@@ -10,6 +10,7 @@ import {
   DialogContent,
   DialogTitle,
   FormControl,
+  FormControlLabel,
   InputLabel,
   MenuItem,
   Select,
@@ -20,6 +21,15 @@ import {
 import RefreshIcon from "@mui/icons-material/Refresh";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import {
   getManagementWfFolderPerformance,
   getManagementWfFolderSessionOrders,
   getManagementWfFolderDestinations,
@@ -27,6 +37,9 @@ import {
   postManagementWfFolderAttributionReset,
   postManagementPerformanceApproveSession,
   postManagementPerformanceApproveDay,
+  postManagementPerformanceApproveEmployeeDay,
+  postManagementPerformanceExcludeEmployeeDay,
+  postManagementPerformanceIncludeEmployeeDay,
   postManagementPerformanceOverrideSession,
   postManagementPerformanceExcludeSession,
   postManagementPerformanceIncludeSession,
@@ -39,227 +52,172 @@ import PerformanceDetailDrawer, {
   PerformanceFilterChip,
   PerformanceSortSelect,
 } from "./performance/PerformanceDetailDrawer";
-import { PERF_TYPE, PERF_UI, PerfSeparator, perfKpiCellSx, perfKpiGridSx, perfKpiInlineSx, perfKpiStripSx, perfRowSx } from "./performance/performanceTokens";
+import {
+  PERF_TYPE,
+  PERF_UI,
+  PerfSeparator,
+  perfKpiCellSx,
+  perfKpiGridSx,
+  perfKpiInlineSx,
+  perfRowSx,
+} from "./performance/performanceTokens";
 import { fmtCount, fmtDelta, fmtHours, fmtLbs, fmtRate } from "./performance/performanceFormat";
 import { displayCustomerName } from "../../utils/displayCustomerName";
 import { orderDisplayIdFromRow } from "../../utils/orderDisplayId";
 
-const WF_SORT_OPTIONS = [
-  { value: "output", label: "Most orders" },
-  { value: "pounds", label: "Most lb" },
+function apiErr(err, fallback = "Request failed") {
+  const d = err?.response?.data;
+  if (!d) return err?.message || fallback;
+  return d.error || d.message || d.status || err?.message || fallback;
+}
+
+function dayStatusLabel(status) {
+  switch (String(status || "").toUpperCase()) {
+    case "APPROVED":
+      return "Approved";
+    case "PARTIALLY_APPROVED":
+      return "Partially approved";
+    case "EXCLUDED":
+      return "Excluded";
+    case "NEEDS_APPROVAL":
+    case "UNAPPROVED":
+    default:
+      return "Needs approval";
+  }
+}
+
+function dayStatusColor(status) {
+  switch (String(status || "").toUpperCase()) {
+    case "APPROVED":
+      return PERF_UI.tealDark;
+    case "PARTIALLY_APPROVED":
+      return "#b45309";
+    case "EXCLUDED":
+      return "#92400e";
+    default:
+      return "#94a3b8";
+  }
+}
+
+const GRAPH_METRICS = [
+  { value: "lbs_hr", label: "Lb/hr", field: "lbs_per_hour" },
+  { value: "bags_hr", label: "Bags/hr", field: "bags_per_hour" },
+  { value: "pounds", label: "Pounds", field: "total_pre_lbs" },
+  { value: "orders", label: "Orders", field: "orders_completed" },
+];
+
+const SORT_OPTIONS = [
   { value: "lbs_hr", label: "Highest lb/hr" },
+  { value: "orders", label: "Most orders" },
+  { value: "pounds", label: "Most pounds" },
   { value: "bags_hr", label: "Highest bags/hr" },
 ];
 
-function SessionLink({
-  session,
-  onOpenSession,
-  onApprove,
-  onEdit,
-  onExclude,
-  onInclude,
+function sessionPublishPayload(session) {
+  return {
+    session_id: session.session_id,
+    session_code: session.session_code,
+    segment_id: session.segment_id,
+    user_id: session.user_id ?? session.employee_user_id,
+    employee: session.employee,
+    total_pre_lbs: session.total_pre_lbs,
+    performance_hours: session.performance_hours,
+    lbs_per_hour: session.lbs_per_hour,
+    orders_completed: session.orders_completed,
+    start_time: session.start_time,
+    end_time: session.end_time,
+    performance_end: session.performance_end,
+    performance_basis: session.performance_basis,
+    role_status: session.role_status,
+    include_in_authoritative_aggregate: session.include_in_authoritative_aggregate,
+  };
+}
+
+function WfEmployeeDayRow({
+  rank,
+  employee,
+  onReview,
+  onApproveDay,
+  onExcludeDay,
+  onIncludeDay,
   approveBusy,
 }) {
-  const label = session.session_code
-    ? `View ${session.session_code}`
-    : `View ${session.orders_completed} order${session.orders_completed === 1 ? "" : "s"}`;
-  const pub = session.publication_status || session.publication?.status || "UNAPPROVED";
-  const isOpen = String(session.role_status || "").toLowerCase() === "open";
-  const approved = pub === "APPROVED";
-  const excluded = pub === "EXCLUDED";
-  const calc =
-    session.publication?.calculated_metric_value ??
-    session.lbs_per_hour ??
-    null;
-  const approvedVal =
-    session.publication?.published_metric_value ??
-    (approved ? session.lbs_per_hour : null);
-  const overridden = Boolean(session.publication?.is_rate_override);
+  const status = employee.day_publication_status || employee.publication_status || "NEEDS_APPROVAL";
+  const excluded = status === "EXCLUDED";
+  const approved = status === "APPROVED";
+  const hours = employee.performance_hours ?? employee.session_hours;
+  const statsLine = `${fmtCount(employee.orders_completed)} orders · ${fmtLbs(employee.total_pre_lbs, {
+    compact: true,
+  })} · ${fmtHours(hours)} · ${fmtRate(employee.bags_per_hour)} bags/hr`;
+  const metaParts = [employee.time_range_label, employee.duration_label].filter(Boolean);
+  const sessionCount = employee.session_count || (employee.sessions || []).length;
+
   return (
-    <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-      <Box
-        component="button"
-        type="button"
-        onClick={() => onOpenSession(session)}
-        sx={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 0.1,
-          m: 0,
-          p: 0,
-          border: "none",
-          bgcolor: "transparent",
-          cursor: "pointer",
-          fontFamily: "inherit",
-          ...PERF_TYPE.link,
-          minHeight: { xs: 36, md: 28 },
-          WebkitTapHighlightColor: "transparent",
-          "&:hover": { color: PERF_UI.teal, textDecoration: "underline" },
-        }}
+    <Box sx={perfRowSx()}>
+      <Stack
+        direction={{ xs: "column", md: "row" }}
+        alignItems={{ xs: "stretch", md: "baseline" }}
+        spacing={0.75}
+        useFlexGap
+        flexWrap="wrap"
       >
-        {label}
-        <ChevronRightIcon sx={{ fontSize: 14 }} />
-      </Box>
-      <Typography sx={{ ...PERF_TYPE.meta, color: "#64748b" }}>
-        Calc {fmtRate(calc)}
-        {approved || excluded ? ` · Pub ${fmtRate(approvedVal)}` : ""}
-        {overridden ? " · Override" : ""}
-      </Typography>
-      <Typography
-        sx={{
-          ...PERF_TYPE.meta,
-          color: excluded ? "#b45309" : approved ? PERF_UI.tealDark : "#94a3b8",
-          fontWeight: 700,
-        }}
-      >
-        {excluded ? "Excluded" : approved ? "Approved" : "Unapproved"}
-      </Typography>
-      {!isOpen && !excluded ? (
+        <Typography sx={{ ...PERF_TYPE.name, minWidth: 0 }} noWrap>
+          <Box component="span" sx={PERF_TYPE.rank}>
+            #{rank}{" "}
+          </Box>
+          {employee.employee}
+        </Typography>
+        <Typography sx={PERF_TYPE.body}>{statsLine}</Typography>
+        <Box sx={{ flex: 1, minWidth: 8 }} />
+        <Typography sx={PERF_TYPE.metricPrimary} whiteSpace="nowrap">
+          {fmtRate(employee.lbs_per_hour, 0)}{" "}
+          <Box component="span" sx={PERF_TYPE.metricLabel}>
+            lb/hr
+          </Box>
+        </Typography>
+      </Stack>
+      <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.35 }}>
+        {metaParts.length ? (
+          <Typography sx={PERF_TYPE.meta}>{metaParts.join(" · ")}</Typography>
+        ) : null}
+        {sessionCount ? (
+          <Typography sx={PERF_TYPE.meta}>
+            {sessionCount} session{sessionCount === 1 ? "" : "s"}
+          </Typography>
+        ) : null}
+        <Typography sx={{ ...PERF_TYPE.meta, color: dayStatusColor(status), fontWeight: 700 }}>
+          {dayStatusLabel(status)}
+        </Typography>
         <Button
           size="small"
           variant="outlined"
           disabled={approveBusy}
-          onClick={() => onEdit?.(session)}
+          onClick={() => onReview?.(employee)}
           sx={{ minHeight: 28, py: 0, px: 1, fontSize: 11, textTransform: "none" }}
         >
-          Edit
+          Review
         </Button>
-      ) : null}
-      <Button
-        size="small"
-        variant="outlined"
-        disabled={approved || isOpen || approveBusy || excluded}
-        onClick={() => onApprove?.(session)}
-        sx={{ minHeight: 28, py: 0, px: 1, fontSize: 11, textTransform: "none" }}
-      >
-        {isOpen ? "Open" : "Approve"}
-      </Button>
-      {!isOpen ? (
+        {!excluded && !approved ? (
+          <Button
+            size="small"
+            variant="outlined"
+            disabled={approveBusy}
+            onClick={() => onApproveDay?.(employee)}
+            sx={{ minHeight: 28, py: 0, px: 1, fontSize: 11, textTransform: "none" }}
+          >
+            Approve
+          </Button>
+        ) : null}
         <Button
           size="small"
           variant="text"
           disabled={approveBusy}
-          onClick={() => (excluded ? onInclude?.(session) : onExclude?.(session))}
+          onClick={() => (excluded ? onIncludeDay?.(employee) : onExcludeDay?.(employee))}
           sx={{ minHeight: 28, py: 0, px: 1, fontSize: 11, textTransform: "none" }}
         >
           {excluded ? "Include" : "Exclude"}
         </Button>
-      ) : null}
-    </Stack>
-  );
-}
-
-function WfEmployeeRankCard({
-  rank,
-  employee,
-  onOpenSession,
-  onApprove,
-  onEdit,
-  onExclude,
-  onInclude,
-  approveBusy,
-}) {
-  const sessions = employee.sessions || [];
-  const timeRange = employee.time_range_label || sessions[0]?.time_range_label;
-  const duration = employee.duration_label;
-  const statsLine = `${fmtCount(employee.orders_completed)} orders · ${fmtLbs(employee.total_pre_lbs, { compact: true })} · ${fmtRate(employee.bags_per_hour)} bags/hr`;
-  const metaParts = [timeRange, duration].filter(Boolean);
-
-  return (
-    <Box sx={perfRowSx()}>
-      {/* Phone */}
-      <Box sx={{ display: { xs: "block", md: "none" } }}>
-        <Stack direction="row" justifyContent="space-between" alignItems="baseline" spacing={1}>
-          <Typography sx={{ ...PERF_TYPE.name, minWidth: 0 }} noWrap>
-            <Box component="span" sx={PERF_TYPE.rank}>
-              #{rank}{" "}
-            </Box>
-            {employee.employee}
-          </Typography>
-          <Typography sx={PERF_TYPE.metricPrimary} whiteSpace="nowrap">
-            {fmtRate(employee.lbs_per_hour, 0)}{" "}
-            <Box component="span" sx={PERF_TYPE.metricLabel}>
-              lb/hr
-            </Box>
-          </Typography>
-        </Stack>
-        <Typography sx={{ ...PERF_TYPE.body, mt: 0.2 }}>{statsLine}</Typography>
-        {metaParts.length ? (
-          <Typography sx={{ ...PERF_TYPE.meta, mt: 0.15 }}>{metaParts.join(" · ")}</Typography>
-        ) : null}
-        {sessions.length ? (
-          <Stack direction="row" spacing={0.75} flexWrap="wrap" sx={{ mt: 0.35 }}>
-            {sessions.map((sess) => (
-              <SessionLink
-                key={sess.session_id}
-                session={sess}
-                onOpenSession={onOpenSession}
-                onApprove={onApprove}
-                onEdit={onEdit}
-                onExclude={onExclude}
-                onInclude={onInclude}
-                approveBusy={approveBusy}
-              />
-            ))}
-          </Stack>
-        ) : null}
-      </Box>
-
-      {/* Desktop / tablet */}
-      <Box sx={{ display: { xs: "none", md: "block" } }}>
-        <Stack direction="row" alignItems="baseline" spacing={0.75} useFlexGap flexWrap="wrap">
-          <Typography component="span" sx={PERF_TYPE.rank}>
-            #{rank}
-          </Typography>
-          <Typography component="span" sx={PERF_TYPE.name}>
-            {employee.employee}
-          </Typography>
-          <Typography component="span" sx={PERF_TYPE.body}>
-            {statsLine}
-          </Typography>
-          <Box sx={{ flex: 1, minWidth: 8 }} />
-          <Typography component="span" sx={PERF_TYPE.metricPrimary}>
-            {fmtRate(employee.lbs_per_hour, 0)} lb/hr
-          </Typography>
-        </Stack>
-        <Stack
-          direction="row"
-          alignItems="center"
-          spacing={0.5}
-          useFlexGap
-          flexWrap="wrap"
-          sx={{ mt: 0.2 }}
-        >
-          {metaParts.length ? (
-            <Typography component="span" sx={PERF_TYPE.meta}>
-              {metaParts.join(" · ")}
-            </Typography>
-          ) : null}
-          {metaParts.length && sessions.length ? (
-            <Typography component="span" sx={PERF_TYPE.meta}>
-              ·
-            </Typography>
-          ) : null}
-          {sessions.map((sess, idx) => (
-            <Stack key={sess.session_id} direction="row" alignItems="center" spacing={0.35}>
-              {idx > 0 ? (
-                <Typography component="span" sx={PERF_TYPE.meta}>
-                  ·
-                </Typography>
-              ) : null}
-              <SessionLink
-                session={sess}
-                onOpenSession={onOpenSession}
-                onApprove={onApprove}
-                onEdit={onEdit}
-                onExclude={onExclude}
-                onInclude={onInclude}
-                approveBusy={approveBusy}
-              />
-            </Stack>
-          ))}
-        </Stack>
-      </Box>
+      </Stack>
     </Box>
   );
 }
@@ -519,13 +477,18 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
   const [actionBusy, setActionBusy] = useState(false);
   const [showNeedsAttribution, setShowNeedsAttribution] = useState(false);
   const [showOutsideSession, setShowOutsideSession] = useState(false);
-  const [sortBy, setSortBy] = useState("output");
+  const [sortBy, setSortBy] = useState("lbs_hr");
   const [approveBusy, setApproveBusy] = useState(false);
   const [benchDraft, setBenchDraft] = useState("");
   const [pubMessage, setPubMessage] = useState("");
   const [editSession, setEditSession] = useState(null);
   const [editRate, setEditRate] = useState("");
   const [editReason, setEditReason] = useState("");
+  const [showExcluded, setShowExcluded] = useState(false);
+  const [roleKey, setRoleKey] = useState("FOLDER");
+  const [employeeFilter, setEmployeeFilter] = useState("all");
+  const [graphMetric, setGraphMetric] = useState("lbs_hr");
+  const [reviewEmployee, setReviewEmployee] = useState(null);
 
   const patchSessionPublication = (sessionId, publication) => {
     const sid = String(sessionId || "");
@@ -591,7 +554,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
             });
         }
       } catch (err) {
-        setError(err?.response?.data?.error || err?.message || "Unable to load Folder Performance");
+        setError(apiErr(err, "Unable to load Folder Performance"));
         setData(null);
       } finally {
         setLoading(false);
@@ -706,23 +669,6 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
     }
   };
 
-  const sessionPublishPayload = (session) => ({
-    session_id: session.session_id,
-    session_code: session.session_code,
-    segment_id: session.segment_id,
-    user_id: session.user_id ?? session.employee_user_id,
-    employee: session.employee,
-    total_pre_lbs: session.total_pre_lbs,
-    performance_hours: session.performance_hours,
-    lbs_per_hour: session.lbs_per_hour,
-    orders_completed: session.orders_completed,
-    start_time: session.start_time,
-    end_time: session.end_time,
-    performance_end: session.performance_end,
-    performance_basis: session.performance_basis,
-    role_status: session.role_status,
-  });
-
   const approveSession = async (session) => {
     if (!session?.session_id) return;
     setApproveBusy(true);
@@ -740,18 +686,38 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
         return;
       }
       setPubMessage(`Approved ${session.session_code || session.session_id}`);
-      patchSessionPublication(
-        session.session_id,
-        body.publication || {
-          status: "APPROVED",
-          published_metric_value: body.published_metric_value,
-          calculated_metric_value: body.calculated_metric_value ?? session.lbs_per_hour,
-          is_rate_override: Boolean(body.is_rate_override),
-          content_fingerprint: body.content_fingerprint,
-        }
-      );
+      await load({ skip_lazy_baseline: true });
     } catch (err) {
-      setError(err?.response?.data?.error || err?.message || "Approve failed");
+      setError(apiErr(err, "Approve failed"));
+    } finally {
+      setApproveBusy(false);
+    }
+  };
+
+  const approveEmployeeDay = async (employee) => {
+    if (!employee) return;
+    setApproveBusy(true);
+    setPubMessage("");
+    setError("");
+    try {
+      const res = await postManagementPerformanceApproveEmployeeDay("FOLDER", {
+        date_et: dateEt,
+        user_id: employee.user_id,
+        employee: employee.employee,
+        sessions: (employee.sessions || []).map(sessionPublishPayload),
+      });
+      const body = res.data || {};
+      if (body.ok === false && body.status === "employee_not_found") {
+        setError(body.error || "Employee not found for this day");
+        return;
+      }
+      setPubMessage(
+        `Approved ${employee.employee}: ${body.approved || 0} session(s)` +
+          (body.already_approved ? ` · ${body.already_approved} already` : "")
+      );
+      await load({ skip_lazy_baseline: true });
+    } catch (err) {
+      setError(apiErr(err, "Approve employee day failed"));
     } finally {
       setApproveBusy(false);
     }
@@ -769,7 +735,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
     setEditReason(pub.override_reason || "");
   };
 
-  const saveEdit = async ({ andApprove = false } = {}) => {
+  const saveEdit = async () => {
     if (!editSession?.session_id) return;
     const rate = Number(editRate);
     if (!Number.isFinite(rate) || rate < 0) {
@@ -793,18 +759,10 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
         return;
       }
       setPubMessage(`Saved manager value for ${editSession.session_code || editSession.session_id}`);
-      patchSessionPublication(
-        editSession.session_id,
-        body.publication || {
-          status: "APPROVED",
-          published_metric_value: body.published_metric_value,
-          calculated_metric_value: body.calculated_metric_value,
-          is_rate_override: true,
-        }
-      );
       setEditSession(null);
+      await load({ skip_lazy_baseline: true });
     } catch (err) {
-      setError(err?.response?.data?.error || err?.message || "Save failed");
+      setError(apiErr(err, "Save failed"));
     } finally {
       setApproveBusy(false);
     }
@@ -817,6 +775,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
     try {
       const res = await postManagementPerformanceExcludeSession("FOLDER", session.session_id, {
         date_et: session.selected_date_et || dateEt,
+        session: sessionPublishPayload(session),
       });
       const body = res.data || {};
       if (!body.ok) {
@@ -824,9 +783,9 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
         return;
       }
       setPubMessage(`Excluded ${session.session_code || session.session_id}`);
-      patchSessionPublication(session.session_id, body.publication || { status: "EXCLUDED", excluded: true });
+      await load({ skip_lazy_baseline: true });
     } catch (err) {
-      setError(err?.response?.data?.error || err?.message || "Exclude failed");
+      setError(apiErr(err, "Exclude failed"));
     } finally {
       setApproveBusy(false);
     }
@@ -844,9 +803,60 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
         return;
       }
       setPubMessage(`Included ${session.session_code || session.session_id}`);
-      patchSessionPublication(session.session_id, body.publication || { status: "APPROVED" });
+      await load({ skip_lazy_baseline: true });
     } catch (err) {
-      setError(err?.response?.data?.error || err?.message || "Include failed");
+      setError(apiErr(err, "Include failed"));
+    } finally {
+      setApproveBusy(false);
+    }
+  };
+
+  const excludeEmployeeDay = async (employee) => {
+    if (!employee) return;
+    setApproveBusy(true);
+    setError("");
+    try {
+      const res = await postManagementPerformanceExcludeEmployeeDay("FOLDER", {
+        date_et: dateEt,
+        user_id: employee.user_id,
+        employee: employee.employee,
+        sessions: (employee.sessions || []).map(sessionPublishPayload),
+      });
+      const body = res.data || {};
+      if (!body.ok) {
+        setError(body.error || body.status || "Exclude failed");
+        return;
+      }
+      setPubMessage(`Excluded ${employee.employee} for ${dateEt}`);
+      setReviewEmployee(null);
+      await load({ skip_lazy_baseline: true });
+    } catch (err) {
+      setError(apiErr(err, "Exclude failed"));
+    } finally {
+      setApproveBusy(false);
+    }
+  };
+
+  const includeEmployeeDay = async (employee) => {
+    if (!employee) return;
+    setApproveBusy(true);
+    setError("");
+    try {
+      const res = await postManagementPerformanceIncludeEmployeeDay("FOLDER", {
+        user_id: employee.user_id,
+        employee: employee.employee,
+        sessions: employee.sessions || [],
+        session_ids: (employee.sessions || []).map((s) => s.session_id).filter(Boolean),
+      });
+      const body = res.data || {};
+      if (!body.ok) {
+        setError(body.error || body.status || "Include failed");
+        return;
+      }
+      setPubMessage(`Included ${employee.employee}`);
+      await load({ skip_lazy_baseline: true });
+    } catch (err) {
+      setError(apiErr(err, "Include failed"));
     } finally {
       setApproveBusy(false);
     }
@@ -859,26 +869,16 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
     try {
       const res = await postManagementPerformanceApproveDay("FOLDER", dateEt, {});
       const s = res.data || {};
-      if (!s.ok) {
+      if (s.ok === false) {
         setError(s.error || "Approve Day failed");
         return;
       }
       setPubMessage(
         `Approve Day: ${s.approved || 0} approved · ${s.already_approved || 0} already · ${s.open || 0} open · ${s.invalid_empty || 0} invalid`
       );
-      for (const row of s.results || []) {
-        if (!row?.session_id || !row.ok) continue;
-        patchSessionPublication(
-          row.session_id,
-          row.publication || {
-            status: "APPROVED",
-            published_metric_value: row.published_metric_value,
-            content_fingerprint: row.content_fingerprint,
-          }
-        );
-      }
+      await load({ skip_lazy_baseline: true });
     } catch (err) {
-      setError(err?.response?.data?.error || err?.message || "Approve Day failed");
+      setError(apiErr(err, "Approve Day failed"));
     } finally {
       setApproveBusy(false);
     }
@@ -894,9 +894,9 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
     try {
       await putManagementFolderBenchmark({ lbs_per_hour_target: n });
       setPubMessage(`Folder benchmark set to ${n} lb/hr`);
-      await load();
+      await load({ skip_lazy_baseline: true });
     } catch (err) {
-      setError(err?.response?.data?.error || err?.message || "Benchmark save failed");
+      setError(apiErr(err, "Benchmark save failed"));
     } finally {
       setApproveBusy(false);
     }
@@ -918,7 +918,16 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
   const outsideFolderSessionCount = data?.outside_folder_session_count || 0;
 
   const employees = useMemo(() => {
-    const rows = [...(data?.employees || [])];
+    const active = [...(data?.employees || [])];
+    const excluded = [...(data?.excluded_employees || [])];
+    let rows = showExcluded ? [...active, ...excluded] : active;
+    if (employeeFilter !== "all") {
+      rows = rows.filter(
+        (e) =>
+          String(e.user_id) === String(employeeFilter) ||
+          String(e.employee) === String(employeeFilter)
+      );
+    }
     if (sortBy === "lbs_hr") {
       rows.sort((a, b) => (b.lbs_per_hour || 0) - (a.lbs_per_hour || 0));
     } else if (sortBy === "bags_hr") {
@@ -929,7 +938,26 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
       rows.sort((a, b) => (b.orders_completed || 0) - (a.orders_completed || 0));
     }
     return rows;
-  }, [data?.employees, sortBy]);
+  }, [data?.employees, data?.excluded_employees, sortBy, showExcluded, employeeFilter]);
+
+  const employeeOptions = useMemo(() => {
+    const all = [...(data?.employees || []), ...(data?.excluded_employees || [])];
+    return all
+      .map((e) => ({
+        value: e.user_id != null ? String(e.user_id) : e.employee,
+        label: e.employee,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [data?.employees, data?.excluded_employees]);
+
+  const graphRows = useMemo(() => {
+    const field = GRAPH_METRICS.find((m) => m.value === graphMetric)?.field || "lbs_per_hour";
+    return employees.map((e) => ({
+      name: String(e.employee || "").replace(/\s*\(.*?\)\s*/g, "").trim() || e.employee,
+      value: Number(e[field]) || 0,
+      full: e.employee,
+    }));
+  }, [employees, graphMetric]);
 
   const totalHours = summary.total_hours ?? summary.session_hours;
   const kpiItems = [
@@ -1021,7 +1049,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
           </Button>
           <PerformanceSortSelect
             value={sortBy}
-            options={WF_SORT_OPTIONS}
+            options={SORT_OPTIONS}
             onChange={setSortBy}
             aria-label="Sort employees"
           />
@@ -1072,6 +1100,68 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
           {pubMessage}
         </Alert>
       ) : null}
+
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }} flexWrap="wrap" useFlexGap>
+        <FormControl size="small" sx={{ minWidth: 120 }}>
+          <InputLabel id="perf-role">Role</InputLabel>
+          <Select
+            labelId="perf-role"
+            label="Role"
+            value={roleKey}
+            onChange={(e) => setRoleKey(e.target.value)}
+          >
+            <MenuItem value="FOLDER">Folder</MenuItem>
+          </Select>
+        </FormControl>
+        <FormControl size="small" sx={{ minWidth: 180 }}>
+          <InputLabel id="perf-emp">Employee</InputLabel>
+          <Select
+            labelId="perf-emp"
+            label="Employee"
+            value={employeeFilter}
+            onChange={(e) => setEmployeeFilter(e.target.value)}
+          >
+            <MenuItem value="all">All employees</MenuItem>
+            {employeeOptions.map((o) => (
+              <MenuItem key={o.value} value={o.value}>
+                {o.label}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        <FormControl size="small" sx={{ minWidth: 120 }}>
+          <InputLabel id="perf-metric">Graph</InputLabel>
+          <Select
+            labelId="perf-metric"
+            label="Graph"
+            value={graphMetric}
+            onChange={(e) => setGraphMetric(e.target.value)}
+          >
+            {GRAPH_METRICS.map((m) => (
+              <MenuItem key={m.value} value={m.value}>
+                {m.label}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        <FormControlLabel
+          control={
+            <Checkbox
+              size="small"
+              checked={showExcluded}
+              onChange={(e) => setShowExcluded(e.target.checked)}
+            />
+          }
+          label={<Typography sx={{ fontSize: 12 }}>Show excluded</Typography>}
+        />
+      </Stack>
+      <Typography sx={{ ...PERF_TYPE.meta, mb: 1 }}>
+        Folder is the live productivity role (lb/hr · bags/hr). Other roles are reserved until publishers exist.
+        {data?.excluded_employee_count
+          ? ` · ${data.excluded_employee_count} excluded employee-day(s) hidden by default.`
+          : ""}
+      </Typography>
+
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }} flexWrap="wrap" useFlexGap>
         <Typography sx={{ ...PERF_TYPE.meta, fontWeight: 700 }}>Folder Benchmark</Typography>
         <TextField
@@ -1236,23 +1326,63 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
             </Box>
           ) : null}
 
+          {employeeFilter === "all" && graphRows.length ? (
+            <Box
+              sx={{
+                mb: 1.25,
+                px: 0.5,
+                py: 1,
+                borderRadius: 1.25,
+                bgcolor: PERF_UI.rowBg,
+                border: `1px solid ${PERF_UI.rowBorder}`,
+                height: Math.max(220, Math.min(480, 28 * graphRows.length + 60)),
+              }}
+            >
+              <Typography sx={{ ...PERF_TYPE.meta, px: 1, mb: 0.5, fontWeight: 700 }}>
+                All employees · {GRAPH_METRICS.find((m) => m.value === graphMetric)?.label || "Lb/hr"}
+              </Typography>
+              <ResponsiveContainer width="100%" height="90%">
+                <BarChart
+                  data={graphRows}
+                  layout="vertical"
+                  margin={{ top: 4, right: 16, left: 8, bottom: 4 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis type="number" tick={{ fontSize: 11 }} />
+                  <YAxis
+                    type="category"
+                    dataKey="name"
+                    width={88}
+                    tick={{ fontSize: 11 }}
+                    interval={0}
+                  />
+                  <Tooltip
+                    formatter={(v) => [fmtRate(v), GRAPH_METRICS.find((m) => m.value === graphMetric)?.label]}
+                    labelFormatter={(_, p) => p?.[0]?.payload?.full || ""}
+                  />
+                  <Bar dataKey="value" fill={PERF_UI.teal} radius={[0, 3, 3, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </Box>
+          ) : null}
+
           <Stack spacing={0.3}>
             {employees.map((emp, idx) => (
-              <WfEmployeeRankCard
-                key={emp.employee}
+              <WfEmployeeDayRow
+                key={`${emp.user_id || emp.employee}-${idx}`}
                 rank={idx + 1}
                 employee={emp}
-                onOpenSession={openSession}
-                onApprove={approveSession}
-                onEdit={openEdit}
-                onExclude={excludeSession}
-                onInclude={includeSession}
+                onReview={setReviewEmployee}
+                onApproveDay={approveEmployeeDay}
+                onExcludeDay={excludeEmployeeDay}
+                onIncludeDay={includeEmployeeDay}
                 approveBusy={approveBusy}
               />
             ))}
             {!loading && !employees.length ? (
               <Typography sx={{ py: 2, ...PERF_TYPE.body, textAlign: "center" }}>
-                No Wash & Fold folder sessions for this window.
+                No Wash & Fold folder employee-days for this window
+                {showExcluded ? "" : " (excluded rows hidden)"}.
               </Typography>
             ) : null}
           </Stack>
@@ -1334,6 +1464,128 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
         busy={actionBusy}
       />
 
+      <Dialog
+        open={!!reviewEmployee}
+        onClose={() => setReviewEmployee(null)}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>
+          Review · {reviewEmployee?.employee}
+          <Typography sx={{ ...PERF_TYPE.meta, mt: 0.35 }}>
+            {dayStatusLabel(
+              reviewEmployee?.day_publication_status || reviewEmployee?.publication_status
+            )}{" "}
+            · {fmtCount(reviewEmployee?.orders_completed)} orders ·{" "}
+            {fmtLbs(reviewEmployee?.total_pre_lbs, { compact: true })} ·{" "}
+            {fmtRate(reviewEmployee?.lbs_per_hour)} lb/hr
+          </Typography>
+        </DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={1.25}>
+            {(reviewEmployee?.sessions || []).map((sess) => {
+              const pub = sess.publication_status || sess.publication?.status || "UNAPPROVED";
+              const isOpen = String(sess.role_status || "").toLowerCase() === "open";
+              return (
+                <Box
+                  key={sess.session_id}
+                  sx={{
+                    p: 1,
+                    borderRadius: 1,
+                    border: `1px solid ${PERF_UI.rowBorder}`,
+                    bgcolor: PERF_UI.rowBg,
+                  }}
+                >
+                  <Stack direction="row" justifyContent="space-between" alignItems="baseline">
+                    <Typography sx={{ fontWeight: 700, fontSize: 13 }}>
+                      {sess.session_code || sess.session_id}
+                    </Typography>
+                    <Typography sx={{ fontSize: 12, color: dayStatusColor(pub), fontWeight: 700 }}>
+                      {pub === "UNAPPROVED" ? "Unapproved" : dayStatusLabel(pub)}
+                    </Typography>
+                  </Stack>
+                  <Typography sx={{ ...PERF_TYPE.meta, mt: 0.25 }}>
+                    Calc {fmtRate(sess.lbs_per_hour)} · Pub{" "}
+                    {fmtRate(sess.publication?.published_metric_value ?? sess.lbs_per_hour)} ·{" "}
+                    {fmtCount(sess.orders_completed)} orders · {fmtLbs(sess.total_pre_lbs, { compact: true })} ·{" "}
+                    {fmtHours(sess.performance_hours)}
+                  </Typography>
+                  <Stack direction="row" spacing={0.75} sx={{ mt: 0.75 }} flexWrap="wrap" useFlexGap>
+                    <Button
+                      size="small"
+                      sx={{ textTransform: "none" }}
+                      onClick={() => openSession({ ...sess, employee: reviewEmployee.employee })}
+                    >
+                      Orders
+                      <ChevronRightIcon sx={{ fontSize: 14 }} />
+                    </Button>
+                    {!isOpen && pub !== "EXCLUDED" ? (
+                      <Button
+                        size="small"
+                        sx={{ textTransform: "none" }}
+                        disabled={approveBusy}
+                        onClick={() => openEdit({ ...sess, employee: reviewEmployee.employee })}
+                      >
+                        Edit
+                      </Button>
+                    ) : null}
+                    {!isOpen && pub !== "APPROVED" && pub !== "EXCLUDED" ? (
+                      <Button
+                        size="small"
+                        sx={{ textTransform: "none" }}
+                        disabled={approveBusy}
+                        onClick={() => approveSession({ ...sess, employee: reviewEmployee.employee })}
+                      >
+                        Approve
+                      </Button>
+                    ) : null}
+                    {!isOpen ? (
+                      <Button
+                        size="small"
+                        sx={{ textTransform: "none" }}
+                        disabled={approveBusy}
+                        onClick={() =>
+                          pub === "EXCLUDED"
+                            ? includeSession(sess)
+                            : excludeSession({ ...sess, employee: reviewEmployee.employee })
+                        }
+                      >
+                        {pub === "EXCLUDED" ? "Include" : "Exclude"}
+                      </Button>
+                    ) : null}
+                  </Stack>
+                </Box>
+              );
+            })}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setReviewEmployee(null)}>Close</Button>
+          {String(reviewEmployee?.day_publication_status) === "EXCLUDED" ? (
+            <Button
+              variant="contained"
+              disabled={approveBusy}
+              onClick={() => includeEmployeeDay(reviewEmployee)}
+            >
+              Include again
+            </Button>
+          ) : (
+            <>
+              <Button disabled={approveBusy} onClick={() => excludeEmployeeDay(reviewEmployee)}>
+                Exclude day
+              </Button>
+              <Button
+                variant="contained"
+                disabled={approveBusy || reviewEmployee?.day_publication_status === "APPROVED"}
+                onClick={() => approveEmployeeDay(reviewEmployee)}
+              >
+                Approve day
+              </Button>
+            </>
+          )}
+        </DialogActions>
+      </Dialog>
+
       <Dialog open={!!editSession} onClose={() => setEditSession(null)} fullWidth maxWidth="xs">
         <DialogTitle>Manager approved value</DialogTitle>
         <DialogContent>
@@ -1366,7 +1618,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
           <Button onClick={() => setEditSession(null)} disabled={approveBusy}>
             Cancel
           </Button>
-          <Button onClick={() => saveEdit({ andApprove: true })} disabled={approveBusy} variant="contained">
+          <Button onClick={() => saveEdit()} disabled={approveBusy} variant="contained">
             Save & Approve
           </Button>
         </DialogActions>

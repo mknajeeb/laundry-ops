@@ -2676,6 +2676,27 @@ export const postManagementPerformanceApproveSession = (roleKey, sessionId, body
     { timeout: 60000 }
   );
 
+export const postManagementPerformanceApproveEmployeeDay = (roleKey, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/performance/${encodeURIComponent(roleKey)}/employees/approve-day`,
+    body,
+    { timeout: 60000 }
+  );
+
+export const postManagementPerformanceExcludeEmployeeDay = (roleKey, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/performance/${encodeURIComponent(roleKey)}/employees/exclude-day`,
+    body,
+    { timeout: 60000 }
+  );
+
+export const postManagementPerformanceIncludeEmployeeDay = (roleKey, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/performance/${encodeURIComponent(roleKey)}/employees/include-day`,
+    body,
+    { timeout: 60000 }
+  );
+
 export const postManagementPerformanceOverrideSession = (roleKey, sessionId, body = {}) =>
   axios.post(
     `${API_BASE}/api/management/performance/${encodeURIComponent(roleKey)}/sessions/${encodeURIComponent(sessionId)}/override`,

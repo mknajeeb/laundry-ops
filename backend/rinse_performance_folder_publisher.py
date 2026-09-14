@@ -6,7 +6,7 @@ Does not recalculate Folder performance; reads canonical Management cards.
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from backend.management_wf_folder_performance import build_day_folder_performance
 from backend.rinse_folding_settings import get_rinse_folding_benchmarks, put_rinse_folding_benchmarks
@@ -248,7 +248,9 @@ def attach_publication_status_to_day(
     organization_id: int,
     day: dict[str, Any],
 ) -> dict[str, Any]:
-    """Annotate Management day payload with publication status per session."""
+    """Annotate sessions + derive employee-day publication status (set-based)."""
+    from backend.rinse_performance_approvals import derive_employee_day_publication_status
+
     sids: list[str] = []
     for sess in day.get("sessions") or []:
         sid = str(sess.get("session_id") or "")
@@ -273,8 +275,295 @@ def attach_publication_status_to_day(
             pub = status.get(sid) or {"status": "UNAPPROVED"}
             sess["publication_status"] = pub["status"]
             sess["publication"] = pub
+        day_pub = derive_employee_day_publication_status(emp.get("sessions") or [])
+        emp["day_publication_status"] = day_pub["status"]
+        emp["day_publication"] = day_pub
+        emp["publication_status"] = day_pub["status"]
     day["folder_benchmark_lbs_hr"] = get_folder_benchmark(cursor, organization_id)
     return day
+
+
+def _recompute_summary_from_employees(employees: list[dict[str, Any]]) -> dict[str, Any]:
+    from backend.management_wf_folder_performance import weighted_aggregate_rates
+
+    total_orders = sum(int(e.get("orders_completed") or 0) for e in employees)
+    total_lbs = round(sum(float(e.get("total_pre_lbs") or 0) for e in employees), 2)
+    total_hours = round(
+        sum(
+            float(e.get("performance_hours") or e.get("session_hours") or 0)
+            for e in employees
+            if (e.get("performance_hours") is not None or e.get("session_hours") is not None)
+        ),
+        4,
+    )
+    rates = weighted_aggregate_rates(
+        total_orders=total_orders,
+        total_pre_lbs=total_lbs,
+        total_session_hours=total_hours if total_hours > 0 else None,
+    )
+    return {
+        "orders_completed": total_orders,
+        "total_pre_lbs": total_lbs,
+        "total_hours": total_hours if total_hours > 0 else None,
+        "session_hours": total_hours if total_hours > 0 else None,
+        "bags_per_hour": rates["bags_per_hour"],
+        "lbs_per_hour": rates["lbs_per_hour"],
+        "employee_count": len(employees),
+        "average_basis": "weighted_sum_orders_lbs_over_sum_hours",
+    }
+
+
+def partition_employees_by_exclusion(day: dict[str, Any]) -> dict[str, Any]:
+    """Split active vs excluded employee-days; recompute active summary."""
+    employees = list(day.get("employees") or [])
+    active = [
+        e
+        for e in employees
+        if str(e.get("day_publication_status") or e.get("publication_status") or "") != "EXCLUDED"
+    ]
+    excluded = [
+        e
+        for e in employees
+        if str(e.get("day_publication_status") or e.get("publication_status") or "") == "EXCLUDED"
+    ]
+    summary = dict(day.get("summary") or {})
+    summary.update(_recompute_summary_from_employees(active))
+    # Preserve unmapped counts from original summary.
+    for key in (
+        "needs_attribution_count",
+        "outside_folder_session_count",
+        "unmapped_count",
+        "session_count",
+    ):
+        if key in (day.get("summary") or {}):
+            summary[key] = day["summary"][key]
+    day["employees"] = active
+    day["excluded_employees"] = excluded
+    day["excluded_employee_count"] = len(excluded)
+    day["summary"] = summary
+    day["summary_active"] = summary
+    day["summary_all_including_excluded"] = _recompute_summary_from_employees(employees)
+    return day
+
+
+def approve_folder_employee_day(
+    cursor,
+    organization_id: int,
+    *,
+    selected_date_et: date,
+    employee_user_id: int | None = None,
+    employee_name: str | None = None,
+    actor_user_id: int | None = None,
+    actor_name: str | None = None,
+    day: Mapping[str, Any] | None = None,
+    sessions: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Approve all eligible closed Folder sessions for one employee on one ET day."""
+    day_payload = day or build_day_folder_performance(
+        cursor,
+        int(organization_id),
+        selected_date_et=selected_date_et,
+        attach_customers=False,
+    )
+    emp = _find_employee(
+        day_payload,
+        employee_user_id=employee_user_id,
+        employee_name=employee_name,
+    )
+    if not emp and sessions:
+        emp = {
+            "employee": employee_name,
+            "user_id": employee_user_id,
+            "sessions": list(sessions),
+        }
+    if not emp:
+        return {
+            "ok": False,
+            "error": "employee_not_found",
+            "status": "employee_not_found",
+        }
+    sess_list = list(sessions) if sessions is not None else list(emp.get("sessions") or [])
+    summary = {
+        "ok": True,
+        "approved": 0,
+        "already_approved": 0,
+        "open": 0,
+        "invalid_empty": 0,
+        "failed": 0,
+        "results": [],
+        "employee": emp.get("employee"),
+        "user_id": emp.get("user_id"),
+        "selected_date_et": selected_date_et.isoformat(),
+        "role_key": ROLE_FOLDER,
+    }
+    # Wrap as a fake day for approve_folder_session reuse.
+    fake_day = {"sessions": sess_list, "employees": [emp]}
+    for sess in sess_list:
+        sid = str(sess.get("session_id") or "")
+        ok, reason = session_is_approvable(sess)
+        if not ok:
+            summary[reason] = int(summary.get(reason) or 0) + 1
+            summary["results"].append({"session_id": sid, "status": reason, "ok": False})
+            continue
+        out = approve_folder_session(
+            cursor,
+            organization_id,
+            selected_date_et=selected_date_et,
+            session_id=sid,
+            actor_user_id=actor_user_id,
+            actor_name=actor_name,
+            session=sess,
+            day=fake_day,
+        )
+        if out.get("already_approved"):
+            summary["already_approved"] += 1
+        elif out.get("ok"):
+            summary["approved"] += 1
+        else:
+            st = str(out.get("status") or "failed")
+            summary[st] = int(summary.get(st) or 0) + 1
+        summary["results"].append(out)
+    return summary
+
+
+def exclude_folder_employee_day(
+    cursor,
+    organization_id: int,
+    *,
+    selected_date_et: date,
+    employee_user_id: int | None = None,
+    employee_name: str | None = None,
+    reason: str | None = None,
+    actor_user_id: int | None = None,
+    actor_name: str | None = None,
+    sessions: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Exclude all countable sessions for an employee-day via existing session exclude."""
+    from backend.rinse_performance_approvals import (
+        exclude_session_publication,
+        session_counts_toward_employee_day,
+    )
+
+    sess_list = list(sessions or [])
+    if not sess_list:
+        day = build_day_folder_performance(
+            cursor,
+            int(organization_id),
+            selected_date_et=selected_date_et,
+            attach_customers=False,
+        )
+        emp = _find_employee(
+            day, employee_user_id=employee_user_id, employee_name=employee_name
+        )
+        if not emp:
+            return {"ok": False, "error": "employee_not_found", "status": "employee_not_found"}
+        sess_list = list(emp.get("sessions") or [])
+        employee_name = emp.get("employee") or employee_name
+        employee_user_id = emp.get("user_id") if emp.get("user_id") is not None else employee_user_id
+
+    results = []
+    excluded = 0
+    for sess in sess_list:
+        if not session_counts_toward_employee_day(sess) and str(
+            sess.get("role_status") or ""
+        ).lower() == "open":
+            continue
+        sid = str(sess.get("session_id") or "")
+        if not sid:
+            continue
+        snap = session_card_to_snapshot(sess, business_date_et=selected_date_et)
+        # Allow exclude even when hours/rate empty by forcing a 0 placeholder snap.
+        if snap.get("published_metric_value") is None:
+            snap["published_metric_value"] = 0.0
+            snap["calculated_metric_value"] = 0.0
+            snap["published_numerator"] = float(sess.get("total_pre_lbs") or 0)
+            snap["published_denominator"] = float(sess.get("performance_hours") or 0) or 0.0001
+            snap["calculated_numerator"] = snap["published_numerator"]
+            snap["calculated_denominator"] = snap["published_denominator"]
+        out = exclude_session_publication(
+            cursor,
+            organization_id,
+            role_key=ROLE_FOLDER,
+            session_id=sid,
+            reason=reason,
+            actor_user_id=actor_user_id,
+            actor_name=actor_name,
+            snapshot=snap,
+        )
+        if out.get("ok"):
+            excluded += 1
+        results.append(out)
+    return {
+        "ok": excluded > 0 or not results,
+        "excluded": excluded,
+        "results": results,
+        "employee": employee_name,
+        "user_id": employee_user_id,
+        "selected_date_et": selected_date_et.isoformat(),
+        "day_publication_status": "EXCLUDED" if excluded else "NEEDS_APPROVAL",
+        "publication": {"status": "EXCLUDED", "excluded": True},
+    }
+
+
+def include_folder_employee_day(
+    cursor,
+    organization_id: int,
+    *,
+    employee_user_id: int | None = None,
+    employee_name: str | None = None,
+    session_ids: Sequence[str] | None = None,
+    actor_user_id: int | None = None,
+    actor_name: str | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    from backend.rinse_performance_approvals import include_session_publication
+
+    sids = [str(s).strip() for s in (session_ids or []) if str(s).strip()]
+    if not sids:
+        return {"ok": False, "error": "session_ids required", "status": "session_ids_required"}
+    results = []
+    included = 0
+    for sid in sids:
+        out = include_session_publication(
+            cursor,
+            organization_id,
+            role_key=ROLE_FOLDER,
+            session_id=sid,
+            actor_user_id=actor_user_id,
+            actor_name=actor_name,
+            reason=reason,
+        )
+        if out.get("ok"):
+            included += 1
+        results.append(out)
+    return {
+        "ok": included > 0,
+        "included": included,
+        "results": results,
+        "employee": employee_name,
+        "user_id": employee_user_id,
+        "publication": {"status": "APPROVED" if included else "NEEDS_APPROVAL"},
+    }
+
+
+def _find_employee(
+    day: Mapping[str, Any],
+    *,
+    employee_user_id: int | None = None,
+    employee_name: str | None = None,
+) -> dict[str, Any] | None:
+    name = str(employee_name or "").strip().casefold()
+    uid = None
+    try:
+        uid = int(employee_user_id) if employee_user_id is not None else None
+    except (TypeError, ValueError):
+        uid = None
+    for emp in day.get("employees") or []:
+        if uid is not None and emp.get("user_id") is not None and int(emp["user_id"]) == uid:
+            return dict(emp)
+        if name and str(emp.get("employee") or "").strip().casefold() == name:
+            return dict(emp)
+    return None
 
 
 def reconcile_folder_approvals_for_day(

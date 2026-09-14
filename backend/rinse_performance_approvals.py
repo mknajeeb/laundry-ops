@@ -273,6 +273,59 @@ def session_is_approvable(session: Mapping[str, Any]) -> tuple[bool, str]:
     return True, "ok"
 
 
+def session_counts_toward_employee_day(session: Mapping[str, Any]) -> bool:
+    """Closed authoritative sessions define employee-day approval/exclude state."""
+    if not session.get("include_in_authoritative_aggregate", True):
+        return False
+    status = str(session.get("role_status") or "").lower()
+    if status in {"open", "unresolved"}:
+        return False
+    return True
+
+
+def derive_employee_day_publication_status(
+    sessions: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Roll session publication into one employee-day badge.
+
+    Returns status in:
+      APPROVED | NEEDS_APPROVAL | PARTIALLY_APPROVED | EXCLUDED
+    """
+    eligible = [s for s in sessions if session_counts_toward_employee_day(s)]
+    if not eligible:
+        eligible = list(sessions)
+    if not eligible:
+        return {
+            "status": "NEEDS_APPROVAL",
+            "approved_count": 0,
+            "unapproved_count": 0,
+            "excluded_count": 0,
+            "eligible_session_count": 0,
+        }
+    statuses = [
+        str(s.get("publication_status") or (s.get("publication") or {}).get("status") or "UNAPPROVED")
+        for s in eligible
+    ]
+    excluded_count = sum(1 for st in statuses if st == "EXCLUDED")
+    approved_count = sum(1 for st in statuses if st == "APPROVED")
+    unapproved_count = len(statuses) - excluded_count - approved_count
+    if excluded_count == len(statuses):
+        day_status = "EXCLUDED"
+    elif approved_count == len(statuses):
+        day_status = "APPROVED"
+    elif approved_count == 0 and excluded_count == 0:
+        day_status = "NEEDS_APPROVAL"
+    else:
+        day_status = "PARTIALLY_APPROVED"
+    return {
+        "status": day_status,
+        "approved_count": approved_count,
+        "unapproved_count": unapproved_count,
+        "excluded_count": excluded_count,
+        "eligible_session_count": len(statuses),
+    }
+
+
 def upsert_approved_snapshot(
     cursor,
     organization_id: int,
@@ -802,15 +855,44 @@ def exclude_session_publication(
     reason: str | None = None,
     actor_user_id: int | None = None,
     actor_name: str | None = None,
+    snapshot: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Exclude from external reads without altering calculated Management values."""
+    """Exclude from external/active Performance without altering calculated values.
+
+    If no approval row exists yet, ``snapshot`` (from the already-rendered session
+    card) is upserted first so managers can exclude without a prior Approve.
+    """
     ensure_rinse_performance_approval_tables(cursor)
     org = int(organization_id)
     rk = str(role_key).upper()
     sid = str(session_id).strip()
     row = get_approval_row(cursor, org, role_key=rk, session_id=sid)
     if row is None:
-        return {"ok": False, "status": "not_approved", "session_id": sid}
+        if snapshot is None:
+            return {
+                "ok": False,
+                "status": "not_approved",
+                "error": "Session has no publication row yet; pass session snapshot to exclude, or Approve first.",
+                "session_id": sid,
+            }
+        snap = dict(snapshot)
+        snap["session_id"] = sid
+        upsert_approved_snapshot(
+            cursor,
+            org,
+            role_key=rk,
+            snapshot=snap,
+            actor_user_id=actor_user_id,
+            actor_name=actor_name,
+        )
+        row = get_approval_row(cursor, org, role_key=rk, session_id=sid)
+        if row is None:
+            return {
+                "ok": False,
+                "status": "failed",
+                "error": "Unable to create publication row for exclude",
+                "session_id": sid,
+            }
     cursor.execute(
         f"""
         UPDATE {APPROVALS_TABLE}

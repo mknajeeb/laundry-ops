@@ -28,11 +28,16 @@ from backend.rinse_performance_approvals import (
 )
 from backend.rinse_performance_folder_publisher import (
     approve_folder_day,
+    approve_folder_employee_day,
     approve_folder_session,
     attach_publication_status_to_day,
+    exclude_folder_employee_day,
     get_folder_benchmark,
+    include_folder_employee_day,
     invalidate_folder_approvals_for_date,
+    partition_employees_by_exclusion,
     put_folder_benchmark,
+    session_card_to_snapshot,
 )
 from backend.rinse_performance_roles import ROLE_FOLDER, role_is_publishable
 from backend.rinse_scan_time import json_safe_rinse
@@ -62,15 +67,25 @@ def _actor(me: dict) -> tuple[int | None, str | None]:
 
 
 def _annotate_dashboard(cursor, oid: int, payload: dict, selected: date) -> dict:
-    """Attach publication status only — no fingerprint reconcile on GET.
+    """Attach publication status + employee-day badges; hide excluded by default.
 
     Reconcile-on-GET previously invalidated every approval after Approve because
     list payloads strip nested orders while approve fingerprints included them.
     Fingerprint no longer depends on orders; reconcile remains on mutation paths.
     """
-    day = payload
-    attach_publication_status_to_day(cursor, oid, day)
+    attach_publication_status_to_day(cursor, oid, payload)
+    partition_employees_by_exclusion(payload)
     payload["folder_benchmark_lbs_hr"] = get_folder_benchmark(cursor, oid)
+    payload["performance_unit"] = "employee_day"
+    payload["roles_available"] = [
+        {
+            "role_key": "FOLDER",
+            "display_name": "Folder",
+            "metrics": ["lbs_per_hour", "bags_per_hour", "pounds", "orders"],
+            "live": True,
+            "note": "Folder is the only live Productivity role with lb/hr and bags/hr attribution.",
+        }
+    ]
     return payload
 
 
@@ -375,7 +390,15 @@ def register_management_wf_folder_performance_routes(
                 return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
             oid = int(user_org_id(me))
             body = request.get_json(silent=True) or {}
+            selected, err = _selected_date_et(
+                body.get("date_et") or body.get("selected_date_et")
+            )
+            if err:
+                return err
             actor_id, actor_name = _actor(me)
+            snap = None
+            if isinstance(body.get("session"), dict):
+                snap = session_card_to_snapshot(body["session"], business_date_et=selected)
             out = exclude_session_publication(
                 cursor,
                 oid,
@@ -384,6 +407,139 @@ def register_management_wf_folder_performance_routes(
                 reason=(body.get("reason") or body.get("note") or None),
                 actor_user_id=actor_id,
                 actor_name=actor_name,
+                snapshot=snap,
+            )
+            conn.commit()
+            status = 200 if out.get("ok") else 400
+            return jsonify(json_safe_rinse(out)), status
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/api/management/performance/<role_key>/employees/approve-day",
+        methods=["POST"],
+    )
+    def management_performance_approve_employee_day(role_key: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_WRITE_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            rk = str(role_key or "").strip().upper()
+            if rk != ROLE_FOLDER:
+                return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
+            oid = int(user_org_id(me))
+            body = request.get_json(silent=True) or {}
+            selected, err = _selected_date_et(
+                body.get("date_et") or body.get("selected_date_et")
+            )
+            if err:
+                return err
+            actor_id, actor_name = _actor(me)
+            sessions = body.get("sessions") if isinstance(body.get("sessions"), list) else None
+            out = approve_folder_employee_day(
+                cursor,
+                oid,
+                selected_date_et=selected,
+                employee_user_id=body.get("user_id") or body.get("employee_user_id"),
+                employee_name=body.get("employee") or body.get("employee_name"),
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+                sessions=sessions,
+            )
+            conn.commit()
+            status = 200 if out.get("ok") else 400
+            return jsonify(json_safe_rinse(out)), status
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/api/management/performance/<role_key>/employees/exclude-day",
+        methods=["POST"],
+    )
+    def management_performance_exclude_employee_day(role_key: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_WRITE_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            rk = str(role_key or "").strip().upper()
+            if rk != ROLE_FOLDER:
+                return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
+            oid = int(user_org_id(me))
+            body = request.get_json(silent=True) or {}
+            selected, err = _selected_date_et(
+                body.get("date_et") or body.get("selected_date_et")
+            )
+            if err:
+                return err
+            actor_id, actor_name = _actor(me)
+            sessions = body.get("sessions") if isinstance(body.get("sessions"), list) else None
+            out = exclude_folder_employee_day(
+                cursor,
+                oid,
+                selected_date_et=selected,
+                employee_user_id=body.get("user_id") or body.get("employee_user_id"),
+                employee_name=body.get("employee") or body.get("employee_name"),
+                reason=(body.get("reason") or body.get("note") or None),
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+                sessions=sessions,
+            )
+            conn.commit()
+            status = 200 if out.get("ok") else 400
+            return jsonify(json_safe_rinse(out)), status
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/api/management/performance/<role_key>/employees/include-day",
+        methods=["POST"],
+    )
+    def management_performance_include_employee_day(role_key: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_WRITE_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            rk = str(role_key or "").strip().upper()
+            if rk != ROLE_FOLDER:
+                return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
+            oid = int(user_org_id(me))
+            body = request.get_json(silent=True) or {}
+            actor_id, actor_name = _actor(me)
+            out = include_folder_employee_day(
+                cursor,
+                oid,
+                employee_user_id=body.get("user_id") or body.get("employee_user_id"),
+                employee_name=body.get("employee") or body.get("employee_name"),
+                session_ids=body.get("session_ids")
+                or [
+                    str(s.get("session_id"))
+                    for s in (body.get("sessions") or [])
+                    if isinstance(s, dict) and s.get("session_id")
+                ],
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+                reason=(body.get("reason") or None),
             )
             conn.commit()
             status = 200 if out.get("ok") else 400
