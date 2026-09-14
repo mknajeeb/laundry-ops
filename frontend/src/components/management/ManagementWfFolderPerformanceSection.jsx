@@ -59,6 +59,7 @@ import {
   perfKpiCellSx,
   perfKpiGridSx,
   perfKpiInlineSx,
+  perfKpiStripSx,
   perfRowSx,
 } from "./performance/performanceTokens";
 import { fmtCount, fmtDelta, fmtHours, fmtLbs, fmtRate } from "./performance/performanceFormat";
