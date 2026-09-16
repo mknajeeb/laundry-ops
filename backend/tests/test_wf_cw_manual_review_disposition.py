@@ -43,7 +43,7 @@ def test_category_manual_after_specialty_and_split():
         category_for_reason_codes(
             [REASON_MANAGER_SENT_FOR_REVIEW, "WF_ZERO_OR_MISSING_POST_WEIGHT"]
         )
-        == CATEGORY_SPECIALTY
+        == "weight_review"
     )
     assert (
         category_for_reason_codes(

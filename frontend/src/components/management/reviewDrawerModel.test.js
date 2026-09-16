@@ -66,6 +66,15 @@ describe("review drawer section flags", () => {
     expect(resolveReviewDrawerInlineVariant(unresolved, "specialty_items")).toBe(
       "specialty_bulk",
     );
+    expect(
+      resolveReviewDrawerInlineVariant(
+        { reason_codes: ["WF_ZERO_OR_MISSING_POST_WEIGHT"] },
+        "weight_review",
+      ),
+    ).toBe("weight");
+    expect(bagHasSpecialtyReview({ reason_codes: ["WF_ZERO_OR_MISSING_POST_WEIGHT"] })).toBe(
+      false,
+    );
     const cleared = {
       reason_codes: ["SERVICE_CLASSIFICATION_MISMATCH"],
       category: "specialty_items",

@@ -30,13 +30,15 @@ const MISSING_CODES = new Set([
 const SPECIALTY_BULK_CODE = "WF_BULK_WORKITEM_REVIEW";
 const SPECIALTY_REVIEW_CODES = new Set([
   SPECIALTY_BULK_CODE,
-  "WF_ZERO_OR_MISSING_POST_WEIGHT",
-  "WF_ZERO_OR_MISSING_WEIGHT",
   "COMPLETED_WITHOUT_RECOGNIZED_ENTRY",
   "SERVICE_CLASSIFICATION_MISMATCH",
   "COMPLETION_DETAILS_MISSING",
   "MISSING_PRE_EVIDENCE",
   "SCAN_CHRONOLOGY_STALE",
+]);
+const MISSING_POST_CODES = new Set([
+  "WF_ZERO_OR_MISSING_POST_WEIGHT",
+  "WF_ZERO_OR_MISSING_WEIGHT",
 ]);
 const MANUAL_REVIEW_CODES = new Set(["MANAGER_SENT_FOR_REVIEW"]);
 
@@ -62,7 +64,11 @@ export function bagHasSpecialtyBulk(bag) {
   return false;
 }
 
-/** True when the bag belongs in the Specialty Review drawer queue. */
+export function bagHasMissingPostWeight(bag) {
+  const cat = String(bag?.review_category || bag?.category || "").toLowerCase();
+  if (cat === "weight_review") return true;
+  return [...reasonCodeSet(bag)].some((c) => MISSING_POST_CODES.has(c));
+}
 export function bagHasSpecialtyReview(bag) {
   if (bag?.has_specialty_review === true) return true;
   const cat = String(bag?.review_category || bag?.category || "").toLowerCase();
@@ -86,15 +92,18 @@ export function resolveReviewDrawerInlineVariant(bag, drawerCategory = null) {
   };
   const cat = String(enriched.category || enriched.review_category || "").toLowerCase();
   if (cat === "manual_review") return "manual";
-  if ([...reasonCodeSet(enriched)].some((c) => MANUAL_REVIEW_CODES.has(c)) && !bagHasMissingPortal(enriched)) {
+  if (cat === "weight_review") return "weight";
+  if ([...reasonCodeSet(enriched)].some((c) => MANUAL_REVIEW_CODES.has(c)) && !bagHasMissingPortal(enriched) && !bagHasMissingPostWeight(enriched)) {
     return "manual";
   }
   const showMissing = bagHasMissingPortal(enriched);
   const showSpecialtyBulk = bagHasSpecialtyBulk(enriched) && !showMissing;
+  const showMissingPost = bagHasMissingPostWeight(enriched) && !showMissing && !showSpecialtyBulk;
   const showSpecialtyReview =
     bagHasSpecialtyReview(enriched) && !showMissing && !showSpecialtyBulk;
   if (showMissing) return "missing";
   if (showSpecialtyBulk) return "specialty_bulk";
+  if (showMissingPost) return "weight";
   if (showSpecialtyReview) return "specialty_review";
   return "none";
 }

@@ -49,6 +49,9 @@ import {
 import {
   formatReviewApiError,
   formatReviewBagShortReason,
+  bagHasMissingPostWeight,
+  managerNoteDisplay,
+  MISSING_POST_WEIGHT_EXPLANATION,
 } from "./reviewDisplayLabels";
 
 const NO_CHARGE_REASONS = ["Customer cancelled", "False alarm", "Duplicate scan", "Other"];
@@ -256,13 +259,18 @@ function ReviewReasonBanner({ bag, drawerCategory }) {
           ? "Manual Review"
           : drawerCategory === "specialty_items"
             ? "Specialty / Bulky Item Review"
-            : "Needs review",
+            : drawerCategory === "weight_review"
+              ? "Missing POST Weight"
+              : "Needs review",
   });
-  const note =
-    bag?.manual_review_reason ||
-    bag?.manager_note ||
-    bag?.cw_manual_review_reason ||
-    null;
+  const note = managerNoteDisplay(bag);
+  const missingPost = bagHasMissingPostWeight({ ...(bag || {}), category: drawerCategory });
+  const preLabel = evidencePreLabel(bag);
+  const postRaw = bag?.post_weight_lbs ?? bag?.post_weight_value;
+  const postMissing = postRaw == null || postRaw === "";
+  const completionStatus =
+    bag?.effective_status || bag?.dashboard_status || bag?.canonical_completion_status || null;
+  const completionEvidence = fmtTime(bag?.completion_at || bag?.canonical_completion_timestamp);
   const disposition = bag?.manager_disposition || null;
   return (
     <Box
@@ -290,6 +298,26 @@ function ReviewReasonBanner({ bag, drawerCategory }) {
       <Typography sx={{ fontSize: 14, fontWeight: 800, color: "#7f1d1d", mt: 0.15 }}>
         {label}
       </Typography>
+      {missingPost ? (
+        <>
+          <Typography sx={{ fontSize: 12, color: "#7f1d1d", mt: 0.35 }}>
+            {MISSING_POST_WEIGHT_EXPLANATION}
+          </Typography>
+          <Typography sx={{ fontSize: 12, color: "#7f1d1d", mt: 0.25, fontWeight: 700 }}>
+            PRE {preLabel} · POST {postMissing ? "Missing" : fmtLbs(postRaw) || "Missing"}
+          </Typography>
+          {completionStatus ? (
+            <Typography sx={{ fontSize: 12, color: "#7f1d1d", mt: 0.15 }}>
+              Status: {String(completionStatus).replace(/_/g, " ")}
+            </Typography>
+          ) : null}
+          {completionEvidence ? (
+            <Typography sx={{ fontSize: 12, color: "#7f1d1d", mt: 0.15 }}>
+              Completion evidence: {completionEvidence}
+            </Typography>
+          ) : null}
+        </>
+      ) : null}
       {note ? (
         <Typography sx={{ fontSize: 12, color: "#7f1d1d", mt: 0.35, fontWeight: 600 }}>
           Manager note: {note}
@@ -307,6 +335,8 @@ function ReviewReasonBanner({ bag, drawerCategory }) {
 
 function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, variant = "missing", drawerCategory = null }) {
   const isSpecialty = variant === "specialty";
+  const isMissingPost =
+    drawerCategory === "weight_review" || bagHasMissingPostWeight(bag);
   const isManual =
     drawerCategory === "manual_review" ||
     String(bag?.category || bag?.review_category || "").toLowerCase() === "manual_review" ||
@@ -690,7 +720,10 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
       </Stack>
       {completionEmp || completionTime ? (
         <Typography sx={{ fontSize: 12, color: "#94a3b8", mb: 0.5 }}>
-          Detected: {[completionEmp, completionTime].filter(Boolean).join(" · ")}
+          {isMissingPost
+            ? "Completion evidence"
+            : "Detected"}
+          : {[completionEmp, completionTime].filter(Boolean).join(" · ")}
         </Typography>
       ) : null}
 
@@ -1249,6 +1282,8 @@ export default function ManagementRinseWfReviewDrawerRow({
                     ? "Manual Review"
                     : drawerCategory === "specialty_items"
                       ? "Specialty / Bulky Item Review"
+                      : drawerCategory === "weight_review"
+                        ? "Missing POST Weight"
                       : "Needs review",
             })}
           </Typography>
@@ -1299,6 +1334,15 @@ export default function ManagementRinseWfReviewDrawerRow({
             onSaved={onSaved}
             variant="specialty"
             drawerCategory={drawerCategory}
+          />
+        ) : inlineVariant === "weight" || drawerCategory === "weight_review" ? (
+          <MissingPortalInline
+            bag={merged}
+            catalog={catalog || []}
+            selectedDateEt={selectedDateEt}
+            readOnly={readOnly}
+            onSaved={onSaved}
+            drawerCategory="weight_review"
           />
         ) : inlineVariant === "manual" || drawerCategory === "manual_review" ? (
           <MissingPortalInline

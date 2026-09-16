@@ -612,6 +612,7 @@ def _deferred_review_stub() -> dict[str, Any]:
         "specialty_items": None,
         "missing_from_portal": None,
         "split_order_review": None,
+        "weight_review": None,
         "unknown_review": None,
         "manual_review": None,
     }

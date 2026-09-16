@@ -9,6 +9,9 @@ import {
   formatReviewReasonLabels,
   formatSplitStateLabel,
   isRawBackendCode,
+  managerNoteDisplay,
+  bagHasMissingPostWeight,
+  MISSING_POST_WEIGHT_EXPLANATION,
 } from "./reviewDisplayLabels";
 
 const SAMPLE_CODES = Object.keys(REVIEW_REASON_LABELS);
@@ -102,6 +105,28 @@ describe("formatReviewBagShortReason", () => {
 
   it("uses category fallback when codes are absent", () => {
     expect(formatReviewBagShortReason({ category: "manual_review" })).toBe("Manual Review");
+  });
+
+  it("maps missing POST away from Specialty and keeps bulky specialty", () => {
+    expect(
+      formatReviewBagShortReason({ reason_codes: ["WF_ZERO_OR_MISSING_POST_WEIGHT"] }),
+    ).toBe("Missing POST Weight");
+    expect(
+      formatReviewBagShortReason({ reason_codes: ["WF_BULK_WORKITEM_REVIEW"] }),
+    ).toBe("Specialty / Bulky Item Review");
+    expect(
+      formatReviewBagShortReason({ reason_codes: ["SERVICE_CLASSIFICATION_MISMATCH"] }),
+    ).toBe("Specialty / Bulky Item Review");
+  });
+
+  it("does not invent a manager note when none exists", () => {
+    expect(managerNoteDisplay({})).toBeNull();
+    expect(managerNoteDisplay({ manager_note: "  " })).toBeNull();
+    expect(managerNoteDisplay({ manager_note: "checked portal" })).toBe("checked portal");
+    expect(bagHasMissingPostWeight({ reason_codes: ["WF_ZERO_OR_MISSING_POST_WEIGHT"] })).toBe(
+      true,
+    );
+    expect(MISSING_POST_WEIGHT_EXPLANATION).toMatch(/post-clean weight/i);
   });
 });
 

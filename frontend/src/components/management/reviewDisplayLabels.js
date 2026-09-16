@@ -14,8 +14,8 @@ const REVIEW_REASON_LABELS = {
   MULTIPLE_WASHERS_WITHOUT_SPLIT_MARKER: "Split Order Review",
   SPLIT_EVIDENCE_INCOMPLETE_AT_DISAPPEARANCE: "Split Order Review",
   MANAGER_SENT_FOR_REVIEW: "Manual Review",
-  WF_ZERO_OR_MISSING_POST_WEIGHT: "Specialty / Bulky Item Review",
-  WF_ZERO_OR_MISSING_WEIGHT: "Specialty / Bulky Item Review",
+  WF_ZERO_OR_MISSING_POST_WEIGHT: "Missing POST Weight",
+  WF_ZERO_OR_MISSING_WEIGHT: "Missing POST Weight",
   COMPLETED_WITHOUT_RECOGNIZED_ENTRY: "Specialty / Bulky Item Review",
   COMPLETION_DETAILS_MISSING: "Specialty / Bulky Item Review",
   MISSING_PRE_EVIDENCE: "Specialty / Bulky Item Review",
@@ -124,6 +124,7 @@ export function formatReviewBagShortReason(
   if (cat === "missing_from_portal") return "Missing From Portal";
   if (cat === "split_order_review") return "Split Order Review";
   if (cat === "manual_review") return "Manual Review";
+  if (cat === "weight_review") return "Missing POST Weight";
   if (cat === "specialty_items") return "Specialty / Bulky Item Review";
   return fallback;
 }
@@ -189,6 +190,38 @@ export function collectNormalReviewUiText(bag, { apiError, apiMessage, validatio
     validationReason || null,
   ].filter(Boolean);
   return parts;
+}
+
+export const MISSING_POST_WEIGHT_LABEL = "Missing POST Weight";
+export const MISSING_POST_WEIGHT_EXPLANATION =
+  "No valid post-clean weight was found for this order.";
+
+const MISSING_POST_CODES = new Set([
+  "WF_ZERO_OR_MISSING_POST_WEIGHT",
+  "WF_ZERO_OR_MISSING_WEIGHT",
+]);
+
+export function bagReasonCodes(bag) {
+  const raw = Array.isArray(bag?.reason_codes)
+    ? bag.reason_codes
+    : bag?.review_reason
+      ? [bag.review_reason]
+      : [];
+  return raw.map((c) => String(c || "").trim().toUpperCase()).filter(Boolean);
+}
+
+export function bagHasMissingPostWeight(bag) {
+  const cat = String(bag?.category || bag?.review_category || "").toLowerCase();
+  if (cat === "weight_review") return true;
+  return bagReasonCodes(bag).some((c) => MISSING_POST_CODES.has(c));
+}
+
+/** Blank manager notes must not render a "Manager note:" label. */
+export function managerNoteDisplay(bag) {
+  const raw =
+    bag?.manual_review_reason || bag?.manager_note || bag?.cw_manual_review_reason || "";
+  const text = String(raw).trim();
+  return text || null;
 }
 
 export { REVIEW_REASON_LABELS, API_ERROR_LABELS, SPLIT_STATE_LABELS };

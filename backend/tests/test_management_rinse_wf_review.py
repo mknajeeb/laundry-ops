@@ -82,10 +82,10 @@ def test_specialty_bulk_wins_over_disappeared():
     )
 
 
-def test_other_review_reasons_route_to_specialty_queue():
+def test_other_review_reasons_route_to_weight_not_specialty():
     assert (
         category_for_reason_codes(["WF_ZERO_OR_MISSING_POST_WEIGHT"])
-        == CATEGORY_SPECIALTY
+        == "weight_review"
     )
     assert category_for_reason_codes(["MANAGER_SENT_FOR_REVIEW"]) == CATEGORY_MANUAL_REVIEW
 
@@ -112,10 +112,12 @@ def test_split_no_double_count():
     }
     split = split_review_categories(headline)
     assert split["counts"]["review_required"] == 3
-    assert split["counts"][CATEGORY_SPECIALTY] == 2
+    assert split["counts"][CATEGORY_SPECIALTY] == 1
     assert split["counts"][CATEGORY_MISSING_PORTAL] == 1
-    assert set(split[CATEGORY_SPECIALTY]) == {"BAGAAA01", "BAGCCC03"}
+    assert split["counts"]["weight_review"] == 1
+    assert set(split[CATEGORY_SPECIALTY]) == {"BAGAAA01"}
     assert set(split[CATEGORY_MISSING_PORTAL]) == {"BAGBBB02"}
+    assert set(split["weight_review"]) == {"BAGCCC03"}
     # No overlap.
     assert not (set(split[CATEGORY_SPECIALTY]) & set(split[CATEGORY_MISSING_PORTAL]))
 

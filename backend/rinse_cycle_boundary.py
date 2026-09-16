@@ -49,6 +49,12 @@ full timestamp with seconds; portal scan-index chronology (lower index =
 later within a scrape); event id when scan_index is unavailable; never
 purpose alone. Source: ``same_minute_post_after_review_sequence``.
 
+Explicit PRE evidence is not POST. ``weight_role=PRE`` or source
+``rinse_preclean_info`` never qualifies as the post-review completion
+weight, including the same-minute path. A later genuine POST-bearing
+event (unlabeled weight-entry, ``weight_role=POST``,
+``rinse_postclean_info``, or ``rinse_workitem_wf_lbs``) may still complete.
+
 Do not use lifetime first clean-rack, lifetime first weight-entry, old
 garments-reviewed, old completion timestamps, or ordinal weight-entry alone.
 Do not require move-bag after sent-to-vendor, or a separate move-bag when
@@ -290,6 +296,19 @@ def _weight_follows_review(
     return False, None
 
 
+def _weight_event_is_explicit_pre(ev: Mapping[str, Any]) -> bool:
+    """True when weight authority would refuse this event as POST.
+
+    Mirrors ``rinse_current_cycle_weight``: explicit ``weight_role=PRE`` and
+    ``rinse_preclean_info`` are PRE-only. Completion must not reinterpret the
+    same event as POST because it falls after or in the same minute as
+    garments-reviewed.
+    """
+    role = str(ev.get("weight_role") or "").strip().upper()
+    src = str(ev.get("weight_source") or "").strip().lower()
+    return role == "PRE" or src == "rinse_preclean_info"
+
+
 def _is_return_boundary(purpose: str) -> bool:
     return purpose == "received-from-vendor"
 
@@ -388,6 +407,9 @@ def _chain_from_entry(
             ev, ts, review_event, review_at
         )
         if not follows:
+            continue
+        # PRE / preclean cannot satisfy POST completion, including same-minute.
+        if _weight_event_is_explicit_pre(ev):
             continue
         return _ChainFromEntry(
             review_at=review_at,
