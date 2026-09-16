@@ -154,8 +154,14 @@ def search_rinse_orders(
     if lf == "incomplete":
         where.append("UPPER(COALESCE(r.completion_status,'')) != 'COMPLETED'")
 
+    parsed_display = None
     if bag_id:
         raw = str(bag_id).strip()
+        from backend.order_display_id import parse_order_display_id
+
+        parsed_display = parse_order_display_id(raw)
+        if parsed_display and parsed_display.get("bag_id"):
+            raw = parsed_display["bag_id"]
         bid = normalize_bag_id(raw)
         if bid:
             where.append("(r.bag_id = %s OR r.bag_id LIKE %s)")
@@ -272,6 +278,10 @@ def search_rinse_orders(
 
         out_rows.append({**row, "in_checkout": in_co, "staging_order_id": staging_id})
 
+    _attach_search_order_display_ids(cursor, org, out_rows, display_filter=parsed_display)
+    if parsed_display:
+        out_rows = [row for row in out_rows if row.get("orders")]
+
     return {
         "total": total,
         "limit": lim,
@@ -279,6 +289,67 @@ def search_rinse_orders(
         "summary": summary,
         "rows": out_rows,
     }
+
+
+def _attach_search_order_display_ids(
+    cursor,
+    organization_id: int,
+    rows: list[dict[str, Any]],
+    *,
+    display_filter: dict[str, Any] | None = None,
+) -> None:
+    """Attach OI display labels. Does not merge rows that share a display string."""
+    bags = sorted(
+        {
+            normalize_bag_id(r.get("bag_id"))
+            for r in rows
+            if normalize_bag_id(r.get("bag_id"))
+        }
+    )
+    if not bags:
+        return
+    from backend.order_display_id import stamp_order_display_ids
+    from backend.ta_helpers import table_exists
+
+    if not table_exists(cursor, "rinse_order_instances"):
+        return
+    placeholders = ",".join(["%s"] * len(bags))
+    cursor.execute(
+        f"""
+        SELECT bag_id, order_instance_id
+        FROM rinse_order_instances
+        WHERE organization_id = %s AND bag_id IN ({placeholders})
+        ORDER BY order_instance_id DESC
+        """,
+        (int(organization_id), *bags),
+    )
+    by_bag: dict[str, list[dict[str, Any]]] = {}
+    for rec in cursor.fetchall() or []:
+        bag = normalize_bag_id(rec.get("bag_id"))
+        oid = rec.get("order_instance_id")
+        if not bag or not oid:
+            continue
+        by_bag.setdefault(bag, []).append(
+            {"bag_id": bag, "order_instance_id": int(oid)}
+        )
+    flat = [item for items in by_bag.values() for item in items]
+    stamp_order_display_ids(cursor, flat)
+    from backend.order_display_id import filter_orders_for_display_query
+
+    for row in rows:
+        bag = normalize_bag_id(row.get("bag_id"))
+        orders = filter_orders_for_display_query(list(by_bag.get(bag) or []), display_filter)
+        row["orders"] = orders
+        row.pop("order_instance_id", None)
+        row.pop("order_display_id", None)
+        row.pop("estimated_delivery_date", None)
+        row.pop("order_instance_ambiguous", None)
+        if len(orders) == 1:
+            row["order_instance_id"] = orders[0].get("order_instance_id")
+            row["order_display_id"] = orders[0].get("order_display_id")
+            row["estimated_delivery_date"] = orders[0].get("estimated_delivery_date")
+        elif len(orders) > 1:
+            row["order_instance_ambiguous"] = True
 
 
 def _lifecycle_summary(cursor, org: int) -> dict[str, Any]:
@@ -414,5 +485,19 @@ def get_order_archive_detail(
         detail["scheduled_scrape_status"] = None
         errs = detail.setdefault("section_errors", {})
         errs["scheduled_scrape_status"] = str(exc)
+
+    try:
+        shell = [{"bag_id": bid}]
+        _attach_search_order_display_ids(cursor, org, shell)
+        attached = shell[0]
+        detail["orders"] = attached.get("orders") or []
+        if attached.get("order_display_id"):
+            detail["order_display_id"] = attached.get("order_display_id")
+            detail["order_instance_id"] = attached.get("order_instance_id")
+            detail["estimated_delivery_date"] = attached.get("estimated_delivery_date")
+        elif attached.get("order_instance_ambiguous"):
+            detail["order_instance_ambiguous"] = True
+    except Exception as exc:
+        log.warning("order display id attach bag=%s: %s", bid, exc)
 
     return detail

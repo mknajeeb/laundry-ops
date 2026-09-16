@@ -1371,8 +1371,12 @@ def get_issue(
         (int(organization_id), int(issue_id)),
     )
     attrs = [_serialize_attr(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    issue = _serialize_issue(row)
+    from backend.order_display_id import stamp_order_display_ids
+
+    stamp_order_display_ids(cursor, [issue])
     out = {
-        "issue": _serialize_issue(row),
+        "issue": issue,
         "attributions": attrs,
         "query_count": getattr(cursor, "query_count", None),
     }
@@ -1519,6 +1523,9 @@ def list_issues(
         item = _serialize_issue(r)
         item["primary_employee_name"] = r.get("primary_employee_name")
         items.append(item)
+    from backend.order_display_id import stamp_order_display_ids
+
+    stamp_order_display_ids(cursor, items)
     return {
         "issues": items,
         "total": total,
@@ -2452,6 +2459,7 @@ def employee_drilldown(
             {
                 "id": int(r["id"]),
                 "bag_id": r.get("bag_id"),
+                "order_instance_id": r.get("order_instance_id"),
                 "issue_category": r.get("issue_category"),
                 "issue_subtype": r.get("issue_subtype"),
                 "status": r.get("status"),
@@ -2466,6 +2474,9 @@ def employee_drilldown(
                 "is_primary": bool(r.get("is_primary")),
             }
         )
+    from backend.order_display_id import stamp_order_display_ids
+
+    stamp_order_display_ids(cursor, recent)
     return {
         "employee": matches[0] if matches else {"employee_name": employee_name, "issues": 0},
         "recent_issues": recent,

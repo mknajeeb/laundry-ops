@@ -2174,9 +2174,20 @@ def build_management_review_list(
                 "sent_at": ov.get("created_at_et") or mr.get("sent_back_at"),
                 "reviewed_by": mr.get("reviewed_by"),
                 "reviewed_at": mr.get("reviewed_at"),
+                "order_instance_id": ov.get("order_instance_id")
+                or snap.get("order_instance_id")
+                or row.get("order_instance_id"),
             }
         )
         bags_out.append(bag_row)
+
+    from backend.order_display_id import (
+        fill_unique_open_wf_order_instance,
+        stamp_order_display_ids,
+    )
+
+    fill_unique_open_wf_order_instance(cursor, organization_id, bags_out)
+    stamp_order_display_ids(cursor, bags_out)
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 1)
     return {

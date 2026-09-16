@@ -100,6 +100,18 @@ export function orderDisplayIdFromRow(row) {
   return formatOrderDisplayId(
     row.bag_id,
     row.order_instance_id,
-    row.estimated_delivery_date || row.edd || row.date_clean || null,
+    row.estimated_delivery_date || row.edd || null,
   );
+}
+
+/** True when another row shares this display string. Display ID is not unique. */
+export function displayIdCollides(row, peers) {
+  const id = orderDisplayIdFromRow(row);
+  if (!id || !Array.isArray(peers)) return false;
+  const oi = Number(row?.order_instance_id);
+  return peers.some((other) => {
+    if (!other || other === row) return false;
+    if (Number(other.order_instance_id) === oi) return false;
+    return orderDisplayIdFromRow(other) === id;
+  });
 }

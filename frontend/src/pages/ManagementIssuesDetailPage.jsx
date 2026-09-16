@@ -11,6 +11,7 @@ import {
   Typography,
 } from "@mui/material";
 import { useNavigate, useParams } from "react-router-dom";
+import { displayIdCollides } from "../utils/orderDisplayId";
 import {
   getManagementIssue,
   getManagementIssuesOrderContext,
@@ -397,8 +398,9 @@ export default function ManagementIssuesDetailPage() {
                     minHeight: 48,
                   }}
                 >
-                  {r.order_display_id || r.bag_id} · OI {r.order_instance_id} ·{" "}
-                  {r.customer_name || ""}
+                  {r.order_display_id || r.bag_id}
+                  {displayIdCollides(r, linkResults) ? ` · OI ${r.order_instance_id}` : ""}
+                  {r.customer_name ? ` · ${r.customer_name}` : ""}
                 </Button>
               ))}
             </Stack>

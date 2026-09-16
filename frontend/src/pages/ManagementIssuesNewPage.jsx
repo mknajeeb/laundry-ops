@@ -23,6 +23,7 @@ import {
   searchManagementIssuesBags,
 } from "../api";
 import ManagementHubNav from "../components/management/ManagementHubNav";
+import { displayIdCollides } from "../utils/orderDisplayId";
 import { IssuesPageShell } from "../components/management/issues/ManagementIssuesSubNav";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 
@@ -307,8 +308,8 @@ export default function ManagementIssuesNewPage() {
                     {r.customer_name || "—"}
                   </Typography>
                   <Typography sx={{ fontSize: 13, color: "#64748b" }}>
-                    {r.service_type} · {r.rush ? "Rush" : "Non-Rush"} · OI{" "}
-                    {r.order_instance_id}
+                    {r.service_type} · {r.rush ? "Rush" : "Non-Rush"}
+                    {displayIdCollides(r, results) ? ` · OI ${r.order_instance_id}` : ""}
                     {r.production_date_et ? ` · ${r.production_date_et}` : ""}
                   </Typography>
                   <Button

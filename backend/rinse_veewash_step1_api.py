@@ -936,6 +936,14 @@ def build_drilldown(
     if summary is not None:
         summary = dict(summary)
         summary["data_freshness"] = data_freshness
+    try:
+        from backend.order_display_id import attach_display_order_instances_for_day
+
+        attach_display_order_instances_for_day(
+            cursor, organization_id, bags, selected_date_et
+        )
+    except Exception:
+        pass
     return {
         "selected_date_et": selected_date_et.isoformat(),
         "metric": metric,

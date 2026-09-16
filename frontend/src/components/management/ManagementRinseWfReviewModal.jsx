@@ -24,6 +24,7 @@ import EditBagPanel from "../shift/EditBagPanel";
 import ManagementCopyableId from "./ManagementCopyableId";
 import { formatReviewApiError } from "./reviewDisplayLabels";
 import { displayCustomerName } from "../../utils/displayCustomerName";
+import { orderDisplayIdFromRow } from "../../utils/orderDisplayId";
 
 function fmtTime(v) {
   if (!v) return "—";
@@ -305,7 +306,7 @@ export default function ManagementRinseWfReviewModal({
             <Box>
               <Typography sx={{ fontWeight: 800, fontSize: 17 }}>Review WF Bag</Typography>
               <ManagementCopyableId
-                value={bagId || seedBag?.bag_id}
+                value={orderDisplayIdFromRow(seedBag) || bagId || seedBag?.bag_id}
                 fontSize={13}
                 fontWeight={700}
                 sx={{ mt: 0.25 }}

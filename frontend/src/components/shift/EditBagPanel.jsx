@@ -26,6 +26,7 @@ import { postVeewashStep1Correction, getDailyOperationsHdProductionDetail } from
 import FoldingUserSelect from "../folding/FoldingUserSelect";
 import { CompactEtDateTimeField } from "../PayrollDateTimeField";
 import ManagementCopyableId from "../management/ManagementCopyableId";
+import { orderDisplayIdFromRow } from "../../utils/orderDisplayId";
 import {
   buildEditBagPayloadDraft,
   classifyEditReasonRequirements,
@@ -684,7 +685,11 @@ export default function EditBagPanel({
         flexWrap="wrap"
         sx={{ mt: 0.25 }}
       >
-        <ManagementCopyableId value={bag?.bag_id} fontSize={13} fontWeight={800} />
+        <ManagementCopyableId
+          value={orderDisplayIdFromRow(bag) || bag?.bag_id}
+          fontSize={13}
+          fontWeight={800}
+        />
         <Typography variant="body2" color="text.secondary">
           · {customer} · {draft.service_type || "WF"} / {rushLabel} · {reviewStatus}
         </Typography>

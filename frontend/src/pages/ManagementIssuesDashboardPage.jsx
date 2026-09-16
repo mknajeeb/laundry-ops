@@ -334,7 +334,7 @@ export default function ManagementIssuesDashboardPage() {
                       color: VEEWASH_DASHBOARD.primaryBlueDark,
                     }}
                   >
-                    #{r.id} {r.bag_id} {r.issue_category}
+                    #{r.id} {r.order_display_id || r.bag_id} {r.issue_category}
                   </Typography>
                 ))}
               </Box>

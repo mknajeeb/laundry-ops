@@ -186,7 +186,7 @@ function HdEmployeeDetailDrawer({ open, onClose, employee, dateEt }) {
                     {displayCustomerName(row.customer_name) || "Customer unavailable"}
                   </Typography>
                   <Typography sx={{ mt: 0.1, fontSize: 13, color: PERF_UI.secondary, fontWeight: 400 }}>
-                    {row.bag_id}
+                    {row.order_display_id || row.bag_id}
                   </Typography>
                   <Typography sx={{ mt: 0.08, fontSize: 12, color: PERF_UI.muted, fontWeight: 400 }}>
                     Wash · {fmtTimeShort(row.washed_at) || "—"}
@@ -208,7 +208,7 @@ function HdEmployeeDetailDrawer({ open, onClose, employee, dateEt }) {
                     {displayCustomerName(row.customer_name) || "Customer unavailable"}
                   </Typography>
                   <Typography sx={{ mt: 0.1, fontSize: 13, color: PERF_UI.secondary, fontWeight: 400 }}>
-                    {row.bag_id}
+                    {row.order_display_id || row.bag_id}
                   </Typography>
                   <Typography sx={{ mt: 0.08, fontSize: 12, color: PERF_UI.muted, fontWeight: 400 }}>
                     Fold · {fmtTimeShort(row.folded_at) || "—"}

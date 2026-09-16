@@ -609,6 +609,9 @@ def get_current_wf_workload(
             items,
             selected_date_et=None,
         )
+        from backend.order_display_id import stamp_order_display_ids
+
+        stamp_order_display_ids(cursor, items)
 
     payload = {
         "organization_id": org,
@@ -742,6 +745,10 @@ def get_selected_date_wf_completed(
                 ),
             }
         )
+    if items:
+        from backend.order_display_id import stamp_order_display_ids
+
+        stamp_order_display_ids(cursor, items)
 
     return {
         "organization_id": org,

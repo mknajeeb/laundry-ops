@@ -21,7 +21,7 @@ import TodayTapCardSkeleton from "./TodayTapCardSkeleton";
 import ManagementRinseWfReviewSection from "./ManagementRinseWfReviewSection";
 import ManagementPendingBagDrawer from "./ManagementPendingBagDrawer";
 import ManagementCopyableId from "./ManagementCopyableId";
-import { orderDisplayIdFromRow } from "../../utils/orderDisplayId";
+import { displayIdCollides, orderDisplayIdFromRow } from "../../utils/orderDisplayId";
 import {
   getManagementTodaySuppliesDetail,
 } from "../../api";
@@ -1171,10 +1171,11 @@ export default function ManagementRinseWfSection({
                           ) : null}
                         </Typography>
                         <Typography sx={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>
-                          OI {row.order_instance_id ?? "—"}
-                          {" · "}
                           {row.status === "review_required" ? "Review" : "Pending"}
                           {row.rush_status ? ` · ${row.rush_status}` : ""}
+                          {displayIdCollides(row, items)
+                            ? ` · OI ${row.order_instance_id}`
+                            : ""}
                         </Typography>
                         {reasonText ? (
                           <Typography sx={{ fontSize: 11, color: "#b91c1c", fontWeight: 600, mt: 0.25 }}>

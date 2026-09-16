@@ -474,8 +474,8 @@ export default function ManagementRinseWfReviewSection({
       setConfirm({ anchorEl: null, bag: null, decision: null });
       setDecisionMsg(
         decision === "split"
-          ? `Marked ${bag.bag_id} as Split`
-          : `Marked ${bag.bag_id} as Not Split`,
+          ? `Marked ${orderDisplayIdFromRow(bag) || bag.bag_id} as Split`
+          : `Marked ${orderDisplayIdFromRow(bag) || bag.bag_id} as Not Split`,
       );
       // Optimistic remove from queue
       setListState((prev) => ({
@@ -775,7 +775,7 @@ export default function ManagementRinseWfReviewSection({
           {confirmIsSplit ? "Mark this order as Split?" : "Mark this order as Not Split?"}
         </Typography>
         <Typography sx={{ fontSize: 11, color: "#64748b", mb: 1.25 }}>
-          Affects Supply dosing. {confirm.bag?.bag_id}
+          Affects Supply dosing. {orderDisplayIdFromRow(confirm.bag) || confirm.bag?.bag_id}
         </Typography>
         <Stack direction="row" spacing={1} justifyContent="flex-end">
           <Button

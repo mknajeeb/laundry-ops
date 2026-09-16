@@ -267,7 +267,7 @@ function OrderRow({
     if (!order?.bag_id || sending) return;
     const dateEt = order.selected_date_et || selectedDateEt;
     if (!dateEt) return;
-    if (!window.confirm(`Send ${order.bag_id} back to Review Required?`)) return;
+    if (!window.confirm(`Send ${orderDisplayIdFromRow(order) || order.bag_id} back to Review Required?`)) return;
     setSending(true);
     setSentOk(false);
     try {

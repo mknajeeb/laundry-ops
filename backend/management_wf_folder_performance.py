@@ -1087,20 +1087,31 @@ def build_day_folder_performance(
         total_session_hours=total_hours if total_hours > 0 else None,
     )
 
+    from backend.order_display_id import stamp_order_display_ids
+
+    needs_public = [_public_order_row(o) for o in needs_attribution]
+    outside_public = [_public_order_row(o) for o in outside_folder_session]
+    unmapped_public = [_public_order_row(o) for o in unmapped]
+    public_orders: list[dict[str, Any]] = []
+    for card in session_cards:
+        public_orders.extend(card.get("orders") or [])
+    public_orders.extend(needs_public)
+    public_orders.extend(outside_public)
+    public_orders.extend(unmapped_public)
+    stamp_order_display_ids(cursor, public_orders)
+
     return {
         "selected_date_et": selected_date_et.isoformat(),
         "role_filter_key": DEFAULT_ROLE_FILTER_KEY,
         "credited_weight_basis": "EVIDENCE_PRE",
         "employees": employees_out,
         "sessions": session_cards,
-        "needs_attribution_orders": [_public_order_row(o) for o in needs_attribution],
+        "needs_attribution_orders": needs_public,
         "needs_attribution_count": len(needs_attribution),
-        "outside_folder_session_orders": [
-            _public_order_row(o) for o in outside_folder_session
-        ],
+        "outside_folder_session_orders": outside_public,
         "outside_folder_session_count": len(outside_folder_session),
         # Backward-compatible union (Needs Attribution first).
-        "unmapped_orders": [_public_order_row(o) for o in unmapped],
+        "unmapped_orders": unmapped_public,
         "unmapped_count": len(unmapped),
         "summary": {
             **totals,

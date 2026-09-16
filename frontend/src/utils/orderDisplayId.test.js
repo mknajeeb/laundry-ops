@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  displayIdCollides,
   formatOrderDisplayId,
   orderDisplayIdFromRow,
   parseOrderDisplayId,
@@ -28,6 +29,21 @@ describe("orderDisplayId", () => {
     expect(p.bagId).toBe("8MNDJDAV8D");
     expect(p.orderInstanceId).toBe(5493);
     expect(p.form).toBe("oi_fallback");
+  });
+
+  it("does not treat a shared display id as unique", () => {
+    const a = {
+      bag_id: "9YTC6BJWAY",
+      order_instance_id: 5271,
+      order_display_id: "9YTC6BJWAY-OI-09142026",
+    };
+    const b = {
+      bag_id: "9YTC6BJWAY",
+      order_instance_id: 5517,
+      order_display_id: "9YTC6BJWAY-OI-09142026",
+    };
+    expect(displayIdCollides(a, [a, b])).toBe(true);
+    expect(displayIdCollides(a, [a])).toBe(false);
   });
 
   it("reads server order_display_id from row", () => {

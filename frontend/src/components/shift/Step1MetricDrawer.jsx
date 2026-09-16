@@ -38,7 +38,8 @@ import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import FoldingUserSelect from "../folding/FoldingUserSelect";
 import { PayrollDateTimeField } from "../PayrollDateTimeField";
 import BulkWorkitemEntrySection from "./BulkWorkitemEntrySection";
-import CopyableBagId from "../CopyableBagId";
+import ManagementCopyableId from "../management/ManagementCopyableId";
+import { displayIdCollides, orderDisplayIdFromRow } from "../../utils/orderDisplayId";
 import EditBagPanel from "./EditBagPanel";
 import HdReviewPanel from "./HdReviewPanel";
 import { formatWeightObservedEt, mergeBagListRow } from "./editBagHelpers";
@@ -458,7 +459,7 @@ export default function Step1MetricDrawer({
     const reasonCode = String(reasonCodes[0] || "MANAGER_SENT_FOR_REVIEW").trim().toUpperCase();
     if (
       !window.confirm(
-        `Send ${bag.bag_id} back to Review Required?`
+        `Send ${orderDisplayIdFromRow(bag) || bag.bag_id} back to Review Required?`
       )
     ) {
       return;
@@ -632,7 +633,22 @@ export default function Step1MetricDrawer({
                 <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                   <Box sx={{ width: "100%", pr: 1 }}>
                     <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-                      <CopyableBagId bagId={bag.bag_id} />
+                      <ManagementCopyableId
+                        value={orderDisplayIdFromRow(bag) || bag.bag_id}
+                        fontSize={13}
+                        fontWeight={800}
+                      />
+                      {Array.isArray(bag.orders) && bag.orders.length > 1 ? (
+                        <Typography variant="caption" color="text.secondary">
+                          {bag.orders
+                            .map((o) => `${o.order_display_id || bag.bag_id} · OI ${o.order_instance_id}`)
+                            .join(" · ")}
+                        </Typography>
+                      ) : displayIdCollides(bag, bags) ? (
+                        <Typography variant="caption" color="text.secondary">
+                          OI {bag.order_instance_id}
+                        </Typography>
+                      ) : null}
                       <Chip size="small" label={bag.service_type || "—"} />
                       <Chip size="small" label={bag.rush_flag || "—"} variant="outlined" />
                       <Chip

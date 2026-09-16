@@ -195,7 +195,7 @@ export default function RinseOrderSearchPage() {
 
       <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
         <Stack direction={{ xs: "column", md: "row" }} spacing={1} flexWrap="wrap">
-          <TextField size="small" label="Bag ID (partial OK)" value={bagId} onChange={(e) => setBagId(e.target.value)} />
+          <TextField size="small" label="Bag ID or BAGID-OI-MMDDYYYY" value={bagId} onChange={(e) => setBagId(e.target.value)} />
           <TextField
             size="small"
             label="Customer / user search"
@@ -240,7 +240,7 @@ export default function RinseOrderSearchPage() {
         <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell>Bag ID</TableCell>
+              <TableCell>Order</TableCell>
               <TableCell>Customer</TableCell>
               <TableCell>Cleaning date</TableCell>
               <TableCell>Completion</TableCell>
@@ -252,7 +252,23 @@ export default function RinseOrderSearchPage() {
           <TableBody>
             {rows.map((r) => (
               <TableRow key={r.bag_id} hover selected={selectedBag === r.bag_id}>
-                <TableCell>{r.bag_id}</TableCell>
+                <TableCell>
+                  {r.order_display_id ||
+                    (Array.isArray(r.orders) &&
+                    r.orders.length > 1 &&
+                    r.orders.every(
+                      (o) => o.order_display_id && o.order_display_id === r.orders[0].order_display_id,
+                    )
+                      ? r.orders[0].order_display_id
+                      : r.bag_id)}
+                  {Array.isArray(r.orders) && r.orders.length > 1
+                    ? r.orders.map((o) => (
+                        <Typography key={o.order_instance_id} variant="caption" display="block">
+                          {o.order_display_id || r.bag_id} · OI {o.order_instance_id}
+                        </Typography>
+                      ))
+                    : null}
+                </TableCell>
                 <TableCell>{displayCustomerName(r.name_clean) || "—"}</TableCell>
                 <TableCell>{r.date_clean || "—"}</TableCell>
                 <TableCell>{r.completion_status || "—"}</TableCell>

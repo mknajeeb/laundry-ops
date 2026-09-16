@@ -19,6 +19,7 @@ import { scanEventPurpose } from "../folding/FoldingScanEventsTable";
 import { formatRinseScanTime, formatSystemDateTime, sortRinseScanEvents } from "../../utils/rinseTimeFormat";
 import { formatDateTime, formatFoldingDuration, formatLbs, formatRate } from "../../utils/foldingFormat";
 import { foldingExceptionLabel } from "../../utils/foldingExceptionLabels";
+import { orderDisplayIdFromRow } from "../../utils/orderDisplayId";
 import { displayCustomerName } from "../../utils/displayCustomerName";
 
 function FieldRow({ label, value }) {
@@ -38,7 +39,25 @@ function SummaryTab({ detail }) {
   const s = detail?.registry_summary || detail?.registry || {};
   return (
     <Box>
-      <FieldRow label="Bag ID" value={s.bag_id || detail?.bag_id} />
+      <FieldRow
+        label="Order"
+        value={
+          detail?.order_display_id ||
+          orderDisplayIdFromRow(detail) ||
+          s.bag_id ||
+          detail?.bag_id
+        }
+      />
+      {Array.isArray(detail?.orders) && detail.orders.length > 1
+        ? detail.orders.map((o) => (
+            <FieldRow
+              key={o.order_instance_id}
+              label="Matching order"
+              value={`${o.order_display_id || s.bag_id} · OI ${o.order_instance_id}`}
+            />
+          ))
+        : null}
+      <FieldRow label="Physical bag" value={s.bag_id || detail?.bag_id} />
       <FieldRow label="Customer" value={displayCustomerName(s.customer ?? s.name_clean)} />
       <FieldRow label="Completion status" value={s.completion_status} />
       <FieldRow label="Completion reason" value={s.completion_reason} />
@@ -419,7 +438,11 @@ export default function OrderSearchDetailDrawer({ open, onClose, detail, bagId, 
       PaperProps={{ sx: { width: { xs: "100%", sm: 520, md: 640 }, p: 2 } }}
     >
       <Typography variant="h6" fontWeight={800} gutterBottom>
-        {detail?.bag_id || bagId || "Bag detail"}
+        {detail?.order_display_id ||
+          (Array.isArray(detail?.orders) && detail.orders.length > 1
+            ? detail.bag_id || bagId
+            : detail?.bag_id || bagId) ||
+          "Bag detail"}
       </Typography>
       {detailError ? (
         <Alert severity="error" sx={{ mb: 2 }}>

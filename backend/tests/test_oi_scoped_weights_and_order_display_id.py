@@ -5,8 +5,10 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from backend.order_display_id import (
+    filter_orders_for_display_query,
     format_order_display_id,
     parse_order_display_id,
+    stamp_order_display_ids,
 )
 from backend.rinse_current_cycle_weight import resolve_current_cycle_weights
 
@@ -45,6 +47,54 @@ def test_format_order_display_id_with_edd():
 
 def test_format_order_display_id_fallback_without_edd():
     assert format_order_display_id("8MNDJDAV8D", 5493) == "8MNDJDAV8D-OI-5493"
+
+
+class _StampCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
+
+    def execute(self, sql, params=None):
+        self.calls.append((sql, params))
+
+    def fetchall(self):
+        return self.rows
+
+
+def test_stamp_uses_cycle_edd_not_numeric_oi(monkeypatch):
+    monkeypatch.setattr("backend.ta_helpers.table_exists", lambda *_a, **_k: True)
+    monkeypatch.setattr("backend.ta_helpers.table_has_column", lambda *_a, **_k: True)
+    cursor = _StampCursor(
+        [{"order_instance_id": 5539, "estimated_delivery_date": date(2026, 9, 14)}]
+    )
+    rows = stamp_order_display_ids(
+        cursor,
+        [{"bag_id": "03SKBG9BXQ", "order_instance_id": 5539}],
+    )
+    assert rows[0]["order_display_id"] == "03SKBG9BXQ-OI-09142026"
+    assert rows[0]["order_instance_id"] == 5539
+
+
+def test_display_query_keeps_colliding_ois_separate():
+    orders = [
+        {
+            "bag_id": "9YTC6BJWAY",
+            "order_instance_id": 5271,
+            "order_display_id": "9YTC6BJWAY-OI-09142026",
+        },
+        {
+            "bag_id": "9YTC6BJWAY",
+            "order_instance_id": 5517,
+            "order_display_id": "9YTC6BJWAY-OI-09142026",
+        },
+    ]
+    parsed = parse_order_display_id("9YTC6BJWAY-OI-09142026")
+    matched = filter_orders_for_display_query(orders, parsed)
+    assert [row["order_instance_id"] for row in matched] == [5271, 5517]
+    unique = filter_orders_for_display_query(
+        orders, parse_order_display_id("9YTC6BJWAY-OI-5271")
+    )
+    assert [row["order_instance_id"] for row in unique] == [5271]
 
 
 def test_parse_order_display_id_edd_and_oi_fallback():

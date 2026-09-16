@@ -186,7 +186,8 @@ export default function ManagementPendingBagDrawer({
                 fontWeight={700}
               />
               <Typography sx={{ fontSize: 12, color: "#64748b" }}>
-                · OI {bag.order_instance_id ?? "—"} · {rushLabel(bag.rush_status || bag.rush_flag)}
+                · {rushLabel(bag.rush_status || bag.rush_flag)}
+                {bag.order_instance_id ? ` · OI ${bag.order_instance_id}` : ""}
               </Typography>
             </Stack>
             <Typography sx={{ fontSize: 12, fontWeight: 700, color: "#334155" }}>
