@@ -537,6 +537,33 @@ def _apply_resolution_to_cycle_row(
     }
 
 
+def _completed_cycle_portal_fields(
+    existing: Mapping[str, Any],
+    portal_meta: Mapping[str, Any] | None,
+    portal_metadata_scope: str,
+) -> tuple[Any, Any, Any]:
+    """EDD, Rush, and cycle portal_last_seen for a COMPLETED cycle.
+
+    ``portal_meta`` from discovery is bag-scoped: the current portal row for a
+    reusable bag. That must not overwrite the completed cycle. Explicit
+    cycle-targeted callers pass ``portal_metadata_scope="cycle"``. Manager
+    corrections do not use this path; they write the cycle's own fields through
+    ``upsert_service_cycle``.
+    """
+    if str(portal_metadata_scope or "bag") == "cycle":
+        meta = portal_meta or {}
+        return (
+            meta.get("rush_flag") or existing.get("rush_status"),
+            meta.get("estimated_delivery_date") or existing.get("estimated_delivery_date"),
+            meta.get("last_seen_at") or existing.get("portal_last_seen_at"),
+        )
+    return (
+        existing.get("rush_status"),
+        existing.get("estimated_delivery_date"),
+        existing.get("portal_last_seen_at"),
+    )
+
+
 def admit_or_update_cycle_from_evidence(
     cursor,
     organization_id: int,
@@ -546,6 +573,7 @@ def admit_or_update_cycle_from_evidence(
     admitted_at: datetime | None = None,
     admitted_source: str = "DURABLE_EVIDENCE",
     portal_meta: Mapping[str, Any] | None = None,
+    portal_metadata_scope: str = "bag",
 ) -> dict[str, Any]:
     """Idempotent admit/update for one service occurrence."""
     org = int(organization_id)
@@ -554,11 +582,17 @@ def admit_or_update_cycle_from_evidence(
     existing = get_cycle_by_key(cursor, org, bid, cycle_anchor_at)
     if existing and str(existing.get("status")) == STATUS_COMPLETED:
         # Completed cycles are immutable for lifecycle — refresh weights from canonical resolver.
+        # Bag-scoped portal discovery must not replace this cycle's EDD, Rush, or
+        # portal_last_seen_at. That timestamp is cycle-scoped: last portal observation
+        # applied to this cycle, not a later sighting of the physical bag.
         cycle_dict, weights = _cycle_resolution(cursor, org, bid, cycle_anchor_at)
         from backend.rinse_current_cycle_weight import authoritative_evidence_pre_lbs
 
         refreshed_pre = authoritative_evidence_pre_lbs(weights)
         refreshed_post = weights.get("post_weight_lbs")
+        rush_status, estimated_delivery_date, portal_last_seen_at = (
+            _completed_cycle_portal_fields(existing, portal_meta, portal_metadata_scope)
+        )
         return upsert_service_cycle(
             cursor,
             org,
@@ -569,17 +603,15 @@ def admit_or_update_cycle_from_evidence(
             status=STATUS_COMPLETED,
             completed_at=existing.get("completed_at"),
             completion_source=existing.get("completion_source"),
-            rush_status=(portal_meta or {}).get("rush_flag") or existing.get("rush_status"),
-            estimated_delivery_date=(portal_meta or {}).get("estimated_delivery_date")
-            or existing.get("estimated_delivery_date"),
+            rush_status=rush_status,
+            estimated_delivery_date=estimated_delivery_date,
             pre_weight_lbs=refreshed_pre
             if refreshed_pre is not None
             else existing.get("pre_weight_lbs"),
             post_weight_lbs=refreshed_post
             if refreshed_post is not None
             else existing.get("post_weight_lbs"),
-            portal_last_seen_at=(portal_meta or {}).get("last_seen_at")
-            or existing.get("portal_last_seen_at"),
+            portal_last_seen_at=portal_last_seen_at,
         )
 
     cycle_dict, weights = _cycle_resolution(cursor, org, bid, cycle_anchor_at)
@@ -803,13 +835,17 @@ def sync_portal_discovery(
     Presence alone must never fork a second OI/cycle while an ACTIVE/REVIEW
     cycle already owns the bag. ``now_utc`` portal anchors are only allowed
     when there is no open cycle.
+
+    A COMPLETED cycle at the latest known anchor is not the current order.
+    Bag-scoped portal fields wait until a newer lifecycle boundary is known.
+    A scan delay must not write the next order's EDD onto the completed cycle.
     """
     org = int(organization_id)
     now_utc = now or datetime.utcnow()
     refreshed = {
         _norm_bag(b) for b in (evidence_refreshed_bag_ids or []) if _norm_bag(b)
     }
-    admitted = updated = metadata_only = 0
+    admitted = updated = metadata_only = skipped_completed_portal = 0
     for raw_bid, meta in (portal_bags or {}).items():
         bid = _norm_bag(raw_bid)
         if not bid:
@@ -841,6 +877,11 @@ def sync_portal_discovery(
                 admitted += 1
                 continue
             if isinstance(active_anchor, datetime) and anchor == active_anchor:
+                if str(active.get("status")) == STATUS_COMPLETED:
+                    # Latest evidence is still this completed cycle. Do not
+                    # treat the bag's current portal row as this lifecycle.
+                    skipped_completed_portal += 1
+                    continue
                 if bid in refreshed and _update_portal_cycle_metadata(
                     cursor,
                     org,
@@ -947,7 +988,17 @@ def sync_portal_discovery(
                         updated += 1
                     continue
             anchor = now_utc
-        if not get_cycle_by_key(cursor, org, bid, anchor):
+        held = (
+            get_cycle_by_key(cursor, org, bid, anchor)
+            if isinstance(anchor, datetime)
+            else None
+        )
+        if held and str(held.get("status")) == STATUS_COMPLETED:
+            # Newer lifecycle boundary has not landed. Leave the completed
+            # cycle's EDD/Rush/portal_last_seen_at alone.
+            skipped_completed_portal += 1
+            continue
+        if not held:
             admit_or_update_cycle_from_evidence(
                 cursor,
                 org,
@@ -992,6 +1043,7 @@ def sync_portal_discovery(
         "admitted": admitted,
         "updated": updated,
         "metadata_only": metadata_only,
+        "skipped_completed_portal": skipped_completed_portal,
     }
 
 
