@@ -1,5 +1,9 @@
 """Scoped org Rinse operational archive + clear for a clean baseline.
 
+SUPERSEDED FOR WF-ONLY RESETS by ``backend.wf_ops_clean_reset``. The targets
+below are org-wide: running this clears Rinse HD along with Rinse WF. Use it
+only for a deliberate whole-org Rinse baseline.
+
 Archives org-scoped Rinse WF/HD operational state to gzip JSONL files, then
 deletes only those org rows. Never TRUNCATE. Never touches employees, payroll,
 auth, bag registry, folding user maps, or bulk workitem catalogs.
