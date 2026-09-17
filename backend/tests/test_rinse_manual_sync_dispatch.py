@@ -17,11 +17,14 @@ from backend.rinse_manual_sync_dispatch import dispatch_manual_rinse_sync
 class TestAcaJobTrigger:
     def test_build_job_start_template_scopes_org(self):
         tpl = build_job_start_template(3, run_type="manual")
-        args = tpl["template"]["containers"][0]["args"]
+        # Azure StartJobExecutionTemplate expects top-level containers[].
+        args = tpl["containers"][0]["args"]
         assert "--organization-id" in args
         assert "3" in args
         assert "--run-type" in args
         assert "manual" in args
+        assert "--once" in args
+        assert "--force-schedule" in args
 
     @patch.dict(
         "os.environ",

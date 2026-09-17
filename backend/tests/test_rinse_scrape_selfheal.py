@@ -988,7 +988,7 @@ def test_run_bash_script_timeout_kills_hung_portal(monkeypatch, tmp_path):
 
 
 def test_success_handoff_starts_exactly_one_successor(monkeypatch):
-    """Normal success path: start_successor_execution invoked once."""
+    """LEGACY continuous path: start_successor_execution invoked once."""
     from backend.jobs import run_scheduled_rinse_scrape as job
 
     class Result:
@@ -1028,12 +1028,108 @@ def test_success_handoff_starts_exactly_one_successor(monkeypatch):
         lambda **_k: starts.append(1)
         or {"ok": True, "execution_name": "succ-1"},
     )
-    assert job.main([]) == 0
+    assert job.main(["--continuous"]) == 0
     assert starts == [1]
 
 
+def test_default_once_skips_successor_handoff(monkeypatch):
+    """Default production path is once: no successor, even on success."""
+    from backend.jobs import run_scheduled_rinse_scrape as job
+
+    class Result:
+        organization_id = 3
+        run_id = 100
+        status = "success"
+        rinse_vendor = "veewash"
+        tenant_slug = "veewash"
+        batch_id = 1
+        portal_rows_count = 10
+        scan_events_count = 20
+        error_message = None
+        ready_for_vendor_status = None
+        ready_for_vendor_error = None
+        at_vendor_status = None
+        paths = None
+        detail = {}
+        finished_at = datetime(2026, 8, 24, 18, 0, 0)
+
+    starts: list[int] = []
+    scrapes: list[int] = []
+
+    class FakeCursor:
+        def close(self):
+            return None
+
+    class FakeConn:
+        def cursor(self, **_k):
+            return FakeCursor()
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("backend.db.get_db", lambda: FakeConn())
+    monkeypatch.setattr(
+        "backend.release_revision.load_release_revision_stamps",
+        lambda: {"runtime_revision": "abc"},
+    )
+    monkeypatch.setattr(
+        "backend.jobs.run_scheduled_rinse_scrape._schedule_gate_allows_run",
+        lambda *_a, **_k: (True, {"reason": "test_force", "tick_key": "2026-09-17 07:00"}),
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scheduled_scrape.run_all_scheduled_scrapes",
+        lambda *_a, **_k: scrapes.append(1) or [Result()],
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_schedule.mark_tick_completed",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_chain.start_successor_execution",
+        lambda **_k: starts.append(1) or {"ok": True, "execution_name": "should-not-fire"},
+    )
+    assert job.main([]) == 0
+    assert scrapes == [1]
+    assert starts == []
+
+
+def test_schedule_gate_skips_when_not_due(monkeypatch):
+    from backend.jobs import run_scheduled_rinse_scrape as job
+
+    starts: list[int] = []
+    scrapes: list[int] = []
+
+    class FakeConn:
+        def close(self):
+            return None
+
+    monkeypatch.setattr("backend.db.get_db", lambda: FakeConn())
+    monkeypatch.setattr(
+        "backend.release_revision.load_release_revision_stamps",
+        lambda: {"runtime_revision": "abc"},
+    )
+    monkeypatch.setattr(
+        "backend.jobs.run_scheduled_rinse_scrape._schedule_gate_allows_run",
+        lambda *_a, **_k: (False, {"reason": "tick_already_completed", "mode": "ACTIVE"}),
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scheduled_scrape.run_all_scheduled_scrapes",
+        lambda *_a, **_k: scrapes.append(1) or [],
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_chain.start_successor_execution",
+        lambda **_k: starts.append(1) or {"ok": True},
+    )
+    assert job.main([]) == 0
+    assert scrapes == []
+    assert starts == []
+
+
 def test_once_flag_skips_successor_handoff(monkeypatch):
-    """Regression: --once (acceptance pause) must not start a successor ACA job."""
+    """Regression: --once must not start a successor ACA job."""
     from backend.jobs import run_scheduled_rinse_scrape as job
 
     class Result:
@@ -1055,7 +1151,17 @@ def test_once_flag_skips_successor_handoff(monkeypatch):
 
     starts: list[int] = []
 
+    class FakeCursor:
+        def close(self):
+            return None
+
     class FakeConn:
+        def cursor(self, **_k):
+            return FakeCursor()
+
+        def commit(self):
+            return None
+
         def close(self):
             return None
 
@@ -1065,6 +1171,10 @@ def test_once_flag_skips_successor_handoff(monkeypatch):
         lambda: {"runtime_revision": "abc"},
     )
     monkeypatch.setattr(
+        "backend.jobs.run_scheduled_rinse_scrape._schedule_gate_allows_run",
+        lambda *_a, **_k: (True, {"reason": "force", "tick_key": None}),
+    )
+    monkeypatch.setattr(
         "backend.rinse_scheduled_scrape.run_all_scheduled_scrapes",
         lambda *_a, **_k: [Result()],
     )
@@ -1072,12 +1182,12 @@ def test_once_flag_skips_successor_handoff(monkeypatch):
         "backend.rinse_scrape_chain.start_successor_execution",
         lambda **_k: starts.append(1) or {"ok": True, "execution_name": "should-not-fire"},
     )
-    assert job.main(["--once"]) == 0
+    assert job.main(["--once", "--force-schedule"]) == 0
     assert starts == []
 
 
 def test_max_cycles_one_still_starts_successor(monkeypatch):
-    """--max-cycles 1 exits the loop but must still hand off to a successor."""
+    """Legacy --max-cycles 1 (continuous probe) still hands off to a successor."""
     from backend.jobs import run_scheduled_rinse_scrape as job
 
     class Result:

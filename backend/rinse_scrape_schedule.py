@@ -635,3 +635,70 @@ def missed_active_tick(
 
 def config_as_dict(config: ScrapeScheduleConfig) -> dict[str, Any]:
     return config.to_public_dict()
+
+
+LAST_TICK_SETTINGS_KEY = "rinse_scrape_last_tick_v1"
+
+
+def get_last_completed_tick_key(cursor, organization_id: int) -> str | None:
+    """Return the last schedule tick_key completed for this org, if recorded."""
+    try:
+        from backend.ta_helpers import table_exists, table_has_column
+
+        if not table_exists(cursor, "system_settings") or not table_has_column(
+            cursor, "system_settings", "organization_id"
+        ):
+            return None
+        cursor.execute(
+            """
+            SELECT svalue FROM system_settings
+            WHERE organization_id = %s AND skey = %s
+            LIMIT 1
+            """,
+            (int(organization_id), LAST_TICK_SETTINGS_KEY),
+        )
+        row = cursor.fetchone()
+        raw = row.get("svalue") if isinstance(row, dict) else (row[0] if row else None)
+        if not raw:
+            return None
+        if isinstance(raw, str) and raw.strip().startswith("{"):
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                key = parsed.get("tick_key")
+                return str(key) if key else None
+        return str(raw).strip() or None
+    except Exception:
+        return None
+
+
+def mark_tick_completed(
+    cursor,
+    organization_id: int,
+    tick_key_value: str,
+    *,
+    run_id: int | None = None,
+) -> None:
+    """Record that a schedule tick was completed (owned scrape finished successfully)."""
+    from backend.ta_helpers import table_exists, table_has_column
+
+    if not tick_key_value:
+        return
+    if not table_exists(cursor, "system_settings") or not table_has_column(
+        cursor, "system_settings", "organization_id"
+    ):
+        return
+    body = json.dumps(
+        {
+            "tick_key": str(tick_key_value),
+            "run_id": int(run_id) if run_id is not None else None,
+            "recorded_at_et": ensure_et().isoformat(),
+        }
+    )
+    cursor.execute(
+        """
+        INSERT INTO system_settings (organization_id, skey, svalue)
+        VALUES (%s, %s, %s)
+        ON DUPLICATE KEY UPDATE svalue = VALUES(svalue)
+        """,
+        (int(organization_id), LAST_TICK_SETTINGS_KEY, body),
+    )

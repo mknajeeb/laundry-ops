@@ -1,18 +1,17 @@
 """
 Scheduled Rinse scrape (multi-tenant): Playwright + dual CSV import + auto-confirm.
 
-Processes RINSE_SCHEDULED_ORG_IDS sequentially (one org at a time; per-org DB lock).
+Normal production path (default):
+  python -m backend.jobs.run_scheduled_rinse_scrape --once
+  → at most one owned scrape cycle, no successor, schedule-gated for run_type=scheduled
 
-Local / ACA job:
-  python -m backend.jobs.run_scheduled_rinse_scrape
-  python -m backend.jobs.run_scheduled_rinse_scrape --organization-id 3
-  python -m backend.jobs.run_scheduled_rinse_scrape --dry-run
+Legacy continuous loop (opt-in only; not the normal schedule model):
+  python -m backend.jobs.run_scheduled_rinse_scrape --continuous
 
 Requires:
   RINSE_SCHEDULED_SCRAPE_ENABLED=1
-  RINSE_SCHEDULED_ORG_IDS=3          # v1 VeeWash only; later e.g. 1,3
-  RINSE_VEEWASH_ORG_IDS=3            # maps org → veewash vendor (add RINSE_WASHPRO_ORG_IDS when enabling Washpro)
-  MYSQL_* and per-vendor RINSE_*_STORAGE_STATE on Azure Files (see docs/RINSE_SCHEDULED_SCRAPE_AZURE_DEPLOY.md)
+  RINSE_SCHEDULED_ORG_IDS=3
+  MYSQL_* and per-vendor RINSE_*_STORAGE_STATE
 """
 
 from __future__ import annotations
@@ -37,6 +36,65 @@ def _reexec_with_project_venv() -> None:
 _reexec_with_project_venv()
 
 
+def _should_use_once(args: argparse.Namespace) -> bool:
+    """Default production path is once; continuous is opt-in."""
+    if args.dry_run:
+        return True
+    if args.continuous:
+        return False
+    if args.max_cycles is not None and not args.once:
+        # Legacy probe: max-cycles without --once implies continuous loop.
+        return False
+    # Explicit --once, or default scheduled/manual one-shot.
+    return True
+
+
+def _schedule_gate_allows_run(conn, args: argparse.Namespace) -> tuple[bool, dict]:
+    """
+    For run_type=scheduled once invocations, no-op when no tick is due.
+
+    Manual/server/recovery/--force-schedule bypass the due-tick gate.
+    Continuous legacy path also bypasses (caller must not use this for normal ops).
+    """
+    from backend.rinse_scrape_schedule import (
+        evaluate_schedule,
+        get_last_completed_tick_key,
+        load_schedule_config,
+    )
+    from backend.rinse_scheduled_scrape import parse_scheduled_org_ids
+
+    if args.dry_run:
+        return True, {"reason": "dry_run"}
+    if str(args.run_type or "").strip().lower() != "scheduled":
+        return True, {"reason": "non_scheduled_run_type"}
+    if args.force_schedule:
+        return True, {"reason": "force_schedule"}
+    if args.continuous or (args.max_cycles is not None and not args.once):
+        return True, {"reason": "continuous_legacy_path"}
+
+    orgs = args.organization_ids or parse_scheduled_org_ids()
+    if not orgs:
+        return False, {"reason": "no_orgs"}
+
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cfg = load_schedule_config(cursor)
+        # Gate on the first org (v1 single-tenant schedule).
+        org = int(orgs[0])
+        last_key = get_last_completed_tick_key(cursor, org)
+        decision = evaluate_schedule(config=cfg, last_completed_tick_key=last_key)
+        detail = decision.to_public_dict()
+        detail["organization_id"] = org
+        if decision.scrape_due:
+            return True, detail
+        return False, detail
+    finally:
+        try:
+            cursor.close()
+        except Exception:
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Run scheduled Rinse scrape pipeline")
     p.add_argument(
@@ -57,12 +115,26 @@ def main(argv: list[str] | None = None) -> int:
         "--max-cycles",
         type=int,
         default=None,
-        help="Stop the sequential loop after N cycles (tests / probes). Default: until replica handoff.",
+        help="With --continuous: stop after N cycles. Ignored for default --once path.",
     )
     p.add_argument(
         "--once",
         action="store_true",
-        help="Run a single cycle then exit (no sequential loop, no successor start).",
+        default=False,
+        help="Run a single cycle then exit (default production behavior when not --continuous).",
+    )
+    p.add_argument(
+        "--continuous",
+        action="store_true",
+        help=(
+            "LEGACY: run the in-process continuous loop and successor handoff. "
+            "Not used for normal ACTIVE/QUIET scheduling."
+        ),
+    )
+    p.add_argument(
+        "--force-schedule",
+        action="store_true",
+        help="Bypass schedule due-tick gate (manual/recovery).",
     )
     p.add_argument(
         "--force-fail",
@@ -75,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Hold lock without heartbeats after lease (self-heal stall proof).",
     )
     args = p.parse_args(argv)
+    use_once = _should_use_once(args)
 
     from backend.db import get_db
     from backend.release_revision import load_release_revision_stamps
@@ -87,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "scheduler_release_revision": stamps,
                 "manager_lock_upsert_module": "backend.rinse_veewash_shift_day",
+                "execution_mode": "once" if use_once else "continuous_legacy",
             },
             indent=2,
             default=str,
@@ -96,14 +170,53 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = get_db()
     results = []
+    schedule_detail: dict = {}
     try:
-        if args.once or args.dry_run:
+        allowed, schedule_detail = _schedule_gate_allows_run(conn, args)
+        print(
+            f"SCHEDULE_BOUNDARY gate_allowed={allowed} "
+            f"detail={json.dumps(schedule_detail, default=str)[:800]}",
+            flush=True,
+        )
+        if not allowed:
+            print(
+                f"SCHEDULE_BOUNDARY skip reason={schedule_detail.get('reason')} "
+                f"mode={schedule_detail.get('mode')} tick={schedule_detail.get('tick_key')}",
+                flush=True,
+            )
+            results = []
+        elif use_once:
             results = run_all_scheduled_scrapes(
                 conn,
                 organization_ids=args.organization_ids,
                 run_type=args.run_type,
                 dry_run=args.dry_run,
             )
+            # Record tick completion for successful owned scheduled cycles.
+            if (
+                not args.dry_run
+                and str(args.run_type or "").lower() == "scheduled"
+                and schedule_detail.get("tick_key")
+            ):
+                try:
+                    from backend.rinse_scrape_schedule import mark_tick_completed
+
+                    cur = conn.cursor(dictionary=True)
+                    try:
+                        for r in results:
+                            st = str(getattr(r, "status", "") or "")
+                            if st in ("success", "partial_success", "needs_attention"):
+                                mark_tick_completed(
+                                    cur,
+                                    int(getattr(r, "organization_id")),
+                                    str(schedule_detail["tick_key"]),
+                                    run_id=getattr(r, "run_id", None),
+                                )
+                        conn.commit()
+                    finally:
+                        cur.close()
+                except Exception as tick_exc:
+                    print(f"SCHEDULE_BOUNDARY tick_mark_failed: {tick_exc}", flush=True)
         else:
             results = run_continuous_scheduled_loop(
                 conn,
@@ -119,22 +232,20 @@ def main(argv: list[str] | None = None) -> int:
             str(getattr(r, "status", "") or "") not in ("skipped", "")
             for r in results
         )
-        # --once is a one-shot probe: it must not start a successor (that was the
-        # Sep-1 pause mode). Continuous / --max-cycles exits still hand off.
-        if args.once:
+        # Default once path and dry-run never start a successor.
+        if use_once or args.once or args.dry_run:
             print(
-                "CHAIN_BOUNDARY successor_skipped reason=once_flag "
+                "CHAIN_BOUNDARY successor_skipped reason=once_or_default_once "
                 f"owned_cycle={owned_cycle}",
                 flush=True,
             )
-        elif args.dry_run:
-            print("CHAIN_BOUNDARY successor_skipped reason=dry_run", flush=True)
         elif not owned_cycle:
             print(
                 "CHAIN_BOUNDARY successor_skipped reason=no_owned_cycle",
                 flush=True,
             )
         else:
+            # Legacy continuous only.
             try:
                 from backend.rinse_scrape_chain import start_successor_execution
 
@@ -184,6 +295,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "runs": out,
                 "scheduler_release_revision": stamps,
+                "schedule": schedule_detail,
             },
             indent=2,
             default=str,

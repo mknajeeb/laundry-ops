@@ -178,6 +178,8 @@ def build_job_start_template(
                     str(org),
                     "--run-type",
                     str(run_type or "manual"),
+                    "--once",
+                    "--force-schedule",
                 ],
             }
         ]
@@ -277,7 +279,7 @@ def _azure_json(method: str, url: str, token: str, body: bytes | None = None) ->
 
 
 def start_rinse_scrape_chain_job(*, run_type: str = "scheduled") -> AcaJobStartResult:
-    """Start the job with its default command (continuous sequential loop)."""
+    """Start the scrape job using its configured default command (expected: --once)."""
     if not aca_job_trigger_configured():
         return AcaJobStartResult(
             ok=False,
