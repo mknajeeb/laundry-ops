@@ -47,6 +47,8 @@ def main(argv: list[str] | None = None) -> int:
     from backend.rinse_scrape_schedule import (
         current_mode,
         load_schedule_config,
+        mark_quiet_reclaim,
+        quiet_reclaim_due,
         quiet_suppresses_automatic_start,
     )
 
@@ -70,17 +72,30 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         for oid in orgs:
-            out = reclaim_orphan_owner(cursor, int(oid))
-            print(f"watchdog org={oid} reclaim={out}", flush=True)
-            conn.commit()
-
             if quiet:
+                due, due_detail = quiet_reclaim_due(cursor, int(oid))
+                if not due:
+                    print(
+                        f"RECOVERY_BOUNDARY org={oid} action=quiet_expected_idle "
+                        f"reclaim_throttled={due_detail.get('reason')}",
+                        flush=True,
+                    )
+                    continue
+                out = reclaim_orphan_owner(cursor, int(oid))
+                mark_quiet_reclaim(
+                    cursor, int(oid), reclaim_action=str(out.get("action") or "")
+                )
                 print(
                     f"RECOVERY_BOUNDARY org={oid} action=quiet_reclaim_only "
                     f"reclaim={out.get('action')} (no scrape start)",
                     flush=True,
                 )
+                conn.commit()
                 continue
+
+            out = reclaim_orphan_owner(cursor, int(oid))
+            print(f"watchdog org={oid} reclaim={out}", flush=True)
+            conn.commit()
 
             # ACTIVE: start recovery only when a tick was missed — not merely
             # because the chain is idle between ticks.

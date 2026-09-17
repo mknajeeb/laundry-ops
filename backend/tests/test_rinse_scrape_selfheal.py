@@ -852,6 +852,14 @@ def test_watchdog_quiet_never_starts_scrape(monkeypatch):
         lambda **_k: True,
     )
     monkeypatch.setattr(
+        "backend.rinse_scrape_schedule.quiet_reclaim_due",
+        lambda *_a, **_k: (True, {"reason": "never_reclaimed"}),
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_schedule.mark_quiet_reclaim",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
         "backend.rinse_scrape_chain.ensure_recovery_once",
         lambda cursor, org, **kw: recovery_calls.append("should_not_fire")
         or {"restarted": True},
@@ -859,6 +867,54 @@ def test_watchdog_quiet_never_starts_scrape(monkeypatch):
     assert wd.main(["--organization-id", "3"]) == 0
     assert reclaim_calls == [3]
     assert recovery_calls == []
+
+
+def test_watchdog_quiet_throttles_reclaim(monkeypatch):
+    from backend.jobs import run_rinse_freshness_watchdog as wd
+
+    reclaim_calls: list[int] = []
+
+    class FakeCursor:
+        def close(self):
+            return None
+
+    class FakeConn:
+        def cursor(self, **_k):
+            return FakeCursor()
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("backend.db.get_db", lambda: FakeConn())
+    monkeypatch.setattr(
+        "backend.rinse_scheduled_scrape.parse_scheduled_org_ids", lambda: [3]
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.reclaim_orphan_owner",
+        lambda cursor, org: reclaim_calls.append(org) or {"action": "no_owner"},
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_schedule.load_schedule_config",
+        lambda *_a, **_k: __import__(
+            "backend.rinse_scrape_schedule", fromlist=["default_schedule_config"]
+        ).default_schedule_config(),
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_schedule.current_mode", lambda **_k: "QUIET"
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_schedule.quiet_suppresses_automatic_start",
+        lambda **_k: True,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_schedule.quiet_reclaim_due",
+        lambda *_a, **_k: (False, {"reason": "within_quiet_interval"}),
+    )
+    assert wd.main(["--organization-id", "3"]) == 0
+    assert reclaim_calls == []
 
 def test_reclaim_persists_measured_ages(monkeypatch):
     from backend.rinse_scrape_liveness import reclaim_orphan_owner

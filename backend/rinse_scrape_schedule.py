@@ -702,3 +702,88 @@ def mark_tick_completed(
         """,
         (int(organization_id), LAST_TICK_SETTINGS_KEY, body),
     )
+
+
+QUIET_RECLAIM_SETTINGS_KEY = "rinse_scrape_quiet_reclaim_v1"
+DEFAULT_QUIET_RECLAIM_MIN_INTERVAL_SEC = 30 * 60
+
+
+def quiet_reclaim_due(
+    cursor,
+    organization_id: int,
+    *,
+    now_et: datetime | None = None,
+    min_interval_seconds: int = DEFAULT_QUIET_RECLAIM_MIN_INTERVAL_SEC,
+) -> tuple[bool, dict[str, Any]]:
+    """
+    QUIET reclaim throttle: absence of scraper is healthy; reclaim at most
+    about every 30 minutes unless never run.
+    """
+    now = ensure_et(now_et)
+    detail: dict[str, Any] = {
+        "min_interval_seconds": int(min_interval_seconds),
+        "now_et": now.isoformat(),
+    }
+    try:
+        from backend.ta_helpers import table_exists, table_has_column
+
+        if not table_exists(cursor, "system_settings") or not table_has_column(
+            cursor, "system_settings", "organization_id"
+        ):
+            return True, {**detail, "reason": "no_settings_table"}
+        cursor.execute(
+            """
+            SELECT svalue FROM system_settings
+            WHERE organization_id = %s AND skey = %s
+            LIMIT 1
+            """,
+            (int(organization_id), QUIET_RECLAIM_SETTINGS_KEY),
+        )
+        row = cursor.fetchone()
+        raw = row.get("svalue") if isinstance(row, dict) else (row[0] if row else None)
+        if not raw:
+            return True, {**detail, "reason": "never_reclaimed"}
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(parsed, dict):
+            return True, {**detail, "reason": "bad_payload"}
+        last_s = parsed.get("last_reclaim_at_et")
+        if not last_s:
+            return True, {**detail, "reason": "missing_last"}
+        last = ensure_et(datetime.fromisoformat(str(last_s)))
+        age = (now - last).total_seconds()
+        detail["last_reclaim_at_et"] = last.isoformat()
+        detail["age_seconds"] = age
+        if age >= float(min_interval_seconds):
+            return True, {**detail, "reason": "interval_elapsed"}
+        return False, {**detail, "reason": "within_quiet_interval"}
+    except Exception as exc:
+        return True, {**detail, "reason": "error_fail_open", "error": str(exc)}
+
+
+def mark_quiet_reclaim(
+    cursor,
+    organization_id: int,
+    *,
+    now_et: datetime | None = None,
+    reclaim_action: str | None = None,
+) -> None:
+    from backend.ta_helpers import table_exists, table_has_column
+
+    if not table_exists(cursor, "system_settings") or not table_has_column(
+        cursor, "system_settings", "organization_id"
+    ):
+        return
+    body = json.dumps(
+        {
+            "last_reclaim_at_et": ensure_et(now_et).isoformat(),
+            "reclaim_action": reclaim_action,
+        }
+    )
+    cursor.execute(
+        """
+        INSERT INTO system_settings (organization_id, skey, svalue)
+        VALUES (%s, %s, %s)
+        ON DUPLICATE KEY UPDATE svalue = VALUES(svalue)
+        """,
+        (int(organization_id), QUIET_RECLAIM_SETTINGS_KEY, body),
+    )
