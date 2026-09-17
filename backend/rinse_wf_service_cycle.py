@@ -74,23 +74,36 @@ def _norm_bag(raw: Any) -> str:
     return normalize_bag_id(raw) or ""
 
 
+def wf_reset_epoch_scan_wall(cursor, organization_id: int) -> datetime | None:
+    """WF clean-reset epoch as naive ET wall, matching ``scanned_at_parsed``.
+
+    Scan history survives the reset physically (strategy D). Everything stamped
+    before this instant is archaeology: it must never admit a cycle or an OI.
+    """
+    from backend.wf_ops_reset_epoch import epoch_scan_wall, get_wf_reset_epoch_at
+
+    return epoch_scan_wall(get_wf_reset_epoch_at(cursor, int(organization_id)))
+
+
 def _load_timeline(cursor, organization_id: int, bag_id: str) -> list[dict[str, Any]]:
     if not table_exists(cursor, "rinse_bag_scan_events"):
         return []
-    cur = cursor
-    cur.execute(
-        """
+    from backend.wf_ops_reset_epoch import epoch_sql_predicate
+
+    epoch_sql, epoch_params = epoch_sql_predicate(cursor, int(organization_id))
+    cursor.execute(
+        f"""
         SELECT bag_id, rack, purpose, scanned_at_parsed, user_name, weight_lbs,
                weight_role, weight_source, weight_observed_at, weight_attach_reason,
                weight_presence_run_id, source_filename, raw_json, scan_index, id
         FROM rinse_bag_scan_events
         WHERE organization_id = %s AND bag_id = %s
-          AND scanned_at_parsed IS NOT NULL
+          AND scanned_at_parsed IS NOT NULL{epoch_sql}
         ORDER BY scanned_at_parsed ASC, scan_index ASC, id ASC
         """,
-        (int(organization_id), bag_id),
+        (int(organization_id), bag_id, *epoch_params),
     )
-    return [dict(r) for r in (cur.fetchall() or []) if isinstance(r, dict)]
+    return [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
 
 
 def _valid_cycle_anchors(timeline: Sequence[Mapping[str, Any]]) -> list[datetime]:
@@ -850,9 +863,15 @@ def sync_portal_discovery(
     A COMPLETED cycle at the latest known anchor is not the current order.
     Bag-scoped portal fields wait until a newer lifecycle boundary is known.
     A scan delay must not write the next order's EDD onto the completed cycle.
+
+    After a WF clean reset, trusted-baseline bags have no post-epoch STV yet.
+    Their anchor is the reset epoch (naive ET wall, same convention as an STV
+    anchor) rather than ``now_utc``: a wall-clock anchor would differ on every
+    scrape and fork a second order instance for the same physical bag.
     """
     org = int(organization_id)
     now_utc = now or datetime.utcnow()
+    baseline_anchor = wf_reset_epoch_scan_wall(cursor, org)
     refreshed = {
         _norm_bag(b) for b in (evidence_refreshed_bag_ids or []) if _norm_bag(b)
     }
@@ -998,7 +1017,7 @@ def sync_portal_discovery(
                         )
                         updated += 1
                     continue
-            anchor = now_utc
+            anchor = baseline_anchor or now_utc
         held = (
             get_cycle_by_key(cursor, org, bid, anchor)
             if isinstance(anchor, datetime)

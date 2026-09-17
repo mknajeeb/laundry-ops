@@ -112,6 +112,41 @@ def _schedule_gate_allows_run(conn, args: argparse.Namespace) -> tuple[bool, dic
             pass
 
 
+def _wf_maintenance_gate_allows_run(conn, args: argparse.Namespace) -> tuple[bool, dict]:
+    """Refuse scrape while WF ops maintenance is on, unless this is the
+    authorized baseline scrape (``--baseline-auth`` matching WF_BASELINE_RESET_AUTH).
+
+    This is independent of the ACTIVE/QUIET schedule: cadence is untouched.
+    """
+    from backend.rinse_scheduled_scrape import parse_scheduled_org_ids
+    from backend.wf_ops_reset_epoch import wf_ops_mutation_gate
+
+    if args.dry_run or conn is None:
+        return True, {"reason": "no_db_mutation"}
+    orgs = args.organization_ids or parse_scheduled_org_ids()
+    if not orgs:
+        return True, {"reason": "no_orgs"}
+    try:
+        cursor = conn.cursor(dictionary=True)
+    except Exception as exc:
+        # Maintenance is an explicit operator opt-in; an unusable cursor must
+        # not take the scraper down.
+        return True, {"reason": "maintenance_unreadable", "error": str(exc)}
+    try:
+        for oid in orgs:
+            allowed, detail = wf_ops_mutation_gate(
+                cursor, int(oid), allow_baseline_token=args.baseline_auth
+            )
+            if not allowed:
+                return False, detail
+        return True, {"reason": "maintenance_off"}
+    finally:
+        try:
+            cursor.close()
+        except Exception:
+            pass
+
+
 def _result_duration_seconds(r) -> float | None:
     started = getattr(r, "started_at", None)
     finished = getattr(r, "finished_at", None)
@@ -192,6 +227,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Bypass schedule due-tick gate (manual/recovery).",
     )
     p.add_argument(
+        "--baseline-auth",
+        default=None,
+        help=(
+            "Token matching WF_BASELINE_RESET_AUTH. Only this lets the single "
+            "authorized baseline scrape run while WF ops maintenance is on."
+        ),
+    )
+    p.add_argument(
         "--force-fail",
         action="store_true",
         help="Fail the first cycle after lock+lease (self-heal failure proof).",
@@ -261,7 +304,18 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = get_db()
     try:
-        allowed, schedule_detail = _schedule_gate_allows_run(conn, args)
+        # WF ops maintenance is a mutation gate, not a cadence change: it only
+        # suppresses the run, and leaves the ACTIVE/QUIET schedule untouched.
+        wf_allowed, wf_detail = _wf_maintenance_gate_allows_run(conn, args)
+        if not wf_allowed:
+            print(
+                f"WF_MAINTENANCE_BOUNDARY gate_allowed=False "
+                f"detail={json.dumps(wf_detail, default=str)[:800]}",
+                flush=True,
+            )
+            allowed, schedule_detail = False, dict(wf_detail)
+        else:
+            allowed, schedule_detail = _schedule_gate_allows_run(conn, args)
         print(
             f"SCHEDULE_BOUNDARY gate_allowed={allowed} "
             f"detail={json.dumps(schedule_detail, default=str)[:800]}",

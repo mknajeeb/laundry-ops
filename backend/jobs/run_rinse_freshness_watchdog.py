@@ -38,6 +38,11 @@ _reexec_with_project_venv()
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Rinse scrape recovery watchdog")
     p.add_argument("--organization-id", type=int, action="append", dest="organization_ids")
+    p.add_argument(
+        "--baseline-auth",
+        default=None,
+        help="Token matching WF_BASELINE_RESET_AUTH (baseline scrape only).",
+    )
     args = p.parse_args(argv)
 
     from backend.rinse_scheduled_scrape import parse_scheduled_org_ids
@@ -68,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     from backend.rinse_scrape_chain import ensure_recovery_once
     from backend.rinse_scrape_liveness import reclaim_orphan_owner
     from backend.rinse_scrape_schedule import mark_quiet_reclaim, quiet_reclaim_due
+    from backend.wf_ops_reset_epoch import wf_ops_mutation_gate
 
     conn = get_db()
     cursor = conn.cursor(dictionary=True, buffered=True)
@@ -78,6 +84,19 @@ def main(argv: list[str] | None = None) -> int:
         quiet = quiet_suppresses_automatic_start(config=cfg)
 
         for oid in orgs:
+            # Recovery reclaims leases and can start a scrape — both are mutations.
+            # WF ops maintenance must stop them before anything else is evaluated.
+            wf_allowed, wf_detail = wf_ops_mutation_gate(
+                cursor, int(oid), allow_baseline_token=args.baseline_auth
+            )
+            if not wf_allowed:
+                print(
+                    f"RECOVERY_BOUNDARY org={oid} action=wf_ops_maintenance_skip "
+                    f"reason={wf_detail.get('reason')} (no reclaim, no recovery start)",
+                    flush=True,
+                )
+                continue
+
             if quiet:
                 due, due_detail = quiet_reclaim_due(cursor, int(oid))
                 if not due:
