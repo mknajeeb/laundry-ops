@@ -95,6 +95,44 @@ def _schedule_gate_allows_run(conn, args: argparse.Namespace) -> tuple[bool, dic
             pass
 
 
+def _result_duration_seconds(r) -> float | None:
+    started = getattr(r, "started_at", None)
+    finished = getattr(r, "finished_at", None)
+    if started and finished:
+        try:
+            return max(0.0, (finished - started).total_seconds())
+        except Exception:
+            return None
+    return None
+
+
+def _scrape_summary_for_result(r, *, schedule_detail: dict | None = None) -> dict:
+    detail = getattr(r, "detail", None) or {}
+    if not isinstance(detail, dict):
+        detail = {}
+    lifecycle = detail.get("lifecycle") if isinstance(detail.get("lifecycle"), dict) else {}
+    query_budget = detail.get("query_budget") if isinstance(detail.get("query_budget"), dict) else None
+    return {
+        "event": "SCRAPE_SUMMARY",
+        "run_id": getattr(r, "run_id", None),
+        "organization_id": getattr(r, "organization_id", None),
+        "status": getattr(r, "status", None),
+        "duration_seconds": _result_duration_seconds(r),
+        "portal_rows_count": getattr(r, "portal_rows_count", None),
+        "scan_events_count": getattr(r, "scan_events_count", None),
+        "batch_id": getattr(r, "batch_id", None),
+        "changed_count": detail.get("changed_count") or detail.get("rows_changed"),
+        "new_count": detail.get("new_count") or detail.get("rows_new"),
+        "removed_count": detail.get("removed_count") or detail.get("rows_removed"),
+        "lifecycle_changes": lifecycle.get("changes") or lifecycle.get("changed_count"),
+        "query_budget": query_budget,
+        "tick_key": (schedule_detail or {}).get("tick_key"),
+        "mode": (schedule_detail or {}).get("mode"),
+        "error_message": getattr(r, "error_message", None),
+        "result": getattr(r, "status", None),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Run scheduled Rinse scrape pipeline")
     p.add_argument(
@@ -234,11 +272,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         # Default once path and dry-run never start a successor.
         if use_once or args.once or args.dry_run:
-            print(
-                "CHAIN_BOUNDARY successor_skipped reason=once_or_default_once "
-                f"owned_cycle={owned_cycle}",
-                flush=True,
-            )
+            pass  # expected; SCRAPE_SUMMARY covers outcome
         elif not owned_cycle:
             print(
                 "CHAIN_BOUNDARY successor_skipped reason=no_owned_cycle",
@@ -260,47 +294,92 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             pass
 
-    out = []
     exit_code = 0
+    summaries = []
     for r in results:
-        item = {
-            "organization_id": r.organization_id,
-            "run_id": r.run_id,
-            "status": r.status,
-            "rinse_vendor": r.rinse_vendor,
-            "tenant_slug": r.tenant_slug,
-            "batch_id": r.batch_id,
-            "portal_rows_count": r.portal_rows_count,
-            "scan_events_count": r.scan_events_count,
-            "error_message": r.error_message,
-            "ready_for_vendor_status": r.ready_for_vendor_status,
-            "ready_for_vendor_error": r.ready_for_vendor_error,
-            "at_vendor_status": r.at_vendor_status,
-            "log_path": str(r.paths.log_path) if r.paths else None,
-            "detail": r.detail,
-            "scheduler_runtime_revision": stamps.get("runtime_revision"),
-            "scheduler_image_revision": stamps.get("image_revision"),
-            "scheduler_source_revision": stamps.get("source_revision"),
-        }
-        out.append(item)
+        summary = _scrape_summary_for_result(r, schedule_detail=schedule_detail)
+        summaries.append(summary)
+        print(json.dumps(summary, default=str), flush=True)
         if r.status == "failed":
             exit_code = 1
         elif r.status == "partial_success" and exit_code == 0:
             exit_code = 2
         elif r.status == "needs_attention" and exit_code == 0:
             exit_code = 3
+        elif str(r.status or "") not in ("success", "skipped", "partial_success", "needs_attention", ""):
+            if exit_code == 0 and r.error_message:
+                print(
+                    json.dumps(
+                        {
+                            "event": "SCRAPE_WARNING",
+                            "run_id": r.run_id,
+                            "status": r.status,
+                            "error_message": r.error_message,
+                        },
+                        default=str,
+                    ),
+                    flush=True,
+                )
 
-    print(
-        json.dumps(
-            {
-                "runs": out,
-                "scheduler_release_revision": stamps,
-                "schedule": schedule_detail,
-            },
-            indent=2,
-            default=str,
-        )
+    verbose = str(os.getenv("RINSE_SCRAPE_VERBOSE_RESULT") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
     )
+    if verbose:
+        out = []
+        for r in results:
+            out.append(
+                {
+                    "organization_id": r.organization_id,
+                    "run_id": r.run_id,
+                    "status": r.status,
+                    "rinse_vendor": r.rinse_vendor,
+                    "tenant_slug": r.tenant_slug,
+                    "batch_id": r.batch_id,
+                    "portal_rows_count": r.portal_rows_count,
+                    "scan_events_count": r.scan_events_count,
+                    "error_message": r.error_message,
+                    "ready_for_vendor_status": r.ready_for_vendor_status,
+                    "ready_for_vendor_error": r.ready_for_vendor_error,
+                    "at_vendor_status": r.at_vendor_status,
+                    "log_path": str(r.paths.log_path) if r.paths else None,
+                    "detail": r.detail,
+                    "scheduler_runtime_revision": stamps.get("runtime_revision"),
+                    "scheduler_image_revision": stamps.get("image_revision"),
+                    "scheduler_source_revision": stamps.get("source_revision"),
+                }
+            )
+        print(
+            json.dumps(
+                {
+                    "runs": out,
+                    "scheduler_release_revision": stamps,
+                    "schedule": schedule_detail,
+                },
+                indent=2,
+                default=str,
+            )
+        )
+    else:
+        print(
+            json.dumps(
+                {
+                    "event": "SCRAPE_RUN_COMPLETE",
+                    "exit_code": exit_code,
+                    "summaries": summaries,
+                    "scheduler_release_revision": {
+                        k: stamps.get(k)
+                        for k in ("runtime_revision", "image_revision", "source_revision")
+                    },
+                    "schedule_mode": (schedule_detail or {}).get("mode"),
+                    "schedule_reason": (schedule_detail or {}).get("reason"),
+                },
+                default=str,
+            ),
+            flush=True,
+        )
     print(f"CHAIN_BOUNDARY process_exit exit_code={exit_code}", flush=True)
     return exit_code
 
