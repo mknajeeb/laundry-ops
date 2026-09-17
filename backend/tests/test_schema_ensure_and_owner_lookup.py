@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from backend.schema_ensure_cache import (
     reset_schema_ensure_cache,
     run_schema_ensure_once,
@@ -82,10 +84,12 @@ def test_fetch_owner_uses_pk_equality():
     from backend import rinse_bag_operational_owner as own
 
     sqls: list[str] = []
+    params_seen: list[tuple] = []
 
     class Cur:
         def execute(self, sql, params=None):
             sqls.append(sql)
+            params_seen.append(params)
 
         def fetchone(self):
             return None
@@ -98,6 +102,46 @@ def test_fetch_owner_uses_pk_equality():
     assert len(sqls) == 1
     assert "WHERE bag_id = %s" in sqls[0]
     assert "UPPER(TRIM" not in sqls[0]
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("abc123", "ABC123"),
+        ("ABC123", "ABC123"),
+        ("  abc123", "ABC123"),
+        ("abc123  ", "ABC123"),
+        ("  AbC123  ", "ABC123"),
+        ("BAG_12", "BAG_12"),
+        ("bag-99", "BAG-99"),
+    ],
+)
+def test_fetch_owner_normalizes_input_then_pk_equality(raw, expected):
+    from backend import rinse_bag_operational_owner as own
+    from backend.schema_ensure_cache import mark_table_exists, reset_schema_ensure_cache
+
+    reset_schema_ensure_cache()
+    mark_table_exists("rinse_bag_operational_owner", True)
+    params_seen: list = []
+
+    class Cur:
+        def execute(self, sql, params=None):
+            params_seen.append(params)
+
+        def fetchone(self):
+            return {
+                "bag_id": expected,
+                "owner_organization_id": 3,
+                "owner_rinse_vendor": "veewash",
+                "assigned_at": None,
+                "assignment_source": "registry",
+                "locked": 1,
+            }
+
+    row = own._fetch_owner_row(Cur(), raw)
+    assert params_seen == [(expected,)]
+    assert row is not None
+    assert row["bag_id"] == expected
 
 
 def test_resolve_canonical_owners_batch_pk_equality(monkeypatch):

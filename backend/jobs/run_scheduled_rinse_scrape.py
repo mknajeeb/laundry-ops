@@ -55,11 +55,16 @@ def _schedule_gate_allows_run(conn, args: argparse.Namespace) -> tuple[bool, dic
 
     Manual/server/recovery/--force-schedule bypass the due-tick gate.
     Continuous legacy path also bypasses (caller must not use this for normal ops).
+
+    When conn is None, only Quiet/non-DB checks run (defaults + env schedule).
+    ACTIVE due/not-due still requires conn for last-completed tick_key.
     """
     from backend.rinse_scrape_schedule import (
+        current_mode,
         evaluate_schedule,
         get_last_completed_tick_key,
         load_schedule_config,
+        quiet_suppresses_automatic_start,
     )
     from backend.rinse_scheduled_scrape import parse_scheduled_org_ids
 
@@ -76,10 +81,22 @@ def _schedule_gate_allows_run(conn, args: argparse.Namespace) -> tuple[bool, dic
     if not orgs:
         return False, {"reason": "no_orgs"}
 
+    # Cheap Quiet skip: mode is America/New_York wall clock. Defaults+env are enough
+    # without DB when no persisted override is required for Quiet boundary.
+    # ACTIVE still needs DB for last_completed_tick_key.
+    if conn is None:
+        cfg = load_schedule_config(None)
+        if quiet_suppresses_automatic_start(config=cfg) or current_mode(config=cfg) == "QUIET":
+            decision = evaluate_schedule(config=cfg, last_completed_tick_key=None)
+            detail = decision.to_public_dict()
+            detail["organization_id"] = int(orgs[0])
+            detail["db_skipped"] = True
+            return False, detail
+        return True, {"reason": "needs_db_for_active_tick", "organization_id": int(orgs[0])}
+
     cursor = conn.cursor(dictionary=True)
     try:
         cfg = load_schedule_config(cursor)
-        # Gate on the first org (v1 single-tenant schedule).
         org = int(orgs[0])
         last_key = get_last_completed_tick_key(cursor, org)
         decision = evaluate_schedule(config=cfg, last_completed_tick_key=last_key)
@@ -206,9 +223,43 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
 
-    conn = get_db()
     results = []
     schedule_detail: dict = {}
+    conn = None
+
+    # Quiet / non-due: try schedule gate without opening production DB first.
+    if use_once and not args.dry_run:
+        pre_allowed, pre_detail = _schedule_gate_allows_run(None, args)
+        if not pre_allowed and pre_detail.get("db_skipped"):
+            schedule_detail = pre_detail
+            print(
+                f"SCHEDULE_BOUNDARY gate_allowed=False db_skipped=1 "
+                f"detail={json.dumps(schedule_detail, default=str)[:800]}",
+                flush=True,
+            )
+            print(
+                f"SCHEDULE_BOUNDARY skip reason={schedule_detail.get('reason')} "
+                f"mode={schedule_detail.get('mode')} tick={schedule_detail.get('tick_key')}",
+                flush=True,
+            )
+            print(
+                json.dumps(
+                    {
+                        "event": "SCRAPE_RUN_COMPLETE",
+                        "exit_code": 0,
+                        "summaries": [],
+                        "schedule_mode": schedule_detail.get("mode"),
+                        "schedule_reason": schedule_detail.get("reason"),
+                        "db_skipped": True,
+                    },
+                    default=str,
+                ),
+                flush=True,
+            )
+            print("CHAIN_BOUNDARY process_exit exit_code=0", flush=True)
+            return 0
+
+    conn = get_db()
     try:
         allowed, schedule_detail = _schedule_gate_allows_run(conn, args)
         print(

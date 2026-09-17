@@ -9,7 +9,7 @@ ACTIVE:
   - if a scheduled tick was missed/failed, start at most ONE recovery --once
 
 QUIET:
-  - reclaim orphans if needed
+  - reclaim orphans if needed (throttled ~30 minutes)
   - never start a scraper (absence is healthy)
 """
 
@@ -40,41 +40,49 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--organization-id", type=int, action="append", dest="organization_ids")
     args = p.parse_args(argv)
 
-    from backend.db import get_db
     from backend.rinse_scheduled_scrape import parse_scheduled_org_ids
-    from backend.rinse_scrape_chain import ensure_recovery_once
-    from backend.rinse_scrape_liveness import reclaim_orphan_owner
     from backend.rinse_scrape_schedule import (
         current_mode,
         load_schedule_config,
-        mark_quiet_reclaim,
-        quiet_reclaim_due,
         quiet_suppresses_automatic_start,
     )
 
     orgs = args.organization_ids or parse_scheduled_org_ids()
+    # Mode from defaults+env first (no DB). Quiet throttle still needs a light DB read.
+    cfg_local = load_schedule_config(None)
+    mode = current_mode(config=cfg_local)
+    quiet = quiet_suppresses_automatic_start(config=cfg_local)
+    print(
+        json.dumps(
+            {
+                "watchdog_mode": mode,
+                "quiet_suppresses_automatic_start": quiet,
+                "schedule": cfg_local.to_public_dict(),
+            },
+            default=str,
+        ),
+        flush=True,
+    )
+
+    from backend.db import get_db
+    from backend.rinse_scrape_chain import ensure_recovery_once
+    from backend.rinse_scrape_liveness import reclaim_orphan_owner
+    from backend.rinse_scrape_schedule import mark_quiet_reclaim, quiet_reclaim_due
+
     conn = get_db()
     cursor = conn.cursor(dictionary=True, buffered=True)
     try:
+        # Refresh config from DB when available (persisted overrides).
         cfg = load_schedule_config(cursor)
         mode = current_mode(config=cfg)
         quiet = quiet_suppresses_automatic_start(config=cfg)
-        print(
-            json.dumps(
-                {
-                    "watchdog_mode": mode,
-                    "quiet_suppresses_automatic_start": quiet,
-                    "schedule": cfg.to_public_dict(),
-                },
-                default=str,
-            ),
-            flush=True,
-        )
 
         for oid in orgs:
             if quiet:
                 due, due_detail = quiet_reclaim_due(cursor, int(oid))
                 if not due:
+                    # Common path (~every 5m in Quiet): one settings SELECT, no reclaim,
+                    # no Azure, no lease fencing writes.
                     print(
                         f"RECOVERY_BOUNDARY org={oid} action=quiet_expected_idle "
                         f"reclaim_throttled={due_detail.get('reason')}",
@@ -97,8 +105,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"watchdog org={oid} reclaim={out}", flush=True)
             conn.commit()
 
-            # ACTIVE: start recovery only when a tick was missed — not merely
-            # because the chain is idle between ticks.
             restart = ensure_recovery_once(
                 cursor,
                 int(oid),

@@ -433,7 +433,7 @@ def ensure_recovery_once(
         last_completed_tick_key=last_key,
     )
 
-    def _blocked(reason: str, **extra: Any) -> dict[str, Any]:
+    def _blocked(reason: str, *, persist: bool = True, **extra: Any) -> dict[str, Any]:
         out = {
             "restarted": False,
             "reason": reason,
@@ -442,7 +442,16 @@ def ensure_recovery_once(
             "tick_key": decision.tick_key,
             **extra,
         }
-        record_successor_attempt(cursor, org, out)
+        # Do not write lease "successor attempt" for routine expected-idle outcomes;
+        # those fire every watchdog tick and are not recovery actions.
+        if persist and reason not in {
+            "quiet_expected_idle",
+            "no_missed_tick",
+            "within_miss_grace",
+            "tick_already_completed",
+            "no_active_tick_to_recover",
+        }:
+            record_successor_attempt(cursor, org, out)
         print(
             f"RECOVERY_BOUNDARY blocked org={org} trigger={trigger} "
             f"reason={reason} mode={decision.mode} tick={decision.tick_key}",
@@ -451,10 +460,10 @@ def ensure_recovery_once(
         return out
 
     if decision.quiet_suppresses_automatic_start or decision.mode == "QUIET":
-        return _blocked("quiet_expected_idle")
+        return _blocked("quiet_expected_idle", persist=False)
 
     if not decision.scrape_due or not decision.recovery_start_permitted:
-        return _blocked(decision.reason or "no_missed_tick")
+        return _blocked(decision.reason or "no_missed_tick", persist=False)
 
     running = _running_aca_executions()
     if running:
