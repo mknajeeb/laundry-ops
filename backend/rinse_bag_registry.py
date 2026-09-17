@@ -32,53 +32,58 @@ from backend.rinse_scan_time import (
 
 
 def ensure_rinse_bag_registry_table(cursor) -> None:
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS rinse_bag_registry (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            organization_id INT NOT NULL,
-            bag_id VARCHAR(64) NOT NULL,
-            completion_status VARCHAR(32) NOT NULL DEFAULT 'INCOMPLETE',
-            completed_at DATETIME NULL,
-            completion_reason VARCHAR(64) NULL,
-            first_clean_scan_at DATETIME NULL,
-            first_clean_scan_event_id INT NULL,
-            trigger_scan_at DATETIME NULL,
-            trigger_scan_event_id INT NULL,
-            trigger_kind VARCHAR(32) NULL,
-            name_clean VARCHAR(255) NULL,
-            weight_num DECIMAL(8,2) NULL,
-            service_type VARCHAR(10) NULL,
-            date_clean DATE NULL,
-            last_upload_batch_id INT NULL,
-            last_staging_order_id INT NULL,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
-            UNIQUE KEY uq_rinse_bag_org_bag (organization_id, bag_id),
-            KEY idx_rinse_bag_org_status (organization_id, completion_status),
-            KEY idx_rinse_bag_completed_at (organization_id, completed_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    # Widen legacy completion_status columns to hold longer lifecycle states
-    # (e.g. COMPLETION_REVIEW_REQUIRED = 26 chars).
-    cursor.execute(
-        """
-        SELECT CHARACTER_MAXIMUM_LENGTH AS len FROM information_schema.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE()
-          AND TABLE_NAME = 'rinse_bag_registry'
-          AND COLUMN_NAME = 'completion_status'
-        """
-    )
-    row = cursor.fetchone()
-    cur_len = None
-    if row is not None:
-        cur_len = row.get("len") if isinstance(row, dict) else row[0]
-    if cur_len is not None and int(cur_len) < 32:
+    from backend.schema_ensure_cache import run_schema_ensure_once
+
+    def _ensure() -> None:
         cursor.execute(
-            "ALTER TABLE rinse_bag_registry "
-            "MODIFY COLUMN completion_status VARCHAR(32) NOT NULL DEFAULT 'INCOMPLETE'"
+            """
+            CREATE TABLE IF NOT EXISTS rinse_bag_registry (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                organization_id INT NOT NULL,
+                bag_id VARCHAR(64) NOT NULL,
+                completion_status VARCHAR(32) NOT NULL DEFAULT 'INCOMPLETE',
+                completed_at DATETIME NULL,
+                completion_reason VARCHAR(64) NULL,
+                first_clean_scan_at DATETIME NULL,
+                first_clean_scan_event_id INT NULL,
+                trigger_scan_at DATETIME NULL,
+                trigger_scan_event_id INT NULL,
+                trigger_kind VARCHAR(32) NULL,
+                name_clean VARCHAR(255) NULL,
+                weight_num DECIMAL(8,2) NULL,
+                service_type VARCHAR(10) NULL,
+                date_clean DATE NULL,
+                last_upload_batch_id INT NULL,
+                last_staging_order_id INT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_rinse_bag_org_bag (organization_id, bag_id),
+                KEY idx_rinse_bag_org_status (organization_id, completion_status),
+                KEY idx_rinse_bag_completed_at (organization_id, completed_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
         )
+        # Widen legacy completion_status columns to hold longer lifecycle states
+        # (e.g. COMPLETION_REVIEW_REQUIRED = 26 chars).
+        cursor.execute(
+            """
+            SELECT CHARACTER_MAXIMUM_LENGTH AS len FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'rinse_bag_registry'
+              AND COLUMN_NAME = 'completion_status'
+            """
+        )
+        row = cursor.fetchone()
+        cur_len = None
+        if row is not None:
+            cur_len = row.get("len") if isinstance(row, dict) else row[0]
+        if cur_len is not None and int(cur_len) < 32:
+            cursor.execute(
+                "ALTER TABLE rinse_bag_registry "
+                "MODIFY COLUMN completion_status VARCHAR(32) NOT NULL DEFAULT 'INCOMPLETE'"
+            )
+
+    run_schema_ensure_once("rinse_bag_registry", _ensure)
 
 
 def _scan_events_table_has_column(cursor, col_name: str) -> bool:
@@ -113,54 +118,64 @@ def _scan_events_table_has_index(cursor, index_name: str) -> bool:
 
 def ensure_rinse_bag_scan_events_dedupe_schema(cursor) -> None:
     """Add dedupe_key column + unique (org, bag, dedupe_key) when missing."""
-    ensure_rinse_bag_scan_events_table(cursor)
-    if not _scan_events_table_has_column(cursor, "dedupe_key"):
-        cursor.execute(
-            "ALTER TABLE rinse_bag_scan_events ADD COLUMN dedupe_key VARCHAR(64) NULL AFTER bag_id"
-        )
-    if not _scan_events_table_has_index(cursor, "uq_rbse_org_bag_dedupe"):
-        backfill_scan_event_dedupe_keys(cursor)
-        delete_duplicate_scan_events(cursor)
-        cursor.execute(
-            """
-            CREATE UNIQUE INDEX uq_rbse_org_bag_dedupe
-            ON rinse_bag_scan_events (organization_id, bag_id, dedupe_key)
-            """
-        )
+    from backend.schema_ensure_cache import run_schema_ensure_once
+
+    def _ensure() -> None:
+        ensure_rinse_bag_scan_events_table(cursor)
+        if not _scan_events_table_has_column(cursor, "dedupe_key"):
+            cursor.execute(
+                "ALTER TABLE rinse_bag_scan_events ADD COLUMN dedupe_key VARCHAR(64) NULL AFTER bag_id"
+            )
+        if not _scan_events_table_has_index(cursor, "uq_rbse_org_bag_dedupe"):
+            backfill_scan_event_dedupe_keys(cursor)
+            delete_duplicate_scan_events(cursor)
+            cursor.execute(
+                """
+                CREATE UNIQUE INDEX uq_rbse_org_bag_dedupe
+                ON rinse_bag_scan_events (organization_id, bag_id, dedupe_key)
+                """
+            )
+
+    run_schema_ensure_once("rinse_bag_scan_events_dedupe", _ensure)
 
 
 def ensure_rinse_bag_scan_events_table(cursor) -> None:
     """Create base table (without calling dedupe migration — avoids recursion)."""
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS rinse_bag_scan_events (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            organization_id INT NOT NULL,
-            bag_id VARCHAR(64) NOT NULL,
-            dedupe_key VARCHAR(64) NULL,
-            scan_index INT NULL,
-            rack VARCHAR(128) NULL,
-            time_scanned_raw VARCHAR(255) NULL,
-            scanned_at_parsed DATETIME NULL,
-            source_timezone VARCHAR(64) NOT NULL DEFAULT 'America/New_York',
-            user_name VARCHAR(255) NULL,
-            purpose VARCHAR(255) NULL,
-            last_location VARCHAR(8) NULL,
-            last_scan VARCHAR(8) NULL,
-            source_upload_batch_id INT NULL,
-            source_filename VARCHAR(512) NULL,
-            last_seen_at DATETIME NULL,
-            raw_json JSON NULL,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
-            KEY idx_rbse_org_bag (organization_id, bag_id),
-            KEY idx_rbse_org_bag_time (organization_id, bag_id, scanned_at_parsed, scan_index),
-            KEY idx_rbse_batch (source_upload_batch_id),
-            KEY idx_rbse_org_batch_bag (organization_id, source_upload_batch_id, bag_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    _ensure_rinse_bag_scan_events_audit_columns(cursor)
+    from backend.schema_ensure_cache import run_schema_ensure_once
+
+    def _ensure() -> None:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rinse_bag_scan_events (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                organization_id INT NOT NULL,
+                bag_id VARCHAR(64) NOT NULL,
+                dedupe_key VARCHAR(64) NULL,
+                scan_index INT NULL,
+                rack VARCHAR(128) NULL,
+                time_scanned_raw VARCHAR(255) NULL,
+                scanned_at_parsed DATETIME NULL,
+                source_timezone VARCHAR(64) NOT NULL DEFAULT 'America/New_York',
+                user_name VARCHAR(255) NULL,
+                purpose VARCHAR(255) NULL,
+                last_location VARCHAR(8) NULL,
+                last_scan VARCHAR(8) NULL,
+                source_upload_batch_id INT NULL,
+                source_filename VARCHAR(512) NULL,
+                last_seen_at DATETIME NULL,
+                raw_json JSON NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+                KEY idx_rbse_org_bag (organization_id, bag_id),
+                KEY idx_rbse_org_bag_time (organization_id, bag_id, scanned_at_parsed, scan_index),
+                KEY idx_rbse_batch (source_upload_batch_id),
+                KEY idx_rbse_org_batch_bag (organization_id, source_upload_batch_id, bag_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        _ensure_rinse_bag_scan_events_audit_columns(cursor)
+
+    run_schema_ensure_once("rinse_bag_scan_events", _ensure)
 
 
 def _ensure_rinse_bag_scan_events_audit_columns(cursor) -> None:
@@ -175,9 +190,14 @@ def _ensure_rinse_bag_scan_events_audit_columns(cursor) -> None:
 
 
 def ensure_rinse_bag_tables(cursor) -> None:
-    ensure_rinse_bag_registry_table(cursor)
-    ensure_rinse_bag_scan_events_table(cursor)
-    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
+    from backend.schema_ensure_cache import run_schema_ensure_once
+
+    def _ensure() -> None:
+        ensure_rinse_bag_registry_table(cursor)
+        ensure_rinse_bag_scan_events_table(cursor)
+        ensure_rinse_bag_scan_events_dedupe_schema(cursor)
+
+    run_schema_ensure_once("rinse_bag_tables", _ensure)
 
 
 def fetch_pre_existing_completed_bag_ids(

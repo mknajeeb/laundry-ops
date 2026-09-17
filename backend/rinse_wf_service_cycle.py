@@ -40,23 +40,34 @@ def is_wf_canonical_lifecycle_enabled(cursor, organization_id: int) -> bool:
 
 
 def ensure_wf_service_cycles_table(cursor) -> None:
-    if table_exists(cursor, "rinse_wf_service_cycles"):
-        return
-    from pathlib import Path
+    from backend.schema_ensure_cache import run_schema_ensure_once
 
-    sql = (
-        Path(__file__).resolve().parent / "sql" / "rinse_wf_service_cycles_v1.sql"
-    ).read_text()
-    lines = [
-        ln
-        for ln in sql.splitlines()
-        if not ln.strip().startswith("--")
-    ]
-    body = "\n".join(lines)
-    for stmt in body.split(";"):
-        s = stmt.strip()
-        if s:
-            cursor.execute(s)
+    def _ensure() -> None:
+        if table_exists(cursor, "rinse_wf_service_cycles"):
+            from backend.schema_ensure_cache import mark_table_exists
+
+            mark_table_exists("rinse_wf_service_cycles", True)
+            return
+        from pathlib import Path
+
+        sql = (
+            Path(__file__).resolve().parent / "sql" / "rinse_wf_service_cycles_v1.sql"
+        ).read_text()
+        lines = [
+            ln
+            for ln in sql.splitlines()
+            if not ln.strip().startswith("--")
+        ]
+        body = "\n".join(lines)
+        for stmt in body.split(";"):
+            s = stmt.strip()
+            if s:
+                cursor.execute(s)
+        from backend.schema_ensure_cache import mark_table_exists
+
+        mark_table_exists("rinse_wf_service_cycles", True)
+
+    run_schema_ensure_once("rinse_wf_service_cycles", _ensure)
 
 
 def _norm_bag(raw: Any) -> str:

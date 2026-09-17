@@ -81,35 +81,47 @@ def _rinse_vendor_for_org(organization_id: int) -> str:
 
 
 def ensure_operational_owner_table(cursor) -> None:
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS rinse_bag_operational_owner (
-          bag_id VARCHAR(64) NOT NULL PRIMARY KEY,
-          owner_organization_id INT NOT NULL,
-          owner_rinse_vendor VARCHAR(16) NOT NULL,
-          assigned_at DATETIME NOT NULL,
-          assignment_source VARCHAR(32) NOT NULL,
-          locked TINYINT(1) NOT NULL DEFAULT 1,
-          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
-          KEY idx_rboo_owner_org (owner_organization_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
+    from backend.schema_ensure_cache import run_schema_ensure_once
+
+    def _ensure() -> None:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rinse_bag_operational_owner (
+              bag_id VARCHAR(64) NOT NULL PRIMARY KEY,
+              owner_organization_id INT NOT NULL,
+              owner_rinse_vendor VARCHAR(16) NOT NULL,
+              assigned_at DATETIME NOT NULL,
+              assignment_source VARCHAR(32) NOT NULL,
+              locked TINYINT(1) NOT NULL DEFAULT 1,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+              KEY idx_rboo_owner_org (owner_organization_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        from backend.schema_ensure_cache import mark_table_exists
+
+        mark_table_exists("rinse_bag_operational_owner", True)
+
+    run_schema_ensure_once("rinse_bag_operational_owner", _ensure)
 
 
 def _fetch_owner_row(cursor, bag_id: str) -> dict[str, Any] | None:
-    if not table_exists(cursor, "rinse_bag_operational_owner"):
+    from backend.schema_ensure_cache import cached_table_exists
+
+    if not cached_table_exists(cursor, "rinse_bag_operational_owner", probe=table_exists):
         return None
     bid = normalize_bag_id(bag_id)
     if not bid:
         return None
+    # bag_id is PRIMARY KEY; values are written via normalize_bag_id.
+    # Equality on the PK (normalized input) — never UPPER(TRIM(column)).
     cursor.execute(
         """
         SELECT bag_id, owner_organization_id, owner_rinse_vendor,
                assigned_at, assignment_source, locked
         FROM rinse_bag_operational_owner
-        WHERE UPPER(TRIM(bag_id)) = %s
+        WHERE bag_id = %s
         LIMIT 1
         """,
         (bid,),
@@ -300,7 +312,7 @@ def resolve_canonical_owners(
                 SELECT bag_id, owner_organization_id, owner_rinse_vendor,
                        assigned_at, assignment_source, locked
                 FROM rinse_bag_operational_owner
-                WHERE UPPER(TRIM(bag_id)) IN ({ph})
+                WHERE bag_id IN ({ph})
                 """,
                 tuple(part),
             )
