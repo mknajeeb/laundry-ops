@@ -44,24 +44,14 @@ def _load_scan_timeline(
     organization_id: int,
     bag_id: str,
 ) -> list[dict[str, Any]]:
-    from backend.ta_helpers import table_exists
+    """Epoch-fenced timeline — delegates to central persistent scan loader."""
+    from backend.rinse_bag_registry import fetch_persistent_scan_events_for_bag
 
     bid = normalize_bag_id(bag_id)
-    if not bid or not table_exists(cursor, "rinse_bag_scan_events"):
+    if not bid:
         return []
-    cursor.execute(
-        """
-        SELECT bag_id, rack, purpose, scanned_at_parsed, user_name, weight_lbs,
-               source_filename, raw_json
-        FROM rinse_bag_scan_events
-        WHERE organization_id = %s
-          AND bag_id = %s
-          AND scanned_at_parsed IS NOT NULL
-        ORDER BY scanned_at_parsed ASC, id ASC
-        """,
-        (int(organization_id), bid),
-    )
-    return [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    rows = fetch_persistent_scan_events_for_bag(cursor, organization_id, bid)
+    return [r for r in rows if r.get("scanned_at_parsed") is not None]
 
 
 def _resolve_authoritative_scan_completion(

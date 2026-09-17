@@ -522,13 +522,19 @@ def fetch_persistent_scan_events_for_bags(
     organization_id: int,
     bag_ids: Sequence[str],
 ) -> dict[str, list[dict[str, Any]]]:
-    """Batch-load persistent timelines for many bags (same columns as single-bag fetch)."""
+    """Batch-load persistent timelines for many bags (same columns as single-bag fetch).
+
+    Pre-``wf_reset_epoch_at`` rows are excluded (central WF clean-reset fence).
+    """
     ensure_rinse_bag_scan_events_dedupe_schema(cursor)
+    from backend.wf_ops_reset_epoch import epoch_sql_predicate
+
     org = int(organization_id)
     ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
     out: dict[str, list[dict[str, Any]]] = {bid: [] for bid in ids}
     if not ids:
         return out
+    epoch_sql, epoch_params = epoch_sql_predicate(cursor, org)
     # full_row=False columns match fetch_persistent_scan_events_for_bag
     chunk = 100
     for i in range(0, len(ids), chunk):
@@ -539,10 +545,10 @@ def fetch_persistent_scan_events_for_bags(
             SELECT id, bag_id, rack, user_name, scanned_at_parsed, scan_index, purpose,
                    source_filename, weight_lbs, raw_json
             FROM rinse_bag_scan_events
-            WHERE organization_id = %s AND bag_id IN ({ph})
+            WHERE organization_id = %s AND bag_id IN ({ph}){epoch_sql}
             ORDER BY bag_id ASC, scanned_at_parsed ASC, scan_index ASC, id ASC
             """,
-            (org, *part),
+            (org, *part, *epoch_params),
         )
         for row in cursor.fetchall() or []:
             if not isinstance(row, dict):
@@ -1381,32 +1387,13 @@ def merge_scan_events_from_upload(
 def fetch_persistent_scan_events_for_bag(
     cursor, organization_id: int, bag_id: str
 ) -> list[dict[str, Any]]:
+    """Load one bag timeline. Pre-``wf_reset_epoch_at`` rows are excluded."""
     bid = normalize_bag_id(bag_id)
     if not bid:
         return []
-    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
-    org = int(organization_id)
-    cursor.execute(
-        _scan_events_timeline_list_sql(full_row=False),
-        (org, bid),
-    )
-    rows = cursor.fetchall() or []
-    out = []
-    for r in rows:
-        if isinstance(r, dict):
-            out.append(r)
-        else:
-            out.append(
-                {
-                    "id": r[0],
-                    "rack": r[1],
-                    "user_name": r[2],
-                    "scanned_at_parsed": r[3],
-                    "scan_index": r[4],
-                    "purpose": r[5] if len(r) > 5 else None,
-                }
-            )
-    return out
+    # Prefer the batch path so epoch fencing stays in one place.
+    by_bag = fetch_persistent_scan_events_for_bags(cursor, organization_id, [bid])
+    return list(by_bag.get(bid) or [])
 
 
 def apply_completion_to_registry(

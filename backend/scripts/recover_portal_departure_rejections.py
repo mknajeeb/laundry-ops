@@ -67,6 +67,9 @@ def main() -> int:
         restore_portal_scrape_rejected_bag,
         verify_and_resolve_portal_departure_bag,
     )
+    from backend.wf_ops_reset_epoch import require_offline_recovery_authorization
+
+    require_offline_recovery_authorization(apply=bool(args.apply))
 
     org = int(args.org)
     conn = get_db()

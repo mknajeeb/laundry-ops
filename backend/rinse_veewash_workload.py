@@ -625,8 +625,12 @@ def load_canonical_completions_v2(
             racks = list(DEFAULT_FACILITY_ENTRY_RACKS)
 
     # Bound IN lists — never full-table scan all org scan events.
+    # Pre-wf_reset_epoch_at rows cannot drive Pending/Completed/day_bag.
+    from backend.wf_ops_reset_epoch import epoch_sql_predicate
+
     id_set = set(ids)
     by_bag: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    epoch_sql, epoch_params = epoch_sql_predicate(cursor, int(organization_id))
     chunk_size = 400
     for i in range(0, len(ids), chunk_size):
         chunk = ids[i : i + chunk_size]
@@ -638,10 +642,10 @@ def load_canonical_completions_v2(
             FROM rinse_bag_scan_events
             WHERE organization_id = %s
               AND bag_id IN ({placeholders})
-              AND scanned_at_parsed IS NOT NULL
+              AND scanned_at_parsed IS NOT NULL{epoch_sql}
             ORDER BY scanned_at_parsed ASC, id ASC
             """,
-            (int(organization_id), *chunk),
+            (int(organization_id), *chunk, *epoch_params),
         )
         for row in cursor.fetchall() or []:
             if not isinstance(row, dict):

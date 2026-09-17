@@ -129,7 +129,12 @@ def fetch_upload_batch_scan_rows_for_bag(
     *,
     up_to_batch_id: int | None = None,
 ) -> list[dict[str, Any]]:
-    """All draft upload scan rows for a bag, newest batch first."""
+    """All draft upload scan rows for a bag, newest batch first.
+
+    Pre-``wf_reset_epoch_at`` rows cannot resurrect registry completion.
+    """
+    from backend.wf_ops_reset_epoch import filter_scan_event_rows
+
     if not table_exists(cursor, "upload_batch_scan_events"):
         return []
     bid = normalize_bag_id(bag_id)
@@ -149,7 +154,8 @@ def fetch_upload_batch_scan_rows_for_bag(
         args.append(int(up_to_batch_id))
     sql += " ORDER BY upload_batch_id DESC, scanned_at_parsed ASC, scan_index ASC, id ASC"
     cursor.execute(sql, tuple(args))
-    return [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    rows = [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    return filter_scan_event_rows(cursor, org, rows)
 
 
 def fetch_upload_batch_scan_rows_for_bags(
@@ -160,7 +166,12 @@ def fetch_upload_batch_scan_rows_for_bags(
     up_to_batch_id: int | None = None,
     include_raw_json: bool = True,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Batch draft upload scan rows for many bags (same columns/order as single-bag)."""
+    """Batch draft upload scan rows for many bags (same columns/order as single-bag).
+
+    Pre-``wf_reset_epoch_at`` rows are dropped (central fence).
+    """
+    from backend.wf_ops_reset_epoch import filter_scan_event_rows
+
     ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
     out: dict[str, list[dict[str, Any]]] = {bid: [] for bid in ids}
     if not ids or not table_exists(cursor, "upload_batch_scan_events"):
@@ -196,6 +207,8 @@ def fetch_upload_batch_scan_rows_for_bags(
             bid = normalize_bag_id(row.get("bag_id"))
             if bid:
                 out.setdefault(bid, []).append(dict(row))
+    for bid, rows in list(out.items()):
+        out[bid] = filter_scan_event_rows(cursor, org, rows)
     return out
 
 

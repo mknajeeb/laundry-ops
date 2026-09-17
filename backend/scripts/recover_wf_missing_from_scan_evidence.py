@@ -33,6 +33,9 @@ def main() -> int:
         recover_missing_portal_bags_from_scan_evidence,
     )
     from backend.rinse_wf_service_cycle_compat import terminal_project_canonical_wf_day_snapshot
+    from backend.wf_ops_reset_epoch import require_offline_recovery_authorization
+
+    require_offline_recovery_authorization(apply=not args.dry_run)
 
     conn = get_db()
     cur = conn.cursor(dictionary=True)

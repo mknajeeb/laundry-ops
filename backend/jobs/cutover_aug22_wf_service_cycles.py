@@ -19,6 +19,10 @@ def main() -> int:
         seed_minimal_cutover_cycles,
     )
     from backend.rinse_wf_service_cycle_compat import project_canonical_cycles_to_day_snapshot
+    from backend.wf_ops_reset_epoch import require_offline_recovery_authorization
+
+    # Cutover is offline mutation — never run accidentally after WF clean reset.
+    require_offline_recovery_authorization(apply=True)
 
     org = int(os.getenv("WF_CUTOVER_ORG_ID") or "3")
     day = date.fromisoformat(os.getenv("WF_CUTOVER_DATE") or "2026-08-22")

@@ -38,6 +38,9 @@ def main() -> int:
     load_dotenv(REPO_ROOT / ".env")
     from backend.db import get_db
     from backend.rinse_bag_registry import merge_scan_events_from_upload, recompute_completion_for_bags
+    from backend.wf_ops_reset_epoch import require_offline_recovery_authorization
+
+    require_offline_recovery_authorization(apply=bool(args.apply))
     from backend.rinse_folding_registry import recompute_folding_after_upload
     from backend.rinse_upload_finalize import load_upload_batch_scan_events_as_dataframe
     from backend.ta_helpers import table_exists

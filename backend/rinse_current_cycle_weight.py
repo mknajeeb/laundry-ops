@@ -1476,7 +1476,10 @@ def load_current_cycle_weight_map(
 
     timelines: dict[str, list[dict[str, Any]]] = {b: [] for b in ids}
     if table_exists(cursor, "rinse_bag_scan_events"):
+        from backend.wf_ops_reset_epoch import epoch_sql_predicate
+
         placeholders = ",".join(["%s"] * len(ids))
+        epoch_sql, epoch_params = epoch_sql_predicate(cursor, int(organization_id))
         cursor.execute(
             f"""
             SELECT id, bag_id, purpose, rack, user_name, scanned_at_parsed,
@@ -1486,10 +1489,10 @@ def load_current_cycle_weight_map(
             FROM rinse_bag_scan_events
             WHERE organization_id = %s
               AND bag_id IN ({placeholders})
-              AND scanned_at_parsed IS NOT NULL
+              AND scanned_at_parsed IS NOT NULL{epoch_sql}
             ORDER BY scanned_at_parsed ASC, id ASC
             """,
-            (int(organization_id), *ids),
+            (int(organization_id), *ids, *epoch_params),
         )
         for row in cursor.fetchall() or []:
             bid = str(row.get("bag_id") or "").strip().upper()

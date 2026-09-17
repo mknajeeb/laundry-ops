@@ -112,13 +112,19 @@ def load_new_order_boundary_timestamps_for_bags(
     organization_id: int,
     bag_ids: Sequence[str],
 ) -> dict[str, list[datetime]]:
-    """Batch load pickup/workitems/load-in timestamps for many bags."""
+    """Batch load pickup/workitems/load-in timestamps for many bags.
+
+    Pre-``wf_reset_epoch_at`` boundaries cannot open a post-reset OI.
+    """
+    from backend.wf_ops_reset_epoch import epoch_sql_predicate
+
     ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
     out: dict[str, list[datetime]] = {b: [] for b in ids}
     if not ids or not table_exists(cursor, "rinse_bag_scan_events"):
         return out
     ph_bags = ",".join(["%s"] * len(ids))
     ph_purp = ",".join(["%s"] * len(_NEW_ORDER_BOUNDARY_PURPOSES))
+    epoch_sql, epoch_params = epoch_sql_predicate(cursor, int(organization_id))
     cursor.execute(
         f"""
         SELECT bag_id, scanned_at_parsed
@@ -126,10 +132,10 @@ def load_new_order_boundary_timestamps_for_bags(
         WHERE organization_id = %s
           AND bag_id IN ({ph_bags})
           AND purpose IN ({ph_purp})
-          AND scanned_at_parsed IS NOT NULL
+          AND scanned_at_parsed IS NOT NULL{epoch_sql}
         ORDER BY bag_id, scanned_at_parsed ASC
         """,
-        (int(organization_id), *ids, *_NEW_ORDER_BOUNDARY_PURPOSES),
+        (int(organization_id), *ids, *_NEW_ORDER_BOUNDARY_PURPOSES, *epoch_params),
     )
     for row in cursor.fetchall() or []:
         bid = normalize_bag_id(

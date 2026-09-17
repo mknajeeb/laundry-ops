@@ -312,6 +312,11 @@ def _bags_with_same_day_scan_evidence(
     org = int(organization_id)
     found: set[str] = set()
     chunk = 200
+    from backend.wf_ops_reset_epoch import epoch_lower_bound_et
+    from backend.rinse_folding_et import naive_et_day_start
+
+    day_start = naive_et_day_start(selected_date_et)
+    lower = epoch_lower_bound_et(cursor, org, day_start) or day_start
     for i in range(0, len(ids), chunk):
         part = ids[i : i + chunk]
         ph = ",".join(["%s"] * len(part))
@@ -324,7 +329,7 @@ def _bags_with_same_day_scan_evidence(
               AND scanned_at_parsed >= %s
               AND scanned_at_parsed < DATE_ADD(%s, INTERVAL 1 DAY)
             """,
-            (org, *part, selected_date_et, selected_date_et),
+            (org, *part, lower, selected_date_et),
         )
         for r in cursor.fetchall() or []:
             bid = str((r.get("bag_id") if isinstance(r, dict) else r[0]) or "").strip().upper()
@@ -370,6 +375,11 @@ def _bags_with_same_day_entry_evidence(
     found: set[str] = set()
     rack_ph = ",".join(["%s"] * len(rack_keys))
     chunk = 200
+    from backend.wf_ops_reset_epoch import epoch_lower_bound_et
+    from backend.rinse_folding_et import naive_et_day_start
+
+    day_start = naive_et_day_start(selected_date_et)
+    lower = epoch_lower_bound_et(cursor, org, day_start) or day_start
     for i in range(0, len(ids), chunk):
         part = ids[i : i + chunk]
         ph = ",".join(["%s"] * len(part))
@@ -384,7 +394,7 @@ def _bags_with_same_day_entry_evidence(
               AND rack IS NOT NULL AND TRIM(rack) != ''
               AND LOWER(TRIM(rack)) IN ({rack_ph})
             """,
-            (org, *part, selected_date_et, selected_date_et, *rack_keys),
+            (org, *part, lower, selected_date_et, *rack_keys),
         )
         for r in cursor.fetchall() or []:
             bid = str((r.get("bag_id") if isinstance(r, dict) else r[0]) or "").strip().upper()
@@ -473,21 +483,39 @@ def _bags_canonically_completed_before_opening(
     by_bag: dict[str, list[dict[str, Any]]] = {b: [] for b in remaining}
     chunk = 200
     prior_end = naive_et_day_end_inclusive(prior)
+    from backend.wf_ops_reset_epoch import epoch_scan_wall, get_wf_reset_epoch_at
+
+    epoch_wall = epoch_scan_wall(get_wf_reset_epoch_at(cursor, org))
     for i in range(0, len(remaining), chunk):
         part = remaining[i : i + chunk]
         ph = ",".join(["%s"] * len(part))
-        cursor.execute(
-            f"""
-            SELECT bag_id, purpose, rack, scanned_at_parsed, user_name, weight_lbs, id, raw_json
-            FROM rinse_bag_scan_events
-            WHERE organization_id = %s
-              AND bag_id IN ({ph})
-              AND scanned_at_parsed IS NOT NULL
-              AND scanned_at_parsed < %s
-            ORDER BY scanned_at_parsed ASC, id ASC
-            """,
-            (org, *part, day_start),
-        )
+        if epoch_wall is None:
+            cursor.execute(
+                f"""
+                SELECT bag_id, purpose, rack, scanned_at_parsed, user_name, weight_lbs, id, raw_json
+                FROM rinse_bag_scan_events
+                WHERE organization_id = %s
+                  AND bag_id IN ({ph})
+                  AND scanned_at_parsed IS NOT NULL
+                  AND scanned_at_parsed < %s
+                ORDER BY scanned_at_parsed ASC, id ASC
+                """,
+                (org, *part, day_start),
+            )
+        else:
+            cursor.execute(
+                f"""
+                SELECT bag_id, purpose, rack, scanned_at_parsed, user_name, weight_lbs, id, raw_json
+                FROM rinse_bag_scan_events
+                WHERE organization_id = %s
+                  AND bag_id IN ({ph})
+                  AND scanned_at_parsed IS NOT NULL
+                  AND scanned_at_parsed >= %s
+                  AND scanned_at_parsed < %s
+                ORDER BY scanned_at_parsed ASC, id ASC
+                """,
+                (org, *part, epoch_wall, day_start),
+            )
         for row in cursor.fetchall() or []:
             if not isinstance(row, dict):
                 continue
@@ -624,6 +652,9 @@ def _drop_completed_bags_with_selected_day_cycle(
     next_start = naive_et_day_start(selected_date_et + timedelta(days=1))
     ids = sorted(completed)
     chunk = 200
+    from backend.wf_ops_reset_epoch import epoch_lower_bound_et
+
+    lower = epoch_lower_bound_et(cursor, org, day_start) or day_start
     for i in range(0, len(ids), chunk):
         part = ids[i : i + chunk]
         ph = ",".join(["%s"] * len(part))
@@ -638,7 +669,7 @@ def _drop_completed_bags_with_selected_day_cycle(
               AND scanned_at_parsed < %s
             ORDER BY scanned_at_parsed ASC, id ASC
             """,
-            (org, *part, day_start, next_start),
+            (org, *part, lower, next_start),
         )
         for row in cursor.fetchall() or []:
             if not isinstance(row, dict):
