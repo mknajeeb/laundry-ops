@@ -1,17 +1,22 @@
 """
-Rinse scrape orphan watchdog — multi-signal reclaim + idle-chain successor.
+Rinse scrape recovery watchdog — orphan reclaim + missed ACTIVE tick recovery.
 
-Reclaim requires stale supervisor heartbeat AND no live ownership evidence
-(ACA execution not Running, MySQL lock not held).
+This is NOT a continuous-chain successor watchdog. Between scheduled --once
+ticks, "no scraper running" is the expected healthy state.
 
-After a successful reclaim (or when the chain is already ownerless/idle),
-start exactly one recovery successor. Deduplication lives in
-``ensure_chain_successor`` (Running ACA / live lease / owner-await-reclaim).
+ACTIVE:
+  - reclaim genuinely orphaned lease owners
+  - if a scheduled tick was missed/failed, start at most ONE recovery --once
+
+QUIET:
+  - reclaim orphans if needed
+  - never start a scraper (absence is healthy)
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -31,43 +36,61 @@ _reexec_with_project_venv()
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="Rinse scrape orphan watchdog")
+    p = argparse.ArgumentParser(description="Rinse scrape recovery watchdog")
     p.add_argument("--organization-id", type=int, action="append", dest="organization_ids")
     args = p.parse_args(argv)
 
     from backend.db import get_db
     from backend.rinse_scheduled_scrape import parse_scheduled_org_ids
-    from backend.rinse_scrape_chain import (
-        chain_is_idle_for_recovery,
-        ensure_chain_successor,
-    )
+    from backend.rinse_scrape_chain import ensure_recovery_once
     from backend.rinse_scrape_liveness import reclaim_orphan_owner
+    from backend.rinse_scrape_schedule import (
+        current_mode,
+        load_schedule_config,
+        quiet_suppresses_automatic_start,
+    )
 
     orgs = args.organization_ids or parse_scheduled_org_ids()
     conn = get_db()
     cursor = conn.cursor(dictionary=True, buffered=True)
     try:
+        cfg = load_schedule_config(cursor)
+        mode = current_mode(config=cfg)
+        quiet = quiet_suppresses_automatic_start(config=cfg)
+        print(
+            json.dumps(
+                {
+                    "watchdog_mode": mode,
+                    "quiet_suppresses_automatic_start": quiet,
+                    "schedule": cfg.to_public_dict(),
+                },
+                default=str,
+            ),
+            flush=True,
+        )
+
         for oid in orgs:
             out = reclaim_orphan_owner(cursor, int(oid))
             print(f"watchdog org={oid} reclaim={out}", flush=True)
             conn.commit()
 
-            action = str(out.get("action") or "")
-            restart_trigger = f"watchdog_{action}"
-            should_try = action in (
-                "reclaimed",
-                "cleared_stale_owner",
-                "no_owner",
-                "no_lease",
-            ) or chain_is_idle_for_recovery(cursor, int(oid))
-            if should_try:
-                restart = ensure_chain_successor(
-                    cursor,
-                    int(oid),
-                    trigger=restart_trigger,
+            if quiet:
+                print(
+                    f"RECOVERY_BOUNDARY org={oid} action=quiet_reclaim_only "
+                    f"reclaim={out.get('action')} (no scrape start)",
+                    flush=True,
                 )
-                print(f"watchdog org={oid} successor={restart}", flush=True)
-                conn.commit()
+                continue
+
+            # ACTIVE: start recovery only when a tick was missed — not merely
+            # because the chain is idle between ticks.
+            restart = ensure_recovery_once(
+                cursor,
+                int(oid),
+                trigger=f"watchdog_{out.get('action') or 'tick'}",
+            )
+            print(f"watchdog org={oid} recovery={restart}", flush=True)
+            conn.commit()
         return 0
     finally:
         cursor.close()

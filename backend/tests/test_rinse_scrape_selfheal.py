@@ -679,11 +679,20 @@ def test_watchdog_retries_idle_chain_after_start_failure(monkeypatch):
         lambda cursor, org: {"action": "skip_fresh_supervisor"},
     )
     monkeypatch.setattr(
-        "backend.rinse_scrape_chain.chain_is_idle_for_recovery",
-        lambda *_a, **_k: True,
+        "backend.rinse_scrape_schedule.load_schedule_config",
+        lambda *_a, **_k: __import__(
+            "backend.rinse_scrape_schedule", fromlist=["default_schedule_config"]
+        ).default_schedule_config(),
     )
     monkeypatch.setattr(
-        "backend.rinse_scrape_chain.ensure_chain_successor",
+        "backend.rinse_scrape_schedule.current_mode", lambda **_k: "ACTIVE"
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_schedule.quiet_suppresses_automatic_start",
+        lambda **_k: False,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_chain.ensure_recovery_once",
         lambda cursor, org, **kw: calls.append(kw.get("trigger") or "")
         or {"restarted": False, "reason": "start_failed"},
     )
@@ -692,10 +701,11 @@ def test_watchdog_retries_idle_chain_after_start_failure(monkeypatch):
 
 
 def test_watchdog_starts_successor_after_reclaim(monkeypatch):
+    """ACTIVE reclaim may attempt recovery (ensure_recovery_once decides due/not)."""
     from backend.jobs import run_rinse_freshness_watchdog as wd
 
     reclaim_calls: list[int] = []
-    successor_calls: list[str] = []
+    recovery_calls: list[str] = []
 
     class FakeCursor:
         def close(self):
@@ -721,19 +731,34 @@ def test_watchdog_starts_successor_after_reclaim(monkeypatch):
         or {"action": "reclaimed", "run_id": 4878, "reason": "FAILED_ORPHAN_RECLAIM"},
     )
     monkeypatch.setattr(
-        "backend.rinse_scrape_chain.ensure_chain_successor",
-        lambda cursor, org, **kw: successor_calls.append(kw.get("trigger") or "")
-        or {"restarted": True, "execution_name": "new-exec"},
+        "backend.rinse_scrape_schedule.load_schedule_config",
+        lambda *_a, **_k: __import__(
+            "backend.rinse_scrape_schedule", fromlist=["default_schedule_config"]
+        ).default_schedule_config(),
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_schedule.current_mode", lambda **_k: "ACTIVE"
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_schedule.quiet_suppresses_automatic_start",
+        lambda **_k: False,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_chain.ensure_recovery_once",
+        lambda cursor, org, **kw: recovery_calls.append(kw.get("trigger") or "")
+        or {"restarted": True, "execution_name": "new-exec", "reason": "recovery_started"},
     )
     assert wd.main(["--organization-id", "3"]) == 0
     assert reclaim_calls == [3]
-    assert successor_calls == ["watchdog_reclaimed"]
+    assert recovery_calls == ["watchdog_reclaimed"]
 
 
-def test_watchdog_starts_successor_when_already_idle(monkeypatch):
+def test_watchdog_does_not_start_merely_because_idle(monkeypatch):
+    """Idle between ticks is healthy — ensure_recovery_once decides; no chain successor."""
     from backend.jobs import run_rinse_freshness_watchdog as wd
 
-    successor_calls: list[str] = []
+    recovery_calls: list[str] = []
+    legacy_calls: list[str] = []
 
     class FakeCursor:
         def close(self):
@@ -758,13 +783,82 @@ def test_watchdog_starts_successor_when_already_idle(monkeypatch):
         lambda cursor, org: {"action": "no_owner"},
     )
     monkeypatch.setattr(
+        "backend.rinse_scrape_schedule.load_schedule_config",
+        lambda *_a, **_k: __import__(
+            "backend.rinse_scrape_schedule", fromlist=["default_schedule_config"]
+        ).default_schedule_config(),
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_schedule.current_mode", lambda **_k: "ACTIVE"
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_schedule.quiet_suppresses_automatic_start",
+        lambda **_k: False,
+    )
+    monkeypatch.setattr(
         "backend.rinse_scrape_chain.ensure_chain_successor",
-        lambda cursor, org, **kw: successor_calls.append(kw.get("trigger") or "")
+        lambda cursor, org, **kw: legacy_calls.append(kw.get("trigger") or "")
+        or {"restarted": True},
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_chain.ensure_recovery_once",
+        lambda cursor, org, **kw: recovery_calls.append(kw.get("trigger") or "")
+        or {"restarted": False, "reason": "within_grace"},
+    )
+    assert wd.main(["--organization-id", "3"]) == 0
+    assert recovery_calls == ["watchdog_no_owner"]
+    assert legacy_calls == []
+
+
+def test_watchdog_quiet_never_starts_scrape(monkeypatch):
+    from backend.jobs import run_rinse_freshness_watchdog as wd
+
+    recovery_calls: list[str] = []
+    reclaim_calls: list[int] = []
+
+    class FakeCursor:
+        def close(self):
+            return None
+
+    class FakeConn:
+        def cursor(self, **_k):
+            return FakeCursor()
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("backend.db.get_db", lambda: FakeConn())
+    monkeypatch.setattr(
+        "backend.rinse_scheduled_scrape.parse_scheduled_org_ids", lambda: [3]
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.reclaim_orphan_owner",
+        lambda cursor, org: reclaim_calls.append(org) or {"action": "no_owner"},
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_schedule.load_schedule_config",
+        lambda *_a, **_k: __import__(
+            "backend.rinse_scrape_schedule", fromlist=["default_schedule_config"]
+        ).default_schedule_config(),
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_schedule.current_mode", lambda **_k: "QUIET"
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_schedule.quiet_suppresses_automatic_start",
+        lambda **_k: True,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_chain.ensure_recovery_once",
+        lambda cursor, org, **kw: recovery_calls.append("should_not_fire")
         or {"restarted": True},
     )
     assert wd.main(["--organization-id", "3"]) == 0
-    assert successor_calls == ["watchdog_no_owner"]
-
+    assert reclaim_calls == [3]
+    assert recovery_calls == []
 
 def test_reclaim_persists_measured_ages(monkeypatch):
     from backend.rinse_scrape_liveness import reclaim_orphan_owner

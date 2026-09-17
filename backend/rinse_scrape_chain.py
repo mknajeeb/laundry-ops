@@ -395,10 +395,115 @@ def ensure_chain_successor(
 
 
 def maybe_restart_dead_chain(cursor, organization_id: int) -> dict[str, Any]:
-    """Compatibility wrapper — prefer ensure_chain_successor."""
+    """Compatibility wrapper — prefer ensure_chain_successor (legacy continuous)."""
     return ensure_chain_successor(
         cursor, organization_id, trigger="maybe_restart_dead_chain"
     )
+
+
+def ensure_recovery_once(
+    cursor,
+    organization_id: int,
+    *,
+    trigger: str = "watchdog_recovery",
+    now_et: datetime | None = None,
+) -> dict[str, Any]:
+    """
+    Start at most one schedule recovery scrape (--once) when ACTIVE work was missed.
+
+    Unlike ensure_chain_successor, this does NOT start merely because no ACA
+    execution is Running. Quiet idle is healthy and never starts a scrape.
+    """
+    from backend.rinse_aca_job_trigger import start_rinse_scrape_aca_job
+    from backend.rinse_scrape_liveness import is_owned_execution_live, read_lease_liveness
+    from backend.rinse_scrape_runs import mysql_lock_is_held
+    from backend.rinse_scrape_schedule import (
+        get_last_completed_tick_key,
+        load_schedule_config,
+        missed_active_tick,
+    )
+
+    org = int(organization_id)
+    now_utc = _utcnow()
+    cfg = load_schedule_config(cursor)
+    last_key = get_last_completed_tick_key(cursor, org)
+    decision = missed_active_tick(
+        now_et,
+        cfg,
+        last_completed_tick_key=last_key,
+    )
+
+    def _blocked(reason: str, **extra: Any) -> dict[str, Any]:
+        out = {
+            "restarted": False,
+            "reason": reason,
+            "trigger": trigger,
+            "mode": decision.mode,
+            "tick_key": decision.tick_key,
+            **extra,
+        }
+        record_successor_attempt(cursor, org, out)
+        print(
+            f"RECOVERY_BOUNDARY blocked org={org} trigger={trigger} "
+            f"reason={reason} mode={decision.mode} tick={decision.tick_key}",
+            flush=True,
+        )
+        return out
+
+    if decision.quiet_suppresses_automatic_start or decision.mode == "QUIET":
+        return _blocked("quiet_expected_idle")
+
+    if not decision.scrape_due or not decision.recovery_start_permitted:
+        return _blocked(decision.reason or "no_missed_tick")
+
+    running = _running_aca_executions()
+    if running:
+        return _blocked("aca_already_running", running_executions=running)
+
+    lock_held, _ = mysql_lock_is_held(cursor, org)
+    if lock_held and is_owned_execution_live(cursor, org, now=now_utc):
+        return _blocked("healthy_lock_held")
+
+    lease = read_lease_liveness(cursor, org) or read_lease(cursor, org) or {}
+    owner_run = lease.get("owner_run_id")
+    if owner_run and is_owned_execution_live(cursor, org, now=now_utc):
+        return _blocked("live_lease_owner", owner_run_id=int(owner_run))
+
+    lock_name = _successor_start_lock_name(org)
+    cursor.execute("SELECT GET_LOCK(%s, 0) AS got", (lock_name,))
+    got_row = cursor.fetchone() or {}
+    got = got_row.get("got") if isinstance(got_row, dict) else (got_row[0] if got_row else 0)
+    if not int(got or 0):
+        return _blocked("recovery_start_in_progress")
+
+    try:
+        running = _running_aca_executions()
+        if running:
+            return _blocked("aca_already_running", running_executions=running)
+
+        started = start_rinse_scrape_aca_job(org, run_type="scheduled")
+        out = {
+            "restarted": bool(started.ok),
+            "reason": "recovery_started" if started.ok else "start_failed",
+            "trigger": trigger,
+            "mode": decision.mode,
+            "tick_key": decision.tick_key,
+            "execution_name": started.execution_name,
+            "error_message": started.error_message,
+        }
+        record_successor_attempt(cursor, org, out)
+        print(
+            f"RECOVERY_BOUNDARY start org={org} trigger={trigger} "
+            f"restarted={out['restarted']} tick={out.get('tick_key')} "
+            f"exec={out.get('execution_name')} err={out.get('error_message') or ''}",
+            flush=True,
+        )
+        return out
+    finally:
+        try:
+            cursor.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+        except Exception:
+            pass
 
 
 def run_continuous_scheduled_loop(
