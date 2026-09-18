@@ -5,9 +5,10 @@ Dry-run (read-only; SELECT only):
   python -m backend.scripts.wf_ops_clean_reset_once --org 3
   python -m backend.scripts.wf_ops_clean_reset_once --org 3 --out /tmp/wf_dryrun.json
 
-Apply is hard-blocked in code (``wf_ops_clean_reset.APPLY_BLOCKED``) and would
-additionally require ``WF_CLEAN_RESET_APPLY_UNLOCK=1`` plus ``wf_ops_maintenance``
-already ON for the org.
+Apply requires ALL of:
+  --apply
+  WF_CLEAN_RESET_APPLY_UNLOCK=1
+  wf_ops_maintenance already ON for the org
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ def main() -> int:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Archive + WF-scoped clear (currently hard-blocked; default is dry-run)",
+        help="Archive + WF-scoped clear (also requires WF_CLEAN_RESET_APPLY_UNLOCK=1)",
     )
     parser.add_argument(
         "--archive-root",
@@ -120,7 +121,7 @@ def main() -> int:
         print(f"APPLIED: {report.get('applied')}")
 
     if args.apply and APPLY_BLOCKED:
-        print("NOTE: APPLY_BLOCKED=True — no production apply path is reachable.")
+        print("NOTE: APPLY_BLOCKED=True — apply path unreachable in this build.")
 
     out = args.out or str(
         Path(args.archive_root) / f"wf_ops_clean_reset_org{args.org}_dryrun.json"

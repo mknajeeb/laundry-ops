@@ -20,7 +20,7 @@ recovery path for a bad baseline. All four are kept and fenced by the epoch.
 
 Usage (via script):
   python -m backend.scripts.wf_ops_clean_reset_once --org 3
-  python -m backend.scripts.wf_ops_clean_reset_once --org 3 --apply   # blocked
+  python -m backend.scripts.wf_ops_clean_reset_once --org 3 --apply  # needs unlock+maintenance
 """
 
 from __future__ import annotations
@@ -46,9 +46,10 @@ from backend.wf_ops_reset_epoch import (
 # Hard allow-list — refuse any other tenant until explicitly expanded.
 ALLOWED_ORGANIZATION_IDS = frozenset({3})
 
-# Hard block: --apply cannot run until this is flipped by an authorized change.
-# Dry-run always works.
-APPLY_BLOCKED = True
+# Code-level hard block removed for the authorized release SHA.
+# Apply STILL requires BOTH ``--apply`` and ``WF_CLEAN_RESET_APPLY_UNLOCK=1``
+# plus ``wf_ops_maintenance`` already ON for the org. Dry-run is the default.
+APPLY_BLOCKED = False
 
 APPLY_UNLOCK_ENV = "WF_CLEAN_RESET_APPLY_UNLOCK"
 
@@ -762,8 +763,7 @@ def build_dry_run_report(
 def _apply_gate_error(cursor, org: int) -> str | None:
     if APPLY_BLOCKED:
         return (
-            "APPLY_BLOCKED=True — production apply is disabled in code until "
-            "explicitly authorized. Dry-run only."
+            "APPLY_BLOCKED=True — production apply is disabled in code. Dry-run only."
         )
     if str(os.getenv(APPLY_UNLOCK_ENV) or "").strip() != "1":
         return f"{APPLY_UNLOCK_ENV}=1 is required to apply"

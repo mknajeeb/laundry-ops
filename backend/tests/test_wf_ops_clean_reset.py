@@ -45,7 +45,10 @@ ORG = 3
 
 _SCHEMA = """
 CREATE TABLE system_settings (
-  organization_id INTEGER, skey TEXT, svalue TEXT
+  organization_id INTEGER NOT NULL,
+  skey TEXT NOT NULL,
+  svalue TEXT,
+  PRIMARY KEY (organization_id, skey)
 );
 CREATE TABLE rinse_wf_service_cycles (
   id INTEGER PRIMARY KEY, organization_id INTEGER, bag_id TEXT,
@@ -129,7 +132,12 @@ class _SqliteCursor:
         self._cur = conn.cursor()
 
     def execute(self, sql, params=None):
-        self._cur.execute(sql.replace("%s", "?"), tuple(params or ()))
+        text = str(sql)
+        # MySQL upsert → sqlite-compatible form for fixture apply tests.
+        if "ON DUPLICATE KEY UPDATE" in text.upper():
+            text = text.split("ON DUPLICATE")[0].strip()
+            text = text.replace("INSERT INTO", "INSERT OR REPLACE INTO", 1)
+        self._cur.execute(text.replace("%s", "?"), tuple(params or ()))
 
     def fetchall(self):
         return [dict(r) for r in self._cur.fetchall()]
@@ -216,8 +224,86 @@ def test_only_org_3_allowed():
             _require_allowed_org(bad)
 
 
-def test_apply_is_hard_blocked():
-    assert APPLY_BLOCKED is True
+def test_apply_code_block_is_off_for_release():
+    """Release SHA allows apply only via env unlock + --apply + maintenance."""
+    assert APPLY_BLOCKED is False
+
+
+def test_no_apply_flag_never_writes(db, tmp_path):
+    before = _ids(db, "rinse_order_instances", "order_instance_id")
+    report = run_wf_clean_reset(
+        _SqliteConn(db), ORG, dry_run=True, archive_root=tmp_path
+    )
+    assert report["applied"] is False
+    assert report["dry_run"] is True
+    assert _ids(db, "rinse_order_instances", "order_instance_id") == before
+    assert not list(Path(tmp_path).glob("**/*.jsonl.gz"))
+
+
+def test_apply_without_unlock_env_refused(db, tmp_path, monkeypatch):
+    monkeypatch.delenv("WF_CLEAN_RESET_APPLY_UNLOCK", raising=False)
+    report = run_wf_clean_reset(
+        _SqliteConn(db), ORG, dry_run=False, archive_root=tmp_path
+    )
+    assert report["applied"] is False
+    assert "WF_CLEAN_RESET_APPLY_UNLOCK" in report["error"]
+    assert _ids(db, "rinse_order_instances", "order_instance_id") == {10, 11, 12}
+
+
+def test_unlock_without_apply_flag_never_writes(db, tmp_path, monkeypatch):
+    """Env unlock alone must not mutate — dry_run=True is the default path."""
+    monkeypatch.setenv("WF_CLEAN_RESET_APPLY_UNLOCK", "1")
+    from backend.wf_ops_reset_epoch import set_wf_ops_maintenance
+
+    set_wf_ops_maintenance(_cursor(db), ORG, True)
+    before = _ids(db, "rinse_order_instances", "order_instance_id")
+    report = run_wf_clean_reset(
+        _SqliteConn(db), ORG, dry_run=True, archive_root=tmp_path
+    )
+    assert report["applied"] is False
+    assert report["dry_run"] is True
+    assert _ids(db, "rinse_order_instances", "order_instance_id") == before
+
+
+def test_apply_requires_unlock_env_and_maintenance(db, tmp_path, monkeypatch):
+    monkeypatch.delenv("WF_CLEAN_RESET_APPLY_UNLOCK", raising=False)
+    report = run_wf_clean_reset(
+        _SqliteConn(db), ORG, dry_run=False, archive_root=tmp_path
+    )
+    assert report["applied"] is False
+    assert "WF_CLEAN_RESET_APPLY_UNLOCK" in report["error"]
+
+    monkeypatch.setenv("WF_CLEAN_RESET_APPLY_UNLOCK", "1")
+    report = run_wf_clean_reset(
+        _SqliteConn(db), ORG, dry_run=False, archive_root=tmp_path
+    )
+    assert report["applied"] is False
+    assert "wf_ops_maintenance" in report["error"]
+    assert _ids(db, "rinse_order_instances", "order_instance_id") == {10, 11, 12}
+
+
+def test_apply_with_unlock_and_maintenance_succeeds_in_fixture(db, tmp_path, monkeypatch):
+    """TEST-ONLY: both unlock + --apply + maintenance allow the apply path."""
+    monkeypatch.setenv("WF_CLEAN_RESET_APPLY_UNLOCK", "1")
+    from backend.wf_ops_reset_epoch import (
+        get_wf_ops_maintenance,
+        get_wf_reset_epoch_at,
+        set_wf_ops_maintenance,
+    )
+
+    set_wf_ops_maintenance(_cursor(db), ORG, True)
+    assert get_wf_ops_maintenance(_cursor(db), ORG) is True
+    report = run_wf_clean_reset(
+        _SqliteConn(db), ORG, dry_run=False, archive_root=tmp_path
+    )
+    assert report.get("error") is None, report.get("error")
+    assert report["applied"] is True
+    assert report["scope_protection"]["hd_rows_in_clear_scope"] == 0
+    # WF OIs cleared; HD OI retained
+    assert _ids(db, "rinse_order_instances", "order_instance_id") == {12}
+    assert _ids(db, "hd_day_bag_production") == {70}
+    assert get_wf_reset_epoch_at(_cursor(db), ORG, use_cache=False) is not None
+    assert list(Path(tmp_path).glob("**/MANIFEST.json"))
 
 
 def test_clear_targets_never_include_hd_or_shared_history():
@@ -376,7 +462,7 @@ def test_dry_run_report_has_all_required_sections(db, tmp_path):
         assert key in report, key
     assert report["dry_run"] is True
     assert report["applied"] is False
-    assert report["apply_blocked"] is True
+    assert report["apply_blocked"] is False
     assert report["epoch"]["current_value"] is None
     assert report["epoch"]["maintenance_on"] is False
 
@@ -392,44 +478,6 @@ def test_dry_run_report_has_all_required_sections(db, tmp_path):
     assert "SCOPE PROTECTION" in text
     assert "RESURRECTION RESIDUAL" in text
     assert "WFBAG1-OI-09122026" in text
-
-
-def test_run_wf_clean_reset_dry_run_mutates_nothing(db, tmp_path):
-    before = _ids(db, "rinse_order_instances", "order_instance_id")
-    report = run_wf_clean_reset(
-        _SqliteConn(db), ORG, dry_run=True, archive_root=tmp_path
-    )
-    assert report["applied"] is False
-    assert _ids(db, "rinse_order_instances", "order_instance_id") == before
-    assert not list(Path(tmp_path).glob("**/*.jsonl.gz"))
-
-
-def test_apply_refused_while_blocked(db, tmp_path, monkeypatch):
-    monkeypatch.setenv("WF_CLEAN_RESET_APPLY_UNLOCK", "1")
-    report = run_wf_clean_reset(
-        _SqliteConn(db), ORG, dry_run=False, archive_root=tmp_path
-    )
-    assert report["applied"] is False
-    assert "APPLY_BLOCKED" in report["error"]
-    assert _ids(db, "rinse_order_instances", "order_instance_id") == {10, 11, 12}
-
-
-def test_apply_requires_unlock_env_and_maintenance(db, tmp_path, monkeypatch):
-    monkeypatch.setattr("backend.wf_ops_clean_reset.APPLY_BLOCKED", False)
-    monkeypatch.delenv("WF_CLEAN_RESET_APPLY_UNLOCK", raising=False)
-    report = run_wf_clean_reset(
-        _SqliteConn(db), ORG, dry_run=False, archive_root=tmp_path
-    )
-    assert report["applied"] is False
-    assert "WF_CLEAN_RESET_APPLY_UNLOCK" in report["error"]
-
-    monkeypatch.setenv("WF_CLEAN_RESET_APPLY_UNLOCK", "1")
-    report = run_wf_clean_reset(
-        _SqliteConn(db), ORG, dry_run=False, archive_root=tmp_path
-    )
-    assert report["applied"] is False
-    assert "wf_ops_maintenance" in report["error"]
-    assert _ids(db, "rinse_order_instances", "order_instance_id") == {10, 11, 12}
 
 
 # --- archive / clear / registry / restore ----------------------------------------
