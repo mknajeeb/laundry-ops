@@ -14,6 +14,8 @@ import {
 } from "../api";
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import ManagementRinseWfSection from "../components/management/ManagementRinseWfSection";
+import WfOpsMaintenanceBanner from "../components/management/WfOpsMaintenanceBanner";
+import useWfOpsMaintenance from "../hooks/useWfOpsMaintenance";
 import { formatFriendlyEtWall } from "../utils/rinseTimeFormat";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import { mergeRinseWfDashboardPayload } from "./managementRinseWfLoadModel";
@@ -66,6 +68,7 @@ export default function ManagementRinseWfPage() {
   const [supplies, setSupplies] = useState(null);
   const [suppliesLoading, setSuppliesLoading] = useState(false);
   const [suppliesError, setSuppliesError] = useState("");
+  const { maintenanceOn, wfMutationsLocked } = useWfOpsMaintenance();
   const primarySeq = useRef(0);
   const secondarySeq = useRef(0);
   const supplySeq = useRef(0);
@@ -265,6 +268,7 @@ export default function ManagementRinseWfPage() {
       }}
     >
       <ManagementHubNav activeId="rinse_wf" />
+      <WfOpsMaintenanceBanner active={maintenanceOn} />
 
       <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mt: 1.25, mb: 1.25 }} spacing={1}>
         <Box sx={{ minWidth: 0 }}>
@@ -325,6 +329,7 @@ export default function ManagementRinseWfPage() {
         }}
         primaryLoading={primaryLoading}
         secondaryLoading={secondaryLoading}
+        wfMutationsLocked={wfMutationsLocked}
       />    </Box>
   );
 }

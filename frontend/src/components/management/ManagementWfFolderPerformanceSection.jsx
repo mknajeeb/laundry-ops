@@ -463,7 +463,10 @@ function MoveDialog({
   );
 }
 
-export default function ManagementWfFolderPerformanceSection({ dateEt }) {
+export default function ManagementWfFolderPerformanceSection({
+  dateEt,
+  wfMutationsLocked = false,
+}) {
   const [compare, setCompare] = useState("today");
   const [lastN, setLastN] = useState(10);
   const [data, setData] = useState(null);
@@ -480,6 +483,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
   const [showOutsideSession, setShowOutsideSession] = useState(false);
   const [sortBy, setSortBy] = useState("lbs_hr");
   const [approveBusy, setApproveBusy] = useState(false);
+  const controlsLocked = Boolean(approveBusy || actionBusy || wfMutationsLocked);
   const [benchDraft, setBenchDraft] = useState("");
   const [pubMessage, setPubMessage] = useState("");
   const [editSession, setEditSession] = useState(null);
@@ -1042,7 +1046,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
           <Button
             size="small"
             variant="contained"
-            disabled={approveBusy || loading}
+            disabled={controlsLocked || loading}
             onClick={approveDay}
             sx={{ textTransform: "none", fontWeight: 700, bgcolor: PERF_UI.teal, "&:hover": { bgcolor: PERF_UI.tealDark } }}
           >
@@ -1173,7 +1177,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
           inputProps={{ "aria-label": "Folder benchmark lb/hr" }}
         />
         <Typography sx={PERF_TYPE.meta}>lb/hr</Typography>
-        <Button size="small" variant="outlined" disabled={approveBusy} onClick={saveBenchmark} sx={{ textTransform: "none" }}>
+        <Button size="small" variant="outlined" disabled={controlsLocked} onClick={saveBenchmark} sx={{ textTransform: "none" }}>
           Save
         </Button>
       </Stack>
@@ -1377,7 +1381,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
                 onApproveDay={approveEmployeeDay}
                 onExcludeDay={excludeEmployeeDay}
                 onIncludeDay={includeEmployeeDay}
-                approveBusy={approveBusy}
+                approveBusy={controlsLocked}
               />
             ))}
             {!loading && !employees.length ? (
@@ -1524,7 +1528,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
                       <Button
                         size="small"
                         sx={{ textTransform: "none" }}
-                        disabled={approveBusy}
+                        disabled={controlsLocked}
                         onClick={() => openEdit({ ...sess, employee: reviewEmployee.employee })}
                       >
                         Edit
@@ -1534,7 +1538,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
                       <Button
                         size="small"
                         sx={{ textTransform: "none" }}
-                        disabled={approveBusy}
+                        disabled={controlsLocked}
                         onClick={() => approveSession({ ...sess, employee: reviewEmployee.employee })}
                       >
                         Approve
@@ -1544,7 +1548,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
                       <Button
                         size="small"
                         sx={{ textTransform: "none" }}
-                        disabled={approveBusy}
+                        disabled={controlsLocked}
                         onClick={() =>
                           pub === "EXCLUDED"
                             ? includeSession(sess)
@@ -1565,14 +1569,14 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
           {String(reviewEmployee?.day_publication_status) === "EXCLUDED" ? (
             <Button
               variant="contained"
-              disabled={approveBusy}
+              disabled={controlsLocked}
               onClick={() => includeEmployeeDay(reviewEmployee)}
             >
               Include again
             </Button>
           ) : (
             <>
-              <Button disabled={approveBusy} onClick={() => excludeEmployeeDay(reviewEmployee)}>
+              <Button disabled={controlsLocked} onClick={() => excludeEmployeeDay(reviewEmployee)}>
                 Exclude day
               </Button>
               <Button
@@ -1616,10 +1620,10 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setEditSession(null)} disabled={approveBusy}>
+          <Button onClick={() => setEditSession(null)} disabled={controlsLocked}>
             Cancel
           </Button>
-          <Button onClick={() => saveEdit()} disabled={approveBusy} variant="contained">
+          <Button onClick={() => saveEdit()} disabled={controlsLocked} variant="contained">
             Save & Approve
           </Button>
         </DialogActions>

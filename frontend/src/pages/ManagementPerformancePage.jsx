@@ -3,6 +3,8 @@ import { Box, Button, Stack, TextField, Typography } from "@mui/material";
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import ManagementHdPerformanceSection from "../components/management/ManagementHdPerformanceSection";
 import ManagementWfFolderPerformanceSection from "../components/management/ManagementWfFolderPerformanceSection";
+import WfOpsMaintenanceBanner from "../components/management/WfOpsMaintenanceBanner";
+import useWfOpsMaintenance from "../hooks/useWfOpsMaintenance";
 import { PERF_TYPE, PERF_UI } from "../components/management/performance/performanceTokens";
 
 function todayEtIso() {
@@ -26,20 +28,14 @@ const MODES = [
 export default function ManagementPerformancePage() {
   const [dateEt, setDateEt] = useState(todayEtIso);
   const [mode, setMode] = useState("wf");
+  const { maintenanceOn, wfMutationsLocked } = useWfOpsMaintenance();
 
   return (
     <Box sx={{ minHeight: "100dvh", bgcolor: PERF_UI.pageBg, pb: 4 }}>
       <ManagementHubNav activeId="performance" />
+      <Box sx={{ px: { xs: 1.25, sm: 2, md: 2.5, lg: 3 }, pt: 0.85, maxWidth: 1440, mx: "auto", width: "100%" }}>
+        <WfOpsMaintenanceBanner active={maintenanceOn} />
 
-      <Box
-        sx={{
-          px: { xs: 1.25, sm: 2, md: 2.5, lg: 3 },
-          pt: 0.85,
-          maxWidth: 1440,
-          mx: "auto",
-          width: "100%",
-        }}
-      >
         <Stack
           direction={{ xs: "column", sm: "row" }}
           justifyContent="space-between"
@@ -130,7 +126,12 @@ export default function ManagementPerformancePage() {
           }}
         >
           <Box role="tabpanel" hidden={mode !== "wf"} sx={{ display: mode === "wf" ? "block" : "none" }}>
-            {mode === "wf" ? <ManagementWfFolderPerformanceSection dateEt={dateEt} /> : null}
+            {mode === "wf" ? (
+              <ManagementWfFolderPerformanceSection
+                dateEt={dateEt}
+                wfMutationsLocked={wfMutationsLocked}
+              />
+            ) : null}
           </Box>
           <Box role="tabpanel" hidden={mode !== "hd"} sx={{ display: mode === "hd" ? "block" : "none" }}>
             {mode === "hd" ? <ManagementHdPerformanceSection dateEt={dateEt} /> : null}

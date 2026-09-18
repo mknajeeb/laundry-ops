@@ -14,6 +14,8 @@ import { Link as RouterLink } from "react-router-dom";
 import { getManagementSuppliesDashboard } from "../api";
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import SupplyCostSimulatorModal from "../components/management/SupplyCostSimulatorModal";
+import WfOpsMaintenanceBanner from "../components/management/WfOpsMaintenanceBanner";
+import useWfOpsMaintenance from "../hooks/useWfOpsMaintenance";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 
 const PERIODS = [
@@ -91,6 +93,7 @@ export default function ManagementSuppliesDashboardPage() {
   const [error, setError] = useState("");
   const [data, setData] = useState(null);
   const [simOpen, setSimOpen] = useState(false);
+  const { maintenanceOn, wfMutationsLocked } = useWfOpsMaintenance();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -126,12 +129,14 @@ export default function ManagementSuppliesDashboardPage() {
   return (
     <Box sx={{ ...VEEWASH_DASHBOARD.page, maxWidth: 720, mx: "auto", px: { xs: 1.5, sm: 2 }, pb: 4 }}>
       <ManagementHubNav activeId="rinse_wf" />
+      <WfOpsMaintenanceBanner active={maintenanceOn} />
       <Stack direction="row" alignItems="baseline" justifyContent="space-between" sx={{ mt: 1.5, mb: 1 }}>
         <Typography sx={{ fontSize: 20, fontWeight: 800 }}>Supplies</Typography>
         <Button
           component={RouterLink}
           to="/management/supply-master"
           size="small"
+          disabled={wfMutationsLocked}
           sx={{ textTransform: "none", fontWeight: 700 }}
         >
           Supply Master
@@ -243,6 +248,7 @@ export default function ManagementSuppliesDashboardPage() {
             variant="contained"
             fullWidth
             onClick={() => setSimOpen(true)}
+            disabled={wfMutationsLocked}
             sx={{ textTransform: "none", fontWeight: 800, py: 1.1 }}
           >
             Open Planning Simulator

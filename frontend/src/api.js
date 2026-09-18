@@ -2410,6 +2410,16 @@ export const getManagementRinseWf = (dateEt, params = {}) => {
   });
 };
 
+/** Read-only org WF ops maintenance flag (CLI remains the write path). */
+export const getManagementWfOpsMaintenance = (params = {}) => {
+  const { signal, ...rest } = params || {};
+  return axios.get(`${API_BASE}/api/management/wf-ops-maintenance`, {
+    params: rest,
+    signal,
+    timeout: 15000,
+  });
+};
+
 export const getManagementRinseWfSecondary = (dateEt, params = {}) => {
   const { signal, ...rest } = params || {};
   return axios.get(`${API_BASE}/api/management/rinse-wf/secondary`, {

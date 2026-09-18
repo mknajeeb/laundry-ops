@@ -17,6 +17,10 @@ from backend.management_today import (
     build_management_supply_summary,
     build_management_today_payload,
 )
+from backend.management_wf_ops_maintenance import (
+    refuse_wf_mutation_if_maintenance,
+    wf_ops_maintenance_status,
+)
 from backend.rinse_scan_time import json_safe_rinse
 
 HUB_READ_ROLES = frozenset({"ADMIN", "OPS", "MANAGER", "SUPER_ADMIN", "PLATFORM_ADMIN"})
@@ -48,6 +52,25 @@ def register_management_today_routes(
         if not isinstance(selected, date):
             return None, (jsonify({"error": "Invalid date_et; use YYYY-MM-DD"}), 400)
         return selected, None
+
+    @app.route("/api/management/wf-ops-maintenance", methods=["GET"])
+    def management_wf_ops_maintenance_status():
+        """Read-only org WF ops maintenance flag (CLI remains the write path)."""
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_READ_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            return jsonify(wf_ops_maintenance_status(cursor, oid))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
 
     @app.route("/api/management/today", methods=["GET"])
     def management_today():
@@ -588,6 +611,9 @@ def register_management_today_routes(
             if not (_role_set(me) & HUB_READ_ROLES):
                 return jsonify({"error": "Forbidden"}), 403
             oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
             selected, err = _selected_date_et()
             if err:
                 return err
@@ -712,6 +738,9 @@ def register_management_today_routes(
             if not (_role_set(me) & HUB_READ_ROLES):
                 return jsonify({"error": "Forbidden"}), 403
             oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
             selected, err = _selected_date_et()
             if err:
                 return err
@@ -759,6 +788,9 @@ def register_management_today_routes(
             if not (_role_set(me) & HUB_READ_ROLES):
                 return jsonify({"error": "Forbidden"}), 403
             oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
             selected, err = _selected_date_et()
             if err:
                 return err
@@ -814,6 +846,9 @@ def register_management_today_routes(
             if not (_role_set(me) & HUB_READ_ROLES):
                 return jsonify({"error": "Forbidden"}), 403
             oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
             selected, err = _selected_date_et()
             if err:
                 return err
@@ -890,6 +925,9 @@ def register_management_today_routes(
             if not (_role_set(me) & HUB_READ_ROLES):
                 return jsonify({"error": "Forbidden"}), 403
             oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
             selected, err = _selected_date_et()
             if err:
                 return err

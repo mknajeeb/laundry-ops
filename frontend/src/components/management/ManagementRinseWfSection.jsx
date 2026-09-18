@@ -166,6 +166,7 @@ export default function ManagementRinseWfSection({
   onReviewResolved = null,
   primaryLoading = false,
   secondaryLoading = false,
+  wfMutationsLocked = false,
 }) {
   const [rushFilterLocal, setRushFilterLocal] = useState("all");
   const rushFilter = rushFilterProp ?? rushFilterLocal;
@@ -202,7 +203,8 @@ export default function ManagementRinseWfSection({
   );
   const readOnly = Boolean(
     rinse?.shift_day?.read_only
-      || String(rinse?.shift_day?.status || "").toUpperCase() === "CLOSED",
+      || String(rinse?.shift_day?.status || "").toUpperCase() === "CLOSED"
+      || wfMutationsLocked,
   );
 
   const { wf: wfSeg } = useMemo(
@@ -956,6 +958,7 @@ export default function ManagementRinseWfSection({
           size="small"
           variant="outlined"
           onClick={() => setSplitSimOpen(true)}
+          disabled={readOnly}
           sx={{ textTransform: "none", fontWeight: 700 }}
         >
           Simulate Split Cost

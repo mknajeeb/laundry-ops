@@ -6,6 +6,8 @@ from datetime import date
 
 from flask import jsonify, request
 
+from backend.management_wf_ops_maintenance import refuse_wf_mutation_if_maintenance
+
 from backend.business_time import business_today
 from backend.db import get_db
 from backend.management_wf_folder_attribution import (
@@ -195,6 +197,9 @@ def register_management_wf_folder_performance_routes(
             if not role_is_publishable(rk) or rk != ROLE_FOLDER:
                 return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
             oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
             body = request.get_json(silent=True) or {}
             selected, err = _selected_date_et(
                 body.get("date_et") or body.get("selected_date_et")
@@ -244,6 +249,9 @@ def register_management_wf_folder_performance_routes(
             if not role_is_publishable(rk) or rk != ROLE_FOLDER:
                 return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
             oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
             selected, err = _selected_date_et(date_et)
             if err:
                 return err
@@ -282,6 +290,9 @@ def register_management_wf_folder_performance_routes(
             if rk != ROLE_FOLDER:
                 return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
             oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
             actor_id, actor_name = _actor(me)
             out = unapprove_session(
                 cursor,
@@ -319,6 +330,9 @@ def register_management_wf_folder_performance_routes(
             if not role_is_publishable(rk) or rk != ROLE_FOLDER:
                 return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
             oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
             body = request.get_json(silent=True) or {}
             try:
                 rate = float(body.get("published_metric_value"))
@@ -389,6 +403,9 @@ def register_management_wf_folder_performance_routes(
             if rk != ROLE_FOLDER:
                 return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
             oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
             body = request.get_json(silent=True) or {}
             selected, err = _selected_date_et(
                 body.get("date_et") or body.get("selected_date_et")
@@ -435,6 +452,9 @@ def register_management_wf_folder_performance_routes(
             if rk != ROLE_FOLDER:
                 return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
             oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
             body = request.get_json(silent=True) or {}
             selected, err = _selected_date_et(
                 body.get("date_et") or body.get("selected_date_et")
@@ -479,6 +499,9 @@ def register_management_wf_folder_performance_routes(
             if rk != ROLE_FOLDER:
                 return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
             oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
             body = request.get_json(silent=True) or {}
             selected, err = _selected_date_et(
                 body.get("date_et") or body.get("selected_date_et")
@@ -524,6 +547,9 @@ def register_management_wf_folder_performance_routes(
             if rk != ROLE_FOLDER:
                 return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
             oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
             body = request.get_json(silent=True) or {}
             actor_id, actor_name = _actor(me)
             out = include_folder_employee_day(
@@ -567,6 +593,9 @@ def register_management_wf_folder_performance_routes(
             if rk != ROLE_FOLDER:
                 return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
             oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
             body = request.get_json(silent=True) or {}
             actor_id, actor_name = _actor(me)
             out = include_session_publication(
@@ -608,6 +637,9 @@ def register_management_wf_folder_performance_routes(
                 )
             if not (_role_set(me) & HUB_WRITE_ROLES):
                 return jsonify({"error": "Forbidden"}), 403
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
             body = request.get_json(silent=True) or {}
             raw = body.get("lbs_per_hour_target", body.get("benchmark"))
             try:
@@ -743,6 +775,9 @@ def register_management_wf_folder_performance_routes(
             if not (_role_set(me) & HUB_WRITE_ROLES):
                 return jsonify({"error": "Forbidden"}), 403
             oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
             body = request.get_json(silent=True) or {}
             selected, err = _selected_date_et(
                 body.get("date_et") or body.get("selected_date_et")
@@ -881,6 +916,9 @@ def register_management_wf_folder_performance_routes(
             if not (_role_set(me) & HUB_WRITE_ROLES):
                 return jsonify({"error": "Forbidden"}), 403
             oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
             body = request.get_json(silent=True) or {}
             selected, err = _selected_date_et(
                 body.get("date_et") or body.get("selected_date_et")
