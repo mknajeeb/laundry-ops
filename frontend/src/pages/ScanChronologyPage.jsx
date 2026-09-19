@@ -28,14 +28,12 @@ import {
   Typography,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
-import { getRinseBagScanEvents, getScanChronology } from "../api";
-import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
+import { getScanChronology } from "../api";
 import ReadyToFoldChronologyPanel from "../components/ReadyToFoldChronologyPanel";
 import ProcessFlowChronologyPanel from "../components/ProcessFlowChronologyPanel";
 import ProcessFlowAvailabilityCalculator from "../components/ProcessFlowAvailabilityCalculator";
 import { todayRange, yesterdayRange } from "../utils/foldingDateRange";
 import { formatDateTime, formatFoldingDuration } from "../utils/foldingFormat";
-import { parseRinseBagScanEventsResponse } from "../utils/rinseTimeFormat";
 import { displayCustomerName } from "../utils/displayCustomerName";
 import {
   exportScanChronologyCsv,
@@ -64,8 +62,9 @@ const STAGE_TABS = [
   { id: "user_activity", label: "User Activity" },
 ];
 
-const DURATION_STAGES = new Set(["weighing", "sorting", "folder"]);
+const DURATION_STAGES = new Set(["folder"]);
 const EVENT_STAGES = new Set(["washing", "drying"]);
+const SIMPLE_EVENT_STAGES = new Set(["weighing", "sorting"]);
 const UTIL_STAGES = new Set(["washer_utilization", "dryer_utilization"]);
 const DEFAULT_DRYING_DURATION_MINUTES = 40;
 
@@ -341,6 +340,7 @@ export default function ScanChronologyPage() {
   const isProcessFlow = activeStage === "process_flow";
   const isDurationStage = DURATION_STAGES.has(activeStage);
   const isEventStage = EVENT_STAGES.has(activeStage);
+  const isSimpleEventStage = SIMPLE_EVENT_STAGES.has(activeStage);
   const isUtilStage = UTIL_STAGES.has(activeStage);
 
   const [datePreset, setDatePreset] = useState("today");
@@ -524,32 +524,16 @@ export default function ScanChronologyPage() {
     setSearchParams(next, { replace: true });
   };
 
-  const openDrawer = async (row) => {
+  const openDrawer = (row) => {
     setDrawerSession(row);
     setDrawerScans([]);
-    setDrawerLoading(true);
-    try {
-      const res = await getRinseBagScanEvents(row.bag_id);
-      setDrawerScans(parseRinseBagScanEventsResponse(res.data));
-    } catch {
-      setDrawerScans([]);
-    } finally {
-      setDrawerLoading(false);
-    }
+    setDrawerLoading(false);
   };
 
-  const openCoverageDrawer = async (row) => {
+  const openCoverageDrawer = (row) => {
     setDrawerSession({ ...row, coverage_audit: true });
     setDrawerScans([]);
-    setDrawerLoading(true);
-    try {
-      const res = await getRinseBagScanEvents(row.bag_id);
-      setDrawerScans(parseRinseBagScanEventsResponse(res.data));
-    } catch {
-      setDrawerScans([]);
-    } finally {
-      setDrawerLoading(false);
-    }
+    setDrawerLoading(false);
   };
 
   const closeDrawer = () => {
@@ -769,36 +753,42 @@ export default function ScanChronologyPage() {
       );
     }
 
-    if (isEventStage) {
-      const totalKey = activeStage === "washing" ? "total_washer_loads" : "total_drying_scans";
-      const uniqueKey = activeStage === "washing" ? "unique_washers_used" : "unique_dryers_used";
-      const mostUsedKey = activeStage === "washing" ? "most_used_washer" : "most_used_dryer";
-      const firstKey = activeStage === "washing" ? "first_washer_load_et" : "first_drying_scan_et";
-      const lastKey = activeStage === "washing" ? "last_washer_load_et" : "last_drying_scan_et";
+    if (isSimpleEventStage) {
       return (
         <>
-          <SummaryCard label={labels.firstStart} value={formatDateTime(summary[firstKey]) || "—"} />
-          <SummaryCard label={labels.lastEnd} value={formatDateTime(summary[lastKey]) || "—"} />
-          <SummaryCard label={labels.totalSessions} value={summary[totalKey] ?? 0} />
-          {activeStage === "washing" ? (
+          <SummaryCard
+            label={activeStage === "weighing" ? "Bags weighed" : "Bags sorted"}
+            value={summary.total_bags ?? summary.total_sessions ?? 0}
+          />
+          <SummaryCard
+            label="First"
+            value={formatDateTime(summary.first_time_et) || "—"}
+          />
+          <SummaryCard
+            label="Last"
+            value={formatDateTime(summary.last_time_et) || "—"}
+          />
+          {activeStage === "sorting" ? (
             <>
+              <SummaryCard label="SORT hours" value={summary.sort_hours ?? "—"} />
               <SummaryCard
-                label={labels.uniqueBagsWashed}
-                value={washingBagSummary?.unique ?? 0}
-                sub={
-                  (washingBagSummary?.split ?? 0) > 0
-                    ? `${washingBagSummary.split} split`
-                    : undefined
-                }
-              />
-              <SummaryCard
-                label={labels.bagsNotSplit}
-                value={washingBagSummary?.notSplit ?? 0}
+                label="Bags / SORT hour"
+                value={summary.sorting_bags_per_hour ?? "—"}
               />
             </>
           ) : null}
-          <SummaryCard label={labels.uniqueMachines} value={summary[uniqueKey] ?? 0} />
-          <SummaryCard label={labels.mostUsed} value={summary[mostUsedKey] || "—"} />
+        </>
+      );
+    }
+
+    if (isEventStage) {
+      return (
+        <>
+          <SummaryCard label="Washer loads" value={summary.washer_loads ?? summary.total_washer_loads ?? 0} />
+          <SummaryCard label="Dryer loads" value={summary.dryer_loads ?? summary.total_drying_scans ?? 0} />
+          <SummaryCard label="Unique bags" value={summary.unique_bags_handled ?? 0} />
+          <SummaryCard label="First" value={formatDateTime(summary.first_time_et) || "—"} />
+          <SummaryCard label="Last" value={formatDateTime(summary.last_time_et) || "—"} />
         </>
       );
     }
@@ -940,8 +930,7 @@ export default function ScanChronologyPage() {
       );
     }
 
-    if (isEventStage) {
-      const rackKey = activeStage === "washing" ? "washer_rack" : "dryer_rack";
+    if (isSimpleEventStage) {
       return (
         <TableContainer
           component={Paper}
@@ -951,19 +940,15 @@ export default function ScanChronologyPage() {
           <Table size="small" sx={{ minWidth: 640 }}>
             <TableHead>
               <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue, "& th": { color: "#fff", fontWeight: 700 } }}>
-                <TableCell>#</TableCell>
-                <TableCell>Bag ID</TableCell>
+                <TableCell>Bag</TableCell>
                 <TableCell>Employee</TableCell>
-                <TableCell>Time (ET)</TableCell>
-                <TableCell>Machine/Rack</TableCell>
-                <TableCell>Event</TableCell>
-                <TableCell>Confidence</TableCell>
+                <TableCell>{activeStage === "sorting" ? "Sort Time" : "Time"}</TableCell>
+                {activeStage === "weighing" ? <TableCell>Weight</TableCell> : null}
               </TableRow>
             </TableHead>
             <TableBody>
               {sessions.map((row) => (
-                <TableRow key={`${row.index}-${row.bag_id}-${row.timestamp_et}`} hover>
-                  <TableCell>{row.index}</TableCell>
+                <TableRow key={`${row.index}-${row.bag_id}-${row.time_et || row.sort_time_et}`} hover>
                   <TableCell>
                     <Button
                       size="small"
@@ -974,10 +959,53 @@ export default function ScanChronologyPage() {
                     </Button>
                   </TableCell>
                   <TableCell>{row.employee || "—"}</TableCell>
-                  <TableCell>{formatDateTime(row.timestamp_et)}</TableCell>
-                  <TableCell>{row[rackKey] || "—"}</TableCell>
-                  <TableCell>{row.event_purpose || "—"}</TableCell>
-                  <TableCell>{row.confidence || "—"}</TableCell>
+                  <TableCell>{formatDateTime(row.sort_time_et || row.time_et) || "—"}</TableCell>
+                  {activeStage === "weighing" ? (
+                    <TableCell>{row.weight_lbs != null ? row.weight_lbs : "—"}</TableCell>
+                  ) : null}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      );
+    }
+
+    if (isEventStage) {
+      return (
+        <TableContainer
+          component={Paper}
+          elevation={0}
+          sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2 }}
+        >
+          <Table size="small" sx={{ minWidth: 720 }}>
+            <TableHead>
+              <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue, "& th": { color: "#fff", fontWeight: 700 } }}>
+                <TableCell>Bag</TableCell>
+                <TableCell>Employee</TableCell>
+                <TableCell>Washer</TableCell>
+                <TableCell>Wash Time</TableCell>
+                <TableCell>Dryer</TableCell>
+                <TableCell>Dry Time</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {sessions.map((row) => (
+                <TableRow key={`${row.index}-${row.bag_id}-${row.wash_time_et}-${row.dry_time_et}-${row.washer_rack}`} hover>
+                  <TableCell>
+                    <Button
+                      size="small"
+                      onClick={() => openDrawer(row)}
+                      sx={{ textTransform: "none", fontWeight: 700, p: 0, minWidth: 0 }}
+                    >
+                      {row.bag_id}
+                    </Button>
+                  </TableCell>
+                  <TableCell>{row.employee || "—"}</TableCell>
+                  <TableCell>{row.washer_rack || "—"}</TableCell>
+                  <TableCell>{formatDateTime(row.wash_time_et) || "—"}</TableCell>
+                  <TableCell>{row.dryer_rack || "—"}</TableCell>
+                  <TableCell>{formatDateTime(row.dry_time_et) || "—"}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -1601,16 +1629,28 @@ export default function ScanChronologyPage() {
                 <strong>Event:</strong> {drawerSession.event_purpose}
               </Typography>
             ) : null}
+            {drawerSession.weight_lbs != null ? (
+              <Typography variant="body2">
+                <strong>Weight:</strong> {drawerSession.weight_lbs}
+              </Typography>
+            ) : null}
+            {drawerSession.sort_time_et ? (
+              <Typography variant="body2">
+                <strong>Sort time:</strong> {formatDateTime(drawerSession.sort_time_et)}
+              </Typography>
+            ) : null}
+            {drawerSession.wash_time_et ? (
+              <Typography variant="body2">
+                <strong>Wash time:</strong> {formatDateTime(drawerSession.wash_time_et)}
+              </Typography>
+            ) : null}
+            {drawerSession.dry_time_et ? (
+              <Typography variant="body2">
+                <strong>Dry time:</strong> {formatDateTime(drawerSession.dry_time_et)}
+              </Typography>
+            ) : null}
           </Stack>
         ) : null}
-        <Typography variant="subtitle2" fontWeight={700} gutterBottom>
-          Full scan list
-        </Typography>
-        {drawerLoading ? (
-          <CircularProgress size={24} />
-        ) : (
-          <FoldingScanEventsTable events={drawerScans} />
-        )}
       </Drawer>
     </Box>
   );

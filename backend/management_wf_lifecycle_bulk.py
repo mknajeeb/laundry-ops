@@ -179,7 +179,7 @@ def bulk_load_bag_timelines(
         cursor.execute(
             f"""
             SELECT bag_id, purpose, scanned_at_parsed, time_scanned_raw, user_name,
-                   weight_lbs, rack, source_filename, raw_json
+                   weight_lbs, rack, source_filename
             FROM rinse_bag_scan_events
             WHERE organization_id = %s
               AND bag_id IN ({ph})

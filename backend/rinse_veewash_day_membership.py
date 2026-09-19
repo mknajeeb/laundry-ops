@@ -492,7 +492,7 @@ def _bags_canonically_completed_before_opening(
         if epoch_wall is None:
             cursor.execute(
                 f"""
-                SELECT bag_id, purpose, rack, scanned_at_parsed, user_name, weight_lbs, id, raw_json
+                SELECT bag_id, purpose, rack, scanned_at_parsed, user_name, weight_lbs, id
                 FROM rinse_bag_scan_events
                 WHERE organization_id = %s
                   AND bag_id IN ({ph})
@@ -505,7 +505,7 @@ def _bags_canonically_completed_before_opening(
         else:
             cursor.execute(
                 f"""
-                SELECT bag_id, purpose, rack, scanned_at_parsed, user_name, weight_lbs, id, raw_json
+                SELECT bag_id, purpose, rack, scanned_at_parsed, user_name, weight_lbs, id
                 FROM rinse_bag_scan_events
                 WHERE organization_id = %s
                   AND bag_id IN ({ph})
@@ -660,7 +660,7 @@ def _drop_completed_bags_with_selected_day_cycle(
         ph = ",".join(["%s"] * len(part))
         cursor.execute(
             f"""
-            SELECT bag_id, purpose, rack, scanned_at_parsed, user_name, weight_lbs, id, raw_json
+            SELECT bag_id, purpose, rack, scanned_at_parsed, user_name, weight_lbs, id
             FROM rinse_bag_scan_events
             WHERE organization_id = %s
               AND bag_id IN ({ph})

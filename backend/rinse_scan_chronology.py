@@ -190,15 +190,18 @@ def _activity_from_sorting_session(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _activity_from_washing_session(row: dict[str, Any]) -> dict[str, Any]:
-    purpose = row.get("event_purpose") or "start-cleaning"
+def _activity_from_washing_session(row: dict[str, Any]) -> dict[str, Any] | None:
+    if row.get("wash_dry_row") and not row.get("washer_rack") and not row.get("wash_time_et"):
+        return None
+    purpose = "start-cleaning" if row.get("wash_dry_row") else (row.get("event_purpose") or "start-cleaning")
+    when = row.get("wash_time_et") if row.get("wash_dry_row") else row.get("timestamp_et")
     return {
         "activity_type": "washing",
         "activity_label": _ACTIVITY_LABELS["washing"],
-        "time_et": row.get("timestamp_et"),
+        "time_et": when,
         "end_et": None,
         "bag_id": row.get("bag_id"),
-        "employee": _employee_key(row.get("employee")),
+        "employee": _employee_key(row.get("washer_employee") or row.get("employee")),
         "machine_or_rack": row.get("washer_rack"),
         "duration_seconds": None,
         "source": purpose,
@@ -208,15 +211,18 @@ def _activity_from_washing_session(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _activity_from_drying_session(row: dict[str, Any]) -> dict[str, Any]:
-    purpose = row.get("event_purpose") or "drying"
+def _activity_from_drying_session(row: dict[str, Any]) -> dict[str, Any] | None:
+    if row.get("wash_dry_row") and not row.get("dryer_rack") and not row.get("dry_time_et"):
+        return None
+    purpose = "drying" if row.get("wash_dry_row") else (row.get("event_purpose") or "drying")
+    when = row.get("dry_time_et") if row.get("wash_dry_row") else row.get("timestamp_et")
     return {
         "activity_type": "drying",
         "activity_label": _ACTIVITY_LABELS["drying"],
-        "time_et": row.get("timestamp_et"),
+        "time_et": when,
         "end_et": None,
         "bag_id": row.get("bag_id"),
-        "employee": _employee_key(row.get("employee")),
+        "employee": _employee_key(row.get("dryer_employee") or row.get("employee")),
         "machine_or_rack": row.get("dryer_rack"),
         "duration_seconds": None,
         "source": purpose,
@@ -351,9 +357,13 @@ def merge_stage_sessions_to_activities(
     for row in sorting_sessions or []:
         activities.append(_activity_from_sorting_session(row))
     for row in washing_sessions or []:
-        activities.append(_activity_from_washing_session(row))
+        act = _activity_from_washing_session(row)
+        if act:
+            activities.append(act)
     for row in drying_sessions or []:
-        activities.append(_activity_from_drying_session(row))
+        act = _activity_from_drying_session(row)
+        if act:
+            activities.append(act)
     for row in folder_sessions or []:
         activities.append(_activity_from_folder_session(row))
     for row in post_processing_weight_sessions or []:
@@ -393,45 +403,37 @@ def build_user_activity_chronology_payload(
     folder_sessions: list[dict[str, Any]] = []
     post_processing_weight_sessions: list[dict[str, Any]] = []
 
-    if type_filter in ("all", "weighing"):
-        weighing_payload = build_scan_chronology_payload(
-            cursor,
-            organization_id,
-            selected_date_et=selected_date_et,
-            stage="weighing",
-            **{k: v for k, v in common_kwargs.items() if k != "machine_filter"},
+    needs_ops = type_filter in ("all", "weighing", "sorting", "washing", "drying")
+    ops_views = None
+    if needs_ops:
+        from backend.rinse_operational_day import (
+            chronology_payload_from_views,
+            load_operational_day,
         )
-        weighing_sessions = weighing_payload.get("sessions") or []
 
-    if type_filter in ("all", "sorting"):
-        sorting_payload = build_scan_chronology_payload(
-            cursor,
-            organization_id,
-            selected_date_et=selected_date_et,
-            stage="sorting",
-            **{k: v for k, v in common_kwargs.items() if k != "machine_filter"},
-        )
-        sorting_sessions = sorting_payload.get("sessions") or []
-
-    if type_filter in ("all", "washing"):
-        washing_payload = build_scan_chronology_payload(
-            cursor,
-            organization_id,
-            selected_date_et=selected_date_et,
-            stage="washing",
-            **common_kwargs,
-        )
-        washing_sessions = washing_payload.get("sessions") or []
-
-    if type_filter in ("all", "drying"):
-        drying_payload = build_scan_chronology_payload(
-            cursor,
-            organization_id,
-            selected_date_et=selected_date_et,
-            stage="drying",
-            **common_kwargs,
-        )
-        drying_sessions = drying_payload.get("sessions") or []
+        ops_views = load_operational_day(cursor, organization_id, selected_date_et)
+        ops_filters = {
+            "employee_filter": employee_filter,
+            "bag_id_filter": bag_id_filter,
+            "confidence_filter": confidence_filter,
+            "machine_filter": machine_filter,
+        }
+        if type_filter in ("all", "weighing"):
+            weighing_sessions = chronology_payload_from_views(
+                ops_views, "weighing", **{k: v for k, v in ops_filters.items() if k != "machine_filter"}
+            ).get("sessions") or []
+        if type_filter in ("all", "sorting"):
+            sorting_sessions = chronology_payload_from_views(
+                ops_views, "sorting", **{k: v for k, v in ops_filters.items() if k != "machine_filter"}
+            ).get("sessions") or []
+        if type_filter in ("all", "washing"):
+            washing_sessions = chronology_payload_from_views(
+                ops_views, "washing", **ops_filters
+            ).get("sessions") or []
+        if type_filter in ("all", "drying"):
+            drying_sessions = chronology_payload_from_views(
+                ops_views, "drying", **ops_filters
+            ).get("sessions") or []
 
     if type_filter in ("all", "folder"):
         folder_payload = build_scan_chronology_payload(
@@ -560,49 +562,27 @@ def build_scan_chronology_payload(
             bag_id_filter=bag_id_filter,
         )
 
-    common_filters = {
-        "employee_filter": employee_filter,
-        "bag_id_filter": bag_id_filter,
-        "confidence_filter": confidence_filter,
-        "machine_filter": machine_filter,
+    operational_stages = {
+        "weighing",
+        "sorting",
+        "washing",
+        "drying",
+        "washer_utilization",
+        "dryer_utilization",
     }
+    operational_performance = None
+    if stage_key in operational_stages:
+        from backend.rinse_operational_day import build_operational_chronology_payload
 
-    if stage_key == "weighing":
-        raw = build_weighing_chronology_payload(
+        raw = build_operational_chronology_payload(
             cursor,
             organization_id,
             selected_date_et=selected_date_et,
+            stage=stage_key,
             employee_filter=employee_filter,
             bag_id_filter=bag_id_filter,
             confidence_filter=confidence_filter,
-        )
-        sessions = [_normalize_weighing_session(r) for r in raw.get("sessions") or []]
-        summary = _normalize_weighing_summary(raw.get("summary") or {})
-        grouping_rules = raw.get("grouping_rules")
-        event_purposes = raw.get("weighing_event_purposes")
-        employees = raw.get("employees") or []
-        machines: list[str] = []
-    elif stage_key == "sorting":
-        raw = build_sorting_chronology_payload(
-            cursor,
-            organization_id,
-            selected_date_et=selected_date_et,
-            employee_filter=employee_filter,
-            bag_id_filter=bag_id_filter,
-            confidence_filter=confidence_filter,
-        )
-        sessions = [_normalize_sorting_session(r) for r in raw.get("sessions") or []]
-        summary = _normalize_sorting_summary(raw.get("summary") or {})
-        grouping_rules = raw.get("grouping_rules")
-        event_purposes = raw.get("sorting_event_purposes")
-        employees = raw.get("employees") or []
-        machines = []
-    elif stage_key == "washing":
-        raw = build_washing_chronology_payload(
-            cursor,
-            organization_id,
-            selected_date_et=selected_date_et,
-            **common_filters,
+            machine_filter=machine_filter,
         )
         sessions = raw.get("sessions") or []
         summary = raw.get("summary") or {}
@@ -610,19 +590,7 @@ def build_scan_chronology_payload(
         event_purposes = raw.get("event_purposes")
         employees = raw.get("employees") or []
         machines = raw.get("machines") or []
-    elif stage_key == "drying":
-        raw = build_drying_chronology_payload(
-            cursor,
-            organization_id,
-            selected_date_et=selected_date_et,
-            **common_filters,
-        )
-        sessions = raw.get("sessions") or []
-        summary = raw.get("summary") or {}
-        grouping_rules = raw.get("grouping_rules")
-        event_purposes = raw.get("event_purposes")
-        employees = raw.get("employees") or []
-        machines = raw.get("machines") or []
+        operational_performance = raw.get("operational_performance")
     elif stage_key == "folder":
         raw = build_folder_chronology_payload(
             cursor,
@@ -638,33 +606,9 @@ def build_scan_chronology_payload(
         event_purposes = raw.get("event_purposes")
         employees = raw.get("employees") or []
         machines = []
-    elif stage_key == "washer_utilization":
-        raw = build_washer_utilization_payload(
-            cursor,
-            organization_id,
-            selected_date_et=selected_date_et,
-            **common_filters,
-        )
-        sessions = raw.get("sessions") or []
-        summary = raw.get("summary") or {}
-        grouping_rules = raw.get("grouping_rules")
-        event_purposes = None
-        employees = raw.get("employees") or []
-        machines = raw.get("machines") or []
     else:
-        raw = build_dryer_utilization_payload(
-            cursor,
-            organization_id,
-            selected_date_et=selected_date_et,
-            **common_filters,
-        )
-        sessions = raw.get("sessions") or []
-        summary = raw.get("summary") or {}
-        grouping_rules = raw.get("grouping_rules")
-        event_purposes = None
-        employees = raw.get("employees") or []
-        machines = raw.get("machines") or []
-    return {
+        raise ValueError(f"stage must be one of: {', '.join(sorted(VALID_STAGES))}")
+    payload = {
         "date_et": selected_date_et.isoformat(),
         "stage": stage_key,
         "summary": summary,
@@ -674,3 +618,7 @@ def build_scan_chronology_payload(
         "event_purposes": event_purposes,
         "grouping_rules": grouping_rules,
     }
+    if operational_performance is not None:
+        payload["operational_performance"] = operational_performance
+        payload["raw_json_loaded"] = False
+    return payload

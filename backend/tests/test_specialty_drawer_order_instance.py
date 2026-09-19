@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from backend.management_rinse_wf_review import (
     _build_review_action_by_order_instance,
     match_specialty_order_instance,
+    match_specialty_order_instance_window,
 )
 
 DAY = date(2026, 9, 19)
@@ -31,6 +32,42 @@ def test_match_uses_the_evidence_cycle_not_a_newer_open_order():
         )
         is None
     )
+
+
+def test_1vmv2dupuw_completed_window_is_not_the_later_order():
+    """Completed specialty with no current-day bag still uses the evidence window."""
+    bag = "1VMV2DUPUW"
+    completed = datetime(2026, 9, 12, 8, 0)
+    later = datetime(2026, 9, 18, 9, 0)
+    rows = [
+        {
+            "order_instance_id": 41,
+            "bag_id": bag,
+            "cycle_anchor_at": completed,
+            "service_type": "WF",
+        },
+        {
+            "order_instance_id": 88,
+            "bag_id": bag,
+            "cycle_anchor_at": later,
+            "service_type": "WF",
+        },
+    ]
+    evidence = datetime(2026, 9, 12, 11, 30)
+    assert match_specialty_order_instance_window(rows, [evidence]) == 41
+    assert match_specialty_order_instance_window(rows, [datetime(2026, 9, 18, 10, 0)]) == 88
+    assert match_specialty_order_instance_window(rows, [datetime(2026, 9, 1, 1, 0)]) is None
+    assert (
+        match_specialty_order_instance_window(
+            [
+                {"order_instance_id": 1, "cycle_anchor_at": completed, "service_type": "WF"},
+                {"order_instance_id": 2, "cycle_anchor_at": completed, "service_type": "WF"},
+            ],
+            [evidence],
+        )
+        is None
+    )
+    assert match_specialty_order_instance_window(rows, [evidence, datetime(2026, 9, 18, 12, 0)]) is None
 
 
 def _oi(oid, anchor, *, completed_at, org=3, bag="REUSE1"):
@@ -70,9 +107,15 @@ def _patch_action(monkeypatch, rows, qualifier):
         _weights,
     )
     monkeypatch.setattr(
-        "backend.rinse_bulk_workitems.load_bulk_workitem_scan_map",
+        "backend.management_rinse_wf_review.load_post_epoch_specialty_evidence",
         lambda *_a, **_k: {
-            "REUSE1": {"count": 1, "first_at": OLD_ANCHOR, "cycle_anchor_at": OLD_ANCHOR}
+            "REUSE1": {
+                "count": 1,
+                "first_at": OLD_ANCHOR,
+                "cycle_anchor_at": OLD_ANCHOR,
+                "order_instance_id": 10,
+                "events": [],
+            }
         },
     )
     monkeypatch.setattr(

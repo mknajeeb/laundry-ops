@@ -448,7 +448,7 @@ def _load_scan_events_window(
     cursor.execute(
         """
         SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index,
-               last_location, last_scan, raw_json
+               last_location, last_scan
         FROM rinse_bag_scan_events
         WHERE organization_id = %s
           AND scanned_at_parsed >= %s
@@ -478,7 +478,7 @@ def _load_scan_events_for_bags(
         cursor.execute(
             f"""
             SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index,
-                   last_location, last_scan, raw_json
+                   last_location, last_scan
             FROM rinse_bag_scan_events
             WHERE organization_id = %s
               AND bag_id IN ({placeholders})
@@ -542,15 +542,16 @@ def build_ready_to_fold_chronology_payload(
         needle = _bag_key(bag_id_filter)
         candidate_ids = [bid for bid in candidate_ids if bid == needle]
 
-    # Full timelines so sent-to-vendor anchors outside the window still apply.
-    full_events = _load_scan_events_for_bags(cursor, organization_id, candidate_ids)
+    candidate_set = set(candidate_ids)
     events_by_bag: dict[str, list[dict[str, Any]]] = {}
-    for ev in full_events:
+    for ev in window_events:
         bid = _bag_key(ev.get("bag_id"))
-        if bid:
+        if bid and bid in candidate_set:
             events_by_bag.setdefault(bid, []).append(ev)
 
-    drying_rows = extract_drying_rows_from_events(full_events)
+    drying_rows = [
+        r for r in window_drying_rows if _bag_key(r.get("bag_id")) in candidate_set
+    ]
     metadata = _load_bag_metadata(cursor, organization_id, candidate_ids)
 
     bags = build_ready_to_fold_bag_records(

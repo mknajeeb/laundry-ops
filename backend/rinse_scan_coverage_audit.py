@@ -485,7 +485,7 @@ def _load_registry_order_ids(
         placeholders = ",".join(["%s"] * len(part))
         cursor.execute(
             f"""
-            SELECT UPPER(TRIM(bag_id)) AS bag_id, last_staging_order_id
+            SELECT bag_id, last_staging_order_id
             FROM rinse_bag_registry
             WHERE organization_id = %s AND bag_id IN ({placeholders})
             """,
@@ -505,7 +505,7 @@ def build_scan_coverage_audit_payload(
     employee_filter: str | None = None,
     bag_id_filter: str | None = None,
 ) -> dict[str, Any]:
-    from backend.rinse_scan_chronology import build_scan_chronology_payload
+    from backend.rinse_operational_day import load_operational_day
 
     bag_ids, inclusion_by_bag = load_processed_bag_ids_for_day(
         cursor, organization_id, selected_date_et
@@ -519,36 +519,11 @@ def build_scan_coverage_audit_payload(
 
     day_start = naive_et_day_start(selected_date_et)
     day_end = naive_et_day_end_inclusive(selected_date_et)
-
-    weighing_payload = build_scan_chronology_payload(
-        cursor,
-        organization_id,
-        selected_date_et=selected_date_et,
-        stage="weighing",
-    )
-    sorting_payload = build_scan_chronology_payload(
-        cursor,
-        organization_id,
-        selected_date_et=selected_date_et,
-        stage="sorting",
-    )
-    washing_payload = build_scan_chronology_payload(
-        cursor,
-        organization_id,
-        selected_date_et=selected_date_et,
-        stage="washing",
-    )
-    drying_payload = build_scan_chronology_payload(
-        cursor,
-        organization_id,
-        selected_date_et=selected_date_et,
-        stage="drying",
-    )
-
-    weighing_sessions = weighing_payload.get("sessions") or []
-    sorting_sessions = sorting_payload.get("sessions") or []
-    washing_sessions = washing_payload.get("sessions") or []
-    drying_sessions = drying_payload.get("sessions") or []
+    views = load_operational_day(cursor, organization_id, selected_date_et)
+    weighing_sessions = list(views.get("weighing") or [])
+    sorting_sessions = list(views.get("sorting") or [])
+    washing_sessions = list(views.get("washer_loads") or [])
+    drying_sessions = list(views.get("dryer_loads") or [])
 
     metadata_by_bag = _load_bag_metadata(cursor, organization_id, bag_ids)
     completion_ts = _load_completion_timestamps_on_day(

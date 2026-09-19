@@ -876,7 +876,6 @@ def _fresh_review_reasons_from_day_bags(
     from backend.rinse_bulk_workitems import (
         load_bag_bulk_lines,
         load_bulk_resolutions,
-        load_bulk_workitem_scan_map,
     )
     from backend.rinse_scan_freshness import load_last_scan_at_by_bag
     from backend.rinse_veewash_review import (
@@ -973,8 +972,8 @@ def _fresh_review_reasons_from_day_bags(
     registry_services, registry_historical = load_registry_service_classification(
         cursor, organization_id, bag_ids
     )
-    bulk_scans = load_bulk_workitem_scan_map(
-        cursor, organization_id, bag_ids, selected_date_et=selected_date_et
+    bulk_scans = _specialty_scan_map(
+        load_post_epoch_specialty_evidence(cursor, organization_id, list(bag_ids))
     )
     bulk_resolutions = load_bulk_resolutions(
         cursor, organization_id, selected_date_et, bag_ids
@@ -1028,56 +1027,19 @@ def authoritative_wf_bulk_review_ids(
     rows are not required — the scan is the evidence. Pre-epoch scans do not
     qualify. One batched scan load, not a per-bag query.
     """
-    from backend.rinse_bag_completion import normalize_bag_id
     from backend.rinse_bulk_workitems import (
         bag_bulk_review_cleared,
         load_bag_bulk_lines,
         load_bulk_resolutions,
-        load_bulk_workitem_scan_map,
     )
     from backend.ta_helpers import table_exists
-    from backend.wf_ops_reset_epoch import (
-        evidence_on_or_after_epoch,
-        get_wf_reset_epoch_at,
-    )
 
     if not table_exists(cursor, "rinse_order_instances"):
         return []
-    cursor.execute(
-        """
-        SELECT bag_id
-        FROM rinse_order_instances
-        WHERE organization_id = %s
-          AND UPPER(COALESCE(service_type, 'WF')) = 'WF'
-        """,
-        (int(organization_id),),
+    evidence = load_post_epoch_specialty_evidence(cursor, int(organization_id), None)
+    kept = sorted(
+        bid for bid, info in evidence.items() if info.get("order_instance_id")
     )
-    ids = sorted(
-        {
-            normalize_bag_id(row.get("bag_id") if isinstance(row, dict) else row[0])
-            for row in (cursor.fetchall() or [])
-            if (normalize_bag_id(row.get("bag_id") if isinstance(row, dict) else row[0]))
-        }
-    )
-    if not ids:
-        return []
-    scans = load_bulk_workitem_scan_map(
-        cursor, int(organization_id), ids, selected_date_et=selected_date_et
-    )
-    epoch = get_wf_reset_epoch_at(cursor, int(organization_id), use_cache=True)
-    kept: list[str] = []
-    for bid, info in scans.items():
-        if not info or int(info.get("count") or 0) <= 0:
-            continue
-        events = list(info.get("events") or [])
-        stamps = [e.get("scanned_at_parsed") for e in events if isinstance(e, dict)]
-        if not stamps:
-            stamps = [info.get("first_at")]
-        if not any(
-            evidence_on_or_after_epoch(ts, epoch, kind="scan") for ts in stamps
-        ):
-            continue
-        kept.append(bid)
     if not kept:
         return []
     lines = load_bag_bulk_lines(cursor, int(organization_id), selected_date_et, kept)
@@ -1104,7 +1066,6 @@ def compute_canonical_wf_review_membership(
         bag_bulk_review_cleared,
         load_bag_bulk_lines,
         load_bulk_resolutions,
-        load_bulk_workitem_scan_map,
     )
     from backend.rinse_veewash_shift_day import get_day_record, load_day_bags, summary_from_day_record
     from backend.rinse_wf_canonical_split import STATE_REVIEW_REQUIRED
@@ -1276,8 +1237,10 @@ def compute_canonical_wf_review_membership(
         else {}
     )
     bulk_scans = (
-        load_bulk_workitem_scan_map(
-            cursor, organization_id, candidate_ids, selected_date_et=selected_date_et
+        _specialty_scan_map(
+            load_post_epoch_specialty_evidence(
+                cursor, organization_id, list(candidate_ids)
+            )
         )
         if candidate_ids
         else {}
@@ -2142,13 +2105,13 @@ def build_management_review_list(
             CATEGORY_MANUAL_REVIEW,
             CATEGORY_REVIEW_ALL,
         ):
-            from backend.rinse_bulk_workitems import load_bulk_workitem_scan_map
-
             bulk_lines = load_bag_bulk_lines(
                 cursor, organization_id, selected_date_et, page_ids
             )
-            bulk_scans_page = load_bulk_workitem_scan_map(
-                cursor, organization_id, page_ids, selected_date_et=selected_date_et
+            bulk_scans_page = _specialty_scan_map(
+                load_post_epoch_specialty_evidence(
+                    cursor, organization_id, list(page_ids)
+                )
             )
     weight_map = _canonical_review_weights(
         cursor, organization_id, selected_date_et, page_ids
@@ -2618,53 +2581,219 @@ def match_specialty_order_instance(
     return None
 
 
+_WINDOW_AMBIGUOUS = object()
+
+
+def match_specialty_order_instance_window(
+    order_rows: list[Mapping[str, Any]] | None,
+    scan_times: list[Any] | None,
+) -> int | None:
+    """Return the one WF order whose window contains the qualifying scans.
+
+    Window is ``[cycle_anchor_at, next cycle_anchor_at)``. Scans that fall in
+    different orders, or in a duplicated anchor, return None. This does not
+    pick the newest order, the open order, or another lifecycle on the bag.
+    """
+    rows = []
+    for row in order_rows or []:
+        if not isinstance(row, Mapping):
+            continue
+        anchor = _naive_wall(row.get("cycle_anchor_at"))
+        try:
+            oid = int(row.get("order_instance_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if anchor is None or oid <= 0:
+            continue
+        if str(row.get("service_type") or "WF").strip().upper() not in ("", "WF"):
+            continue
+        rows.append((anchor, oid))
+    if not rows:
+        return None
+    rows.sort()
+    groups: list[tuple[datetime, list[int]]] = []
+    for anchor, oid in rows:
+        if groups and groups[-1][0] == anchor:
+            groups[-1][1].append(oid)
+        else:
+            groups.append((anchor, [oid]))
+
+    owners: list[int] = []
+    for raw_ts in scan_times or []:
+        ts = _naive_wall(raw_ts)
+        if ts is None:
+            continue
+        owner = _window_owner(groups, ts)
+        if owner is _WINDOW_AMBIGUOUS:
+            return None
+        if isinstance(owner, int):
+            owners.append(owner)
+    unique = set(owners)
+    if len(unique) == 1:
+        return unique.pop()
+    return None
+
+
+def _window_owner(groups: list[tuple[datetime, list[int]]], ts: datetime):
+    for i, (anchor, oids) in enumerate(groups):
+        end = groups[i + 1][0] if i + 1 < len(groups) else None
+        if ts < anchor:
+            continue
+        if end is not None and ts >= end:
+            continue
+        if len(oids) != 1:
+            return _WINDOW_AMBIGUOUS
+        return oids[0]
+    return None
+
+
+def load_post_epoch_specialty_evidence(
+    cursor,
+    organization_id: int,
+    bag_ids: list[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Post-epoch bulk scans matched to the WF order window that contains them.
+
+    One purpose-equality scan read from the reset epoch. No full bag timeline
+    and no newest/open order fallback.
+    """
+    from backend.rinse_bulk_workitems import purpose_is_bulk_workitem
+    from backend.ta_helpers import table_exists
+    from backend.wf_ops_reset_epoch import epoch_scan_wall, get_wf_reset_epoch_at
+
+    if not table_exists(cursor, "rinse_bag_scan_events") or not table_exists(
+        cursor, "rinse_order_instances"
+    ):
+        return {}
+    ids = [normalize_bag_id(b) for b in (bag_ids or []) if normalize_bag_id(b)]
+    if bag_ids is not None and not ids:
+        return {}
+    epoch = epoch_scan_wall(get_wf_reset_epoch_at(cursor, int(organization_id), use_cache=True))
+    sql = """
+        SELECT id, bag_id, purpose, scanned_at_parsed, user_name
+        FROM rinse_bag_scan_events
+        WHERE organization_id = %s
+          AND scanned_at_parsed IS NOT NULL
+          AND purpose IN ('create-workitem-bulk', 'create-bulk-workitem')
+    """
+    params: list[Any] = [int(organization_id)]
+    if epoch is not None:
+        sql += " AND scanned_at_parsed >= %s"
+        params.append(epoch)
+    if ids:
+        placeholders = ",".join(["%s"] * len(ids))
+        sql += f" AND bag_id IN ({placeholders})"
+        params.extend(ids)
+    sql += " ORDER BY scanned_at_parsed ASC, id ASC"
+    cursor.execute(sql, params)
+    scans_by_bag: dict[str, list[dict[str, Any]]] = {}
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        if not purpose_is_bulk_workitem(row.get("purpose")):
+            continue
+        bid = normalize_bag_id(row.get("bag_id"))
+        ts = _naive_wall(row.get("scanned_at_parsed"))
+        if not bid or ts is None:
+            continue
+        if epoch is not None and ts < epoch:
+            continue
+        scans_by_bag.setdefault(bid, []).append(
+            {
+                "id": row.get("id"),
+                "scanned_at_parsed": ts,
+                "purpose": row.get("purpose"),
+                "user_name": row.get("user_name"),
+            }
+        )
+    if not scans_by_bag:
+        return {}
+    scan_ids = sorted(scans_by_bag)
+    orders_by_bag: dict[str, list[dict[str, Any]]] = {bid: [] for bid in scan_ids}
+    chunk = 200
+    for i in range(0, len(scan_ids), chunk):
+        part = scan_ids[i : i + chunk]
+        placeholders = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT order_instance_id, bag_id, cycle_anchor_at, service_type
+            FROM rinse_order_instances
+            WHERE organization_id = %s
+              AND bag_id IN ({placeholders})
+            """,
+            (int(organization_id), *part),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("service_type") or "WF").strip().upper() != "WF":
+                continue
+            bid = normalize_bag_id(row.get("bag_id"))
+            if bid in orders_by_bag:
+                orders_by_bag[bid].append(dict(row))
+
+    out: dict[str, dict[str, Any]] = {}
+    for bid, events in scans_by_bag.items():
+        oid = match_specialty_order_instance_window(
+            orders_by_bag.get(bid),
+            [ev.get("scanned_at_parsed") for ev in events],
+        )
+        anchor = None
+        if oid:
+            for row in orders_by_bag.get(bid) or []:
+                try:
+                    if int(row.get("order_instance_id") or 0) == oid:
+                        anchor = _naive_wall(row.get("cycle_anchor_at"))
+                        break
+                except (TypeError, ValueError):
+                    continue
+        first = events[0]
+        out[bid] = {
+            "order_instance_id": oid,
+            "count": len(events) if oid else 0,
+            "first_at": first.get("scanned_at_parsed"),
+            "last_at": events[-1].get("scanned_at_parsed"),
+            "employee": first.get("user_name"),
+            "events": events,
+            "cycle_anchor_at": anchor,
+        }
+    return out
+
+
+def _specialty_scan_map(evidence: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for bid, info in evidence.items():
+        if int(info.get("count") or 0) <= 0 and not info.get("order_instance_id"):
+            continue
+        out[str(bid)] = {
+            "count": int(info.get("count") or 0),
+            "first_at": info.get("first_at"),
+            "last_at": info.get("last_at"),
+            "employee": info.get("employee"),
+            "events": list(info.get("events") or []),
+            "cycle_anchor_at": info.get("cycle_anchor_at"),
+        }
+    return out
+
+
 def load_specialty_qualifying_order_instances(
     cursor,
     organization_id: int,
     selected_date_et: date,
     bag_ids: list[str],
 ) -> dict[str, int]:
-    """Map each Specialty bag to the order instance of its evidence cycle.
+    """Map each Specialty bag to the order instance whose window holds its scans.
 
-    The cycle is the same current-cycle window that admitted the bag to
-    Specialty. An order instance qualifies only when its ``cycle_anchor_at``
-    is that window's anchor.
+    Completed orders qualify. A missing or ambiguous identity is omitted so the
+    caller fails closed instead of opening another lifecycle.
     """
-    from backend.rinse_bulk_workitems import load_bulk_workitem_scan_map
-    from backend.ta_helpers import table_exists
-
-    ids = [normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)]
-    if not ids or not table_exists(cursor, "rinse_order_instances"):
-        return {}
-    scans = load_bulk_workitem_scan_map(
-        cursor, int(organization_id), ids, selected_date_et=selected_date_et
-    )
-    placeholders = ",".join(["%s"] * len(ids))
-    cursor.execute(
-        f"""
-        SELECT order_instance_id, bag_id, cycle_anchor_at, service_type
-        FROM rinse_order_instances
-        WHERE organization_id = %s
-          AND bag_id IN ({placeholders})
-          AND UPPER(COALESCE(service_type, 'WF')) = 'WF'
-        """,
-        (int(organization_id), *ids),
-    )
-    by_bag: dict[str, list[dict[str, Any]]] = {}
-    for row in cursor.fetchall() or []:
-        if not isinstance(row, dict):
-            continue
-        bid = normalize_bag_id(row.get("bag_id"))
-        if bid:
-            by_bag.setdefault(bid, []).append(dict(row))
+    del selected_date_et
+    evidence = load_post_epoch_specialty_evidence(cursor, organization_id, bag_ids)
     out: dict[str, int] = {}
-    for bid in ids:
-        info = scans.get(bid) or {}
-        oid = match_specialty_order_instance(
-            by_bag.get(bid), info.get("cycle_anchor_at")
-        )
+    for bid, info in evidence.items():
+        oid = info.get("order_instance_id")
         if oid:
-            out[bid] = oid
+            out[bid] = int(oid)
     return out
 
 
@@ -2729,7 +2858,6 @@ def _build_review_action_by_order_instance(
         list_workitems,
         load_bag_bulk_lines,
         load_bulk_resolutions,
-        load_bulk_workitem_scan_map,
     )
     from backend.rinse_current_cycle_weight import resolve_bag_weight_info_canonical
     from backend.rinse_order_instances import get_order_instance_by_id
@@ -2760,10 +2888,10 @@ def _build_review_action_by_order_instance(
     if str(oi.get("service_type") or "WF").strip().upper() != "WF":
         return _order_instance_invalid(bid)
 
-    qual = load_specialty_qualifying_order_instances(
-        cursor, organization_id, selected_date_et, [bid]
+    evidence = load_post_epoch_specialty_evidence(
+        cursor, organization_id, [bid]
     )
-    if qual.get(bid) != oid:
+    if (evidence.get(bid) or {}).get("order_instance_id") != oid:
         return _order_instance_invalid(bid)
 
     anchor = _naive_wall(oi.get("cycle_anchor_at"))
@@ -2793,9 +2921,7 @@ def _build_review_action_by_order_instance(
         selected_date_et=selected_date_et,
         cycle_anchor_override=anchor,
     )
-    scans = load_bulk_workitem_scan_map(
-        cursor, organization_id, [bid], selected_date_et=selected_date_et
-    ).get(bid) or {}
+    scans = evidence.get(bid) or {}
     line_day = anchor.date() if anchor is not None else selected_date_et
     bulk_lines = load_bag_bulk_lines(
         cursor, organization_id, line_day, [bid]

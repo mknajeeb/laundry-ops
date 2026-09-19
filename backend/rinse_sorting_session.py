@@ -329,6 +329,8 @@ def _sorting_end_ev(
         and not is_create_issue_purpose(ev.get("purpose"))
         and ts_valid(event_ts(ev))
         and (event_ts(ev) or end_ts) > end_ts
+        and bool(cycle_employee)
+        and _operators_match(_operator(ev), cycle_employee)
     ]
     if workitems:
         end_ev = max(workitems, key=sort_key_ev)

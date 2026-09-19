@@ -694,16 +694,13 @@ def filter_process_flow_rows(
 
 
 def _load_scan_events_window(cursor, organization_id: int, window_start, window_end):
-    """Day±1 discovery load — purpose/time only (no raw_json).
-
-    Candidate discovery does not need machine-rack fields; full bag timelines
-    (with last_location/last_scan/raw_json) are loaded separately for composition.
-    """
+    """Day±1 scan window. Rack columns only — no raw_json and no full bag history."""
     if not table_exists(cursor, "rinse_bag_scan_events"):
         return []
     cursor.execute(
         """
-        SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index
+        SELECT bag_id, id, rack, last_location, last_scan, user_name, purpose,
+               scanned_at_parsed, scan_index
         FROM rinse_bag_scan_events
         WHERE organization_id = %s
           AND scanned_at_parsed >= %s
@@ -909,13 +906,10 @@ def build_process_flow_chronology_payload(
         needle = _bag_key(bag_id_filter)
         candidate_ids = {bid for bid in candidate_ids if bid == needle}
 
-    full_events = _load_scan_events_for_bags(
-        cursor, organization_id, sorted(candidate_ids)
-    )
     events_by_bag: dict[str, list[dict[str, Any]]] = {}
-    for ev in full_events:
+    for ev in window_events:
         bid = _bag_key(ev.get("bag_id"))
-        if bid:
+        if bid and bid in candidate_ids:
             events_by_bag.setdefault(bid, []).append(ev)
 
     rows = compose_process_flow_rows_for_bags(
