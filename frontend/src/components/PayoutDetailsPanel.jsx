@@ -39,7 +39,7 @@ import VisibilityIcon from "@mui/icons-material/Visibility";
 import SaveIcon from "@mui/icons-material/Save";
 import LockIcon from "@mui/icons-material/Lock";
 import LockOpenIcon from "@mui/icons-material/LockOpen";
-import { useAuth } from "../context/AuthContext";
+import FinalizeBatchNavigator from "./FinalizeBatchNavigator";
 import {
   finalizePayoutDetails,
   setOfficialPayDate,
@@ -71,8 +71,6 @@ import FinancePayrollFinalizeRow from "./FinancePayrollFinalizeRow";
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
 import {
   batchVisibleForDetails,
-  displayStatusColor,
-  displayStatusLabel,
   formatPayrollMoney,
 } from "../payroll/payrollBatchStatus";
 import {
@@ -1138,20 +1136,12 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
         />
       ) : null}
 
-      {panelTab === "batch" && batches.length > 1 ? (
-        <Stack direction="row" flexWrap="wrap" gap={0.5}>
-          {batches.map((b) => (
-            <Chip
-              key={b.id}
-              size="small"
-              label={`${b.batch_name} · ${displayStatusLabel(b)}`}
-              color={displayStatusColor(b)}
-              variant={selectedId === b.id ? "filled" : "outlined"}
-              onClick={() => loadDetail(b.id)}
-              sx={{ cursor: "pointer" }}
-            />
-          ))}
-        </Stack>
+      {panelTab === "batch" && batches.length ? (
+        <FinalizeBatchNavigator
+          batches={batches}
+          selectedId={selectedId}
+          onSelect={(id) => loadDetail(id)}
+        />
       ) : null}
 
       {panelTab === "batch" && !batches.length ? (
