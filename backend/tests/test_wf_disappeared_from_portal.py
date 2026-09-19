@@ -346,7 +346,7 @@ def test_g_missing_portal_category_includes_new_reason():
     )
     assert (
         _short_reason([REASON_DISAPPEARED_FROM_PORTAL], CATEGORY_MISSING_PORTAL)
-        == "Disappeared From Portal"
+        == "Missing From Portal"
     )
     # Existing reasons unchanged
     assert (
