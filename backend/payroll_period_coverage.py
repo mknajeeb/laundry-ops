@@ -83,6 +83,9 @@ def list_eligible_approved_session_facts(
     has_hours_approved = table_has_column(chk, "shift_sessions", "payroll_hours_approved")
     has_override = table_has_column(chk, "shift_sessions", "manual_override")
     has_review = table_has_column(chk, "payroll_cycles", "review_state")
+    has_class_override = table_has_column(
+        chk, "shift_sessions", "payroll_classification_override"
+    )
     org_clause = (
         "s.organization_id = %s" if has_ss_org else "u.organization_id = %s"
     )
@@ -92,6 +95,11 @@ def list_eligible_approved_session_facts(
         else ", 0 AS payroll_hours_approved"
     )
     override_sel = ", s.manual_override" if has_override else ", 0 AS manual_override"
+    class_sel = (
+        ", s.payroll_classification_override"
+        if has_class_override
+        else ", NULL AS payroll_classification_override"
+    )
     review_sel = (
         ", pc.review_state AS payroll_cycle_review_state" if has_review else ""
     )
@@ -99,7 +107,7 @@ def list_eligible_approved_session_facts(
     c.execute(
         f"""
         SELECT s.id, s.user_id, s.clock_in_at, s.status, s.net_work_seconds
-               {hours_sel}{override_sel}{review_sel}
+               {hours_sel}{override_sel}{class_sel}{review_sel}
         FROM shift_sessions s
         JOIN users u ON u.id = s.user_id
         JOIN payroll_profiles pp ON pp.user_id = s.user_id
@@ -123,7 +131,9 @@ def list_eligible_approved_session_facts(
     except Exception:
         assignment_cache = {uid: [] for uid in uids}
 
-    cat_cache: dict[tuple[int, str], str] = {}
+    from backend.payroll_classification import resolve_session_payroll_category
+
+    profile_cache: dict[tuple[int, str], str] = {}
     out: list[dict] = []
     for row in approved_rows:
         uid = int(row["user_id"])
@@ -132,7 +142,7 @@ def list_eligible_approved_session_facts(
             continue
         day_key = work_day.isoformat()
         cache_key = (uid, day_key)
-        if cache_key not in cat_cache:
+        if cache_key not in profile_cache:
             assigns = assignment_cache.get(uid) or []
             cat = category_from_employment_history(assigns, work_day)
             if not cat:
@@ -140,8 +150,11 @@ def list_eligible_approved_session_facts(
                 cat = worker_category_for_user(
                     conn, uid, on=work_day, assignments=assigns
                 )
-            cat_cache[cache_key] = cat
-        cat = cat_cache[cache_key]
+            profile_cache[cache_key] = cat
+        profile_cat = profile_cache[cache_key]
+        cat, class_source = resolve_session_payroll_category(
+            profile_cat, row.get("payroll_classification_override")
+        )
         if cat not in _PAYROLL_ELIGIBLE_CATEGORIES:
             continue
         hours = round(max(0, int(row.get("net_work_seconds") or 0)) / 3600.0, 2)
@@ -152,6 +165,8 @@ def list_eligible_approved_session_facts(
                 "id": int(row["id"]),
                 "user_id": uid,
                 "worker_category": cat,
+                "profile_worker_category": profile_cat,
+                "classification_source": class_source,
                 "approved_hours": hours,
                 "work_date": day_key,
             }

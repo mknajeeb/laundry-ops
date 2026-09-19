@@ -305,6 +305,14 @@ def list_time_records(
         if has_hours_approved
         else ", 0 AS payroll_hours_approved"
     )
+    has_class_override = table_has_column(
+        chk, "shift_sessions", "payroll_classification_override"
+    )
+    class_sel = (
+        ", s.payroll_classification_override"
+        if has_class_override
+        else ", NULL AS payroll_classification_override"
+    )
     review_sel = ", pc.review_state AS payroll_cycle_review_state" if has_review else ""
     jt_cols = []
     for col in (
@@ -326,7 +334,7 @@ def list_time_records(
     q = f"""
         SELECT s.id, s.user_id, s.clock_in_at, s.clock_out_at, s.status,
                s.total_break_seconds, s.net_work_seconds
-               {override_sel}{hours_approved_sel}{remarks_sel}{jt_sel},
+               {override_sel}{hours_approved_sel}{class_sel}{remarks_sel}{jt_sel},
                pp.first_name, pp.last_name
                {review_sel}
         FROM shift_sessions s
@@ -360,7 +368,12 @@ def list_time_records(
         uid = int(row["user_id"])
         rate_info = lookup.rate_for(uid)
         work_day = _session_work_date_et(row.get("clock_in_at"))
-        cat = lookup.category_for(uid, on=work_day)
+        from backend.payroll_classification import resolve_session_payroll_category
+
+        profile_cat = lookup.category_for(uid, on=work_day)
+        cat, class_source = resolve_session_payroll_category(
+            profile_cat, row.get("payroll_classification_override")
+        )
         if worker_category and worker_category != "all" and cat != worker_category:
             continue
         net = int(row.get("net_work_seconds") or 0)
@@ -371,6 +384,11 @@ def list_time_records(
             "worker_name": f"{row.get('first_name') or ''} {row.get('last_name') or ''}".strip(),
             "worker_category": cat,
             "worker_category_label": CATEGORY_LABELS.get(cat, cat),
+            "profile_worker_category": profile_cat,
+            "classification_source": class_source,
+            "payroll_classification_override": (
+                cat if class_source == "record_override" else None
+            ),
             "work_date": work_day.isoformat() if work_day else str(row.get("clock_in_at") or "")[:10],
             "clock_in_at": row.get("clock_in_at"),
             "clock_out_at": row.get("clock_out_at"),
@@ -2438,7 +2456,7 @@ def build_batch_from_time_records(
         organization_id,
         from_date=fd,
         to_date=td,
-        worker_category=batch["worker_category"],
+        worker_category=None,
         status_filter="approved",
     )
     c = conn.cursor()
@@ -2457,61 +2475,69 @@ def build_batch_from_time_records(
         raise ValueError(
             "No approved time records in this period. Approve hours on the Time Records tab first."
         )
-    by_user: dict[int, dict] = {}
-    for rec in records:
-        uid = int(rec["user_id"])
-        if uid not in by_user:
-            by_user[uid] = {
-                "user_id": uid,
-                "worker_name": rec["worker_name"],
-                "hours": 0.0,
-                "session_ids": [],
-            }
-        by_user[uid]["hours"] += float(rec.get("approved_hours") or 0)
-        by_user[uid]["session_ids"].append(rec["id"])
+    from backend.payroll_classification import write_line_classification_provenance
     from backend.payroll_overtime import (
+        aggregate_classified_batch_lines,
         resolve_batch_overtime_policy,
         resolve_overtime_rate,
-        split_hours_for_overtime,
+        weekly_ot_policy_category,
     )
+    from backend.payroll_workflow import resolve_rate_for_batch_line
 
-    ot_policy = resolve_batch_overtime_policy(
-        conn, organization_id, batch["worker_category"]
-    )
-    for uid, agg in by_user.items():
-        from backend.payroll_workflow import resolve_rate_for_batch_line
-
+    by_user: dict[int, list] = {}
+    for rec in records:
+        by_user.setdefault(int(rec["user_id"]), []).append(rec)
+    wrote = False
+    for uid, recs in by_user.items():
         rate = resolve_rate_for_batch_line(conn, organization_id, uid)
-        regular_h, ot_h = split_hours_for_overtime(
-            agg["hours"],
-            threshold=ot_policy["threshold_hours"],
-            enabled=ot_policy["enabled"] and rate > 0,
+        policy = resolve_batch_overtime_policy(
+            conn, organization_id, weekly_ot_policy_category(recs)
         )
-        ot_rate = (
-            float(
-                resolve_overtime_rate(
-                    rate, multiplier=ot_policy["multiplier"]
+        payloads = aggregate_classified_batch_lines(
+            recs,
+            batch_category=str(batch["worker_category"]),
+            threshold_hours=policy["threshold_hours"],
+            ot_enabled=bool(policy["enabled"]) and float(rate or 0) > 0,
+        )
+        for agg in payloads:
+            ot_rate = (
+                float(
+                    resolve_overtime_rate(
+                        rate, multiplier=policy["multiplier"]
+                    )
                 )
+                if float(agg["ot_hours"]) > 0
+                else 0.0
             )
-            if float(ot_h) > 0
-            else 0.0
-        )
-        add_payout_batch_line(
-            conn,
-            organization_id,
-            batch_id,
-            {
-                "user_id": uid,
-                "worker_name_snapshot": agg["worker_name"],
-                "approved_hours": float(regular_h),
-                "ot_hours": float(ot_h),
-                "rate": rate,
-                "ot_rate": ot_rate,
-                "adjustments": 0,
-                "line_status": "approved",
-                "source_type": "clock_records",
-                "source_shift_session_ids": agg["session_ids"],
-            },
+            created = add_payout_batch_line(
+                conn,
+                organization_id,
+                batch_id,
+                {
+                    "user_id": uid,
+                    "worker_name_snapshot": agg["worker_name"],
+                    "approved_hours": agg["approved_hours"],
+                    "ot_hours": agg["ot_hours"],
+                    "rate": rate,
+                    "ot_rate": ot_rate,
+                    "adjustments": 0,
+                    "line_status": "approved",
+                    "source_type": "clock_records",
+                    "source_shift_session_ids": agg["session_ids"],
+                },
+            )
+            if created.get("id") is not None:
+                write_line_classification_provenance(
+                    conn, int(created["id"]), agg["classification_provenance"]
+                )
+            wrote = True
+    if not wrote:
+        _recompute_batch_totals(conn, batch_id)
+        conn.commit()
+        if allow_empty:
+            return get_payout_batch(conn, organization_id, batch_id) or {}
+        raise ValueError(
+            "No approved time records in this period. Approve hours on the Time Records tab first."
         )
     conn.commit()
     from backend.payroll_workflow import recalculate_w2_batch_taxes

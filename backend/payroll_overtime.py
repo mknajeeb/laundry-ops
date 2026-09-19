@@ -319,3 +319,122 @@ def resolve_batch_overtime_policy(
         "multiplier": float(multiplier),
         "worker_category": str(worker_category or ""),
     }
+
+
+def _session_sort_key(rec: dict) -> tuple:
+    raw = rec.get("clock_in_at") or rec.get("sort_key") or rec.get("work_date") or ""
+    if hasattr(raw, "isoformat"):
+        raw = raw.isoformat()
+    try:
+        sid = int(rec.get("id") or 0)
+    except (TypeError, ValueError):
+        sid = 0
+    return (str(raw), sid)
+
+
+def weekly_ot_policy_category(records: list[dict]) -> str:
+    """Profile category used for the weekly OT threshold.
+
+    Overrides change which batch owns the hours. They must not change the
+    threshold, and the threshold must not be recomputed inside each batch.
+    """
+    for rec in sorted(records or [], key=_session_sort_key):
+        profile = rec.get("profile_worker_category")
+        if profile:
+            return str(profile)
+    return "w2"
+
+
+def allocate_session_overtime(
+    sessions: list[dict],
+    *,
+    threshold: Any = DEFAULT_OT_THRESHOLD,
+    enabled: bool = True,
+) -> dict[int, tuple[Decimal, Decimal]]:
+    """Walk eligible sessions in clock order and mark hours past the weekly threshold.
+
+    Returns session id -> (regular_hours, ot_hours). Hours stay on the session
+    that worked them. Callers filter by classification after this split.
+    """
+    ordered = sorted(sessions or [], key=_session_sort_key)
+    running = Decimal("0")
+    thr = _d(threshold)
+    if thr <= 0:
+        thr = DEFAULT_OT_THRESHOLD
+    out: dict[int, tuple[Decimal, Decimal]] = {}
+    for rec in ordered:
+        sid = int(rec["id"])
+        raw_hours = rec.get("hours")
+        if raw_hours is None:
+            raw_hours = rec.get("approved_hours")
+        hours = max(Decimal("0"), _d(raw_hours))
+        if not enabled:
+            out[sid] = (_q2(hours), Decimal("0.00"))
+            continue
+        start = running
+        end = running + hours
+        if end <= thr:
+            regular, ot = hours, Decimal("0")
+        elif start >= thr:
+            regular, ot = Decimal("0"), hours
+        else:
+            regular = thr - start
+            ot = hours - regular
+        running = end
+        out[sid] = (_q2(regular), _q2(ot))
+    return out
+
+
+def aggregate_classified_batch_lines(
+    records: list[dict],
+    *,
+    batch_category: str,
+    threshold_hours: Any = DEFAULT_OT_THRESHOLD,
+    ot_enabled: bool = True,
+) -> list[dict]:
+    """One payout-line payload per user for sessions in ``batch_category``.
+
+    Overtime is allocated across every session in ``records`` first, including
+    other classifications, then only this category's regular/OT hours are kept.
+    """
+    by_user: dict[int, list[dict]] = {}
+    for rec in records or []:
+        by_user.setdefault(int(rec["user_id"]), []).append(rec)
+    lines = []
+    for uid, recs in by_user.items():
+        alloc = allocate_session_overtime(
+            recs, threshold=threshold_hours, enabled=ot_enabled
+        )
+        matched = [
+            r for r in sorted(recs, key=_session_sort_key) if r.get("worker_category") == batch_category
+        ]
+        if not matched:
+            continue
+        regular = Decimal("0")
+        ot = Decimal("0")
+        provenance = []
+        session_ids = []
+        for rec in matched:
+            sid = int(rec["id"])
+            reg_h, ot_h = alloc.get(sid, (Decimal("0.00"), Decimal("0.00")))
+            regular += reg_h
+            ot += ot_h
+            session_ids.append(sid)
+            provenance.append(
+                {
+                    "shift_session_id": sid,
+                    "worker_category": rec.get("worker_category"),
+                    "classification_source": rec.get("classification_source") or "profile",
+                }
+            )
+        lines.append(
+            {
+                "user_id": uid,
+                "worker_name": matched[0].get("worker_name") or "",
+                "approved_hours": float(_q2(regular)),
+                "ot_hours": float(_q2(ot)),
+                "session_ids": session_ids,
+                "classification_provenance": provenance,
+            }
+        )
+    return lines

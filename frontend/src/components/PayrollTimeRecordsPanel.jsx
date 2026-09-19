@@ -46,6 +46,7 @@ import {
   patchPayrollTimeRecordSegment,
   postApprovePayrollTimeRecord,
   postBulkApprovePayrollTimeRecords,
+  postPayrollClassificationOverride,
   postPayrollTimeRecord,
 } from "../api";
 import {
@@ -60,14 +61,12 @@ import {
   formatPayrollRate,
 } from "../payroll/timeRecordPayroll";
 import { displayRoleLabel } from "../opsMobile/switchRoleFlowHelpers";
+import {
+  CLASSIFICATION_OVERRIDE_OPTIONS,
+  classificationSelectValue,
+  formatRecordClassificationLabel,
+} from "../payroll/payrollClassification";
 import { PayrollDateField, PayrollDateTimeField } from "./PayrollDateTimeField";
-
-const CATEGORY_SHORT = {
-  w2: "W-2",
-  contractor_1099: "1099",
-  temp: "Temp",
-  tryout: "Try Out",
-};
 
 const STATUS_OPTIONS = [
   { value: "all", label: "All statuses" },
@@ -222,6 +221,9 @@ export default function PayrollTimeRecordsPanel({
   const [calendarSettings, setCalendarSettings] = useState(null);
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
+  const [classNotice, setClassNotice] = useState("");
+  const [classEdit, setClassEdit] = useState(null);
+  const [classBusy, setClassBusy] = useState(false);
   const [editorError, setEditorError] = useState("");
   const [loading, setLoading] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
@@ -563,11 +565,34 @@ export default function PayrollTimeRecordsPanel({
     }
   };
 
+  const saveClassification = async () => {
+    if (!classEdit?.row?.id) return;
+    setClassBusy(true);
+    try {
+      const res = await postPayrollClassificationOverride(classEdit.row.id, {
+        payroll_classification_override: classEdit.value || null,
+        reason: classEdit.reason || "",
+      });
+      const warnings = res.data?.warnings || [];
+      setClassNotice(
+        warnings.length
+          ? warnings.map((w) => w.message).filter(Boolean).join(" ")
+          : "",
+      );
+      setClassEdit(null);
+      await load();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Could not update classification");
+    } finally {
+      setClassBusy(false);
+    }
+  };
+
   return (
     <Stack spacing={2} sx={{ width: "100%", minWidth: 0 }}>
-      {error ? (
-        <Alert severity="error" onClose={() => setError("")}>
-          {error}
+      {classNotice ? (
+        <Alert severity="warning" onClose={() => setClassNotice("")}>
+          {classNotice}
         </Alert>
       ) : null}
       {segmentWarning ? (
@@ -799,8 +824,27 @@ export default function PayrollTimeRecordsPanel({
                 >
                   {r.worker_name}
                 </TableCell>
-                <TableCell sx={{ whiteSpace: "nowrap" }}>
-                  {CATEGORY_SHORT[r.worker_category] || r.worker_category_label}
+                <TableCell sx={{ whiteSpace: "nowrap", minWidth: 168 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 700, display: "block" }}>
+                    {formatRecordClassificationLabel(r)}
+                  </Typography>
+                  <Select
+                    size="small"
+                    variant="standard"
+                    value={classificationSelectValue(r)}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      if (next === classificationSelectValue(r)) return;
+                      setClassEdit({ row: r, value: next, reason: "" });
+                    }}
+                    sx={{ fontSize: 12, maxWidth: 180 }}
+                  >
+                    {CLASSIFICATION_OVERRIDE_OPTIONS.map((opt) => (
+                      <MenuItem key={opt.value || "default"} value={opt.value}>
+                        {opt.label}
+                      </MenuItem>
+                    ))}
+                  </Select>
                 </TableCell>
                 <TableCell
                   sx={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
@@ -1219,6 +1263,37 @@ export default function PayrollTimeRecordsPanel({
             disabled={saving}
           >
             Delete segment
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={!!classEdit} onClose={() => !classBusy && setClassEdit(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>Payroll classification</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 1.5 }}>
+            {classEdit?.value
+              ? CLASSIFICATION_OVERRIDE_OPTIONS.find((opt) => opt.value === classEdit.value)?.label
+              : "Use employee default"}
+            {" "}
+            applies to this time record only. Hours stay as entered. An approved record must be
+            approved again before it can enter payroll.
+          </Typography>
+          <TextField
+            label="Reason (optional)"
+            value={classEdit?.reason || ""}
+            onChange={(e) =>
+              setClassEdit((prev) => (prev ? { ...prev, reason: e.target.value } : prev))
+            }
+            fullWidth
+            size="small"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setClassEdit(null)} disabled={classBusy}>
+            Cancel
+          </Button>
+          <Button variant="contained" onClick={saveClassification} disabled={classBusy}>
+            {classBusy ? "Saving…" : "Save classification"}
           </Button>
         </DialogActions>
       </Dialog>

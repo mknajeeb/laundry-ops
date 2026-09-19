@@ -1682,6 +1682,12 @@ export const deletePayrollTimeRecordSegment = (recordId, segmentId) =>
 export const postApprovePayrollTimeRecord = (recordId) =>
   axios.post(`${API_BASE}/api/ta/payroll/time-records/${recordId}/approve`, {});
 
+export const postPayrollClassificationOverride = (recordId, body) =>
+  axios.post(
+    `${API_BASE}/api/ta/payroll/time-records/${recordId}/classification-override`,
+    body,
+  );
+
 export const postBulkApprovePayrollTimeRecords = (body) =>
   axios.post(`${API_BASE}/api/ta/payroll/time-records/bulk-approve`, body);
 
