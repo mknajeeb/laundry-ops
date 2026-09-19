@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from unittest.mock import patch
 
 from backend.management_wf_folder_attribution import apply_override_to_bag
 from backend.management_wf_folder_performance import (
@@ -10,15 +11,18 @@ from backend.management_wf_folder_performance import (
     COMPARE_SAME_WEEKDAY_LAST_WEEK,
     COMPARE_TODAY,
     _assign_bag_into_folder_sessions,
+    _build_folder_sessions_for_user,
     _employee_picker_label,
     _limit_last_n_sessions,
     _public_session_card,
+    clip_folder_segments_to_epoch,
     compute_order_completion_timing,
     merge_day_payloads,
     resolve_comparison_window,
     resolve_folder_performance_window,
     weighted_aggregate_rates,
 )
+from backend.rinse_folding_folder_role_productivity import _hours
 
 
 DAY = date(2026, 8, 18)
@@ -166,7 +170,7 @@ class TestSummaryKpiStripRegression:
         assert summary["bags_per_hour"] == 4.0  # 18 / 4.5
         assert summary["lbs_per_hour"] == 80.0  # 360 / 4.5
 
-    def test_open_session_uses_last_completion_as_of_convention(self):
+    def test_open_session_denominator_runs_to_now(self):
         session_start = datetime(2026, 8, 19, 8, 31, 0)
         latest = datetime(2026, 8, 19, 12, 34, 0)
         now = datetime(2026, 8, 19, 14, 0, 0)
@@ -195,9 +199,8 @@ class TestSummaryKpiStripRegression:
             },
         ]
         card = _public_session_card(sess, orders)
-        # Same as employee card: open → last completion, never wall-clock now.
-        assert card["performance_basis"] == "last_completion"
-        assert card["performance_hours"] == 4.05
+        assert card["performance_basis"] == "open_session_now"
+        assert card["performance_hours"] == 5.4833
         assert card["role_session_hours"] == 5.4833
 
         day = {
@@ -215,11 +218,10 @@ class TestSummaryKpiStripRegression:
             "unmapped_orders": [],
         }
         summary = merge_day_payloads([day])["summary"]
-        assert summary["total_hours"] == 4.05
-        assert summary["bags_per_hour"] == round(2 / 4.05, 4)
-        assert summary["lbs_per_hour"] == round(80.0 / 4.05, 4)
-        # Must not use role window-to-now as the strip denominator.
-        assert summary["total_hours"] != card["role_session_hours"]
+        assert summary["total_hours"] == 5.4833
+        assert summary["bags_per_hour"] == round(2 / 5.4833, 4)
+        assert summary["lbs_per_hour"] == round(80.0 / 5.4833, 4)
+        assert summary["total_hours"] == card["role_session_hours"]
 
     def test_unmapped_orders_excluded_from_productivity_numerator(self):
         # Mapped only in employee attribution → strip numerator matches mapped.
@@ -500,7 +502,7 @@ class TestOverrideOntoSignedInNonFolderSession:
 
 
 class TestOpenSessionPerformanceEnd:
-    def test_open_session_uses_last_completion_not_now(self):
+    def test_open_session_denominator_ends_at_now(self):
         session_start = datetime(2026, 8, 19, 8, 31, 0)
         latest = datetime(2026, 8, 19, 12, 34, 0)
         now = datetime(2026, 8, 19, 14, 0, 0)
@@ -522,18 +524,18 @@ class TestOpenSessionPerformanceEnd:
             }
         ]
         perf = resolve_folder_performance_window(sess, orders)
-        assert perf["performance_basis"] == "last_completion"
-        assert perf["performance_end"] == latest
-        assert perf["role_session_hours"] == 5.4833  # role window to now (display only)
-        assert perf["performance_hours"] == 4.05  # to last completion
+        assert perf["performance_basis"] == "open_session_now"
+        assert perf["performance_end"] == now
+        assert perf["role_session_hours"] == 5.4833
+        assert perf["performance_hours"] == 5.4833
 
         card = _public_session_card(sess, orders)
-        assert card["bags_per_hour"] == round(1 / 4.05, 4)
-        assert card["performance_through_label"] == "Performance through last completion: 12:34 PM"
-        assert card["duration_label"] == "4h 3m"
-        assert "Open" in card["time_range_label"]
+        assert card["bags_per_hour"] == round(1 / 5.4833, 4)
+        assert card["performance_through_label"] is None
+        assert card["duration_label"] == "5h 29m"
+        assert card["time_range_label"] == "8:31 AM – Open · 5h 29m"
 
-    def test_open_session_zero_bags_shows_dash_rates(self):
+    def test_open_session_zero_bags_still_has_folder_hours(self):
         session_start = datetime(2026, 8, 19, 8, 31, 0)
         now = datetime(2026, 8, 19, 14, 0, 0)
         sess = {
@@ -543,9 +545,33 @@ class TestOpenSessionPerformanceEnd:
             "_end_dt": now,
         }
         card = _public_session_card(sess, [])
-        assert card["bags_per_hour"] is None
-        assert card["lbs_per_hour"] is None
-        assert card["performance_hours"] is None
+        assert card["performance_basis"] == "open_session_now"
+        assert card["performance_hours"] == 5.4833
+        assert card["bags_per_hour"] == 0.0
+        assert card["lbs_per_hour"] == 0.0
+
+    def test_open_idle_hour_after_last_completion_is_included(self):
+        session_start = datetime(2026, 9, 19, 8, 0, 0)
+        latest = datetime(2026, 9, 19, 12, 0, 0)
+        now = datetime(2026, 9, 19, 13, 0, 0)
+        sess = {
+            "session_id": "WF-IDLE",
+            "role_status": "open",
+            "_start_dt": session_start,
+            "_end_dt": now,
+        }
+        orders = [
+            {
+                "bag_id": "B1",
+                "completion_time": latest.isoformat(),
+                "credited_weight_lbs": 10.0,
+                "credited_weight_source": "EVIDENCE_PRE",
+            }
+        ]
+        perf = resolve_folder_performance_window(sess, orders)
+        assert perf["latest_completion"] == latest
+        assert perf["performance_end"] == now
+        assert perf["performance_hours"] == 5.0
 
     def test_closed_session_uses_actual_session_end(self):
         session_start = datetime(2026, 8, 18, 8, 31, 0)
@@ -574,3 +600,234 @@ class TestOpenSessionPerformanceEnd:
         assert card["performance_through_label"] is None
         assert "4:00 PM" in card["time_range_label"]
         assert card["duration_label"] == "7h 29m"
+
+
+def _role_segment(seg_id, role, start, end, *, category="RINSE_WF"):
+    return {
+        "id": seg_id,
+        "user_id": 7,
+        "category_code": category,
+        "role_code": role,
+        "started_at": start,
+        "ended_at": end,
+    }
+
+
+class TestFolderSessionBoundaryHours:
+    def test_folder_operator_folder_counts_only_folder_intervals(self):
+        day = date(2026, 8, 18)
+        segs = [
+            _role_segment(1, "FOLDER", datetime(2026, 8, 18, 8, 0), datetime(2026, 8, 18, 10, 0)),
+            _role_segment(2, "OPERATOR", datetime(2026, 8, 18, 10, 0), datetime(2026, 8, 18, 12, 0)),
+            _role_segment(3, "FOLDER", datetime(2026, 8, 18, 12, 0), datetime(2026, 8, 18, 14, 0)),
+        ]
+        sessions = _build_folder_sessions_for_user(
+            segs,
+            selected_date_et=day,
+            sessions_by_id={},
+            now_et=datetime(2026, 8, 18, 16, 0),
+        )
+        assert len(sessions) == 2
+        assert {s["role_code"] for s in sessions} == {"FOLDER"}
+        hours = sum(
+            _hours((s["_end_dt"] - s["_start_dt"]).total_seconds()) for s in sessions
+        )
+        assert hours == 4.0
+
+    def test_non_folder_roles_do_not_count(self):
+        day = date(2026, 8, 18)
+        segs = [
+            _role_segment(1, "OPERATOR", datetime(2026, 8, 18, 8, 0), datetime(2026, 8, 18, 10, 0)),
+            _role_segment(2, "SORT", datetime(2026, 8, 18, 10, 0), datetime(2026, 8, 18, 12, 0)),
+            _role_segment(
+                3,
+                "FOLDER",
+                datetime(2026, 8, 18, 12, 0),
+                datetime(2026, 8, 18, 14, 0),
+                category="RINSE_HD",
+            ),
+        ]
+        sessions = _build_folder_sessions_for_user(
+            segs,
+            selected_date_et=day,
+            sessions_by_id={},
+            now_et=datetime(2026, 8, 18, 16, 0),
+        )
+        assert sessions == []
+
+    def test_overlapping_folder_segments_do_not_double_count(self):
+        day = date(2026, 8, 18)
+        segs = [
+            _role_segment(1, "FOLDER", datetime(2026, 8, 18, 8, 0), datetime(2026, 8, 18, 12, 0)),
+            _role_segment(2, "FOLDER", datetime(2026, 8, 18, 10, 0), datetime(2026, 8, 18, 14, 0)),
+        ]
+        sessions = _build_folder_sessions_for_user(
+            segs,
+            selected_date_et=day,
+            sessions_by_id={},
+            now_et=datetime(2026, 8, 18, 16, 0),
+        )
+        assert len(sessions) == 2
+        hours = sum(
+            _hours((s["_end_dt"] - s["_start_dt"]).total_seconds()) for s in sessions
+        )
+        assert hours == 6.0
+        assert sessions[0]["_end_dt"] == datetime(2026, 8, 18, 10, 0)
+
+    def test_epoch_clip_is_the_performance_start(self):
+        epoch = datetime(2026, 9, 17, 22, 43, 16)
+        end = datetime(2026, 9, 18, 12, 0, 0)
+        clipped = clip_folder_segments_to_epoch(
+            {
+                7: [
+                    _role_segment(9, "FOLDER", datetime(2026, 9, 17, 8, 0), end),
+                ]
+            },
+            epoch,
+        )
+        sessions = _build_folder_sessions_for_user(
+            clipped[7],
+            selected_date_et=date(2026, 9, 18),
+            sessions_by_id={},
+            now_et=datetime(2026, 9, 18, 14, 0),
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["_start_dt"] == epoch
+        card = _public_session_card(sessions[0], [])
+        assert card["performance_basis"] == "session_end"
+        assert card["performance_hours"] == _hours((end - epoch).total_seconds())
+
+    def test_open_folder_segment_ends_at_current_et(self):
+        day = date(2026, 9, 19)
+        start = datetime(2026, 9, 19, 7, 57)
+        now = datetime(2026, 9, 19, 13, 20)
+        with patch(
+            "backend.rinse_folding_folder_role_productivity.eastern_today",
+            return_value=day,
+        ):
+            sessions = _build_folder_sessions_for_user(
+                [_role_segment(1, "FOLDER", start, None)],
+                selected_date_et=day,
+                sessions_by_id={},
+                now_et=now,
+            )
+        assert len(sessions) == 1
+        assert sessions[0]["role_status"] == "open"
+        assert sessions[0]["_end_dt"] == now
+        card = _public_session_card(sessions[0], [])
+        assert card["performance_basis"] == "open_session_now"
+        assert card["performance_hours"] == _hours((now - start).total_seconds())
+
+
+class TestManualAttributionPrecedence:
+    def test_existing_training_account_credit_is_not_replaced_without_override(self):
+        bag = {
+            "bag_id": "271V8S89G2",
+            "credited_employee": "Veewash (Training Account)",
+            "employee": "Veewash (Training Account)",
+            "completed_by_employee": "Veewash (Training Account)",
+        }
+        out = apply_override_to_bag(bag, None)
+        assert out["effective_employee"] == "Veewash (Training Account)"
+        assert out["credited_employee"] == "Veewash (Training Account)"
+        assert out["attribution_overridden"] is False
+
+    def test_271_manual_override_beats_weight_entry_user(self):
+        bag = {
+            "bag_id": "271V8S89G2",
+            "credited_employee": "Francis",
+            "employee": "Francis",
+            "completed_by_employee": "Francis",
+        }
+        override = {
+            "effective_employee_name": "Veewash (Training Account)",
+            "original_scanner_name": "Francis",
+            "original_employee_name": "Francis",
+            "effective_session_id": "WF-training",
+        }
+        out = apply_override_to_bag(bag, override)
+        assert out["effective_employee"] == "Veewash (Training Account)"
+        assert out["credited_employee"] == "Veewash (Training Account)"
+        assert out["employee"] == "Veewash (Training Account)"
+        assert out["completed_by_employee"] == "Veewash (Training Account)"
+        assert out["attribution_overridden"] is True
+        assert out["override_session_id"] == "WF-training"
+
+        rewritten = dict(out)
+        rewritten["credited_employee"] = "Francis"
+        rewritten["employee"] = "Francis"
+        rewritten["completed_by_employee"] = "Francis"
+        again = apply_override_to_bag(rewritten, override)
+        assert again["credited_employee"] == "Veewash (Training Account)"
+        assert again["effective_employee"] == "Veewash (Training Account)"
+
+
+class TestWeightedFolderHours:
+    def test_summary_uses_summed_folder_hours_not_mean_of_rates(self):
+        day = {
+            "employees": [
+                {
+                    "employee": "A",
+                    "orders_completed": 1,
+                    "total_pre_lbs": 10.0,
+                    "performance_hours": 1.0,
+                    "session_hours": 1.0,
+                    "session_count": 1,
+                    "sessions": [],
+                },
+                {
+                    "employee": "B",
+                    "orders_completed": 1,
+                    "total_pre_lbs": 10.0,
+                    "performance_hours": 2.0,
+                    "session_hours": 2.0,
+                    "session_count": 1,
+                    "sessions": [],
+                },
+            ],
+            "unmapped_orders": [],
+        }
+        summary = merge_day_payloads([day])["summary"]
+        assert summary["total_hours"] == 3.0
+        assert summary["lbs_per_hour"] == round(20.0 / 3.0, 4)
+        assert summary["bags_per_hour"] == round(2 / 3.0, 4)
+        assert summary["lbs_per_hour"] != 7.5
+
+    def test_zero_completion_folder_employee_reconciles_into_total_hours(self):
+        day = {
+            "employees": [
+                {
+                    "employee": "Producer",
+                    "orders_completed": 6,
+                    "total_pre_lbs": 154.8,
+                    "performance_hours": 5.0,
+                    "session_hours": 5.0,
+                    "session_count": 1,
+                    "sessions": [],
+                },
+                {
+                    "employee": "Singh (VeeWash)",
+                    "orders_completed": 0,
+                    "total_pre_lbs": 0.0,
+                    "performance_hours": 0.5,
+                    "session_hours": 0.5,
+                    "session_count": 1,
+                    "sessions": [],
+                },
+            ],
+            "unmapped_orders": [],
+        }
+        merged = merge_day_payloads([day])
+        singh = next(e for e in merged["employees"] if e["employee"] == "Singh (VeeWash)")
+        assert singh["orders_completed"] == 0
+        assert singh["total_pre_lbs"] == 0.0
+        assert singh["performance_hours"] == 0.5
+        assert singh["lbs_per_hour"] == 0.0
+        assert singh["bags_per_hour"] == 0.0
+        row_hours = round(
+            sum(float(e["performance_hours"]) for e in merged["employees"]),
+            4,
+        )
+        assert merged["summary"]["total_hours"] == row_hours == 5.5
+        assert merged["summary"]["employee_count"] == 2
+

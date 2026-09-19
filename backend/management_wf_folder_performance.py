@@ -495,6 +495,43 @@ def _build_sessions_from_segments(
     return out
 
 
+def _clip_overlapping_folder_sessions(
+    sessions: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Union Folder intervals. A later Folder segment owns time from its start.
+
+    Operator and other roles are already omitted before this runs. Overlapping
+    Folder segments are clipped so their durations are not added twice.
+    """
+    ordered = sorted(
+        (dict(s) for s in sessions or [] if isinstance(s, Mapping)),
+        key=lambda s: (
+            s.get("_start_dt") or datetime.max,
+            int(s.get("segment_id") or 0),
+        ),
+    )
+    kept: list[dict[str, Any]] = []
+    for i, sess in enumerate(ordered):
+        start = sess.get("_start_dt")
+        end = sess.get("_end_dt")
+        if not isinstance(start, datetime) or not isinstance(end, datetime):
+            kept.append(sess)
+            continue
+        if i + 1 < len(ordered):
+            nxt = ordered[i + 1].get("_start_dt")
+            if isinstance(nxt, datetime) and nxt >= start and end > nxt:
+                sess["_end_dt"] = nxt
+                sess["end_time"] = _iso(nxt)
+                sess["role_status"] = "closed"
+                sess["end_display"] = _iso(nxt)
+                sess["end_source"] = "next_folder_segment_start"
+                end = nxt
+        if end <= start:
+            continue
+        kept.append(sess)
+    return kept
+
+
 def _build_folder_sessions_for_user(
     segments: Sequence[Mapping[str, Any]],
     *,
@@ -502,13 +539,14 @@ def _build_folder_sessions_for_user(
     sessions_by_id: Mapping[int, Mapping[str, Any]],
     now_et: datetime | None,
 ) -> list[dict[str, Any]]:
-    return _build_sessions_from_segments(
+    built = _build_sessions_from_segments(
         segments,
         selected_date_et=selected_date_et,
         sessions_by_id=sessions_by_id,
         now_et=now_et,
         folder_only=True,
     )
+    return _clip_overlapping_folder_sessions(built)
 
 
 def _public_destination_sessions(sessions: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -622,11 +660,12 @@ def resolve_folder_performance_window(
     sess: Mapping[str, Any],
     orders: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Role session window vs performance rate denominator.
+    """Folder session boundary is the productivity denominator.
 
-    OPEN: performance_end = latest credited completion (never now).
-    CLOSED: performance_end = actual Folder role/session end.
-    OPEN with zero completions: no performance denominator.
+    OPEN: performance_end = current ET role end (segment start → now).
+    CLOSED: performance_end = actual Folder segment end.
+    Last credited completion is recorded and does not end the denominator.
+    An open session with no completions still has hours; the rate is zero.
     """
     start = sess.get("_start_dt") or _parse_dt(sess.get("start_time"))
     role_end = sess.get("_end_dt") or _parse_dt(sess.get("end_time"))
@@ -642,18 +681,14 @@ def resolve_folder_performance_window(
     performance_hours = None
     performance_basis = None
 
-    if is_open:
-        if latest is not None and start is not None and latest >= start:
-            performance_end = latest
-            performance_hours = _hours((latest - start).total_seconds())
-            performance_basis = "last_completion"
-        else:
-            performance_basis = "open_no_completions"
-    elif role_status == "closed":
-        if start is not None and role_end is not None and role_end >= start:
-            performance_end = role_end
-            performance_hours = role_session_hours
-            performance_basis = "session_end"
+    if start is not None and role_end is not None and role_end >= start:
+        performance_end = role_end
+        performance_hours = role_session_hours
+        performance_basis = "open_session_now" if is_open else "session_end"
+    elif is_open:
+        performance_basis = "open_no_end"
+    elif role_status == "unresolved":
+        performance_basis = "unresolved"
 
     return {
         "role_session_start": start,
@@ -671,25 +706,21 @@ def _session_timing_labels(
     sess: Mapping[str, Any],
     perf: Mapping[str, Any],
 ) -> dict[str, str | None]:
-    """Human labels separating role session window from performance denominator."""
+    """Human labels. The denominator is the Folder session, not last completion."""
     start = perf.get("role_session_start")
     role_end = perf.get("role_session_end")
-    latest = perf.get("latest_completion")
     role_status = str(perf.get("role_status") or "")
     role_hours = perf.get("role_session_hours")
     perf_hours = perf.get("performance_hours")
 
     if role_status == "open":
         time_range_label = f"{_fmt_clock(start) or '—'} – Open"
-        performance_through_label = (
-            f"Performance through last completion: {_fmt_clock(latest)}"
-            if latest is not None
-            else None
-        )
         duration_label = _fmt_duration_hours(perf_hours) if perf_hours else None
+        if duration_label:
+            time_range_label = f"{time_range_label} · {duration_label}"
         return {
             "time_range_label": time_range_label,
-            "performance_through_label": performance_through_label,
+            "performance_through_label": None,
             "duration_label": duration_label,
         }
 
@@ -860,7 +891,9 @@ def build_day_folder_performance(
     bags = apply_canonical_pre_to_folder_performance_bags(
         cursor, org, selected_date_et, bags
     )
-    # OI-window fold gate + missing-employee fill (no resolve_current_cycle).
+    # Automatic fold / weight-entry attribution, then manager override.
+    # Precedence: manual manager attribution > fold or weight-entry user.
+    # Recalculation must not replace an active override.
     bags = enrich_folder_performance_bags_with_oi_fold_attribution(
         cursor, org, selected_date_et, bags
     )
@@ -1090,7 +1123,9 @@ def build_day_folder_performance(
                 perf_hours_total += float(card["performance_hours"])
                 has_perf_hours = True
 
-        # Employees with Folder sessions OR mapped orders
+        # Employees with Folder sessions stay on the leaderboard even when
+        # they have not completed an order yet. Their hours are the same
+        # hours that feed Total Hours.
         if not emp_sessions and emp not in employee_orders:
             continue
 

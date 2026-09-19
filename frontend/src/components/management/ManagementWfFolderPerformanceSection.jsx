@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -47,6 +47,11 @@ import {
   postVeewashStep1Correction,
 } from "../../api";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
+import { businessTodayYmd } from "../../utils/businessTime";
+import {
+  FOLDER_PERFORMANCE_REFRESH_MS,
+  shouldPollFolderPerformance,
+} from "./performance/folderPerformanceRefresh";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import PerformanceDetailDrawer, {
   PerformanceFilterChip,
@@ -494,6 +499,8 @@ export default function ManagementWfFolderPerformanceSection({
   const [employeeFilter, setEmployeeFilter] = useState("all");
   const [graphMetric, setGraphMetric] = useState("lbs_hr");
   const [reviewEmployee, setReviewEmployee] = useState(null);
+  const loadInFlight = useRef(false);
+  const loadGen = useRef(0);
 
   const patchSessionPublication = (sessionId, publication) => {
     const sid = String(sessionId || "");
@@ -521,8 +528,14 @@ export default function ManagementWfFolderPerformanceSection({
 
   const load = useCallback(
     async (opts = {}) => {
-      setLoading(true);
-      setError("");
+      const silent = Boolean(opts.silent);
+      if (silent && loadInFlight.current) return;
+      const gen = ++loadGen.current;
+      loadInFlight.current = true;
+      if (!silent) {
+        setLoading(true);
+        setError("");
+      }
       try {
         const nextCompare = opts.compare ?? compare;
         const nextLastN = opts.last_n ?? lastN;
@@ -535,11 +548,21 @@ export default function ManagementWfFolderPerformanceSection({
           last_n: nextLastN,
           include_baseline: wantBaseline ? 1 : 0,
         });
-        setData(res.data || null);
+        const next = res.data || null;
+        if (gen !== loadGen.current) return;
+        setData((prev) => {
+          if (!next) return silent ? prev : next;
+          if (silent && prev?.deltas && !next.deltas) {
+            return { ...next, deltas: prev.deltas };
+          }
+          return next;
+        });
         const b = res.data?.folder_benchmark_lbs_hr;
-        if (b != null) setBenchDraft(String(b));
+        if (!silent && b != null) setBenchDraft(String(b));
         // Lazy baseline deltas for Today — do not block first paint.
+        // The clock refresh does not repeat this; rates do not depend on it.
         if (
+          !silent &&
           nextCompare === "today" &&
           !wantBaseline &&
           !(opts && opts.skip_lazy_baseline)
@@ -559,10 +582,13 @@ export default function ManagementWfFolderPerformanceSection({
             });
         }
       } catch (err) {
-        setError(apiErr(err, "Unable to load Folder Performance"));
-        setData(null);
+        if (!silent) {
+          setError(apiErr(err, "Unable to load Folder Performance"));
+          setData(null);
+        }
       } finally {
-        setLoading(false);
+        if (gen === loadGen.current) loadInFlight.current = false;
+        if (!silent) setLoading(false);
       }
     },
     [dateEt, compare, lastN],
@@ -571,6 +597,16 @@ export default function ManagementWfFolderPerformanceSection({
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!shouldPollFolderPerformance({ compare, dateEt, todayYmd: businessTodayYmd() })) {
+      return undefined;
+    }
+    const id = window.setInterval(() => {
+      load({ silent: true, skip_lazy_baseline: true });
+    }, FOLDER_PERFORMANCE_REFRESH_MS);
+    return () => window.clearInterval(id);
+  }, [compare, dateEt, load]);
 
   const openSession = async (session) => {
     setSessionModal(session);
