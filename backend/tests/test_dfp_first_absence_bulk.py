@@ -310,14 +310,10 @@ def test_qualify_uses_bulk_not_per_bag_loop():
                 "9B5V934T45": {
                     "id": 7203,
                     "scrape_meta": {
-                        "source_mode": "ship_to_vendor_window",
-                        "tickets_sources": [
-                            {
-                                "label": "wash_and_fold",
-                                "ship_to_vendor_date_start": "2026-09-09",
-                                "ship_to_vendor_date_end": "2026-09-10",
-                            }
-                        ],
+                        "absence_capable": True,
+                        "source_inspected_complete": True,
+                        "stopped_reason": "no_next_page_ui",
+                        "full_traverse": True,
                     },
                 }
             },

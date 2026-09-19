@@ -606,8 +606,16 @@ def load_day_job_segments_by_user(
     *,
     selected_date_et: date,
     folder_only: bool = False,
+    not_ended_before: datetime | None = None,
 ) -> dict[int, list[dict[str, Any]]]:
-    """Load shift_job_segments overlapping the selected ET day (optionally Folder-only)."""
+    """Load shift_job_segments overlapping the selected ET day (optionally Folder-only).
+
+    ``not_ended_before`` is a naive ET wall used only by WF operational Performance.
+    Payroll/attendance callers omit it and keep the full historical segment.
+    Segments that ended at or before the floor are excluded in SQL
+    (idx_sjs_session covers shift_session_id, started_at; user_id filter is the
+    existing day-overlap access path).
+    """
     from backend.ta_helpers import table_exists
 
     ids = sorted({int(u) for u in user_ids if u})
@@ -619,13 +627,20 @@ def load_day_job_segments_by_user(
 
     day_start = naive_et_day_start(selected_date_et)
     day_end_excl = day_start + timedelta(days=1)
+    overlap_floor = day_start
+    if not_ended_before is not None:
+        floor = not_ended_before.replace(tzinfo=None) if not_ended_before.tzinfo else not_ended_before
+        if floor >= day_end_excl:
+            return out
+        if floor > overlap_floor:
+            overlap_floor = floor
     org = int(organization_id)
     chunk = 200
     for i in range(0, len(ids), chunk):
         part = ids[i : i + chunk]
         placeholders = ",".join(["%s"] * len(part))
         folder_filter = ""
-        args: list[Any] = [org, *part, day_end_excl, day_start]
+        args: list[Any] = [org, *part, day_end_excl, overlap_floor]
         if folder_only:
             folder_filter = (
                 " AND UPPER(COALESCE(sjs.category_code, '')) = %s"

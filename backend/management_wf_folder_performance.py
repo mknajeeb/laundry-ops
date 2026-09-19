@@ -542,7 +542,77 @@ def _order_completion_ts(order: Mapping[str, Any]) -> datetime | None:
     )
 
 
+def _operational_epoch_wall(cursor, organization_id: int):
+    """Naive ET epoch wall for WF operational Performance, or None.
+
+    Payroll/attendance never call this. MagicMock unit-test cursors are skipped
+    so schema-cache lookups are not polluted.
+    """
+    if type(cursor).__module__.startswith("unittest.mock"):
+        return None
+    from backend.wf_ops_reset_epoch import epoch_scan_wall, get_wf_reset_epoch_at
+
+    try:
+        return epoch_scan_wall(get_wf_reset_epoch_at(cursor, int(organization_id)))
+    except Exception:
+        return None
+
+
+def clip_folder_segments_to_epoch(
+    segs_by_user: dict[int, list[dict[str, Any]]],
+    epoch_wall: datetime | None,
+) -> dict[int, list[dict[str, Any]]]:
+    """Credit only the post-epoch portion of Folder segments.
+
+    Copies rows. Does not update ``shift_job_segments``. A segment that starts
+    before the epoch and ends after it keeps ``ended_at`` and moves ``started_at``
+    forward to the epoch wall. A segment that ends at or before the epoch is dropped.
+    """
+    if epoch_wall is None:
+        return segs_by_user
+    wall = epoch_wall.replace(tzinfo=None) if epoch_wall.tzinfo else epoch_wall
+    out: dict[int, list[dict[str, Any]]] = {}
+    for uid, segs in (segs_by_user or {}).items():
+        kept: list[dict[str, Any]] = []
+        for seg in segs or []:
+            row = dict(seg)
+            start = row.get("started_at")
+            end = row.get("ended_at")
+            if isinstance(start, datetime) and start < wall:
+                row["started_at"] = wall
+                row["wf_ops_epoch_clipped"] = True
+                start = wall
+            if isinstance(end, datetime) and isinstance(start, datetime) and end <= start:
+                continue
+            kept.append(row)
+        out[uid] = kept
+    return out
+
+
+def _load_operational_folder_segments(
+    cursor,
+    organization_id: int,
+    user_ids: Sequence[int],
+    *,
+    selected_date_et: date,
+):
+    """Day segments for WF Performance, fenced at wf_reset_epoch_at when set."""
+    epoch_wall = _operational_epoch_wall(cursor, organization_id)
+    segs = load_day_job_segments_by_user(
+        cursor,
+        organization_id,
+        user_ids,
+        selected_date_et=selected_date_et,
+        folder_only=False,
+        not_ended_before=epoch_wall,
+    )
+    return clip_folder_segments_to_epoch(segs, epoch_wall)
+
+
 def _latest_credited_completion_ts(orders: Sequence[Mapping[str, Any]]) -> datetime | None:
+    times = [_order_completion_ts(o) for o in orders or []]
+    times = [t for t in times if t is not None]
+    return max(times) if times else None
     times = [_order_completion_ts(o) for o in orders or []]
     times = [t for t in times if t is not None]
     return max(times) if times else None
@@ -859,8 +929,8 @@ def build_day_folder_performance(
         )
 
     user_ids = sorted(set(all_mapped_uids) | set(name_to_uid.values()))
-    segs_by_user = load_day_job_segments_by_user(
-        cursor, org, user_ids, selected_date_et=selected_date_et, folder_only=False
+    segs_by_user = _load_operational_folder_segments(
+        cursor, org, user_ids, selected_date_et=selected_date_et
     )
     session_ids: list[int] = []
     for segs in segs_by_user.values():
@@ -1614,9 +1684,8 @@ def list_move_destinations(
         )
 
     user_ids = sorted(uid_to_meta.keys())
-    # Day-scoped: only segments overlapping selected_date_et.
-    segs_by_user = load_day_job_segments_by_user(
-        cursor, org, user_ids, selected_date_et=selected_date_et, folder_only=False
+    segs_by_user = _load_operational_folder_segments(
+        cursor, org, user_ids, selected_date_et=selected_date_et
     )
     session_ids: list[int] = []
     for segs in segs_by_user.values():

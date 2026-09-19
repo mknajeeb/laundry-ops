@@ -80,6 +80,9 @@ export function pickCurrentWorkload(rinse, seg) {
       open: asInt(cw.open ?? cw.counts?.open),
       pending: asInt(cw.pending ?? cw.counts?.pending),
       review: asInt(cw.review ?? cw.counts?.review),
+      presenceUnconfirmed: asInt(
+        cw.presence_unconfirmed ?? cw.counts?.presence_unconfirmed,
+      ),
       items: Array.isArray(cw.items) ? cw.items : [],
       dateIndependent: cw.date_independent !== false,
     };
@@ -89,6 +92,7 @@ export function pickCurrentWorkload(rinse, seg) {
     open: h.currentOpen,
     pending: h.pending,
     review: h.review,
+    presenceUnconfirmed: 0,
     items: [],
     dateIndependent: true,
   };

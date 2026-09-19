@@ -817,6 +817,7 @@ def _overlay_lifecycle_wf_segment(
     completed = _int_or_zero(counts.get("completed"))
     review = _int_or_zero(counts.get("review"))
     pending = _int_or_zero(counts.get("pending"))
+    unconfirmed = _int_or_zero(counts.get("presence_unconfirmed"))
     workload = _int_or_zero(counts.get("workload"))  # open only
     current_workload = wl.get("current_workload") or {}
     selected_completed = wl.get("selected_date_completed") or {}
@@ -849,6 +850,7 @@ def _overlay_lifecycle_wf_segment(
         "open": current_open,
         "pending": pending,
         "review": review,
+        "presence_unconfirmed": unconfirmed,
         "items": project_cw_items_for_today(current_workload.get("items") or []),
         "date_independent": True,
         "source": current_workload.get("source") or wl.get("source"),

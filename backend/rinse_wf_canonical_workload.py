@@ -644,6 +644,7 @@ def get_canonical_wf_workload(
 
     pending = frozenset(current.get("pending") or [])
     review_fs = frozenset(current.get("review") or [])
+    unconfirmed = frozenset(current.get("presence_unconfirmed") or [])
     open_only = frozenset(current.get("open") or [])
     completed = frozenset(selected.get("completed") or [])
     completed_map = dict(selected.get("completion_by_bag") or {})
@@ -675,7 +676,13 @@ def get_canonical_wf_workload(
             "bag_id": bid,
             "service_type": "WF",
             "effective_status": (
-                OUTCOME_REVIEW_REQUIRED if bid in review_fs else OUTCOME_PENDING
+                OUTCOME_REVIEW_REQUIRED
+                if bid in review_fs
+                else (
+                    "presence_unconfirmed"
+                    if bid in unconfirmed
+                    else OUTCOME_PENDING
+                )
             ),
             "new_or_carryover": None,
             "review_reason_codes": codes,
@@ -703,7 +710,9 @@ def get_canonical_wf_workload(
             "order_instance_id": comp.get("order_instance_id"),
         }
 
-    disjoint_open = not (pending & review_fs)
+    disjoint_open = not (pending & review_fs) and not (pending & unconfirmed) and not (
+        review_fs & unconfirmed
+    )
     invariants_ok = disjoint_open and len(historical) == 0 and missing_fs <= open_only
 
     return {
@@ -712,6 +721,7 @@ def get_canonical_wf_workload(
         "completed": completed,
         "pending": pending,
         "review": review_fs,
+        "presence_unconfirmed": unconfirmed,
         "bag_ids": bag_ids,
         "new_today": new_today,
         "carryover": carryover,
@@ -721,6 +731,7 @@ def get_canonical_wf_workload(
             "completed": len(completed),
             "pending": len(pending),
             "review": len(review_fs),
+            "presence_unconfirmed": len(unconfirmed),
             # Workload count is Current Workload open only (not a daily equation).
             "workload": len(open_only),
             "new_today": 0,
@@ -740,6 +751,7 @@ def get_canonical_wf_workload(
         "current_workload": {
             "pending": pending,
             "review": review_fs,
+            "presence_unconfirmed": unconfirmed,
             "open": open_only,
             "counts": dict(current.get("counts") or {}),
             "items": list(current.get("items") or []),
@@ -837,16 +849,23 @@ def assert_canonical_workload_invariants(workload: Mapping[str, Any]) -> None:
     """Raise AssertionError when lifecycle membership invariants fail."""
     pending = set(workload.get("pending") or [])
     review = set(workload.get("review") or [])
+    unconfirmed = set(workload.get("presence_unconfirmed") or [])
     historical = set(workload.get("historical_completed_in_workload") or [])
     missing = set(workload.get("missing_from_portal") or [])
-    open_bags = pending | review
+    open_bags = pending | review | unconfirmed
     cw = workload.get("current_workload") or {}
     if cw:
         cw_open = set(cw.get("open") or [])
         if cw_open != open_bags:
-            raise AssertionError("current_workload.open != pending∪review")
+            raise AssertionError("current_workload.open != pending∪review∪presence_unconfirmed")
     if pending & review:
         raise AssertionError("pending/review not mutually exclusive")
+    if pending & unconfirmed:
+        raise AssertionError("pending/presence_unconfirmed not mutually exclusive")
+    if review & unconfirmed:
+        raise AssertionError("review/presence_unconfirmed not mutually exclusive")
+    if missing & unconfirmed:
+        raise AssertionError("missing/presence_unconfirmed not mutually exclusive")
     if historical:
         raise AssertionError(
             f"historical_completed_in_workload non-empty: {sorted(historical)[:10]}"

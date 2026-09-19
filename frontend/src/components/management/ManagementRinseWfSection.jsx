@@ -423,14 +423,15 @@ export default function ManagementRinseWfSection({
         <RushFilterChips value={rushFilter} onChange={onRushChange} disabled={snapshotUnavailable} />
       </Box>
 
-      <BlockLabel hint={`date-free · ${fmtInt(currentWorkload.open)} open total · Pending + Review are mutually exclusive`}>
+      <BlockLabel hint={`date-free · ${fmtInt(currentWorkload.open)} open = ${fmtInt(currentWorkload.pending)} Pending + ${fmtInt(currentWorkload.review)} Review + ${fmtInt(currentWorkload.presenceUnconfirmed)} Presence Unconfirmed`}>
         Current Workload
       </BlockLabel>
-      <CardGrid columns={{ xs: 2, sm: 2 }}>
+      <CardGrid columns={{ xs: 1, sm: 3 }}>
         {primaryLoading ? (
           <>
             <TodayTapCardSkeleton tone="pending" />
             <TodayTapCardSkeleton tone="review" />
+            <TodayTapCardSkeleton tone="unconfirmed" />
           </>
         ) : (
           <>
@@ -440,7 +441,7 @@ export default function ManagementRinseWfSection({
               sub={
                 snapshotUnavailable
                   ? undefined
-                  : `of ${fmtInt(currentWorkload.open)} open`
+                  : "actionable · currently in portal"
               }
               tone="pending"
               onClick={
@@ -455,7 +456,7 @@ export default function ManagementRinseWfSection({
               sub={
                 snapshotUnavailable
                   ? undefined
-                  : `of ${fmtInt(currentWorkload.open)} open`
+                  : "Specialty, split, weight, manual"
               }
               tone="review"
               warn={!snapshotUnavailable && currentWorkload.review > 0}
@@ -470,6 +471,21 @@ export default function ManagementRinseWfSection({
                         nonce: Date.now(),
                       });
                     }
+              }
+            />
+            <TodayTapCard
+              label="Presence Unconfirmed"
+              value={snapshotUnavailable ? "—" : fmtInt(currentWorkload.presenceUnconfirmed)}
+              sub={
+                snapshotUnavailable
+                  ? undefined
+                  : "not Pending · not Missing"
+              }
+              tone="unconfirmed"
+              onClick={
+                snapshotUnavailable
+                  ? undefined
+                  : () => setCurrentWorkloadDialog({ open: true, filter: "presence_unconfirmed" })
               }
             />
           </>
@@ -1098,9 +1114,11 @@ export default function ManagementRinseWfSection({
           <Typography sx={{ fontSize: 12, fontWeight: 600, color: "#64748b" }}>
             {currentWorkloadDialog.filter === "review"
               ? "Review · open order instances · no selected date"
-              : currentWorkloadDialog.filter === "pending"
-                ? "Pending · open order instances · no selected date"
-                : "Open order instances · no selected date"}
+              : currentWorkloadDialog.filter === "presence_unconfirmed"
+                ? "Presence Unconfirmed · open orders with no authoritative portal status · not Pending · not Missing"
+                : currentWorkloadDialog.filter === "pending"
+                  ? "Pending · currently in portal · no selected date"
+                  : "Open order instances · no selected date"}
           </Typography>
           <IconButton
             aria-label="Close"
@@ -1116,17 +1134,21 @@ export default function ManagementRinseWfSection({
             const items =
               currentWorkloadDialog.filter === "review"
                 ? allItems.filter((row) => row.status === "review_required")
-                : currentWorkloadDialog.filter === "pending"
-                  ? allItems.filter((row) => row.status !== "review_required")
-                  : allItems;
+                : currentWorkloadDialog.filter === "presence_unconfirmed"
+                  ? allItems.filter((row) => row.status === "presence_unconfirmed")
+                  : currentWorkloadDialog.filter === "pending"
+                    ? allItems.filter((row) => row.status === "pending")
+                    : allItems;
             if (items.length === 0) {
               return (
                 <Typography sx={{ fontSize: 13, color: "#64748b" }}>
                   {currentWorkloadDialog.filter === "review"
                     ? "No orders need review."
-                    : currentWorkloadDialog.filter === "pending"
-                      ? "No pending open orders."
-                      : "No open orders."}
+                    : currentWorkloadDialog.filter === "presence_unconfirmed"
+                      ? "No orders have unconfirmed portal status."
+                      : currentWorkloadDialog.filter === "pending"
+                        ? "No pending open orders."
+                        : "No open orders."}
                 </Typography>
               );
             }
@@ -1174,7 +1196,11 @@ export default function ManagementRinseWfSection({
                           ) : null}
                         </Typography>
                         <Typography sx={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>
-                          {row.status === "review_required" ? "Review" : "Pending"}
+                          {row.status === "review_required"
+                            ? "Review"
+                            : row.status === "presence_unconfirmed"
+                              ? "Presence Unconfirmed"
+                              : "Pending"}
                           {row.rush_status ? ` · ${row.rush_status}` : ""}
                           {displayIdCollides(row, items)
                             ? ` · OI ${row.order_instance_id}`

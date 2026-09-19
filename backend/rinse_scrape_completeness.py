@@ -65,6 +65,16 @@ def _env_float(name: str, default: float) -> float:
 # Below this prior-population size we do not apply the row-drop guard (small
 # populations swing legitimately, e.g. overnight).
 SCRAPE_GUARD_MIN_PRIOR_POPULATION = _env_int("SCRAPE_GUARD_MIN_PRIOR_POPULATION", 50)
+
+# Identity retention required before a same-sized scrape may deactivate the
+# prior board. Measured on org 3 at_vendor success runs 8502–8633 (116
+# consecutive pairs, 2026-09-18): the only retained fraction below 0.50 was
+# 0.00 (presence run 8583→8584, 142 vs 141, zero shared bag ids). Every other
+# pair whose prior board had >= 50 bags retained at least 0.95. The open gap
+# (0.00, 0.95) is empty, so 0.50 blocks that discontinuity without touching
+# ordinary 1–7 bag departures. Boards under the population floor are not
+# gated — small samples (7–8 bags) legitimately sit near 0.86.
+GENERATION_DISCONTINUITY_MIN_RETAINED = 0.50
 # A run is anomalous when captured rows fall below this fraction of the prior
 # complete run's rows (e.g. 0.60 → a >40% drop is suspicious).
 SCRAPE_GUARD_MIN_ROW_FRACTION = _env_float("SCRAPE_GUARD_MIN_ROW_FRACTION", 0.60)
@@ -114,6 +124,39 @@ def _levels_consistent(a: int | None, b: int | None) -> bool:
         return False
     lo, hi = (a, b) if a <= b else (b, a)
     return lo >= SCRAPE_GUARD_MIN_ROW_FRACTION * hi
+
+
+def generation_identity_allows_absence(
+    *,
+    prior_ids: set[str] | frozenset[str],
+    seen_ids: set[str] | frozenset[str],
+) -> tuple[bool, dict[str, Any]]:
+    """True when seen ids may deactivate bags missing from this scrape.
+
+    Same row count is not enough. A near-zero identity overlap with the
+    previous active board is a generation break, not a departure.
+    """
+    prior = {str(b) for b in prior_ids if b}
+    seen = {str(b) for b in seen_ids if b}
+    prior_n = len(prior)
+    retained = len(prior & seen)
+    fraction = (retained / prior_n) if prior_n else 1.0
+    detail = {
+        "prior_active": prior_n,
+        "seen": len(seen),
+        "retained": retained,
+        "retained_fraction": fraction,
+        "min_prior": SCRAPE_GUARD_MIN_PRIOR_POPULATION,
+        "min_retained_fraction": GENERATION_DISCONTINUITY_MIN_RETAINED,
+    }
+    if prior_n < SCRAPE_GUARD_MIN_PRIOR_POPULATION:
+        detail["reason"] = "prior_below_floor"
+        return True, detail
+    if fraction < GENERATION_DISCONTINUITY_MIN_RETAINED:
+        detail["reason"] = "generation_discontinuity"
+        return False, detail
+    detail["reason"] = "identity_continuous"
+    return True, detail
 
 
 def evaluate_scrape_completeness(
@@ -350,11 +393,22 @@ def confirm_disappearances_from_runs(
       absent_streak == 0               → present (still in the latest complete scrape)
     """
     # Most-recent trustworthy runs first.
-    trusted = [r for r in sorted(
-        trust_runs,
-        key=lambda r: (r.get("started_at") or 0, int(r.get("id") or 0)),
-        reverse=True,
-    ) if r.get("trustworthy")]
+    from backend.rinse_portal_scrape_meta import scrape_explicitly_prohibits_absence
+
+    def _absence_authority(run: Mapping[str, Any]) -> bool:
+        meta = _extract_meta(run)
+        return not scrape_explicitly_prohibits_absence(
+            meta if isinstance(meta, dict) else None
+        )
+
+    trusted = [
+        r for r in sorted(
+            trust_runs,
+            key=lambda r: (r.get("started_at") or 0, int(r.get("id") or 0)),
+            reverse=True,
+        )
+        if r.get("trustworthy") and _absence_authority(r)
+    ]
 
     out: dict[str, dict[str, Any]] = {}
     for raw in candidate_bag_ids:

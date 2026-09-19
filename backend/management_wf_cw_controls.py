@@ -21,6 +21,7 @@ from backend.rinse_veewash_workload import (
     OUTCOME_REVIEW_REQUIRED,
     REASON_MANAGER_SENT_FOR_REVIEW,
 )
+from backend.rinse_wf_presence_unconfirmed import OUTCOME_PRESENCE_UNCONFIRMED
 from backend.ta_helpers import table_exists
 
 OVERRIDE_MANUAL_REVIEW = "manual_review"
@@ -185,14 +186,17 @@ def apply_cw_manager_overlay(
     items_in = list(out.get("items") or [])
     natural_pending = frozenset(out.get("pending") or [])
     natural_review = frozenset(out.get("review") or [])
+    natural_unconfirmed = frozenset(out.get("presence_unconfirmed") or [])
     natural_open = frozenset(out.get("open") or [])
 
     out["oi_pending"] = natural_pending
     out["oi_review"] = natural_review
+    out["oi_presence_unconfirmed"] = natural_unconfirmed
     out["oi_open"] = natural_open
     out["oi_counts"] = {
         "pending": len(natural_pending),
         "review": len(natural_review),
+        "presence_unconfirmed": len(natural_unconfirmed),
         "open": len(natural_open),
     }
 
@@ -245,6 +249,12 @@ def apply_cw_manager_overlay(
             item["review_origin"] = "system"
             item["system_review_reason_codes"] = system_codes
             item.update(public_cw_override_fields(None))
+        elif bid in natural_unconfirmed:
+            item["status"] = OUTCOME_PRESENCE_UNCONFIRMED
+            item["review_reason_codes"] = []
+            item["review_origin"] = None
+            item["system_review_reason_codes"] = []
+            item.update(public_cw_override_fields(None))
         else:
             item["status"] = OUTCOME_PENDING
             item["review_reason_codes"] = []
@@ -259,21 +269,32 @@ def apply_cw_manager_overlay(
         if str(i.get("status") or "").strip().lower() == OUTCOME_REVIEW_REQUIRED
     }
     review_bags.discard(None)
+    unconfirmed_bags = {
+        normalize_bag_id(i.get("bag_id"))
+        for i in new_items
+        if str(i.get("status") or "").strip().lower() == OUTCOME_PRESENCE_UNCONFIRMED
+    }
+    unconfirmed_bags.discard(None)
+    unconfirmed_bags -= review_bags
     pending_bags = {
         normalize_bag_id(i.get("bag_id"))
         for i in new_items
-        if normalize_bag_id(i.get("bag_id")) and normalize_bag_id(i.get("bag_id")) not in review_bags
+        if normalize_bag_id(i.get("bag_id"))
+        and normalize_bag_id(i.get("bag_id")) not in review_bags
+        and normalize_bag_id(i.get("bag_id")) not in unconfirmed_bags
     }
-    open_bags = frozenset(pending_bags | review_bags)
+    open_bags = frozenset(pending_bags | review_bags | unconfirmed_bags)
 
     out["items"] = new_items
     out["pending"] = frozenset(pending_bags)
     out["review"] = frozenset(review_bags)
+    out["presence_unconfirmed"] = frozenset(unconfirmed_bags)
     out["open"] = open_bags
     out["excluded_from_workload"] = frozenset(excluded & natural_open)
     out["counts"] = {
         "pending": len(pending_bags),
         "review": len(review_bags),
+        "presence_unconfirmed": len(unconfirmed_bags),
         "open": len(open_bags),
         "excluded": len(excluded & natural_open),
     }

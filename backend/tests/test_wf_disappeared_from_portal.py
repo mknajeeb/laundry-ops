@@ -45,10 +45,12 @@ def test_ship_window_bounds_from_meta():
     )
 
 
-def test_stv_in_window_qualifies():
+def test_stv_in_window_does_not_qualify_without_absence_capability():
+    """Ship-window traversal is discovery only, even when STV is inside the window."""
     meta = {
         "source_mode": "ship_to_vendor_window",
         "absence_capable": False,
+        "full_traverse": True,
         "tickets_sources": [
             {
                 "label": "wash_and_fold",
@@ -57,7 +59,7 @@ def test_stv_in_window_qualifies():
             }
         ],
     }
-    assert stv_still_in_source_window(
+    assert not stv_still_in_source_window(
         cycle_anchor_at=datetime(2026, 9, 9, 22, 4),
         scrape_meta=meta,
     )
@@ -82,8 +84,8 @@ def test_d_window_rolloff_does_not_qualify():
     )
 
 
-def test_a_confirmed_in_window_open_oi_qualifies():
-    """Previously present + authoritative successful disappearance + open OI."""
+def test_a_ship_window_confirmed_open_oi_does_not_qualify():
+    """absence_capable=false must not publish Missing From Portal."""
     anchor = datetime(2026, 9, 9, 22, 4)
     oi = _oi("9B5V934T45", anchor=anchor, oid=4942)
     cursor = MagicMock()
@@ -123,6 +125,7 @@ def test_a_confirmed_in_window_open_oi_qualifies():
                     "scrape_meta": {
                         "source_mode": "ship_to_vendor_window",
                         "absence_capable": False,
+                        "full_traverse": True,
                         "tickets_sources": [
                             {
                                 "label": "wash_and_fold",
@@ -136,10 +139,7 @@ def test_a_confirmed_in_window_open_oi_qualifies():
         ),
     ):
         out = qualify_disappeared_from_portal_bags(cursor, 3, [oi])
-    assert "9B5V934T45" in out
-    assert out["9B5V934T45"]["reason_code"] == REASON_DISAPPEARED_FROM_PORTAL
-    assert out["9B5V934T45"]["last_present_run_id"] == 7202
-    assert out["9B5V934T45"]["first_absent_run_id"] == 7203
+    assert out == {}
 
 
 def test_b_scrape_failure_no_transition():

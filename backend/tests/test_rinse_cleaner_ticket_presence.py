@@ -149,11 +149,28 @@ class TestPresenceApplyDryRun:
         store: dict[tuple[int, str], dict] = {}
         cursor.lastrowid = 1
         run_rows: dict[tuple[int, str], dict] = {}
+        run_headers: list[int] = []
 
         def execute(sql, args=None):
             args = args or ()
             s = " ".join(str(sql).split())
             if "CREATE TABLE" in s or s.startswith("ALTER TABLE"):
+                return
+            if "FROM rinse_cleaner_ticket_presence_runs" in s and "ORDER BY id DESC" in s:
+                newest = list(reversed(run_headers))[:2]
+                cursor.fetchall.return_value = [{"id": rid} for rid in newest]
+                return
+            if (
+                "FROM rinse_cleaner_ticket_presence_run_rows" in s
+                and "WHERE presence_run_id=%s" in s
+                and "bag_id=%s" not in s
+            ):
+                rid = int(args[0])
+                cursor.fetchall.return_value = [
+                    {"bag_id": bag}
+                    for (run_id, bag) in run_rows
+                    if run_id == rid
+                ]
                 return
             if "FROM rinse_cleaner_ticket_presence_runs" in s and "ORDER BY started_at" in s:
                 cursor.fetchall.return_value = []
@@ -224,6 +241,7 @@ class TestPresenceApplyDryRun:
             elif "INSERT INTO rinse_cleaner_ticket_presence_runs" in s:
                 cursor._next_run_id = int(getattr(cursor, "_next_run_id", 41)) + 1
                 cursor.lastrowid = cursor._next_run_id
+                run_headers.append(cursor._next_run_id)
             elif "INSERT INTO rinse_cleaner_ticket_presence " in s or (
                 "INSERT INTO rinse_cleaner_ticket_presence\n" in str(sql)
             ) or "INSERT INTO rinse_cleaner_ticket_presence (" in s:

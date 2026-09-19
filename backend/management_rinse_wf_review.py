@@ -1016,6 +1016,82 @@ def _fresh_review_reasons_from_day_bags(
     }
 
 
+def authoritative_wf_bulk_review_ids(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+) -> list[str]:
+    """WF order instances with uncleared post-epoch current-cycle bulk scans.
+
+    Completed and open WF OIs both qualify. Hang Dry bags with no WF order
+    instance are not in the candidate set. Saved ``rinse_bag_bulk_workitems``
+    rows are not required — the scan is the evidence. Pre-epoch scans do not
+    qualify. One batched scan load, not a per-bag query.
+    """
+    from backend.rinse_bag_completion import normalize_bag_id
+    from backend.rinse_bulk_workitems import (
+        bag_bulk_review_cleared,
+        load_bag_bulk_lines,
+        load_bulk_resolutions,
+        load_bulk_workitem_scan_map,
+    )
+    from backend.ta_helpers import table_exists
+    from backend.wf_ops_reset_epoch import (
+        evidence_on_or_after_epoch,
+        get_wf_reset_epoch_at,
+    )
+
+    if not table_exists(cursor, "rinse_order_instances"):
+        return []
+    cursor.execute(
+        """
+        SELECT bag_id
+        FROM rinse_order_instances
+        WHERE organization_id = %s
+          AND UPPER(COALESCE(service_type, 'WF')) = 'WF'
+        """,
+        (int(organization_id),),
+    )
+    ids = sorted(
+        {
+            normalize_bag_id(row.get("bag_id") if isinstance(row, dict) else row[0])
+            for row in (cursor.fetchall() or [])
+            if (normalize_bag_id(row.get("bag_id") if isinstance(row, dict) else row[0]))
+        }
+    )
+    if not ids:
+        return []
+    scans = load_bulk_workitem_scan_map(
+        cursor, int(organization_id), ids, selected_date_et=selected_date_et
+    )
+    epoch = get_wf_reset_epoch_at(cursor, int(organization_id), use_cache=True)
+    kept: list[str] = []
+    for bid, info in scans.items():
+        if not info or int(info.get("count") or 0) <= 0:
+            continue
+        events = list(info.get("events") or [])
+        stamps = [e.get("scanned_at_parsed") for e in events if isinstance(e, dict)]
+        if not stamps:
+            stamps = [info.get("first_at")]
+        if not any(
+            evidence_on_or_after_epoch(ts, epoch, kind="scan") for ts in stamps
+        ):
+            continue
+        kept.append(bid)
+    if not kept:
+        return []
+    lines = load_bag_bulk_lines(cursor, int(organization_id), selected_date_et, kept)
+    resolutions = load_bulk_resolutions(
+        cursor, int(organization_id), selected_date_et, kept
+    )
+    out: list[str] = []
+    for bid in kept:
+        if bag_bulk_review_cleared(resolutions.get(bid), list(lines.get(bid) or [])):
+            continue
+        out.append(bid)
+    return out
+
+
 def compute_canonical_wf_review_membership(
     cursor,
     organization_id: int,
@@ -1091,8 +1167,10 @@ def compute_canonical_wf_review_membership(
             )
             fresh_reasons = summary.get("review_reasons_by_bag") or {}
 
+    live_dfp_ids: set[str] = set()
     # Open WF OIs that disappeared from Cleaner Tickets while still in-window.
     # Overlay onto Review membership even when day-bag codes are still empty.
+    # Stored DISAPPEARED codes are not authority unless this live qualify agrees.
     try:
         from backend.rinse_order_instances import list_open_wf_order_instances
         from backend.rinse_wf_disappeared_from_portal import (
@@ -1108,6 +1186,7 @@ def compute_canonical_wf_review_membership(
         dfp = get_qualified_disappeared_from_portal(
             cursor, organization_id, open_rows
         )
+        live_dfp_ids = {normalize_bag_id(b) for b in dfp if normalize_bag_id(b)}
         for bid, _ctx in dfp.items():
             if bid not in by_id:
                 # Not on selected-day day_bag — still surface in Review via overlay.
@@ -1171,6 +1250,19 @@ def compute_canonical_wf_review_membership(
         }
     )
     membership_candidates |= set(split_ids)
+    for bid in authoritative_wf_bulk_review_ids(
+        cursor, organization_id, selected_date_et
+    ):
+        membership_candidates.add(bid)
+        existing = [str(c) for c in (fresh_reasons.get(bid) or []) if c]
+        if REASON_WF_BULK_WORKITEM_REVIEW not in existing:
+            fresh_reasons[bid] = [*existing, REASON_WF_BULK_WORKITEM_REVIEW]
+        if bid not in by_id:
+            by_id[bid] = {
+                "bag_id": bid,
+                "service_type": "WF",
+                "effective_status": "completed",
+            }
     candidate_ids = sorted(membership_candidates)
 
     bulk_lines = (
@@ -1213,6 +1305,17 @@ def compute_canonical_wf_review_membership(
             continue
         row = by_id.get(bid) or {}
         codes = _resolve_bag_review_codes(bid, row, fresh_reasons, headline)
+        absence_codes = {
+            REASON_DISAPPEARED_FROM_PORTAL,
+            REASON_DISAPPEARED_WITHOUT_COMPLETION,
+            REVIEW_MISSING_FROM_PORTAL,
+        }
+        if bid not in live_dfp_ids:
+            stripped = [c for c in codes if str(c) not in absence_codes]
+            absence_only = bool(codes) and not stripped
+            codes = stripped
+        else:
+            absence_only = False
         codes_by_bag[bid] = codes
         lines = list(bulk_lines.get(bid) or [])
         scan = bulk_scans.get(bid)
@@ -1249,6 +1352,9 @@ def compute_canonical_wf_review_membership(
         if category_for_reason_codes(codes) == CATEGORY_WEIGHT_REVIEW:
             weight.append(bid)
             disposition[bid] = CATEGORY_WEIGHT_REVIEW
+            continue
+        if absence_only:
+            disposition[bid] = None
             continue
         if _bag_is_wf_review_required(row, headline, bid):
             if codes and category_for_reason_codes(codes) is None:

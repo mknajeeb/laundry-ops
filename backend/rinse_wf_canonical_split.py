@@ -637,6 +637,13 @@ def _load_events_for_bags(
     if as_of is not None:
         as_of_sql = " AND scanned_at_parsed <= %s"
         as_of_args = (as_of,)
+    from backend.wf_ops_reset_epoch import epoch_sql_predicate
+
+    # Pre-epoch washer/split chronology stays in the table for audit, but must
+    # not reconstruct current split state. Uses idx_rbse_org_bag_time.
+    epoch_sql, epoch_args = epoch_sql_predicate(
+        cursor, int(organization_id), column="scanned_at_parsed"
+    )
     try:
         if slim:
             cursor.execute(
@@ -644,12 +651,19 @@ def _load_events_for_bags(
                 SELECT {cols}
                 FROM rinse_bag_scan_events
                 WHERE organization_id = %s
-                  AND UPPER(TRIM(bag_id)) IN ({ph})
+                  AND bag_id IN ({ph})
                   AND {_SPLIT_EVAL_PURPOSE_SQL}
+                  {epoch_sql}
                   {as_of_sql}
                 ORDER BY scanned_at_parsed, scan_index, id
                 """,
-                (int(organization_id), *ids, *_SPLIT_EVAL_PURPOSE_LIKE_ARGS, *as_of_args),
+                (
+                    int(organization_id),
+                    *ids,
+                    *_SPLIT_EVAL_PURPOSE_LIKE_ARGS,
+                    *epoch_args,
+                    *as_of_args,
+                ),
             )
         else:
             if not table_exists(cursor, "rinse_bag_scan_events"):
@@ -659,11 +673,12 @@ def _load_events_for_bags(
                 SELECT {cols}
                 FROM rinse_bag_scan_events
                 WHERE organization_id = %s
-                  AND UPPER(TRIM(bag_id)) IN ({ph})
+                  AND bag_id IN ({ph})
+                  {epoch_sql}
                   {as_of_sql}
                 ORDER BY scanned_at_parsed, scan_index, id
                 """,
-                (int(organization_id), *ids, *as_of_args),
+                (int(organization_id), *ids, *epoch_args, *as_of_args),
             )
     except Exception:
         return out

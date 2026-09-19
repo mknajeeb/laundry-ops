@@ -160,17 +160,28 @@ def _load_create_issue_rejections(
     bag_ids: Sequence[str],
 ) -> dict[str, dict[str, Any]]:
     """
-    Distinct member orders with at least one create-issue scan on the ET day.
+    Distinct member orders with at least one create-issue scan on the ET day
+    at or after ``wf_reset_epoch_at`` when an epoch exists.
 
-    Returns first create-issue event metadata per order (time + employee).
+    Historical create-issue rows remain in ``rinse_bag_scan_events``.
     Does not use registry completion, bulk workitems, or disappearance reasons.
     """
     ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
     out: dict[str, dict[str, Any]] = {}
     if not ids or not table_exists(cursor, "rinse_bag_scan_events"):
         return out
+    from datetime import datetime as _dt
+
+    from backend.wf_ops_reset_epoch import epoch_lower_bound_et
+
+    day_start = _dt.combine(selected_date_et, _dt.min.time())
+    # Lower bound is max(day start, epoch wall). Pre-epoch create-issue stays stored.
+    floor = epoch_lower_bound_et(cursor, int(organization_id), day_start) or day_start
+    if floor.date() > selected_date_et:
+        return out
     ph = ",".join(["%s"] * len(ids))
     # scanned_at_parsed is naive America/New_York wall time.
+    # idx_rbse_org_bag_time (organization_id, bag_id, scanned_at_parsed, scan_index)
     cursor.execute(
         f"""
         SELECT bag_id, scanned_at_parsed, purpose, user_name, id
@@ -179,9 +190,10 @@ def _load_create_issue_rejections(
           AND bag_id IN ({ph})
           AND scanned_at_parsed >= %s
           AND scanned_at_parsed < DATE_ADD(%s, INTERVAL 1 DAY)
+          AND LOWER(REPLACE(REPLACE(COALESCE(purpose, ''), '_', '-'), ' ', '-')) = 'create-issue'
         ORDER BY scanned_at_parsed ASC, id ASC
         """,
-        (int(organization_id), *ids, selected_date_et, selected_date_et),
+        (int(organization_id), *ids, floor, selected_date_et),
     )
     for row in cursor.fetchall() or []:
         if not isinstance(row, dict):

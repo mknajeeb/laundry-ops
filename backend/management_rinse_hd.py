@@ -1051,6 +1051,94 @@ def _is_workflow_complete_row(row: Mapping[str, Any] | None) -> bool:
     return str(row.get("workflow_status") or "").strip().lower() == STATUS_COMPLETE
 
 
+def hd_current_generation_floor(cursor, organization_id: int) -> datetime | None:
+    """UTC-naive start of the previous clean at_vendor presence generation.
+
+    Current Management HD uses this as a membership floor. Open production rows
+    last seen before it stay stored but are not current Missing/Pending.
+    Returns None when no clean run exists so callers do not drop membership.
+    """
+    from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR
+    from backend.rinse_shift_monitor_baseline import (
+        _is_successful_presence_run,
+        is_contaminated_presence_run,
+    )
+
+    if not table_exists(cursor, "rinse_cleaner_ticket_presence_runs"):
+        return None
+    org = int(organization_id)
+    cursor.execute(
+        """
+        SELECT id, started_at, finished_at, created_at, status, dry_run,
+               portal_status, source_batch_id, scrape_meta_json, errors_json
+        FROM rinse_cleaner_ticket_presence_runs
+        WHERE organization_id = %s
+          AND portal_status = %s
+          AND dry_run = 0
+        ORDER BY COALESCE(finished_at, created_at) DESC, id DESC
+        LIMIT 8
+        """,
+        (org, PORTAL_STATUS_AT_VENDOR),
+    )
+    clean: list[dict[str, Any]] = []
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        if not _is_successful_presence_run(row):
+            continue
+        if is_contaminated_presence_run(row, organization_id=org):
+            continue
+        clean.append(row)
+        if len(clean) >= 2:
+            break
+    if not clean:
+        return None
+    anchor = clean[1] if len(clean) > 1 else clean[0]
+    raw = anchor.get("started_at") or anchor.get("finished_at") or anchor.get("created_at")
+    if not isinstance(raw, datetime):
+        return None
+    return raw.replace(tzinfo=None) if raw.tzinfo else raw
+
+
+def stale_open_hd_bag_ids(
+    cursor,
+    organization_id: int,
+    *,
+    activation: date,
+    floor: datetime,
+) -> set[str]:
+    """Open HD production bags last seen before the current portal generation.
+
+    Does not delete rows. Positive current-portal discovery is applied by the caller.
+    """
+    if not table_exists(cursor, "hd_day_bag_production"):
+        return set()
+    org = int(organization_id)
+    cursor.execute(
+        """
+        SELECT prod.bag_id
+        FROM hd_day_bag_production prod
+        LEFT JOIN rinse_cleaner_ticket_presence p
+          ON p.organization_id = prod.organization_id
+         AND p.bag_id = prod.bag_id
+        WHERE prod.organization_id = %s
+          AND prod.operations_date_et >= %s
+          AND prod.management_completed_at IS NULL
+          AND COALESCE(prod.workflow_status, '') NOT IN (%s, %s, %s)
+          AND (p.last_seen_at IS NULL OR p.last_seen_at < %s)
+        """,
+        (
+            org,
+            activation,
+            WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED,
+            "excluded",
+            STATUS_COMPLETE,
+            floor,
+        ),
+    )
+    return {_norm_bag(r.get("bag_id")) for r in (cursor.fetchall() or []) if _norm_bag(r.get("bag_id"))}
+
+
 def _load_active_admitted_bag_ids(
     cursor,
     organization_id: int,
@@ -1379,9 +1467,20 @@ def build_rinse_hd_day(
     )
     candidate_ids: set[str] = set(hints.keys()) | discovery_ids
     # Durable incomplete admissions remain after portal disappearance.
-    candidate_ids |= _load_active_admitted_bag_ids(
+    admitted = _load_active_admitted_bag_ids(
         cursor, org, selected_date_et, activation=activation
     )
+    candidate_ids |= admitted
+    # Current operational day only: historical open rows last seen before the
+    # previous clean portal generation are audit state, not current Missing.
+    # Positive-evidence discovery (the live portal set) is never removed.
+    # E74-style presence without #HD never enters discovery_ids.
+    if selected_date_et >= business_today():
+        floor = hd_current_generation_floor(cursor, org)
+        if floor is not None:
+            candidate_ids -= stale_open_hd_bag_ids(
+                cursor, org, activation=activation, floor=floor
+            ) - discovery_ids
 
     events = _load_candidate_events_for_bags(cursor, org, selected_date_et, list(candidate_ids))
     by_bag: dict[str, list[dict[str, Any]]] = {}

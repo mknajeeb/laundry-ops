@@ -128,22 +128,14 @@ def stv_still_in_source_window(
 ) -> bool:
     """True when absence may be trusted for this bag's STV.
 
-    Full-snapshot absence-capable traversals always qualify.
-    Ship-window scrapes qualify only when the bag's STV date still falls inside
-    that run's ship_to_vendor window (prevents roll-off false positives).
+    Only an absence-capable complete traversal qualifies. Ship-window scrapes
+    (``absence_capable=false``) never establish Missing From Portal, including
+    when the bag's sent-to-vendor date still falls inside the window.
     """
+    from backend.rinse_portal_scrape_meta import portal_scrape_may_establish_absence
+
     meta = normalize_portal_scrape_meta(dict(scrape_meta) if scrape_meta else None)
-    if portal_scrape_meta_allows_absence_completion(meta):
-        return True
-    stv = _et_date(cycle_anchor_at)
-    if stv is None:
-        return False
-    bounds = ship_window_bounds_from_meta(meta or scrape_meta or {})
-    if bounds is None:
-        # Non-window source that is not absence-capable → fail closed.
-        return False
-    start, end = bounds
-    return start <= stv <= end
+    return portal_scrape_may_establish_absence(meta)
 
 
 def _load_inactive_presence_for_bags(
@@ -293,6 +285,12 @@ def _pick_first_establishing_from_candidates(
             meta = _parse_meta(row.get("scrape_meta_json"))
         guard = meta.get("completeness_guard") if isinstance(meta, dict) else None
         # Prefer explicit guard; otherwise accept successful non-empty captures.
+        # absence_capable=false / ship-window never establishes first absence,
+        # even when the completeness guard set allow_mark_missing.
+        from backend.rinse_portal_scrape_meta import scrape_explicitly_prohibits_absence
+
+        if scrape_explicitly_prohibits_absence(meta if isinstance(meta, dict) else None):
+            continue
         if isinstance(guard, Mapping) and guard.get("allow_mark_missing") is False:
             continue
         if _present(rid):

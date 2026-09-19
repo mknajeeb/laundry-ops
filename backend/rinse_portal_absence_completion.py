@@ -23,7 +23,7 @@ from backend.rinse_portal_departure_completion import (
 )
 from backend.rinse_portal_scrape_meta import (
     fetch_portal_scrape_meta_for_batch,
-    portal_scrape_meta_allows_absence_completion,
+    portal_scrape_may_establish_absence,
 )
 from backend.ta_helpers import table_exists, table_has_column
 
@@ -64,7 +64,7 @@ def upload_batch_is_full_snapshot_portal(
         return False
 
     meta = fetch_portal_scrape_meta_for_batch(cursor, int(upload_batch_id), organization_id)
-    if meta is not None and not portal_scrape_meta_allows_absence_completion(meta):
+    if meta is not None and not portal_scrape_may_establish_absence(meta):
         return False
 
     if table_exists(cursor, "upload_batches") and table_has_column(
@@ -174,7 +174,7 @@ def process_bags_missing_from_latest_portal(
     accepted = list(accepted_portal_rows or [])
 
     batch_meta = fetch_portal_scrape_meta_for_batch(cursor, batch_id, org)
-    if batch_meta is not None and not portal_scrape_meta_allows_absence_completion(batch_meta):
+    if batch_meta is not None and not portal_scrape_may_establish_absence(batch_meta):
         logger.warning(
             "Skipping portal departure rule for org=%s batch=%s: "
             "partial portal scrape (stopped_reason=%s reached_max_pages=%s pages_scraped=%s)",

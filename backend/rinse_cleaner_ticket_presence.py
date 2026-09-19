@@ -1669,6 +1669,120 @@ def _evaluate_presence_completeness_guard(
     )
 
 
+def absence_deactivation_permitted(
+    meta: Mapping[str, Any] | None,
+    *,
+    prior_active_ids: set[str],
+    seen_ids: set[str],
+) -> tuple[bool, str, dict[str, Any]]:
+    """Whether this scrape may set prior bags active=0.
+
+    Completeness (row count) is necessary but not sufficient. Ship-window /
+    ``absence_capable=false`` scrapes never deactivate. A same-count scrape
+    with a generation-identity break does not either.
+    """
+    from backend.rinse_portal_scrape_meta import scrape_explicitly_prohibits_absence
+    from backend.rinse_scrape_completeness import generation_identity_allows_absence
+
+    # absence_capable=false / ship-window is a hard stop. Overlap must never
+    # promote that scrape into absence authority.
+    if scrape_explicitly_prohibits_absence(meta):
+        return False, "absence_not_authoritative", {}
+    allowed, detail = generation_identity_allows_absence(
+        prior_ids=prior_active_ids, seen_ids=seen_ids
+    )
+    if not allowed:
+        return False, str(detail.get("reason") or "generation_discontinuity"), detail
+    return True, "", detail
+
+
+def _preceding_snapshot_bag_ids(
+    cursor,
+    organization_id: int,
+    portal_status: str,
+) -> set[str] | None:
+    """Bag ids on the successful run immediately before the one just recorded.
+
+    Identity continuity is against that snapshot, not the accumulated active
+    board. A non-authoritative scrape may leave the previous generation
+    active; comparing the union would block a later absence-capable recovery.
+    Returns None when the snapshot cannot be read.
+    """
+    try:
+        cursor.execute(
+            """
+            SELECT id
+            FROM rinse_cleaner_ticket_presence_runs
+            WHERE organization_id=%s AND portal_status=%s AND dry_run=0
+              AND status='success'
+            ORDER BY id DESC
+            LIMIT 2
+            """,
+            (int(organization_id), portal_status),
+        )
+        rows = cursor.fetchall()
+        if not isinstance(rows, list) or len(rows) < 2:
+            return None
+        ids: list[int] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                return None
+            rid = int(row.get("id") or 0)
+            if rid:
+                ids.append(rid)
+        if len(ids) < 2:
+            return None
+        preceding = ids[1]
+        cursor.execute(
+            """
+            SELECT bag_id
+            FROM rinse_cleaner_ticket_presence_run_rows
+            WHERE presence_run_id=%s
+            """,
+            (preceding,),
+        )
+        bag_rows = cursor.fetchall()
+        if not isinstance(bag_rows, list):
+            return None
+        out: set[str] = set()
+        for row in bag_rows:
+            if not isinstance(row, dict):
+                continue
+            bid = normalize_bag_id(row.get("bag_id"))
+            if bid:
+                out.add(bid)
+        return out or None
+    except Exception:
+        return None
+
+
+def _identity_prior_ids(
+    cursor,
+    organization_id: int,
+    portal_status: str,
+    active_ids: set[str],
+) -> set[str]:
+    """Board used for the overlap guard. Deactivation still uses active ids."""
+    snap = _preceding_snapshot_bag_ids(cursor, organization_id, portal_status)
+    return snap if snap else active_ids
+
+
+def _active_presence_bag_ids(cursor, organization_id: int, portal_status: str) -> set[str]:
+    cursor.execute(
+        """
+        SELECT bag_id FROM rinse_cleaner_ticket_presence
+        WHERE organization_id=%s AND portal_status=%s AND active=1
+        """,
+        (int(organization_id), portal_status),
+    )
+    out: set[str] = set()
+    for row in cursor.fetchall() or []:
+        bid = row.get("bag_id") if isinstance(row, dict) else row[0]
+        if bid:
+            out.add(str(bid))
+    return out
+
+
 def apply_presence_scrape(
     cursor,
     organization_id: int,
@@ -1807,17 +1921,18 @@ def apply_presence_scrape(
                 stats=stats,
             )
         if mark_missing and not reject_board:
-            cursor.execute(
-                """
-                SELECT bag_id FROM rinse_cleaner_ticket_presence
-                WHERE organization_id=%s AND portal_status=%s AND active=1
-                """,
-                (org, ps),
+            active_ids = _active_presence_bag_ids(cursor, org, ps)
+            permitted, skip_reason, identity = absence_deactivation_permitted(
+                meta,
+                prior_active_ids=_identity_prior_ids(cursor, org, ps, active_ids),
+                seen_ids=seen,
             )
-            for row in cursor.fetchall() or []:
-                bid = row.get("bag_id") if isinstance(row, dict) else row[0]
-                if bid and bid not in seen:
-                    stats["rows_missing"] += 1
+            stats["generation_identity"] = identity
+            if not permitted:
+                stats["mark_missing_skipped"] = True
+                stats["mark_missing_skip_reason"] = skip_reason
+            else:
+                stats["rows_missing"] = sum(1 for bid in active_ids if bid not in seen)
         return stats
 
     if reject_board:
@@ -1908,18 +2023,25 @@ def apply_presence_scrape(
             stats=stats,
         )
 
-    # Soft-deactivate missing bags when mark_missing and scrape is valid.
+    # Soft-deactivate missing bags only when this scrape is absence authority
+    # and the new set is the same generation as the current board.
     if mark_missing:
-        cursor.execute(
-            """
-            SELECT bag_id FROM rinse_cleaner_ticket_presence
-            WHERE organization_id=%s AND portal_status=%s AND active=1
-            """,
-            (org, ps),
+        active_ids = _active_presence_bag_ids(cursor, org, ps)
+        permitted, skip_reason, identity = absence_deactivation_permitted(
+            meta,
+            prior_active_ids=_identity_prior_ids(cursor, org, ps, active_ids),
+            seen_ids=seen,
         )
-        for row in cursor.fetchall() or []:
-            bid = row.get("bag_id") if isinstance(row, dict) else row[0]
-            if bid and bid not in seen:
+        stats["generation_identity"] = identity
+        if not permitted:
+            stats["mark_missing_skipped"] = True
+            stats["mark_missing_skip_reason"] = skip_reason
+            if skip_reason == "generation_discontinuity":
+                meta["generation_discontinuity"] = True
+        else:
+            for bid in active_ids:
+                if bid in seen:
+                    continue
                 stats["rows_missing"] += 1
                 cursor.execute(
                     """

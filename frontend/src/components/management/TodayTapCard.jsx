@@ -32,6 +32,11 @@ const TONES = {
     border: "#e5e7eb",
     bg: "#fff",
   },
+  unconfirmed: {
+    color: "#92400e",
+    border: "rgba(146, 64, 14, 0.35)",
+    bg: "#fff",
+  },
 };
 
 export default function TodayTapCard({

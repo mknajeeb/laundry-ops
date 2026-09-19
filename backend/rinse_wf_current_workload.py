@@ -538,7 +538,16 @@ def get_current_wf_workload(
     )
     disappeared_review = frozenset(disappeared_ctx.keys())
     review = frozenset(cycle_review | conflict_review | disappeared_review)
-    pending = frozenset(b for b in open_bags if b not in review)
+    from backend.rinse_wf_presence_unconfirmed import (
+        OUTCOME_PRESENCE_UNCONFIRMED,
+        resolve_presence_unconfirmed_ids,
+    )
+
+    unconfirmed = frozenset(
+        resolve_presence_unconfirmed_ids(cursor, org, open_bags, review)
+    )
+    unconfirmed = frozenset(b for b in unconfirmed if b not in review)
+    pending = frozenset(b for b in open_bags if b not in review and b not in unconfirmed)
 
     items: list[dict[str, Any]] = []
     for bid in sorted(open_bags):
@@ -571,19 +580,26 @@ def get_current_wf_workload(
                     ),
                 )
             in_review = bid in review
+            in_unconfirmed = bid in unconfirmed
             reason_codes: list[str] = []
             if bid in conflict_review:
                 reason_codes.append(REVIEW_REGISTRY_STALE_COMPLETED)
             if bid in disappeared_review:
                 reason_codes.append(REASON_DISAPPEARED_FROM_PORTAL)
             dctx = disappeared_ctx.get(bid) or {}
+            if in_review:
+                status = OUTCOME_REVIEW_REQUIRED
+            elif in_unconfirmed:
+                status = OUTCOME_PRESENCE_UNCONFIRMED
+            else:
+                status = OUTCOME_PENDING
             item: dict[str, Any] = {
                 "bag_id": bid,
                 "order_instance_id": row.get("order_instance_id"),
                 "completed_at": None,
                 "cycle_anchor_at": anchor,
                 "lifecycle": LIFECYCLE_OPEN,
-                "status": OUTCOME_REVIEW_REQUIRED if in_review else OUTCOME_PENDING,
+                "status": status,
                 "review_reason_codes": reason_codes,
                 "received_from_vendor_at": rfv,
                 "rush_status": row.get("rush_status") or row.get("rush_flag"),
@@ -618,10 +634,12 @@ def get_current_wf_workload(
         "date_independent": True,
         "pending": pending,
         "review": review,
+        "presence_unconfirmed": unconfirmed,
         "open": frozenset(open_bags),
         "counts": {
             "pending": len(pending),
             "review": len(review),
+            "presence_unconfirmed": len(unconfirmed),
             "open": len(open_bags),
         },
         "items": items,

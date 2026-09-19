@@ -64,7 +64,9 @@ describe("Rinse WF presentation model", () => {
     });
     const cw = pickCurrentWorkload(rinse, rinse.segments.wf);
     expect(cw.open).toBe(3);
+    expect(cw.pending).toBe(2);
     expect(cw.review).toBe(1);
+    expect(cw.presenceUnconfirmed).toBe(0);
     expect(cw.dateIndependent).toBe(true);
     const sc = pickSelectedDateCompleted(rinse, rinse.segments.wf);
     expect(sc.completed).toBe(112);

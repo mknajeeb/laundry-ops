@@ -507,7 +507,8 @@ def expand_review_required(
             }
 
     # --- WF create-workitem-bulk → Review Required (completed bags only) -----
-    active = new_today | carryover
+    # Completed stays in history. Unresolved current-cycle bulk still reviews.
+    active = new_today | carryover | completed | cwo
     for bid in list(active):
         bid = _norm_bag(bid)
         if not bid:

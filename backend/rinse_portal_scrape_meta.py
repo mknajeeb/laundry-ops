@@ -187,6 +187,47 @@ def validate_presence_empty_result(
     return validated, checks
 
 
+def scrape_explicitly_prohibits_absence(meta: Mapping[str, Any] | None) -> bool:
+    """Hard stop: these scrapes must never establish absence.
+
+    ``absence_capable=false`` and ship-window / discovery modes are not
+    absence authority, even when ``full_traverse`` is true and the row-count
+    completeness guard would allow ``mark_missing``.
+
+    Empty meta is not an explicit prohibition. Legacy manual uploads and unit
+    fixtures keep the completeness-guard path. Scheduled ship-window runs
+    always stamp ``absence_capable`` / ``source_mode``.
+    """
+    if not meta:
+        return False
+    if meta.get("generation_discontinuity") is True:
+        return True
+    if meta.get("absence_capable") is False:
+        return True
+    mode = str(meta.get("source_mode") or meta.get("source_role") or "").strip().lower()
+    return mode in {
+        "ship_to_vendor_window",
+        "ship_window",
+        "discovery",
+        "discovery_only",
+    }
+
+
+def portal_scrape_may_establish_absence(meta: Mapping[str, Any] | None) -> bool:
+    """Single absence-authority decision for deactivation, first-absence, and departure.
+
+    False when the scrape explicitly prohibits absence. Otherwise the existing
+    complete-traversal predicate (manual meta None still allowed).
+    """
+    if scrape_explicitly_prohibits_absence(meta):
+        return False
+    if meta is None:
+        return True
+    return portal_scrape_meta_allows_absence_completion(
+        dict(meta) if not isinstance(meta, dict) else meta
+    )
+
+
 def _meta_is_ship_window_discovery(meta: Mapping[str, Any]) -> bool:
     """Rolling ship_to_vendor window is discovery-only — never absence authority."""
     mode = str(meta.get("source_mode") or meta.get("source_role") or "").strip().lower()
