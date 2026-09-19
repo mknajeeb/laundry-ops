@@ -24,7 +24,20 @@ export function parseReviewDrawerActionResponse(data) {
   };
 }
 
-export async function fetchReviewDrawerAction(getAction, selectedDateEt, bagId) {
-  const res = await getAction(selectedDateEt, bagId);
+export function reviewActionRequestParams(drawerCategory, bag) {
+  if (drawerCategory !== "specialty_items") return { params: {} };
+  const oi = Number(bag?.order_instance_id);
+  if (!Number.isFinite(oi) || oi <= 0) {
+    return { missingOrderInstance: true, params: {} };
+  }
+  return { params: { order_instance_id: oi } };
+}
+
+export async function fetchReviewDrawerAction(getAction, selectedDateEt, bagId, options = {}) {
+  const params = { ...(options.params || {}) };
+  if (options.orderInstanceId != null && options.orderInstanceId !== "") {
+    params.order_instance_id = options.orderInstanceId;
+  }
+  const res = await getAction(selectedDateEt, bagId, params);
   return parseReviewDrawerActionResponse(res?.data);
 }

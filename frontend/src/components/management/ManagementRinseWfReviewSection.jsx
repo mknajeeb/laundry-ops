@@ -733,8 +733,12 @@ export default function ManagementRinseWfReviewSection({
             </Typography>
           ) : (
             <Stack spacing={0} divider={<Divider />}>
-              {filteredBags.map((bag) =>
-                isSplitDrawer ? (
+              {filteredBags.map((bag) => {
+                const rowKey =
+                  drawer.category === "specialty_items" && bag.order_instance_id
+                    ? `${bag.bag_id}:${bag.order_instance_id}`
+                    : bag.bag_id;
+                return isSplitDrawer ? (
                   <SplitOrderReviewRow
                     key={bag.bag_id}
                     bag={bag}
@@ -749,14 +753,14 @@ export default function ManagementRinseWfReviewSection({
                   />
                 ) : (
                   <ManagementRinseWfReviewDrawerRow
-                    key={bag.bag_id}
+                    key={rowKey}
                     bag={bag}
                     drawerCategory={drawer.category}
                     selectedDateEt={selectedDateEt}
                     readOnly={readOnly}
-                    expanded={expandedBagId === bag.bag_id}
-                    onToggle={(bagId) =>
-                      setExpandedBagId((prev) => (prev === bagId ? null : bagId))
+                    expanded={expandedBagId === rowKey}
+                    onToggle={() =>
+                      setExpandedBagId((prev) => (prev === rowKey ? null : rowKey))
                     }
                     onSaved={(_data, meta) => {
                       applyLocalResolve({
@@ -765,8 +769,8 @@ export default function ManagementRinseWfReviewSection({
                       });
                     }}
                   />
-                ),
-              )}
+                );
+              })}
             </Stack>
           )}
           {listState.meta?.elapsed_ms != null || perf.drawerOpenMs != null ? (

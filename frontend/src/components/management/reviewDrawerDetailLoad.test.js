@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   fetchReviewDrawerAction,
   parseReviewDrawerActionResponse,
+  reviewActionRequestParams,
 } from "./reviewDrawerDetailLoad";
 
 describe("parseReviewDrawerActionResponse", () => {
@@ -59,6 +60,33 @@ describe("parseReviewDrawerActionResponse", () => {
 });
 
 describe("fetchReviewDrawerAction", () => {
+  it("passes the specialty order instance and does not do so for other drawers", async () => {
+    const calls = [];
+    const getAction = async (dateEt, bagId, params) => {
+      calls.push({ dateEt, bagId, params });
+      return { data: { ok: true, bag: { bag_id: bagId }, active_bulk_workitems: [] } };
+    };
+    const specialty = reviewActionRequestParams("specialty_items", {
+      bag_id: "REUSE1",
+      order_instance_id: 10,
+    });
+    expect(specialty.params).toEqual({ order_instance_id: 10 });
+    await fetchReviewDrawerAction(getAction, "2026-09-19", "REUSE1", {
+      params: specialty.params,
+    });
+    expect(calls[0].params).toEqual({ order_instance_id: 10 });
+
+    const split = reviewActionRequestParams("split_order_review", {
+      bag_id: "REUSE1",
+      order_instance_id: 99,
+    });
+    expect(split.params).toEqual({});
+    expect(split.missingOrderInstance).toBeUndefined();
+
+    const missing = reviewActionRequestParams("specialty_items", { bag_id: "REUSE1" });
+    expect(missing.missingOrderInstance).toBe(true);
+  });
+
   it("always resolves loading callers on success", async () => {
     const getAction = async () => ({
       data: {

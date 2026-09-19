@@ -545,9 +545,20 @@ def register_management_today_routes(
             if err:
                 return err
             counting = CountingCursor(cursor)
-            payload = build_management_review_action(counting, oid, selected, bag_id)
+            raw_oi = (request.args.get("order_instance_id") or "").strip()
+            payload = build_management_review_action(
+                counting,
+                oid,
+                selected,
+                bag_id,
+                order_instance_id=raw_oi or None,
+            )
             if payload.get("ok") is False:
-                code = 404 if payload.get("error") == "bag_not_found" else 400
+                code = (
+                    404
+                    if payload.get("error") in ("bag_not_found", "order_instance_invalid")
+                    else 400
+                )
                 return jsonify(json_safe_rinse(payload)), code
             meta = dict(payload.get("_meta") or {})
             meta["query_count"] = int(getattr(counting, "query_count", 0))

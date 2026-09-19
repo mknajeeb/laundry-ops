@@ -36,7 +36,7 @@ Weights come from the canonical current-cycle resolver (via drilldown detail).
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Mapping
 
 from backend.rinse_bag_completion import normalize_bag_id
@@ -2350,6 +2350,13 @@ def build_management_review_list(
     )
 
     fill_unique_open_wf_order_instance(cursor, organization_id, bags_out)
+    _apply_specialty_qualifying_order_identity(
+        cursor,
+        organization_id,
+        selected_date_et,
+        bags_out,
+        list_category=cat,
+    )
     stamp_order_display_ids(cursor, bags_out)
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 1)
@@ -2574,13 +2581,336 @@ def build_management_review_scans(
     }
 
 
+def _naive_wall(raw: Any) -> datetime | None:
+    if not isinstance(raw, datetime):
+        return None
+    if raw.tzinfo is not None:
+        raw = raw.replace(tzinfo=None)
+    return raw.replace(microsecond=0)
+
+
+def match_specialty_order_instance(
+    order_rows: list[Mapping[str, Any]] | None,
+    cycle_anchor_at: Any,
+) -> int | None:
+    """Return the one order instance whose cycle anchor is the specialty cycle.
+
+    Zero matches and more than one match both return None. This does not pick
+    the newest order, the open order, or a different lifecycle on the same bag.
+    """
+    anchor = _naive_wall(cycle_anchor_at)
+    if anchor is None:
+        return None
+    hits: list[int] = []
+    for row in order_rows or []:
+        if not isinstance(row, Mapping):
+            continue
+        if _naive_wall(row.get("cycle_anchor_at")) != anchor:
+            continue
+        try:
+            oid = int(row.get("order_instance_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if oid > 0:
+            hits.append(oid)
+    if len(hits) == 1:
+        return hits[0]
+    return None
+
+
+def load_specialty_qualifying_order_instances(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    bag_ids: list[str],
+) -> dict[str, int]:
+    """Map each Specialty bag to the order instance of its evidence cycle.
+
+    The cycle is the same current-cycle window that admitted the bag to
+    Specialty. An order instance qualifies only when its ``cycle_anchor_at``
+    is that window's anchor.
+    """
+    from backend.rinse_bulk_workitems import load_bulk_workitem_scan_map
+    from backend.ta_helpers import table_exists
+
+    ids = [normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)]
+    if not ids or not table_exists(cursor, "rinse_order_instances"):
+        return {}
+    scans = load_bulk_workitem_scan_map(
+        cursor, int(organization_id), ids, selected_date_et=selected_date_et
+    )
+    placeholders = ",".join(["%s"] * len(ids))
+    cursor.execute(
+        f"""
+        SELECT order_instance_id, bag_id, cycle_anchor_at, service_type
+        FROM rinse_order_instances
+        WHERE organization_id = %s
+          AND bag_id IN ({placeholders})
+          AND UPPER(COALESCE(service_type, 'WF')) = 'WF'
+        """,
+        (int(organization_id), *ids),
+    )
+    by_bag: dict[str, list[dict[str, Any]]] = {}
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        bid = normalize_bag_id(row.get("bag_id"))
+        if bid:
+            by_bag.setdefault(bid, []).append(dict(row))
+    out: dict[str, int] = {}
+    for bid in ids:
+        info = scans.get(bid) or {}
+        oid = match_specialty_order_instance(
+            by_bag.get(bid), info.get("cycle_anchor_at")
+        )
+        if oid:
+            out[bid] = oid
+    return out
+
+
+def _apply_specialty_qualifying_order_identity(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    bags_out: list[dict[str, Any]],
+    *,
+    list_category: str,
+) -> None:
+    """Stamp Specialty rows with the qualifying order instance, replacing any other id."""
+    targets = [
+        row
+        for row in bags_out
+        if list_category == CATEGORY_SPECIALTY
+        or str(row.get("category") or "") == CATEGORY_SPECIALTY
+    ]
+    if not targets:
+        return
+    qual = load_specialty_qualifying_order_instances(
+        cursor,
+        organization_id,
+        selected_date_et,
+        [str(row.get("bag_id") or "") for row in targets],
+    )
+    for row in targets:
+        bid = normalize_bag_id(row.get("bag_id"))
+        oid = qual.get(bid or "")
+        row.pop("estimated_delivery_date", None)
+        row.pop("edd", None)
+        row.pop("order_display_id", None)
+        if oid:
+            row["order_instance_id"] = oid
+            row["specialty_order_instance_id"] = oid
+            row.pop("specialty_identity", None)
+        else:
+            row["order_instance_id"] = None
+            row["specialty_order_instance_id"] = None
+            row["specialty_identity"] = "qualifying_order_instance_missing"
+
+
+def _order_instance_invalid(bag_id: str | None = None) -> dict[str, Any]:
+    out: dict[str, Any] = {"ok": False, "error": "order_instance_invalid"}
+    if bag_id:
+        out["bag_id"] = bag_id
+    return out
+
+
+def _build_review_action_by_order_instance(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    bag_id: str,
+    order_instance_id: Any,
+) -> dict[str, Any]:
+    """Open one Specialty order by primary key. No day-bag requirement, no fallback."""
+    import time
+
+    from backend.order_display_id import attach_order_display_id
+    from backend.rinse_bulk_workitems import (
+        list_workitems,
+        load_bag_bulk_lines,
+        load_bulk_resolutions,
+        load_bulk_workitem_scan_map,
+    )
+    from backend.rinse_current_cycle_weight import resolve_bag_weight_info_canonical
+    from backend.rinse_order_instances import get_order_instance_by_id
+    from backend.ta_helpers import table_exists
+
+    t0 = time.perf_counter()
+    bid = normalize_bag_id(bag_id)
+    if not bid:
+        return {"ok": False, "error": "bag_id_required"}
+    try:
+        oid = int(order_instance_id)
+    except (TypeError, ValueError):
+        return _order_instance_invalid(bid)
+    if oid <= 0:
+        return _order_instance_invalid(bid)
+
+    oi = get_order_instance_by_id(cursor, oid)
+    if not isinstance(oi, dict):
+        return _order_instance_invalid(bid)
+    try:
+        oi_org = int(oi.get("organization_id") or 0)
+    except (TypeError, ValueError):
+        oi_org = 0
+    if oi_org != int(organization_id):
+        return _order_instance_invalid(bid)
+    if normalize_bag_id(oi.get("bag_id")) != bid:
+        return _order_instance_invalid(bid)
+    if str(oi.get("service_type") or "WF").strip().upper() != "WF":
+        return _order_instance_invalid(bid)
+
+    qual = load_specialty_qualifying_order_instances(
+        cursor, organization_id, selected_date_et, [bid]
+    )
+    if qual.get(bid) != oid:
+        return _order_instance_invalid(bid)
+
+    anchor = _naive_wall(oi.get("cycle_anchor_at"))
+    cycle: dict[str, Any] = {}
+    source_id = oi.get("source_cycle_id")
+    if source_id and table_exists(cursor, "rinse_wf_service_cycles"):
+        cursor.execute(
+            """
+            SELECT id, cycle_anchor_at, status, rush_status, estimated_delivery_date,
+                   pre_weight_lbs, post_weight_lbs, completed_at, completion_source
+            FROM rinse_wf_service_cycles
+            WHERE id = %s AND organization_id = %s
+            """,
+            (int(source_id), int(organization_id)),
+        )
+        fetched = cursor.fetchone()
+        if isinstance(fetched, dict):
+            cycle = dict(fetched)
+            cycle_anchor = _naive_wall(cycle.get("cycle_anchor_at"))
+            if anchor is not None and cycle_anchor != anchor:
+                return _order_instance_invalid(bid)
+
+    weights = resolve_bag_weight_info_canonical(
+        cursor,
+        organization_id,
+        bid,
+        selected_date_et=selected_date_et,
+        cycle_anchor_override=anchor,
+    )
+    scans = load_bulk_workitem_scan_map(
+        cursor, organization_id, [bid], selected_date_et=selected_date_et
+    ).get(bid) or {}
+    line_day = anchor.date() if anchor is not None else selected_date_et
+    bulk_lines = load_bag_bulk_lines(
+        cursor, organization_id, line_day, [bid]
+    ).get(bid) or []
+    bulk_res = load_bulk_resolutions(
+        cursor, organization_id, line_day, [bid]
+    ).get(bid)
+    codes = [REASON_WF_BULK_WORKITEM_REVIEW]
+    bulk_cleared, bulk_unresolved = _bulk_review_state_for_bag(
+        codes,
+        bulk_lines=bulk_lines,
+        bulk_resolution=bulk_res,
+        bulk_scan=scans,
+    )
+    flags = review_drawer_section_flags(
+        codes,
+        bulk_cleared=bulk_cleared,
+        bulk_unresolved=bulk_unresolved,
+    )
+    catalog: list[dict[str, Any]] = []
+    if flags["has_specialty_bulk"] or bulk_lines or scans:
+        catalog = list_workitems(cursor, organization_id, active_only=True)
+
+    name_rows = resolve_customer_names_for_bags(
+        cursor,
+        organization_id,
+        [{"bag_id": bid}],
+        selected_date_et=selected_date_et,
+    )
+    customer_name = review_customer_display_name(
+        (name_rows[0] if name_rows else {}).get("customer_name")
+    )
+    completion_employee = oi.get("completed_by_employee_name")
+    completion_at = oi.get("completed_at") or cycle.get("completed_at")
+    qty_info = _specialty_qty_from_lines(bulk_lines)
+    bag = {
+        "bag_id": bid,
+        "order_instance_id": oid,
+        "specialty_order_instance_id": oid,
+        "cycle_anchor_at": anchor.isoformat(sep=" ") if anchor else None,
+        "estimated_delivery_date": cycle.get("estimated_delivery_date"),
+        "customer_name": customer_name,
+        "service_type": "WF",
+        "rush_flag": cycle.get("rush_status"),
+        "reason_codes": codes,
+        "short_reason": _short_reason(codes, CATEGORY_SPECIALTY),
+        "dashboard_status": (
+            "completed" if completion_at else (cycle.get("status") or "review_required")
+        ),
+        "pre_weight_lbs": None,
+        "post_weight_lbs": cycle.get("post_weight_lbs"),
+        "post_weight_value": cycle.get("post_weight_lbs"),
+        "completion_employee": completion_employee,
+        "completion_at": completion_at,
+        "completed_by": completion_employee,
+        "canonical_completion_timestamp": completion_at,
+        "canonical_completion_employee": completion_employee,
+        "manager_edit_version": 0,
+        "updated_at": None,
+        "day_bag_updated_at": None,
+        "comforter_quantity": qty_info.get("comforter_quantity") or 0,
+        "bath_mat_quantity": qty_info.get("bath_mat_quantity") or 0,
+        "bulk_workitems": bulk_lines,
+        "bulk_resolution": bulk_res,
+        "bulk_scan": {
+            "count": int(scans.get("count") or 0),
+            "first_at": scans.get("first_at"),
+            "cycle_anchor_at": scans.get("cycle_anchor_at"),
+        },
+        "has_specialty_bulk": flags["has_specialty_bulk"],
+        "has_specialty_review": flags["has_specialty_review"],
+        "has_missing_portal": False,
+        "bulk_review_cleared": bulk_cleared,
+        "bulk_review_unresolved": bulk_unresolved,
+        "review_category": CATEGORY_SPECIALTY,
+        "category": CATEGORY_SPECIALTY,
+        "allowed_actions": _allowed_actions_for_review_category(CATEGORY_SPECIALTY),
+        "identity_source": "order_instance_id",
+        "_detailsLoaded": True,
+        "_actionMetaOnly": True,
+    }
+    attach_order_display_id(bag)
+    _merge_review_weight_fields(bag, weights)
+    allowed = bag["allowed_actions"]
+    elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+    return {
+        "ok": True,
+        "date_et": selected_date_et.isoformat(),
+        "bag": bag,
+        "active_bulk_workitems": catalog,
+        "allowed_actions": allowed,
+        "_meta": {
+            "include_details": False,
+            "scans_loaded": False,
+            "action_metadata": True,
+            "elapsed_ms": elapsed_ms,
+            "source": "order_instance_primary_key",
+            "day_bag_present": False,
+            "order_instance_id": oid,
+        },
+    }
+
+
 def build_management_review_action(
     cursor,
     organization_id: int,
     selected_date_et: date,
     bag_id: str,
+    order_instance_id: Any = None,
 ) -> dict[str, Any]:
     """Expand-only drawer action metadata for ONE bag.
+
+    When ``order_instance_id`` is supplied, load that Specialty order by primary
+    key and fail closed on any mismatch. Other drawers omit the id and keep the
+    day-bag path.
 
     Lock version, weights, completion, bulk lines, and catalog — no scans,
     chronology, photos, or full drilldown payload.
@@ -2603,6 +2933,14 @@ def build_management_review_action(
     bid = normalize_bag_id(bag_id)
     if not bid:
         return {"ok": False, "error": "bag_id_required"}
+    if order_instance_id not in (None, ""):
+        return _build_review_action_by_order_instance(
+            cursor,
+            organization_id,
+            selected_date_et,
+            bid,
+            order_instance_id,
+        )
 
     rows = load_day_bags_by_ids(cursor, organization_id, selected_date_et, [bid])
     row = rows[0] if rows else {}

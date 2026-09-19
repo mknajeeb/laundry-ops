@@ -41,6 +41,7 @@ const API_ERROR_LABELS = {
   completion_employee_required: "Select the employee who completed this order.",
   post_weight_required: "Enter the post weight.",
   bag_not_found: "Bag not found.",
+  order_instance_invalid: "This specialty order could not be opened.",
   invalid_category: "Invalid review category.",
   invalid_bag_id: "Invalid bag id.",
   conflict: "This bag was updated while you were reviewing it. Close and reopen to retry.",

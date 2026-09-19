@@ -22,7 +22,7 @@ import {
   postManagementWfCwResolveManual,
   postVeewashStep1Correction,
 } from "../../api";
-import { fetchReviewDrawerAction } from "./reviewDrawerDetailLoad";
+import { fetchReviewDrawerAction, reviewActionRequestParams } from "./reviewDrawerDetailLoad";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import FoldingUserSelect from "../folding/FoldingUserSelect";
 import { CompactEtDateTimeField } from "../PayrollDateTimeField";
@@ -1211,6 +1211,15 @@ export default function ManagementRinseWfReviewDrawerRow({
     }
     if (!selectedDateEt || !bag?.bag_id) return undefined;
 
+    const request = reviewActionRequestParams(drawerCategory, bag);
+    if (request.missingOrderInstance) {
+      setLoading(false);
+      setError("This specialty order could not be opened.");
+      setActionBag(null);
+      setCatalog([]);
+      return undefined;
+    }
+
     let cancelled = false;
     setLoading(true);
     setError("");
@@ -1223,6 +1232,7 @@ export default function ManagementRinseWfReviewDrawerRow({
           getManagementRinseWfReviewAction,
           selectedDateEt,
           bag.bag_id,
+          { params: request.params },
         );
         if (cancelled) return;
         if (!result.ok) {
@@ -1252,7 +1262,7 @@ export default function ManagementRinseWfReviewDrawerRow({
     return () => {
       cancelled = true;
     };
-  }, [expanded, selectedDateEt, bag?.bag_id]);
+  }, [expanded, selectedDateEt, bag?.bag_id, bag?.order_instance_id, drawerCategory]);
 
   return (
     <Box
