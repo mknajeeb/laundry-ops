@@ -2581,20 +2581,32 @@ def match_specialty_order_instance(
     return None
 
 
-_WINDOW_AMBIGUOUS = object()
+def _next_new_order_boundary(
+    anchor: datetime,
+    boundary_timestamps: list[datetime],
+) -> datetime | None:
+    """First admission boundary strictly after this order's cycle anchor."""
+    for ts in boundary_timestamps:
+        if ts > anchor:
+            return ts
+    return None
 
 
 def match_specialty_order_instance_window(
     order_rows: list[Mapping[str, Any]] | None,
     scan_times: list[Any] | None,
+    boundary_timestamps: list[Any] | None = None,
 ) -> int | None:
-    """Return the one WF order whose window contains the qualifying scans.
+    """Return the one WF order whose lifecycle contains every qualifying scan.
 
-    Window is ``[cycle_anchor_at, next cycle_anchor_at)``. Scans that fall in
-    different orders, or in a duplicated anchor, return None. This does not
-    pick the newest order, the open order, or another lifecycle on the bag.
+    The window is ``[cycle_anchor_at, next new-order boundary)``. The boundary
+    is the admission set (pickup / workitems-added / load-in), not the next
+    sent-to-vendor and not the next order's cycle anchor. A scan after that
+    boundary, two orders containing the same scan, or scans split across
+    orders all return None. This does not pick the newest order, the open
+    order, the bag alone, or the nearest cycle.
     """
-    rows = []
+    rows: list[tuple[datetime, int]] = []
     for row in order_rows or []:
         if not isinstance(row, Mapping):
             continue
@@ -2605,45 +2617,37 @@ def match_specialty_order_instance_window(
             continue
         if anchor is None or oid <= 0:
             continue
-        if str(row.get("service_type") or "WF").strip().upper() not in ("", "WF"):
+        if str(row.get("service_type") or "WF").strip().upper() != "WF":
             continue
         rows.append((anchor, oid))
     if not rows:
         return None
     rows.sort()
-    groups: list[tuple[datetime, list[int]]] = []
-    for anchor, oid in rows:
-        if groups and groups[-1][0] == anchor:
-            groups[-1][1].append(oid)
-        else:
-            groups.append((anchor, [oid]))
+    bounds: list[datetime] = []
+    for raw in boundary_timestamps or []:
+        ts = _naive_wall(raw)
+        if ts is not None:
+            bounds.append(ts)
+    bounds.sort()
 
     owners: list[int] = []
     for raw_ts in scan_times or []:
         ts = _naive_wall(raw_ts)
         if ts is None:
             continue
-        owner = _window_owner(groups, ts)
-        if owner is _WINDOW_AMBIGUOUS:
+        hits: list[int] = []
+        for anchor, oid in rows:
+            if ts < anchor:
+                continue
+            end = _next_new_order_boundary(anchor, bounds)
+            if end is not None and ts >= end:
+                continue
+            hits.append(oid)
+        if len(hits) != 1:
             return None
-        if isinstance(owner, int):
-            owners.append(owner)
-    unique = set(owners)
-    if len(unique) == 1:
-        return unique.pop()
-    return None
-
-
-def _window_owner(groups: list[tuple[datetime, list[int]]], ts: datetime):
-    for i, (anchor, oids) in enumerate(groups):
-        end = groups[i + 1][0] if i + 1 < len(groups) else None
-        if ts < anchor:
-            continue
-        if end is not None and ts >= end:
-            continue
-        if len(oids) != 1:
-            return _WINDOW_AMBIGUOUS
-        return oids[0]
+        owners.append(hits[0])
+    if len(owners) == 1 or (owners and len(set(owners)) == 1):
+        return owners[0]
     return None
 
 
@@ -2652,10 +2656,11 @@ def load_post_epoch_specialty_evidence(
     organization_id: int,
     bag_ids: list[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Post-epoch bulk scans matched to the WF order window that contains them.
+    """Post-epoch bulk scans matched to the WF order lifecycle that contains them.
 
-    One purpose-equality scan read from the reset epoch. No full bag timeline
-    and no newest/open order fallback.
+    One purpose-equality scan read from the reset epoch, one order-instance
+    read, and one new-order-boundary read. A later sent-to-vendor does not end
+    the lifecycle. No per-bag query and no newest/open order fallback.
     """
     from backend.rinse_bulk_workitems import purpose_is_bulk_workitem
     from backend.ta_helpers import table_exists
@@ -2732,11 +2737,23 @@ def load_post_epoch_specialty_evidence(
             if bid in orders_by_bag:
                 orders_by_bag[bid].append(dict(row))
 
+    from backend.rinse_order_instances import load_new_order_boundary_timestamps_for_bags
+
+    boundaries_by_bag: dict[str, list[datetime]] = {}
+    for i in range(0, len(scan_ids), chunk):
+        part = scan_ids[i : i + chunk]
+        boundaries_by_bag.update(
+            load_new_order_boundary_timestamps_for_bags(
+                cursor, int(organization_id), part
+            )
+        )
+
     out: dict[str, dict[str, Any]] = {}
     for bid, events in scans_by_bag.items():
         oid = match_specialty_order_instance_window(
             orders_by_bag.get(bid),
             [ev.get("scanned_at_parsed") for ev in events],
+            boundaries_by_bag.get(bid) or [],
         )
         anchor = None
         if oid:
