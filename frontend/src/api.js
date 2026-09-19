@@ -1885,6 +1885,11 @@ export const setOfficialPayDate = (batchId, body) =>
 export const unfinalizePayoutDetails = (batchId) =>
   axios.post(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/unfinalize-details`);
 
+export const reopenPaidForCorrection = (batchId, reason) =>
+  axios.post(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/reopen-paid-for-correction`, {
+    reason,
+  });
+
 export const unfinalizeAndDeletePayoutBatch = (batchId) =>
   axios.post(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/unfinalize-and-delete`, {
     confirm: true,

@@ -44,6 +44,7 @@ import {
   finalizePayoutDetails,
   setOfficialPayDate,
   unfinalizePayoutDetails,
+  reopenPaidForCorrection,
   unfinalizeAndDeletePayoutBatch,
   estimatePayoutTaxes,
   getPaymentReceiptHtml,
@@ -485,6 +486,8 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
   const [info, setInfo] = useState("");
   const [finalizeOpen, setFinalizeOpen] = useState(false);
   const [unfinalizeOpen, setUnfinalizeOpen] = useState(false);
+  const [reopenOpen, setReopenOpen] = useState(false);
+  const [reopenReason, setReopenReason] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [finalizePayDate, setFinalizePayDate] = useState("");
   const [confirmPayDate, setConfirmPayDate] = useState(false);
@@ -572,6 +575,8 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
   const isReceiptMode = documentMode === "payment_receipt";
   const canFinalize = detail?.payout_workflow?.can_finalize;
   const canUnfinalize = detail?.payout_workflow?.can_unfinalize && canEditDetails;
+  const canReopenPaid =
+    Boolean(detail?.payout_workflow?.can_reopen_paid_for_correction) && canEditDetails;
   const canDeleteBatch = detail?.payout_workflow?.can_delete && canEditDetails;
   const deleteRequiresUnfinalize = Boolean(detail?.payout_workflow?.delete_requires_unfinalize);
   const finalizeBlockers = detail?.payout_workflow?.finalize_blockers || [];
@@ -746,7 +751,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
       const res = await unfinalizePayoutDetails(selectedId);
       setDetail(res.data);
       setUnfinalizeOpen(false);
-      setInfo("Reopened for editing — remember to finalize again after changes.");
+      setInfo("Details unlocked for editing. Recorded payment status was not changed.");
       const drafts = {};
       (res.data.lines || []).forEach((ln) => {
         drafts[ln.id] = emptyLineState(ln, res.data);
@@ -755,6 +760,32 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
       await loadBatches();
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Unfinalize failed");
+    }
+  };
+
+  const doReopenPaid = async () => {
+    if (!selectedId) return;
+    const reason = reopenReason.trim();
+    if (reason.length < 3) {
+      setError("Enter a reason (at least 3 characters) to reopen paid status.");
+      return;
+    }
+    setError("");
+    try {
+      const res = await reopenPaidForCorrection(selectedId, reason);
+      setDetail(res.data);
+      setReopenOpen(false);
+      setReopenReason("");
+      setInfo("Paid status reversed. Edit the batch, then finalize and mark paid again.");
+      const drafts = {};
+      (res.data.lines || []).forEach((ln) => {
+        drafts[ln.id] = emptyLineState(ln, res.data);
+      });
+      setLineDrafts(drafts);
+      await loadBatches();
+      await loadDetail(selectedId);
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Could not reopen paid status");
     }
   };
 
@@ -1280,6 +1311,16 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                 Unfinalize
               </Button>
             ) : null}
+            {canReopenPaid ? (
+              <Button
+                size="small"
+                color="warning"
+                variant="outlined"
+                onClick={() => setReopenOpen(true)}
+              >
+                Reopen for Correction
+              </Button>
+            ) : null}
             <IconButton size="small" onClick={(e) => setMoreAnchor(e.currentTarget)}>
               <MoreVertIcon fontSize="small" />
             </IconButton>
@@ -1702,15 +1743,48 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
       />
 
       <Dialog open={unfinalizeOpen} onClose={() => setUnfinalizeOpen(false)}>
-        <DialogTitle>Reopen payroll details?</DialogTitle>
+        <DialogTitle>Unfinalize payroll details?</DialogTitle>
         <DialogContent>
           <Typography variant="body2">
-            Unlocks tax and payment fields for editing. Official paystubs and receipts are hidden until you finalize again.
+            Unlocks tax and payment fields for editing. This does not reverse recorded
+            payment. Official paystubs and receipts are hidden until you finalize again.
           </Typography>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setUnfinalizeOpen(false)}>Cancel</Button>
           <Button onClick={doUnfinalize} color="warning" variant="contained">Unfinalize</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={reopenOpen} onClose={() => setReopenOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Reopen paid status for correction?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 1.5 }}>
+            This reverses recorded payment for every worker who is currently paid.
+            Workers already marked unpaid stay unpaid. Gross, deductions, and
+            withholding stay. The batch will no longer show as Paid. You can edit,
+            finalize, and mark paid again. This is not the same as Unfinalize.
+          </Typography>
+          <TextField
+            autoFocus
+            fullWidth
+            required
+            label="Reason"
+            value={reopenReason}
+            onChange={(e) => setReopenReason(e.target.value)}
+            helperText="Required. Kept in the payroll audit history."
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setReopenOpen(false)}>Cancel</Button>
+          <Button
+            onClick={doReopenPaid}
+            color="warning"
+            variant="contained"
+            disabled={reopenReason.trim().length < 3}
+          >
+            Reopen for Correction
+          </Button>
         </DialogActions>
       </Dialog>
 

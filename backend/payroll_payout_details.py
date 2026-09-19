@@ -1712,6 +1712,7 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
             "can_edit_details": ready and not finalized,
             "can_finalize": can_finalize,
             "can_unfinalize": can_unfinalize,
+            "can_reopen_paid_for_correction": st in ("paid", "closed"),
             "can_delete": can_delete,
             "delete_requires_unfinalize": bool(finalized)
             and st in ("approved_for_payment", "paid", "closed"),
@@ -2640,6 +2641,11 @@ def _sync_line_payment_recorded_status(conn, organization_id: int, batch_id: int
         recorded = normalize_payment_recorded((details.get("settlement") or {}).get("payment_recorded"))
         if not recorded:
             continue
+        # approved_unpaid is the workflow token mark_paid still accepts.
+        # Copying payment_recorded=unpaid onto it would exclude the line from
+        # the next mark_paid (that action skips payment_status unpaid).
+        if str(current or "") == "approved_unpaid" and recorded == "unpaid":
+            continue
         if str(current or "") == recorded:
             continue
         upd.execute(
@@ -2791,6 +2797,240 @@ def set_official_pay_date(
     )
     conn.commit()
     return get_payout_batch_details(conn, organization_id, batch_id) or {}
+
+def _audit_events(batch: dict) -> list:
+    audit = _parse_json_blob(batch.get("payout_details_audit_json"))
+    events = audit.get("events") if isinstance(audit.get("events"), list) else []
+    return list(events)
+
+
+def _line_is_explicitly_unpaid(line: dict, batch: dict) -> bool:
+    """A line the operator already marked unpaid, not merely 'not yet paid'."""
+    from backend.payroll_worker_categories import (
+        is_payment_recorded_unpaid,
+        normalize_payment_recorded,
+    )
+
+    details = parse_line_payout_details(line)
+    settlement = details.get("settlement") if isinstance(details.get("settlement"), dict) else {}
+    explicit = normalize_payment_recorded(settlement.get("payment_recorded"))
+    ps = str(line.get("payment_status") or "").strip().lower()
+    if explicit == "unpaid" or ps == "unpaid":
+        return True
+    return is_payment_recorded_unpaid(line, details, batch) and ps == "unpaid"
+
+
+def _line_effective_paid(line: dict, batch: dict) -> bool:
+    from backend.payroll_worker_categories import is_payment_recorded_paid
+
+    if _line_is_explicitly_unpaid(line, batch):
+        return False
+    details = parse_line_payout_details(line)
+    return is_payment_recorded_paid(line, details, batch)
+
+
+def sync_payment_recorded_for_paid_lines(conn, organization_id: int, batch_id: int) -> None:
+    """mark_paid writes payment_status only. The read path trusts payment_recorded.
+
+    After a correction sets payment_recorded=unpaid, the next mark_paid must
+    flip that flag on the lines it actually marks paid. Lines left payment_status
+    unpaid stay unpaid.
+    """
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, payout_details_json, payment_status
+        FROM payout_batch_lines
+        WHERE batch_id=%s AND organization_id=%s AND payment_status='paid'
+        """,
+        (int(batch_id), int(organization_id)),
+    )
+    rows = c.fetchall() or []
+    upd = conn.cursor()
+    for row in rows:
+        if isinstance(row, dict):
+            line_id, blob = row.get("id"), row.get("payout_details_json")
+        else:
+            line_id, blob = row[0], row[1]
+        details = parse_line_payout_details({"payout_details_json": blob})
+        settlement = dict(details.get("settlement") or {})
+        if str(settlement.get("payment_recorded") or "") == "paid":
+            continue
+        settlement["payment_recorded"] = "paid"
+        details["settlement"] = settlement
+        upd.execute(
+            """
+            UPDATE payout_batch_lines
+            SET payout_details_json=%s, updated_at=CURRENT_TIMESTAMP
+            WHERE id=%s AND batch_id=%s AND organization_id=%s AND payment_status='paid'
+            """,
+            (
+                json.dumps(details),
+                int(line_id),
+                int(batch_id),
+                int(organization_id),
+            ),
+        )
+
+
+def reopen_paid_status_for_correction(
+    conn,
+    organization_id: int,
+    batch_id: int,
+    *,
+    actor_id: int,
+    reason: str,
+) -> dict:
+    """Reverse recorded payment on a paid batch so it can be corrected and re-paid.
+
+    Distinct from unfinalize_payout_details, which only unlocks editing.
+    Clears the payment fields mark_paid fills with COALESCE so the next
+    mark_paid writes a new paid_at and payment_date. Does not touch gross,
+    deductions, or withholding.
+    """
+    ensure_payout_details_columns(conn.cursor())
+    reason_s = str(reason or "").strip()
+    if len(reason_s) < 3:
+        raise ValueError("A reason is required to reopen a paid batch for correction")
+    batch = get_payout_batch(conn, organization_id, batch_id)
+    if not batch:
+        raise ValueError("Batch not found")
+    st = str(batch.get("status") or "")
+    events = _audit_events(batch)
+    already = any(
+        isinstance(ev, dict) and ev.get("event") == "payment_reversed_for_correction"
+        for ev in events
+    )
+    if st not in ("paid", "closed"):
+        if already and st == "approved_for_payment":
+            return get_payout_batch_details(conn, organization_id, batch_id) or {}
+        raise ValueError("Only a paid batch can be reopened for correction")
+
+    prior_status = st
+    prior_paid_at = batch.get("paid_at")
+    affected: list[dict] = []
+    line_updates: list[tuple] = []
+    for ln in batch.get("lines") or []:
+        if not _line_effective_paid(ln, batch):
+            continue
+        raw = ln.get("payout_details_json")
+        if isinstance(raw, str):
+            try:
+                raw_details = json.loads(raw) if raw else {}
+            except (TypeError, ValueError):
+                raw_details = {}
+        elif isinstance(raw, dict):
+            raw_details = dict(raw)
+        else:
+            raw_details = {}
+        details = parse_line_payout_details(ln)
+        settlement_view = details.get("settlement") if isinstance(details.get("settlement"), dict) else {}
+        payment_view = details.get("payment") if isinstance(details.get("payment"), dict) else {}
+        raw_settlement = raw_details.get("settlement") if isinstance(raw_details.get("settlement"), dict) else {}
+        raw_payment = raw_details.get("payment") if isinstance(raw_details.get("payment"), dict) else {}
+        prior_recorded = raw_settlement.get("payment_recorded", settlement_view.get("payment_recorded"))
+        prior_amount = raw_settlement.get("amount_paid", settlement_view.get("amount_paid"))
+        prior_pay_date = ln.get("payment_date") or raw_payment.get("date") or payment_view.get("date")
+        prior_ref = (
+            ln.get("payment_reference")
+            or raw_payment.get("reference")
+            or raw_payment.get("check_number")
+            or payment_view.get("reference")
+        )
+        affected.append(
+            {
+                "line_id": ln.get("id"),
+                "user_id": ln.get("user_id"),
+                "worker_name": ln.get("worker_name_snapshot"),
+                "prior_payment_status": ln.get("payment_status"),
+                "prior_payment_date": prior_pay_date.isoformat()
+                if hasattr(prior_pay_date, "isoformat")
+                else prior_pay_date,
+                "prior_payment_reference": prior_ref,
+                "prior_amount_paid": float(prior_amount) if prior_amount is not None else None,
+                "prior_payment_recorded": prior_recorded,
+            }
+        )
+        stored = dict(raw_details)
+        settlement = dict(raw_settlement)
+        settlement["payment_recorded"] = "unpaid"
+        payment = dict(raw_payment)
+        payment["date"] = None
+        payment["reference"] = ""
+        payment["check_number"] = ""
+        stored["settlement"] = settlement
+        stored["payment"] = payment
+        line_updates.append((json.dumps(stored), int(ln["id"])))
+
+    prior_paid_at_s = (
+        prior_paid_at.isoformat() if hasattr(prior_paid_at, "isoformat") else prior_paid_at
+    )
+    events.append(
+        {
+            "event": "payment_reversed_for_correction",
+            "actor_id": int(actor_id),
+            "at": datetime.utcnow().isoformat(timespec="seconds"),
+            "reason": reason_s,
+            "detail": "Recorded payment reversed so the batch can be corrected and paid again",
+            "prior_batch_status": prior_status,
+            "prior_paid_at": prior_paid_at_s,
+            "lines": affected,
+        }
+    )
+    if batch.get("payout_details_finalized_at"):
+        events.append(
+            {
+                "event": "payout_details_unfinalized",
+                "actor_id": int(actor_id),
+                "at": datetime.utcnow().isoformat(timespec="seconds"),
+                "reason": reason_s,
+                "detail": "Cleared with payment reversal so official documents are no longer current",
+            }
+        )
+
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE payout_batches SET
+          status='approved_for_payment',
+          paid_at=NULL,
+          payout_details_finalized_at=NULL,
+          payout_details_finalized_by=NULL,
+          payout_details_audit_json=%s,
+          updated_at=CURRENT_TIMESTAMP
+        WHERE id=%s AND organization_id=%s AND status IN ('paid', 'closed')
+        """,
+        (
+            json.dumps({"events": events}),
+            int(batch_id),
+            int(organization_id),
+        ),
+    )
+    if getattr(c, "rowcount", 1) == 0:
+        fresh = get_payout_batch(conn, organization_id, batch_id) or {}
+        if str(fresh.get("status") or "") == "approved_for_payment" and any(
+            isinstance(ev, dict) and ev.get("event") == "payment_reversed_for_correction"
+            for ev in _audit_events(fresh)
+        ):
+            return get_payout_batch_details(conn, organization_id, batch_id) or {}
+        raise ValueError("Paid batch changed before correction could be saved")
+    for blob, line_id in line_updates:
+        c.execute(
+            """
+            UPDATE payout_batch_lines SET
+              payout_details_json=%s,
+              payment_status='approved_unpaid',
+              payment_date=NULL,
+              payment_reference=NULL,
+              line_status='approved',
+              updated_at=CURRENT_TIMESTAMP
+            WHERE id=%s AND batch_id=%s AND organization_id=%s
+            """,
+            (blob, line_id, int(batch_id), int(organization_id)),
+        )
+    conn.commit()
+    return get_payout_batch_details(conn, organization_id, batch_id) or {}
+
 
 def can_unfinalize_payout_details(batch: dict) -> bool:
     """Allow reopening finalized payout details for corrections (same readiness as edit)."""

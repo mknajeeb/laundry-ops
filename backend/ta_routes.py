@@ -6557,6 +6557,41 @@ def payroll_set_official_pay_date(batch_id: int):
         conn.close()
 
 
+@ta_bp.route("/payroll/payout-batches/<int:batch_id>/reopen-paid-for-correction", methods=["POST"])
+@require_auth
+@require_any_perm("ta.settings", "users.edit")
+def payroll_payout_reopen_paid_for_correction(batch_id: int):
+    """Reverse recorded payment on a paid batch. Does not only unfinalize."""
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            can_edit_payout_details,
+            reopen_paid_status_for_correction,
+        )
+
+        uid = int(g.ta_user["id"])
+        if not can_edit_payout_details(conn, uid):
+            return jsonify({"error": "Forbidden"}), 403
+        oid = _tenant_id()
+        body = request.get_json(silent=True) or {}
+        try:
+            row = reopen_paid_status_for_correction(
+                conn,
+                oid,
+                batch_id,
+                actor_id=uid,
+                reason=body.get("reason") or "",
+            )
+            return jsonify(row)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_reopen_paid_for_correction failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/payout-batches/<int:batch_id>/unfinalize-details", methods=["POST"])
 @require_auth
 @require_any_perm("ta.settings", "users.edit")

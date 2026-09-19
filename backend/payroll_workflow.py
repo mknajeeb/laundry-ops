@@ -1256,6 +1256,9 @@ def apply_batch_workflow_action(
             """,
             (pd, int(batch_id), int(organization_id)),
         )
+        from backend.payroll_payout_details import sync_payment_recorded_for_paid_lines
+
+        sync_payment_recorded_for_paid_lines(conn, organization_id, batch_id)
     elif action == "mark_line_paid":
         if not line_id:
             raise ValueError("line_id required")
