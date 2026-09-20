@@ -254,6 +254,7 @@ FROM {APPROVALS_TABLE}
 WHERE organization_id = %s
   AND role_key = %s
   AND invalidated_at IS NULL
+  AND excluded_at IS NULL
   AND business_date_et >= %s
   AND business_date_et <= %s
 GROUP BY employee_user_id, employee_name
@@ -365,6 +366,7 @@ SELECT
 FROM {APPROVALS_TABLE}
 WHERE organization_id = %s
   AND invalidated_at IS NULL
+  AND excluded_at IS NULL
   AND business_date_et >= %s
   AND business_date_et <= %s
   AND role_key IN ({{role_placeholders}})
@@ -463,6 +465,7 @@ def build_employee_detail(
     clauses = [
         "organization_id=%s",
         "invalidated_at IS NULL",
+        "excluded_at IS NULL",
         "business_date_et >= %s",
         "business_date_et <= %s",
     ]
@@ -548,6 +551,7 @@ FROM {APPROVALS_TABLE}
 WHERE organization_id = %s
   AND role_key = %s
   AND invalidated_at IS NULL
+  AND excluded_at IS NULL
   AND {{emp_clause}}
 ORDER BY business_date_et DESC, published_session_start_et DESC, id DESC
 LIMIT %s
@@ -564,6 +568,7 @@ FROM {APPROVALS_TABLE}
 WHERE organization_id = %s
   AND role_key = %s
   AND invalidated_at IS NULL
+  AND excluded_at IS NULL
   AND business_date_et >= %s
   AND business_date_et <= %s
   AND {{emp_clause}}

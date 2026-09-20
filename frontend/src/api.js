@@ -2767,6 +2767,13 @@ export const postManagementPerformanceUnapproveSession = (roleKey, sessionId, bo
     { timeout: 60000 }
   );
 
+export const postManagementPerformanceEditEmployeeDay = (roleKey, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/performance/${encodeURIComponent(roleKey)}/employees/edit-day`,
+    body,
+    { timeout: 120000 }
+  );
+
 export const getManagementFolderBenchmark = () =>
   axios.get(`${API_BASE}/api/management/performance/FOLDER/benchmark`, { timeout: 30000 });
 

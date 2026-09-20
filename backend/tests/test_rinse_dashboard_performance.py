@@ -542,3 +542,11 @@ class TestAuthHelpers:
         assert _can_read_rinse_dashboard({"roles": ["RINSE"]})
         assert _can_read_rinse_dashboard({"roles": ["ADMIN"]})
         assert not _can_read_rinse_dashboard({"roles": ["CHECKOUT"]})
+
+
+def test_leaderboard_sql_excludes_excluded_sessions():
+    from backend import rinse_dashboard_performance as mod
+    assert "excluded_at IS NULL" in mod._LEADERBOARD_SQL
+    assert "excluded_at IS NULL" in mod._EMPLOYEES_WEEK_SQL
+    assert "excluded_at IS NULL" in mod._WEEK_AGG_SQL
+    assert "excluded_at IS NULL" in mod._LAST_N_SQL

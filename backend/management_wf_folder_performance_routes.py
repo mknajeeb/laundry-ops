@@ -577,6 +577,110 @@ def register_management_wf_folder_performance_routes(
             conn.close()
 
     @app.route(
+        "/api/management/performance/<role_key>/employees/edit-day",
+        methods=["POST"],
+    )
+    def management_performance_edit_employee_day(role_key: str):
+        """Edit Day: average weight (lb/bag) and/or end time of final included session."""
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_WRITE_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            rk = str(role_key or "").strip().upper()
+            if rk != ROLE_FOLDER:
+                return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
+            oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
+            body = request.get_json(silent=True) or {}
+            selected, err = _selected_date_et(
+                body.get("date_et") or body.get("selected_date_et")
+            )
+            if err:
+                return err
+            actor_id, actor_name = _actor(me)
+            emp_name = body.get("employee") or body.get("employee_name")
+            emp_uid = body.get("user_id") or body.get("employee_user_id")
+            reason = body.get("reason") or body.get("note") or None
+            results: dict = {"ok": True, "date_et": selected.isoformat()}
+
+            has_avg = "average_weight_lbs" in body or "day_average_weight" in body
+            has_end = body.get("end_time_et") or body.get("end_time")
+
+            if not has_avg and not has_end:
+                return (
+                    jsonify(
+                        {
+                            "error": "Provide average_weight_lbs and/or end_time_et",
+                            "status": "missing_fields",
+                        }
+                    ),
+                    400,
+                )
+
+            if has_avg:
+                from backend.rinse_performance_employee_day import upsert_day_average_weight
+
+                raw_avg = (
+                    body["average_weight_lbs"]
+                    if "average_weight_lbs" in body
+                    else body.get("day_average_weight")
+                )
+                avg_val = None if raw_avg in (None, "", "clear") else float(raw_avg)
+                avg_out = upsert_day_average_weight(
+                    cursor,
+                    oid,
+                    role_key=rk,
+                    business_date_et=selected,
+                    employee_name=str(emp_name or "").strip(),
+                    employee_user_id=int(emp_uid) if emp_uid is not None else None,
+                    average_weight_lbs=avg_val,
+                    reason=reason,
+                    actor_user_id=actor_id,
+                    actor_name=actor_name,
+                )
+                results["average_weight"] = avg_out
+                if not avg_out.get("ok"):
+                    results["ok"] = False
+
+            if has_end:
+                from backend.rinse_performance_employee_day import apply_employee_day_end_time
+
+                end_out = apply_employee_day_end_time(
+                    conn,
+                    oid,
+                    selected_date_et=selected,
+                    employee_name=str(emp_name or "").strip(),
+                    employee_user_id=int(emp_uid) if emp_uid is not None else None,
+                    end_time_et=str(body.get("end_time_et") or body.get("end_time")),
+                    reason=reason,
+                    actor_user_id=actor_id,
+                    actor_name=actor_name,
+                )
+                results["end_time"] = end_out
+                if not end_out.get("ok"):
+                    results["ok"] = False
+
+            if results.get("ok"):
+                conn.commit()
+            else:
+                conn.rollback()
+            status = 200 if results.get("ok") else 400
+            return jsonify(json_safe_rinse(results)), status
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
         "/api/management/performance/<role_key>/sessions/<session_id>/include",
         methods=["POST"],
     )

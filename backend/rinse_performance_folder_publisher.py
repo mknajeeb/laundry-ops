@@ -279,6 +279,10 @@ def attach_publication_status_to_day(
         emp["day_publication_status"] = day_pub["status"]
         emp["day_publication"] = day_pub
         emp["publication_status"] = day_pub["status"]
+    # Included-only metrics + day average-weight override (after status stamps).
+    from backend.rinse_performance_employee_day import apply_publication_and_day_metrics
+
+    apply_publication_and_day_metrics(cursor, organization_id, day)
     day["folder_benchmark_lbs_hr"] = get_folder_benchmark(cursor, organization_id)
     return day
 

@@ -250,6 +250,13 @@ def _parse_dt(value: Any) -> datetime | None:
 
 def session_is_approvable(session: Mapping[str, Any]) -> tuple[bool, str]:
     """Closed Folder sessions with positive hours and a rate are approvable."""
+    pub = str(
+        session.get("publication_status")
+        or (session.get("publication") or {}).get("status")
+        or ""
+    ).upper()
+    if pub == "EXCLUDED" or (session.get("publication") or {}).get("excluded"):
+        return False, "excluded"
     if str(session.get("role_status") or "").lower() == "open":
         return False, "open"
     if str(session.get("role_status") or "").lower() == "unresolved":
@@ -288,6 +295,9 @@ def derive_employee_day_publication_status(
 ) -> dict[str, Any]:
     """Roll session publication into one employee-day badge.
 
+    Day status is derived from **included** sessions only. An excluded sibling
+    must never keep the day permanently PARTIALLY_APPROVED.
+
     Returns status in:
       APPROVED | NEEDS_APPROVAL | PARTIALLY_APPROVED | EXCLUDED
     """
@@ -300,29 +310,40 @@ def derive_employee_day_publication_status(
             "approved_count": 0,
             "unapproved_count": 0,
             "excluded_count": 0,
+            "included_session_count": 0,
             "eligible_session_count": 0,
         }
-    statuses = [
-        str(s.get("publication_status") or (s.get("publication") or {}).get("status") or "UNAPPROVED")
-        for s in eligible
-    ]
-    excluded_count = sum(1 for st in statuses if st == "EXCLUDED")
-    approved_count = sum(1 for st in statuses if st == "APPROVED")
-    unapproved_count = len(statuses) - excluded_count - approved_count
-    if excluded_count == len(statuses):
-        day_status = "EXCLUDED"
-    elif approved_count == len(statuses):
+
+    def _status(s: Mapping[str, Any]) -> str:
+        return str(
+            s.get("publication_status")
+            or (s.get("publication") or {}).get("status")
+            or "UNAPPROVED"
+        ).upper()
+
+    excluded = [s for s in eligible if _status(s) == "EXCLUDED"]
+    included = [s for s in eligible if _status(s) != "EXCLUDED"]
+    excluded_count = len(excluded)
+    included_statuses = [_status(s) for s in included]
+    approved_count = sum(1 for st in included_statuses if st == "APPROVED")
+    unapproved_count = len(included_statuses) - approved_count
+
+    if not included:
+        day_status = "EXCLUDED" if excluded_count else "NEEDS_APPROVAL"
+    elif approved_count == len(included_statuses):
         day_status = "APPROVED"
-    elif approved_count == 0 and excluded_count == 0:
+    elif approved_count == 0:
         day_status = "NEEDS_APPROVAL"
     else:
         day_status = "PARTIALLY_APPROVED"
+
     return {
         "status": day_status,
         "approved_count": approved_count,
         "unapproved_count": unapproved_count,
         "excluded_count": excluded_count,
-        "eligible_session_count": len(statuses),
+        "included_session_count": len(included),
+        "eligible_session_count": len(eligible),
     }
 
 

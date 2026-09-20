@@ -57,6 +57,16 @@ def test_derive_employee_day_statuses():
         )["status"]
         == "EXCLUDED"
     )
+    # Approved included + excluded sibling → Approved (not Partially)
+    assert (
+        derive_employee_day_publication_status(
+            [
+                {"role_status": "closed", "publication_status": "APPROVED"},
+                {"role_status": "closed", "publication_status": "EXCLUDED"},
+            ]
+        )["status"]
+        == "APPROVED"
+    )
 
 
 def test_partition_hides_excluded_from_active_summary():

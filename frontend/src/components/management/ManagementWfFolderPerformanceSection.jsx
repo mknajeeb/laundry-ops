@@ -43,6 +43,8 @@ import {
   postManagementPerformanceOverrideSession,
   postManagementPerformanceExcludeSession,
   postManagementPerformanceIncludeSession,
+  postManagementPerformanceUnapproveSession,
+  postManagementPerformanceEditEmployeeDay,
   putManagementFolderBenchmark,
   postVeewashStep1Correction,
 } from "../../api";
@@ -494,11 +496,24 @@ export default function ManagementWfFolderPerformanceSection({
   const [editSession, setEditSession] = useState(null);
   const [editRate, setEditRate] = useState("");
   const [editReason, setEditReason] = useState("");
+  const [editDayOpen, setEditDayOpen] = useState(false);
+  const [editDayAvgWeight, setEditDayAvgWeight] = useState("");
+  const [editDayEndTime, setEditDayEndTime] = useState("");
+  const [editDayReason, setEditDayReason] = useState("");
   const [showExcluded, setShowExcluded] = useState(false);
   const [roleKey, setRoleKey] = useState("FOLDER");
   const [employeeFilter, setEmployeeFilter] = useState("all");
   const [graphMetric, setGraphMetric] = useState("lbs_hr");
   const [reviewEmployee, setReviewEmployee] = useState(null);
+
+  // Keep Review drawer in sync after approve/exclude/edit-day reloads.
+  useEffect(() => {
+    if (!reviewEmployee?.employee || !data) return;
+    const name = String(reviewEmployee.employee).toLowerCase();
+    const pool = [...(data.employees || []), ...(data.excluded_employees || [])];
+    const next = pool.find((e) => String(e.employee || "").toLowerCase() === name);
+    if (next) setReviewEmployee(next);
+  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
   const loadInFlight = useRef(false);
   const loadGen = useRef(0);
 
@@ -774,6 +789,101 @@ export default function ManagementWfFolderPerformanceSection({
     setEditSession(session);
     setEditRate(String(seed));
     setEditReason(pub.override_reason || "");
+  };
+
+  const unapproveSession = async (session) => {
+    if (!session?.session_id) return;
+    setApproveBusy(true);
+    setPubMessage("");
+    setError("");
+    try {
+      const res = await postManagementPerformanceUnapproveSession("FOLDER", session.session_id, {
+        reason: "manual_unapprove",
+      });
+      const body = res.data || {};
+      if (body.ok === false) {
+        setError(body.error || body.status || "Disapprove failed");
+        return;
+      }
+      setPubMessage(`Disapproved ${session.session_code || session.session_id}`);
+      await load({ skip_lazy_baseline: true });
+    } catch (err) {
+      setError(apiErr(err, "Disapprove failed"));
+    } finally {
+      setApproveBusy(false);
+    }
+  };
+
+  const openEditDay = (employee) => {
+    if (!employee) return;
+    const seed =
+      employee.day_average_weight_override ??
+      employee.day_average_weight ??
+      (employee.orders_completed > 0
+        ? Number(employee.calculated_total_pre_lbs ?? employee.total_pre_lbs) /
+          Number(employee.orders_completed)
+        : "");
+    setEditDayAvgWeight(seed === "" || seed == null ? "" : String(Number(seed).toFixed(2)));
+    const sessions = employee.sessions || [];
+    const included = sessions.filter((s) => {
+      const pub = s.publication_status || s.publication?.status;
+      return pub !== "EXCLUDED";
+    });
+    const last = [...included].sort((a, b) =>
+      String(a.performance_end || a.end_time || "").localeCompare(
+        String(b.performance_end || b.end_time || "")
+      )
+    );
+    const endRaw = last.length
+      ? last[last.length - 1].performance_end || last[last.length - 1].end_time
+      : "";
+    setEditDayEndTime(endRaw ? String(endRaw).slice(0, 16).replace("T", " ") : "");
+    setEditDayReason("");
+    setEditDayOpen(true);
+  };
+
+  const saveEditDay = async () => {
+    if (!reviewEmployee) return;
+    const payload = {
+      date_et: dateEt,
+      user_id: reviewEmployee.user_id,
+      employee: reviewEmployee.employee,
+      reason: editDayReason || undefined,
+    };
+    const avg = editDayAvgWeight.trim();
+    if (avg !== "") {
+      const n = Number(avg);
+      if (!Number.isFinite(n) || n < 0) {
+        setError("Average Weight (lb/bag) must be a non-negative number");
+        return;
+      }
+      payload.average_weight_lbs = n;
+    }
+    const end = editDayEndTime.trim();
+    if (end) {
+      payload.end_time_et = end.includes("T") ? end : end.replace(" ", "T");
+    }
+    if (payload.average_weight_lbs == null && !payload.end_time_et) {
+      setError("Enter Average Weight and/or End Time");
+      return;
+    }
+    setApproveBusy(true);
+    setError("");
+    try {
+      const res = await postManagementPerformanceEditEmployeeDay("FOLDER", payload);
+      const body = res.data || {};
+      if (!body.ok) {
+        setError(body.error || body.status || "Edit Day failed");
+        return;
+      }
+      setPubMessage(`Updated day for ${reviewEmployee.employee}`);
+      setEditDayOpen(false);
+      await load({ skip_lazy_baseline: true });
+    } catch (err) {
+      setError(apiErr(err, "Edit Day failed"));
+    } finally {
+      setApproveBusy(false);
+    }
   };
 
   const saveEdit = async () => {
@@ -1516,17 +1626,45 @@ export default function ManagementWfFolderPerformanceSection({
           <Typography sx={{ ...PERF_TYPE.meta, mt: 0.35 }}>
             {dayStatusLabel(
               reviewEmployee?.day_publication_status || reviewEmployee?.publication_status
-            )}{" "}
-            · {fmtCount(reviewEmployee?.orders_completed)} orders ·{" "}
-            {fmtLbs(reviewEmployee?.total_pre_lbs, { compact: true })} ·{" "}
-            {fmtRate(reviewEmployee?.lbs_per_hour)} lb/hr
+            )}
           </Typography>
         </DialogTitle>
         <DialogContent dividers>
-          <Stack spacing={1.25}>
+          <Stack spacing={1.5}>
+            <Box
+              sx={{
+                p: 1.25,
+                borderRadius: 1,
+                border: `1px solid ${PERF_UI.rowBorder}`,
+                bgcolor: PERF_UI.rowBg,
+              }}
+            >
+              <Typography sx={{ fontWeight: 800, fontSize: 13, mb: 0.75 }}>Day summary</Typography>
+              <Typography sx={{ ...PERF_TYPE.meta }}>
+                Included {fmtCount(reviewEmployee?.included_session_count ?? reviewEmployee?.session_count)} ·
+                Excluded {fmtCount(reviewEmployee?.excluded_session_count || 0)} · Bags{" "}
+                {fmtCount(reviewEmployee?.orders_completed)} · Pounds{" "}
+                {fmtLbs(reviewEmployee?.total_pre_lbs, { compact: true })}
+                {reviewEmployee?.day_average_weight_is_override
+                  ? ` (calc ${fmtLbs(reviewEmployee?.calculated_total_pre_lbs, { compact: true })})`
+                  : ""}{" "}
+                · Hours {fmtHours(reviewEmployee?.performance_hours)} · Avg Weight{" "}
+                {reviewEmployee?.day_average_weight != null
+                  ? `${Number(reviewEmployee.day_average_weight).toFixed(2)} lb/bag`
+                  : "—"}
+                {reviewEmployee?.day_average_weight_is_override ? " (override)" : ""} ·{" "}
+                {fmtRate(reviewEmployee?.lbs_per_hour)} lb/hr ·{" "}
+                {dayStatusLabel(
+                  reviewEmployee?.day_publication_status || reviewEmployee?.publication_status
+                )}
+              </Typography>
+            </Box>
+
+            <Typography sx={{ fontWeight: 800, fontSize: 13 }}>Sessions</Typography>
             {(reviewEmployee?.sessions || []).map((sess) => {
               const pub = sess.publication_status || sess.publication?.status || "UNAPPROVED";
               const isOpen = String(sess.role_status || "").toLowerCase() === "open";
+              const excluded = pub === "EXCLUDED";
               return (
                 <Box
                   key={sess.session_id}
@@ -1534,7 +1672,7 @@ export default function ManagementWfFolderPerformanceSection({
                     p: 1,
                     borderRadius: 1,
                     border: `1px solid ${PERF_UI.rowBorder}`,
-                    bgcolor: PERF_UI.rowBg,
+                    bgcolor: excluded ? "rgba(148,163,184,0.12)" : PERF_UI.rowBg,
                   }}
                 >
                   <Stack direction="row" justifyContent="space-between" alignItems="baseline">
@@ -1542,14 +1680,28 @@ export default function ManagementWfFolderPerformanceSection({
                       {sess.session_code || sess.session_id}
                     </Typography>
                     <Typography sx={{ fontSize: 12, color: dayStatusColor(pub), fontWeight: 700 }}>
-                      {pub === "UNAPPROVED" ? "Unapproved" : dayStatusLabel(pub)}
+                      {excluded
+                        ? "Excluded"
+                        : pub === "UNAPPROVED"
+                          ? "Needs approval"
+                          : dayStatusLabel(pub)}
                     </Typography>
                   </Stack>
+                  {excluded ? (
+                    <Typography sx={{ ...PERF_TYPE.meta, mt: 0.25, fontStyle: "italic" }}>
+                      Excluded — not included in day totals
+                    </Typography>
+                  ) : null}
                   <Typography sx={{ ...PERF_TYPE.meta, mt: 0.25 }}>
-                    Calc {fmtRate(sess.lbs_per_hour)} · Pub{" "}
-                    {fmtRate(sess.publication?.published_metric_value ?? sess.lbs_per_hour)} ·{" "}
-                    {fmtCount(sess.orders_completed)} orders · {fmtLbs(sess.total_pre_lbs, { compact: true })} ·{" "}
-                    {fmtHours(sess.performance_hours)}
+                    {fmtCount(sess.orders_completed)} bags · {fmtLbs(sess.total_pre_lbs, { compact: true })} ·{" "}
+                    {fmtHours(sess.performance_hours)} · {fmtRate(sess.lbs_per_hour)} lb/hr
+                    {!excluded ? (
+                      <>
+                        {" "}
+                        · Pub{" "}
+                        {fmtRate(sess.publication?.published_metric_value ?? sess.lbs_per_hour)}
+                      </>
+                    ) : null}
                   </Typography>
                   <Stack direction="row" spacing={0.75} sx={{ mt: 0.75 }} flexWrap="wrap" useFlexGap>
                     <Button
@@ -1560,17 +1712,17 @@ export default function ManagementWfFolderPerformanceSection({
                       Orders
                       <ChevronRightIcon sx={{ fontSize: 14 }} />
                     </Button>
-                    {!isOpen && pub !== "EXCLUDED" ? (
+                    {!isOpen && !excluded ? (
                       <Button
                         size="small"
                         sx={{ textTransform: "none" }}
                         disabled={controlsLocked}
                         onClick={() => openEdit({ ...sess, employee: reviewEmployee.employee })}
                       >
-                        Edit
+                        Edit Session
                       </Button>
                     ) : null}
-                    {!isOpen && pub !== "APPROVED" && pub !== "EXCLUDED" ? (
+                    {!isOpen && pub !== "APPROVED" && !excluded ? (
                       <Button
                         size="small"
                         sx={{ textTransform: "none" }}
@@ -1580,18 +1732,28 @@ export default function ManagementWfFolderPerformanceSection({
                         Approve
                       </Button>
                     ) : null}
+                    {!isOpen && pub === "APPROVED" ? (
+                      <Button
+                        size="small"
+                        sx={{ textTransform: "none" }}
+                        disabled={controlsLocked}
+                        onClick={() => unapproveSession(sess)}
+                      >
+                        Disapprove / Reopen
+                      </Button>
+                    ) : null}
                     {!isOpen ? (
                       <Button
                         size="small"
                         sx={{ textTransform: "none" }}
                         disabled={controlsLocked}
                         onClick={() =>
-                          pub === "EXCLUDED"
+                          excluded
                             ? includeSession(sess)
                             : excludeSession({ ...sess, employee: reviewEmployee.employee })
                         }
                       >
-                        {pub === "EXCLUDED" ? "Include" : "Exclude"}
+                        {excluded ? "Include" : "Exclude"}
                       </Button>
                     ) : null}
                   </Stack>
@@ -1600,39 +1762,95 @@ export default function ManagementWfFolderPerformanceSection({
             })}
           </Stack>
         </DialogContent>
-        <DialogActions>
+        <DialogActions sx={{ flexWrap: "wrap", gap: 0.5 }}>
           <Button onClick={() => setReviewEmployee(null)}>Close</Button>
+          <Button
+            disabled={controlsLocked}
+            onClick={() => openEditDay(reviewEmployee)}
+            sx={{ textTransform: "none" }}
+          >
+            Edit Day
+          </Button>
           {String(reviewEmployee?.day_publication_status) === "EXCLUDED" ? (
             <Button
               variant="contained"
               disabled={controlsLocked}
               onClick={() => includeEmployeeDay(reviewEmployee)}
             >
-              Include again
+              Include Day
             </Button>
           ) : (
             <>
               <Button disabled={controlsLocked} onClick={() => excludeEmployeeDay(reviewEmployee)}>
-                Exclude day
+                Exclude Day
               </Button>
               <Button
                 variant="contained"
                 disabled={approveBusy || reviewEmployee?.day_publication_status === "APPROVED"}
                 onClick={() => approveEmployeeDay(reviewEmployee)}
               >
-                Approve day
+                Approve Day
               </Button>
             </>
           )}
         </DialogActions>
       </Dialog>
 
+      <Dialog open={editDayOpen} onClose={() => setEditDayOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Edit Day</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ pt: 1 }}>
+            <Typography sx={{ fontSize: 13, color: "#64748b" }}>
+              Average Weight applies once to included bags. End Time updates only the final
+              included Folder session.
+            </Typography>
+            <TextField
+              label="Average Weight (lb/bag)"
+              value={editDayAvgWeight}
+              onChange={(e) => setEditDayAvgWeight(e.target.value)}
+              size="small"
+              type="number"
+              inputProps={{ min: 0, step: 0.01 }}
+              helperText="effective pounds = average weight × included bag count"
+            />
+            <TextField
+              label="End Time (ET)"
+              value={editDayEndTime}
+              onChange={(e) => setEditDayEndTime(e.target.value)}
+              size="small"
+              placeholder="YYYY-MM-DD HH:MM"
+              helperText="Last included Folder session only"
+            />
+            <TextField
+              label="Reason / note (optional)"
+              value={editDayReason}
+              onChange={(e) => setEditDayReason(e.target.value)}
+              size="small"
+              multiline
+              minRows={2}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditDayOpen(false)} disabled={controlsLocked}>
+            Cancel
+          </Button>
+          <Button onClick={() => saveEditDay()} disabled={controlsLocked} variant="contained">
+            Save Day
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <Dialog open={!!editSession} onClose={() => setEditSession(null)} fullWidth maxWidth="xs">
-        <DialogTitle>Manager approved value</DialogTitle>
+        <DialogTitle>Edit Session · Manager approved rate</DialogTitle>
         <DialogContent>
           <Stack spacing={1.5} sx={{ pt: 1 }}>
             <Typography sx={{ fontSize: 13, color: "#64748b" }}>
               {editSession?.employee} · {editSession?.session_code || editSession?.session_id}
+            </Typography>
+            <Typography sx={{ fontSize: 13 }}>
+              Session lb/hr override — not Average Weight. Use Edit Day for day-level average bag
+              weight.
             </Typography>
             <Typography sx={{ fontSize: 13 }}>
               Calculated: {fmtRate(editSession?.lbs_per_hour)} lb/hr
