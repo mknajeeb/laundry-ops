@@ -69,6 +69,10 @@ import {
   classificationSelectValue,
   formatRecordClassificationLabel,
 } from "../payroll/payrollClassification";
+import {
+  formatOpenBreakCaption,
+  payrollBreakRowActions,
+} from "../payroll/payrollBreakActions";
 import { PayrollDateField, PayrollDateTimeField } from "./PayrollDateTimeField";
 
 const STATUS_OPTIONS = [
@@ -1167,7 +1171,10 @@ export default function PayrollTimeRecordsPanel({
                   </TableCell>
                 </TableRow>
               ));
-              const breakRows = breaks.map((br, idx) => (
+              const breakRows = breaks.map((br, idx) => {
+                const breakActions = payrollBreakRowActions(br);
+                const openCaption = formatOpenBreakCaption(br);
+                return (
                 <TableRow
                   key={`${r.id}-break-${br.id || idx}`}
                   sx={{ bgcolor: alpha(theme.palette.warning.main, br.status === "open" ? 0.12 : 0.05) }}
@@ -1180,12 +1187,32 @@ export default function PayrollTimeRecordsPanel({
                       Break
                     </Typography>
                     <Typography variant="caption" color="text.secondary" display="block">
-                      {br.status === "open"
-                        ? "Open — currently not deducted"
-                        : br.deducted
+                      {openCaption
+                        || (br.deducted
                           ? "Completed — deducted from payable"
-                          : br.status || "Break"}
+                          : br.status || "Break")}
                     </Typography>
+                    <Stack direction="row" spacing={0.75} sx={{ mt: 0.75 }} flexWrap="wrap" useFlexGap>
+                      {breakActions.map((action) => (
+                        <Button
+                          key={action.key}
+                          size="small"
+                          variant={action.key === "delete" ? "outlined" : "contained"}
+                          color={action.key === "delete" ? "error" : "primary"}
+                          onClick={() => {
+                            if (action.key === "delete") {
+                              setBreakDeleteTarget({ record: r, breakRow: br });
+                              return;
+                            }
+                            openBreakEdit(r, br);
+                          }}
+                          aria-label={action.label}
+                          sx={{ textTransform: "none", fontWeight: 600, minHeight: 28, px: 1 }}
+                        >
+                          {action.label}
+                        </Button>
+                      ))}
+                    </Stack>
                   </TableCell>
                   <TableCell sx={{ whiteSpace: "nowrap", fontSize: "0.8125rem" }}>
                     {formatEasternTimeShort(br.break_start_at)}
@@ -1203,30 +1230,33 @@ export default function PayrollTimeRecordsPanel({
                   </TableCell>
                   <TableCell colSpan={4} />
                   <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
-                    <Tooltip title={br.status === "open" ? "Close open break" : "Edit break"}>
-                      <IconButton
-                        size="small"
-                        onClick={() => openBreakEdit(r, br)}
-                        aria-label="Edit break"
-                        sx={{ opacity: 0.85 }}
-                      >
-                        <EditIcon sx={{ fontSize: 16 }} />
-                      </IconButton>
-                    </Tooltip>
-                    <Tooltip title="Delete break">
-                      <IconButton
-                        size="small"
-                        color="error"
-                        onClick={() => setBreakDeleteTarget({ record: r, breakRow: br })}
-                        aria-label="Delete break"
-                        sx={{ opacity: 0.85 }}
-                      >
-                        <DeleteIcon sx={{ fontSize: 16 }} />
-                      </IconButton>
-                    </Tooltip>
+                    {breakActions.map((action) => (
+                      <Tooltip key={`icon-${action.key}`} title={action.label}>
+                        <IconButton
+                          size="small"
+                          color={action.key === "delete" ? "error" : "primary"}
+                          onClick={() => {
+                            if (action.key === "delete") {
+                              setBreakDeleteTarget({ record: r, breakRow: br });
+                              return;
+                            }
+                            openBreakEdit(r, br);
+                          }}
+                          aria-label={action.label}
+                          sx={{ opacity: 0.9 }}
+                        >
+                          {action.key === "delete" ? (
+                            <DeleteIcon sx={{ fontSize: 16 }} />
+                          ) : (
+                            <EditIcon sx={{ fontSize: 16 }} />
+                          )}
+                        </IconButton>
+                      </Tooltip>
+                    ))}
                   </TableCell>
                 </TableRow>
-              ));
+                );
+              });
               return [parent, ...segRows, ...breakRows];
             })}
             {!displayRows.length && !loading ? (
@@ -1560,8 +1590,8 @@ export default function PayrollTimeRecordsPanel({
             ) : null}
             {breakEditorMode === "close" ? (
               <Alert severity="info">
-                Open breaks are not deducted from payable hours. Enter the real end time — the system
-                will not guess it.
+                Enter the actual break end time to close this open break. Payable hours will then
+                deduct the completed break. The system will not assume clock-out or guess an end time.
               </Alert>
             ) : (
               <Typography variant="body2" color="text.secondary">
@@ -1604,16 +1634,21 @@ export default function PayrollTimeRecordsPanel({
       </Dialog>
 
       <Dialog open={!!breakDeleteTarget} onClose={() => setBreakDeleteTarget(null)}>
-        <DialogTitle>Delete break?</DialogTitle>
+        <DialogTitle>
+          {breakDeleteTarget?.breakRow?.status === "open"
+            ? "Delete open break?"
+            : "Delete break?"}
+        </DialogTitle>
         <DialogContent>
           <Typography>
-            Delete this{" "}
-            {breakDeleteTarget?.breakRow?.status === "open" ? "open" : "completed"} break
+            {breakDeleteTarget?.breakRow?.status === "open"
+              ? "Delete this open break without closing it? It is not deducted today; removing it clears the open-break approval block."
+              : "Delete this completed break?"}
             {breakDeleteTarget?.record?.worker_name
-              ? ` for ${breakDeleteTarget.record.worker_name}`
-              : ""}
-            ? Payable hours will be recomputed from remaining completed breaks. Frozen payout lines
-            are not changed until Reopen for Correction / Refresh Hours.
+              ? ` (${breakDeleteTarget.record.worker_name})`
+              : ""}{" "}
+            Payable hours will be recomputed from remaining completed breaks. Frozen payout lines are
+            not changed until Reopen for Correction / Refresh Hours.
           </Typography>
         </DialogContent>
         <DialogActions>
