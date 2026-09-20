@@ -74,9 +74,51 @@ def _annotate_dashboard(cursor, oid: int, payload: dict, selected: date) -> dict
     Reconcile-on-GET previously invalidated every approval after Approve because
     list payloads strip nested orders while approve fingerprints included them.
     Fingerprint no longer depends on orders; reconcile remains on mutation paths.
+
+    Day-override tables are ensured here (Performance GET) so schema exists before
+    Edit Day writes; prefer applying sql/rinse_performance_employee_day_overrides_v1.sql
+    explicitly at deploy time when practical.
     """
+    from backend.rinse_performance_employee_day import ensure_employee_day_override_tables
+    from backend.management_wf_folder_performance import (
+        build_day_folder_performance,
+        _pct_delta,
+    )
+
+    ensure_employee_day_override_tables(cursor)
     attach_publication_status_to_day(cursor, oid, payload)
     partition_employees_by_exclusion(payload)
+
+    # Deltas were computed from pre-publication live sums; recompute from
+    # included-only summaries so excluded sessions cannot inflate comparisons.
+    deltas = payload.get("deltas")
+    if isinstance(deltas, dict) and deltas.get("baseline_date_et"):
+        try:
+            base_et = date.fromisoformat(str(deltas["baseline_date_et"])[:10])
+        except ValueError:
+            base_et = None
+        if base_et is not None:
+            base_day = build_day_folder_performance(
+                cursor,
+                oid,
+                selected_date_et=base_et,
+                attach_customers=False,
+            )
+            attach_publication_status_to_day(cursor, oid, base_day)
+            partition_employees_by_exclusion(base_day)
+            cur_summary = payload.get("summary") or {}
+            base_summary = base_day.get("summary") or {}
+            payload["deltas"] = {
+                "baseline_compare": deltas.get("baseline_compare"),
+                "baseline_date_et": deltas.get("baseline_date_et"),
+                "bags_per_hour_delta_pct": _pct_delta(
+                    cur_summary.get("bags_per_hour"), base_summary.get("bags_per_hour")
+                ),
+                "lbs_per_hour_delta_pct": _pct_delta(
+                    cur_summary.get("lbs_per_hour"), base_summary.get("lbs_per_hour")
+                ),
+            }
+
     payload["folder_benchmark_lbs_hr"] = get_folder_benchmark(cursor, oid)
     payload["performance_unit"] = "employee_day"
     payload["roles_available"] = [

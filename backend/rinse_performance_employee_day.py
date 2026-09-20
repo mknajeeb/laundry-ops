@@ -91,6 +91,24 @@ def _fmt_duration_hours(hours: float | None) -> str | None:
     return f"{mm}m"
 
 
+def employee_day_override_key(
+    *,
+    employee_user_id: int | None,
+    employee_name: str,
+) -> str:
+    """Stable unique identity for a day override within org/role/date.
+
+    Prefer numeric user id so two people with the same display name cannot collide.
+    Name fallback is only for rare rows without user_id.
+    """
+    if employee_user_id is not None:
+        return f"u:{int(employee_user_id)}"
+    name = str(employee_name or "").strip().casefold()
+    if not name:
+        raise ValueError("employee_user_id or employee_name is required")
+    return f"n:{name}"
+
+
 def ensure_employee_day_override_tables(cursor) -> None:
     global _SCHEMA_READY
     if _SCHEMA_READY:
@@ -103,6 +121,7 @@ def ensure_employee_day_override_tables(cursor) -> None:
               organization_id INT NOT NULL,
               role_key VARCHAR(32) NOT NULL,
               business_date_et DATE NOT NULL,
+              employee_key VARCHAR(96) NOT NULL,
               employee_user_id INT NULL,
               employee_name VARCHAR(255) NOT NULL,
               average_weight_lbs DECIMAL(10,4) NULL,
@@ -112,12 +131,55 @@ def ensure_employee_day_override_tables(cursor) -> None:
               updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
               updated_by INT NULL,
               UNIQUE KEY uq_rinse_perf_day_ov
-                (organization_id, role_key, business_date_et, employee_name),
+                (organization_id, role_key, business_date_et, employee_key),
               KEY idx_rinse_perf_day_ov_emp
                 (organization_id, role_key, business_date_et, employee_user_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+    else:
+        # Additive migration if an older preview table lacked employee_key.
+        cursor.execute(f"SHOW COLUMNS FROM {DAY_OVERRIDES_TABLE}")
+        cols = {
+            (r["Field"] if isinstance(r, dict) else r[0])
+            for r in (cursor.fetchall() or [])
+        }
+        if "employee_key" not in cols:
+            cursor.execute(
+                f"""
+                ALTER TABLE {DAY_OVERRIDES_TABLE}
+                  ADD COLUMN employee_key VARCHAR(96) NULL AFTER business_date_et
+                """
+            )
+            cursor.execute(
+                f"""
+                UPDATE {DAY_OVERRIDES_TABLE}
+                SET employee_key = CASE
+                  WHEN employee_user_id IS NOT NULL THEN CONCAT('u:', employee_user_id)
+                  ELSE CONCAT('n:', LOWER(TRIM(employee_name)))
+                END
+                WHERE employee_key IS NULL OR employee_key=''
+                """
+            )
+            cursor.execute(
+                f"""
+                ALTER TABLE {DAY_OVERRIDES_TABLE}
+                  MODIFY COLUMN employee_key VARCHAR(96) NOT NULL
+                """
+            )
+            try:
+                cursor.execute(
+                    f"ALTER TABLE {DAY_OVERRIDES_TABLE} DROP INDEX uq_rinse_perf_day_ov"
+                )
+            except Exception:
+                pass
+            cursor.execute(
+                f"""
+                ALTER TABLE {DAY_OVERRIDES_TABLE}
+                  ADD UNIQUE KEY uq_rinse_perf_day_ov
+                    (organization_id, role_key, business_date_et, employee_key)
+                """
+            )
     if not table_exists(cursor, DAY_OVERRIDE_EVENTS_TABLE):
         cursor.execute(
             f"""
@@ -126,6 +188,7 @@ def ensure_employee_day_override_tables(cursor) -> None:
               organization_id INT NOT NULL,
               role_key VARCHAR(32) NOT NULL,
               business_date_et DATE NOT NULL,
+              employee_key VARCHAR(96) NULL,
               employee_user_id INT NULL,
               employee_name VARCHAR(255) NOT NULL,
               action VARCHAR(32) NOT NULL,
@@ -138,12 +201,11 @@ def ensure_employee_day_override_tables(cursor) -> None:
               reason VARCHAR(255) NULL,
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               KEY idx_rinse_perf_day_ov_ev
-                (organization_id, role_key, business_date_et, employee_name)
+                (organization_id, role_key, business_date_et, employee_key)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
     _SCHEMA_READY = True
-
 
 
 def load_day_average_weight_overrides(
@@ -153,11 +215,11 @@ def load_day_average_weight_overrides(
     role_key: str,
     business_date_et: date,
 ) -> dict[str, float]:
-    """Map employee_name.casefold() → average_weight_lbs for the day."""
+    """Map employee_key → average_weight_lbs for the day (FOLDER role_key scoped)."""
     ensure_employee_day_override_tables(cursor)
     cursor.execute(
         f"""
-        SELECT employee_name, employee_user_id, average_weight_lbs
+        SELECT employee_key, employee_name, employee_user_id, average_weight_lbs
         FROM {DAY_OVERRIDES_TABLE}
         WHERE organization_id=%s AND role_key=%s AND business_date_et=%s
           AND average_weight_lbs IS NOT NULL
@@ -167,11 +229,17 @@ def load_day_average_weight_overrides(
     out: dict[str, float] = {}
     for row in cursor.fetchall() or []:
         r = dict(row) if not isinstance(row, dict) else row
-        name = str(r.get("employee_name") or "").strip()
-        if not name:
-            continue
+        key = str(r.get("employee_key") or "").strip()
+        if not key:
+            try:
+                key = employee_day_override_key(
+                    employee_user_id=r.get("employee_user_id"),
+                    employee_name=str(r.get("employee_name") or ""),
+                )
+            except ValueError:
+                continue
         try:
-            out[name.casefold()] = float(r["average_weight_lbs"])
+            out[key] = float(r["average_weight_lbs"])
         except (TypeError, ValueError):
             continue
     return out
@@ -195,7 +263,14 @@ def upsert_day_average_weight(
     org = int(organization_id)
     rk = str(role_key).upper()
     name = str(employee_name or "").strip()
-    if not name:
+    if not name and employee_user_id is None:
+        return {"ok": False, "status": "missing_employee"}
+    try:
+        emp_key = employee_day_override_key(
+            employee_user_id=employee_user_id,
+            employee_name=name or f"user-{employee_user_id}",
+        )
+    except ValueError:
         return {"ok": False, "status": "missing_employee"}
     if average_weight_lbs is not None:
         w = float(average_weight_lbs)
@@ -207,12 +282,13 @@ def upsert_day_average_weight(
     cursor.execute(
         f"""
         INSERT INTO {DAY_OVERRIDES_TABLE} (
-          organization_id, role_key, business_date_et,
+          organization_id, role_key, business_date_et, employee_key,
           employee_user_id, employee_name, average_weight_lbs, reason,
           created_by, updated_by
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON DUPLICATE KEY UPDATE
           employee_user_id=VALUES(employee_user_id),
+          employee_name=VALUES(employee_name),
           average_weight_lbs=VALUES(average_weight_lbs),
           reason=VALUES(reason),
           updated_by=VALUES(updated_by),
@@ -222,8 +298,9 @@ def upsert_day_average_weight(
             org,
             rk,
             business_date_et,
+            emp_key,
             int(employee_user_id) if employee_user_id is not None else None,
-            name,
+            name or emp_key,
             w,
             (reason or None) and str(reason)[:255],
             actor_user_id,
@@ -234,17 +311,18 @@ def upsert_day_average_weight(
     cursor.execute(
         f"""
         INSERT INTO {DAY_OVERRIDE_EVENTS_TABLE} (
-          organization_id, role_key, business_date_et,
+          organization_id, role_key, business_date_et, employee_key,
           employee_user_id, employee_name, action, average_weight_lbs,
           actor_user_id, actor_name, reason
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             org,
             rk,
             business_date_et,
+            emp_key,
             int(employee_user_id) if employee_user_id is not None else None,
-            name,
+            name or emp_key,
             action,
             w,
             actor_user_id,
@@ -255,9 +333,11 @@ def upsert_day_average_weight(
     return {
         "ok": True,
         "action": action,
-        "employee": name,
+        "employee": name or emp_key,
+        "employee_key": emp_key,
         "average_weight_lbs": w,
         "business_date_et": business_date_et.isoformat(),
+        "role_key": rk,
     }
 
 
@@ -365,6 +445,8 @@ def apply_publication_and_day_metrics(
 
     overrides: dict[str, float] = {}
     if biz is not None:
+        # Ensure tables exist on Performance GET (annotate path), not only on Edit Day.
+        ensure_employee_day_override_tables(cursor)
         overrides = load_day_average_weight_overrides(
             cursor,
             organization_id,
@@ -373,8 +455,14 @@ def apply_publication_and_day_metrics(
         )
 
     for emp in day.get("employees") or []:
-        name = str(emp.get("employee") or "").strip()
-        ov = overrides.get(name.casefold()) if name else None
+        try:
+            key = employee_day_override_key(
+                employee_user_id=emp.get("user_id"),
+                employee_name=str(emp.get("employee") or ""),
+            )
+        except ValueError:
+            key = ""
+        ov = overrides.get(key) if key else None
         recompute_employee_day_metrics(emp, average_weight_override=ov)
 
     # Top-level session list is audit-oriented; leave raw. Summary recomputed later
@@ -385,8 +473,13 @@ def apply_publication_and_day_metrics(
 def pick_final_included_session(
     sessions: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any] | None:
-    """Last included Folder session by performance/end time (for Edit Day end)."""
-    candidates: list[tuple[datetime, dict[str, Any]]] = []
+    """Last included Folder session by effective chronological end.
+
+    Sort key is performance_end / end_time (not session_id, not array order).
+    Excluded sessions are ignored even if they end later. Folder Performance
+    payloads only contain Folder sessions, so non-Folder roles never appear.
+    """
+    candidates: list[tuple[datetime, int, dict[str, Any]]] = []
     for raw in sessions:
         sess = dict(raw)
         if not session_is_included_for_metrics(sess):
@@ -396,11 +489,16 @@ def pick_final_included_session(
         key = end or start
         if key is None:
             continue
-        candidates.append((key, sess))
+        # Tie-break only: stable among equal ends — still chronology-first.
+        try:
+            sid_tie = int(sess.get("session_id") or 0)
+        except (TypeError, ValueError):
+            sid_tie = 0
+        candidates.append((key, sid_tie, sess))
     if not candidates:
         return None
-    candidates.sort(key=lambda x: x[0])
-    return candidates[-1][1]
+    candidates.sort(key=lambda x: (x[0], x[1]))
+    return candidates[-1][2]
 
 
 def apply_employee_day_end_time(
