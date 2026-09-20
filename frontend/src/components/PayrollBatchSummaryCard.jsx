@@ -95,6 +95,14 @@ export default function PayrollBatchSummaryCard({
                 {fmt(summary.outstanding_amount)}
               </Typography>
             </Box>
+            {Number(summary.overpayment_amount) > 0 ? (
+              <Box>
+                <Typography variant="caption" color="text.secondary">Overpayment</Typography>
+                <Typography variant="body2" fontWeight={600}>
+                  {fmt(summary.overpayment_amount)}
+                </Typography>
+              </Box>
+            ) : null}
           </Stack>
         </Box>
         {action && onPrimaryAction ? (

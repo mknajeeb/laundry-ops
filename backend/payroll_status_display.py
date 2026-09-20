@@ -176,6 +176,12 @@ def _money_summary(batch: dict) -> dict[str, Any]:
         "net_payroll": float(net) if net is not None else None,
         "paid_amount": float(paid or 0),
         "outstanding_amount": float(unpaid or 0),
+        "overpayment_amount": float(summary.get("overpayment_amount") or 0),
+        "obligation_amount": (
+            float(summary.get("obligation_amount"))
+            if summary.get("obligation_amount") is not None
+            else None
+        ),
     }
 
 

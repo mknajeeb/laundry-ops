@@ -659,6 +659,9 @@ export default function PayoutBatchesPanel({
   };
 
   const isEditable = detail?.status === "draft" || detail?.status === "hours_reviewed";
+  const canRefreshFromTimeRecords =
+    isEditable ||
+    (detail?.status === "approved_for_payment" && Boolean(detail?.correction_reopened_at));
   const canDeleteBatch =
     isEditable ||
     ["approved_for_payment", "paid", "closed"].includes(detail?.status);
@@ -1027,7 +1030,7 @@ export default function PayoutBatchesPanel({
 
               <Collapse in={advancedOpen}>
                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
-                  <Button size="small" variant="outlined" onClick={refreshHours} disabled={!isEditable}>
+                  <Button size="small" variant="outlined" onClick={refreshHours} disabled={!canRefreshFromTimeRecords}>
                     Refresh from time records
                   </Button>
                   {isEditable ? (
@@ -1070,7 +1073,7 @@ export default function PayoutBatchesPanel({
                     setMoreAnchor(null);
                     refreshHours();
                   }}
-                  disabled={!isEditable}
+                  disabled={!canRefreshFromTimeRecords}
                 >
                   Refresh from time records
                 </MenuItem>

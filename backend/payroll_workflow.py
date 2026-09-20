@@ -762,6 +762,9 @@ def enrich_payout_batch(
     gross_total = Decimal("0")
     paid_total = Decimal("0")
     unpaid_total = Decimal("0")
+    overpayment_total = Decimal("0")
+    correction_obligation = Decimal("0")
+    correction_line_count = 0
     for ln in lines:
         row = dict(ln)
         uid = row.get("user_id")
@@ -841,7 +844,16 @@ def enrich_payout_batch(
         )
         amt = _money(row.get("total_amount") or 0)
         gross_total += _money(row.get("gross_amount") or row.get("total_amount") or 0)
-        if is_payment_recorded_paid(row, details_for_status, batch):
+        from backend.payroll_correction_settlement import dashboard_slice
+
+        correction = dashboard_slice(details_for_status)
+        if correction is not None:
+            paid_total += _money(correction["paid"])
+            unpaid_total += _money(correction["unpaid"])
+            overpayment_total += _money(correction["overpayment"])
+            correction_obligation += _money(correction["obligation"])
+            correction_line_count += 1
+        elif is_payment_recorded_paid(row, details_for_status, batch):
             paid_total += amt
         elif is_payment_recorded_unpaid(row, details_for_status, batch):
             unpaid_total += amt
@@ -922,12 +934,20 @@ def enrich_payout_batch(
             "payout_total": float(_money(batch.get("total_payout_amount") or 0)),
             "paid_amount": float(paid_total),
             "unpaid_amount": float(unpaid_total),
+            "overpayment_amount": float(overpayment_total),
             "missing_rate_count": len(missing_rates),
             "missing_w4_count": 0 if MANUAL_TAX_DEDUCTIONS_ONLY else len(missing_w4),
         }
     )
     if MANUAL_TAX_DEDUCTIONS_ONLY:
         apply_manual_tax_batch_summary_totals(batch, gross_total=float(gross_total))
+    if correction_line_count and correction_line_count == len(enriched_lines):
+        batch["summary"]["net_pay_total"] = float(correction_obligation)
+        batch["summary"]["obligation_amount"] = float(correction_obligation)
+    if correction_line_count:
+        batch["summary"]["paid_amount"] = float(paid_total)
+        batch["summary"]["unpaid_amount"] = float(unpaid_total)
+        batch["summary"]["overpayment_amount"] = float(overpayment_total)
     warnings: list[str] = []
     if missing_rates:
         warnings.append(
@@ -1240,25 +1260,41 @@ def apply_batch_workflow_action(
             (int(batch_id), int(organization_id)),
         )
     elif action == "mark_paid":
+        from backend.payroll_payout_details import (
+            ensure_payout_details_columns,
+            sync_payment_recorded_for_paid_lines,
+        )
+
+        ensure_payout_details_columns(c)
+        pay_ref = str(payment_reference).strip() if payment_reference else None
+        if not pay_ref:
+            pay_ref = None
         c.execute(
             """
             UPDATE payout_batches SET status='paid', paid_at=COALESCE(paid_at, NOW()),
+            correction_reopened_at=NULL,
             updated_at=CURRENT_TIMESTAMP WHERE id=%s AND organization_id=%s
             """,
             (int(batch_id), int(organization_id)),
         )
         c.execute(
             """
-            UPDATE payout_batch_lines SET payment_status='paid', payment_date=COALESCE(payment_date, %s),
+            UPDATE payout_batch_lines SET payment_status='paid',
+            payment_date=COALESCE(payment_date, %s),
+            payment_reference=COALESCE(%s, payment_reference),
             line_status='approved'
             WHERE batch_id=%s AND organization_id=%s
               AND payment_status NOT IN ('paid', 'unpaid')
             """,
-            (pd, int(batch_id), int(organization_id)),
+            (pd, pay_ref, int(batch_id), int(organization_id)),
         )
-        from backend.payroll_payout_details import sync_payment_recorded_for_paid_lines
-
-        sync_payment_recorded_for_paid_lines(conn, organization_id, batch_id)
+        sync_payment_recorded_for_paid_lines(
+            conn,
+            organization_id,
+            batch_id,
+            payment_date=pd,
+            payment_reference=pay_ref,
+        )
     elif action == "mark_line_paid":
         if not line_id:
             raise ValueError("line_id required")

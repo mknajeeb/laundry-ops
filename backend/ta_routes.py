@@ -6210,10 +6210,9 @@ def payroll_payout_batch_detail(batch_id):
             if not accountant_may_access_batch(conn, int(g.ta_user["id"]), row):
                 return jsonify({"error": "Not found"}), 404
             sync = str(request.args.get("sync") or "").lower()
-            if sync in ("1", "true", "yes") and str(row.get("status") or "") in (
-                "draft",
-                "hours_reviewed",
-            ):
+            from backend.payroll_correction_settlement import batch_can_sync_from_time_records
+
+            if sync in ("1", "true", "yes") and batch_can_sync_from_time_records(row):
                 row = build_batch_from_time_records(
                     conn,
                     oid,

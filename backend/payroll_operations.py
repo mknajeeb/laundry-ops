@@ -2435,6 +2435,80 @@ def add_payout_batch_line(
     return json_safe(c2.fetchone() or {})
 
 
+def _load_correction_ledgers(conn, organization_id: int, batch_id: int) -> dict[int, dict]:
+    """Cash already paid, keyed by user, before clock-record lines are rebuilt."""
+    from backend.payroll_correction_settlement import ledger_from_settlement
+    from backend.payroll_payout_details import parse_line_payout_details
+
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT user_id, payout_details_json
+        FROM payout_batch_lines
+        WHERE batch_id=%s AND organization_id=%s
+        """,
+        (int(batch_id), int(organization_id)),
+    )
+    ledgers: dict[int, dict] = {}
+    for row in c.fetchall() or []:
+        if row.get("user_id") is None:
+            continue
+        details = parse_line_payout_details({"payout_details_json": row.get("payout_details_json")})
+        ledger = ledger_from_settlement(details.get("settlement"))
+        if ledger:
+            ledgers[int(row["user_id"])] = ledger
+    return ledgers
+
+
+def _restore_correction_ledgers(
+    conn, organization_id: int, batch_id: int, ledgers: dict[int, dict]
+) -> None:
+    """Put the prior payment ledger back on the rebuilt line and recompute due/overpayment."""
+    if not ledgers:
+        return
+    from backend.payroll_correction_settlement import stamp_settlement
+    from backend.payroll_payout_details import compute_line_totals, parse_line_payout_details
+
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT id, user_id, gross_amount, total_amount, payout_details_json
+        FROM payout_batch_lines
+        WHERE batch_id=%s AND organization_id=%s
+        """,
+        (int(batch_id), int(organization_id)),
+    )
+    upd = conn.cursor()
+    for row in c.fetchall() or []:
+        if row.get("user_id") is None:
+            continue
+        ledger = ledgers.get(int(row["user_id"]))
+        if not ledger:
+            continue
+        details = parse_line_payout_details(row)
+        settlement = dict(details.get("settlement") or {})
+        settlement["correction_accounting"] = True
+        settlement["payment_history"] = list(ledger.get("payment_history") or [])
+        settlement["cumulative_amount_paid"] = ledger.get("cumulative_amount_paid")
+        settlement["preserve_amount_paid"] = True
+        details["settlement"] = settlement
+        totals = compute_line_totals(row, details)
+        details["settlement"] = stamp_settlement(settlement, totals.get("net_pay"))
+        upd.execute(
+            """
+            UPDATE payout_batch_lines
+            SET payout_details_json=%s, updated_at=CURRENT_TIMESTAMP
+            WHERE id=%s AND batch_id=%s AND organization_id=%s
+            """,
+            (
+                json.dumps(details),
+                int(row["id"]),
+                int(batch_id),
+                int(organization_id),
+            ),
+        )
+
+
 def build_batch_from_time_records(
     conn,
     organization_id: int,
@@ -2447,8 +2521,12 @@ def build_batch_from_time_records(
     batch = _fetch_payout_batch_core(conn, organization_id, batch_id)
     if not batch:
         raise ValueError("Batch not found")
-    if str(batch.get("status") or "") not in ("draft", "hours_reviewed"):
-        raise ValueError("Only draft or hours-reviewed batches can sync from time records")
+    from backend.payroll_correction_settlement import batch_can_sync_from_time_records
+
+    if not batch_can_sync_from_time_records(batch):
+        raise ValueError(
+            "Only draft, hours-reviewed, or a batch reopened for correction can sync from time records"
+        )
     fd = from_date or batch.get("pay_period_start")
     td = to_date or batch.get("pay_period_end")
     records = list_time_records(
@@ -2459,6 +2537,9 @@ def build_batch_from_time_records(
         worker_category=None,
         status_filter="approved",
     )
+    ledgers: dict[int, dict] = {}
+    if batch.get("correction_reopened_at"):
+        ledgers = _load_correction_ledgers(conn, organization_id, batch_id)
     c = conn.cursor()
     c.execute(
         """
@@ -2543,6 +2624,9 @@ def build_batch_from_time_records(
     from backend.payroll_workflow import recalculate_w2_batch_taxes
 
     recalculate_w2_batch_taxes(conn, organization_id, batch_id)
+    if ledgers:
+        _restore_correction_ledgers(conn, organization_id, batch_id, ledgers)
+        conn.commit()
     return get_payout_batch(conn, organization_id, batch_id) or {}
 
 

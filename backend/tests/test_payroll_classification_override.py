@@ -377,7 +377,7 @@ def test_paid_batch_sync_is_refused():
         "backend.payroll_operations._fetch_payout_batch_core",
         return_value={"id": 50, "status": "paid", "worker_category": "w2"},
     ):
-        with pytest.raises(ValueError, match="draft or hours-reviewed"):
+        with pytest.raises(ValueError, match="reopened for correction"):
             build_batch_from_time_records(
                 MagicMock(),
                 3,

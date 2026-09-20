@@ -99,6 +99,8 @@ def ensure_payout_details_columns(cursor) -> None:
         ("batch_note", "TEXT NULL"),
         # Phase 1: authoritative Pay Date for Monthly Payroll Paid (no historical backfill).
         ("official_pay_date", "DATE NULL"),
+        # Set only by Reopen for Correction. NULL on every historical batch.
+        ("correction_reopened_at", "DATETIME NULL"),
     ]
     for col, typedef in batch_cols:
         if not table_has_column(cursor, "payout_batches", col):
@@ -344,6 +346,19 @@ def parse_line_payout_details(
         base["settlement"]["preserve_amount_paid"] = bool(
             raw_settlement_early.get("preserve_amount_paid")
         )
+    if raw_settlement_early.get("correction_accounting"):
+        base["settlement"]["correction_accounting"] = True
+        history = raw_settlement_early.get("payment_history")
+        if isinstance(history, list):
+            base["settlement"]["payment_history"] = history
+        for key in (
+            "cumulative_amount_paid",
+            "corrected_net",
+            "remaining_due",
+            "overpayment",
+        ):
+            if raw_settlement_early.get(key) is not None:
+                base["settlement"][key] = float(_money(raw_settlement_early.get(key)))
     from backend.payroll_worker_categories import normalize_payment_recorded
 
     raw_recorded = normalize_payment_recorded(
@@ -894,6 +909,26 @@ def apply_settlement_math(details: dict, gross: float) -> dict:
     paid_full_gross = bool(settlement.get("paid_full_gross_without_withholding"))
     preserve_paid = bool(settlement.get("preserve_amount_paid"))
 
+    if settlement.get("correction_accounting"):
+        if paid_full_gross:
+            settlement["catch_up_withholding"] = 0.0
+            settlement["withheld_from_payment"] = None
+            withheld = 0.0
+            net = round(gross_f, 2)
+        else:
+            prior_collected = _prior_collected_from_pay(settlement)
+            withheld_current = _withheld_for_current_period(
+                settlement, current_period, paid_full_gross=False
+            )
+            withheld = round(withheld_current + prior_collected, 2)
+            net = round(max(0.0, gross_f - withheld), 2)
+        settlement["amount_withheld"] = withheld
+        from backend.payroll_correction_settlement import stamp_settlement
+
+        settlement = stamp_settlement(settlement, net)
+        details["settlement"] = settlement
+        return reconcile_tax_summary(details)
+
     if preserve_paid and settlement.get("amount_paid") is not None:
         paid = round(float(_money(settlement.get("amount_paid"))), 2)
         withheld = round(float(_money(settlement.get("amount_withheld") or 0)), 2)
@@ -1014,6 +1049,11 @@ def compute_line_totals(line: dict, details: Optional[dict] = None) -> dict[str,
     employer_cost = round(gross + er_tax, 2)
     details = apply_settlement_math(details, gross)
     settlement = details.get("settlement") or {}
+    if settlement.get("correction_accounting"):
+        from backend.payroll_correction_settlement import stamp_settlement
+
+        settlement = stamp_settlement(settlement, net)
+        details["settlement"] = settlement
     tax_summary = details.get("tax_summary") or {}
     amount_paid = float(_money(settlement.get("amount_paid")))
     amount_withheld = float(_money(settlement.get("amount_withheld")))
@@ -1043,6 +1083,16 @@ def compute_line_totals(line: dict, details: Optional[dict] = None) -> dict[str,
         "catch_up_withholding": catch_up,
         "tax_catch_up_adjustment": float(tax_summary.get("tax_catch_up_adjustment") or 0),
         "paid_full_gross_without_withholding": paid_full_gross,
+        "correction_accounting": bool(settlement.get("correction_accounting")),
+        "corrected_net": float(_money(settlement.get("corrected_net") or net))
+        if settlement.get("correction_accounting")
+        else net,
+        "cumulative_amount_paid": float(
+            _money(settlement.get("cumulative_amount_paid") or amount_paid)
+        ),
+        "remaining_due": float(_money(settlement.get("remaining_due") or outstanding)),
+        "overpayment": float(_money(settlement.get("overpayment") or 0)),
+        "payment_history": list(settlement.get("payment_history") or []),
     }
 
 
@@ -2829,17 +2879,25 @@ def _line_effective_paid(line: dict, batch: dict) -> bool:
     return is_payment_recorded_paid(line, details, batch)
 
 
-def sync_payment_recorded_for_paid_lines(conn, organization_id: int, batch_id: int) -> None:
+def sync_payment_recorded_for_paid_lines(
+    conn,
+    organization_id: int,
+    batch_id: int,
+    *,
+    payment_date: Optional[str] = None,
+    payment_reference: Optional[str] = None,
+) -> None:
     """mark_paid writes payment_status only. The read path trusts payment_recorded.
 
     After a correction sets payment_recorded=unpaid, the next mark_paid must
-    flip that flag on the lines it actually marks paid. Lines left payment_status
-    unpaid stay unpaid.
+    flip that flag on the lines it actually marks paid. A correction ledger
+    appends only the remaining due — it does not replace the original payment.
+    Lines left payment_status unpaid stay unpaid.
     """
     c = conn.cursor()
     c.execute(
         """
-        SELECT id, payout_details_json, payment_status
+        SELECT id, payout_details_json, payment_status, payment_date, payment_reference
         FROM payout_batch_lines
         WHERE batch_id=%s AND organization_id=%s AND payment_status='paid'
         """,
@@ -2849,11 +2907,42 @@ def sync_payment_recorded_for_paid_lines(conn, organization_id: int, batch_id: i
     upd = conn.cursor()
     for row in rows:
         if isinstance(row, dict):
-            line_id, blob = row.get("id"), row.get("payout_details_json")
+            line_id = row.get("id")
+            blob = row.get("payout_details_json")
+            line_date = row.get("payment_date")
+            line_ref = row.get("payment_reference")
         else:
             line_id, blob = row[0], row[1]
+            line_date = row[3] if len(row) > 3 else None
+            line_ref = row[4] if len(row) > 4 else None
         details = parse_line_payout_details({"payout_details_json": blob})
         settlement = dict(details.get("settlement") or {})
+        if settlement.get("correction_accounting"):
+            from backend.payroll_correction_settlement import record_additional_payment
+
+            settlement = record_additional_payment(
+                settlement,
+                payment_date=payment_date or line_date,
+                reference=payment_reference or line_ref,
+            )
+            settlement["payment_recorded"] = (
+                "paid" if float(settlement.get("remaining_due") or 0) <= 0 else "unpaid"
+            )
+            details["settlement"] = settlement
+            upd.execute(
+                """
+                UPDATE payout_batch_lines
+                SET payout_details_json=%s, updated_at=CURRENT_TIMESTAMP
+                WHERE id=%s AND batch_id=%s AND organization_id=%s AND payment_status='paid'
+                """,
+                (
+                    json.dumps(details),
+                    int(line_id),
+                    int(batch_id),
+                    int(organization_id),
+                ),
+            )
+            continue
         if str(settlement.get("payment_recorded") or "") == "paid":
             continue
         settlement["payment_recorded"] = "paid"
@@ -2953,6 +3042,15 @@ def reopen_paid_status_for_correction(
         )
         stored = dict(raw_details)
         settlement = dict(raw_settlement)
+        from backend.payroll_correction_settlement import open_correction_ledger
+
+        settlement = open_correction_ledger(
+            settlement,
+            amount_paid=prior_amount,
+            payment_date=prior_pay_date,
+            reference=prior_ref,
+            method=raw_payment.get("method") or payment_view.get("method"),
+        )
         settlement["payment_recorded"] = "unpaid"
         payment = dict(raw_payment)
         payment["date"] = None
@@ -2971,7 +3069,7 @@ def reopen_paid_status_for_correction(
             "actor_id": int(actor_id),
             "at": datetime.utcnow().isoformat(timespec="seconds"),
             "reason": reason_s,
-            "detail": "Recorded payment reversed so the batch can be corrected and paid again",
+                "detail": "Calculation reopened for correction. Money already paid stays on the settlement ledger",
             "prior_batch_status": prior_status,
             "prior_paid_at": prior_paid_at_s,
             "lines": affected,
@@ -2994,6 +3092,7 @@ def reopen_paid_status_for_correction(
         UPDATE payout_batches SET
           status='approved_for_payment',
           paid_at=NULL,
+          correction_reopened_at=NOW(),
           payout_details_finalized_at=NULL,
           payout_details_finalized_by=NULL,
           payout_details_audit_json=%s,
@@ -3588,6 +3687,46 @@ OT Premium represents only the additional amount paid above the employee’s reg
 </table>"""
 
 
+def _correction_settlement_rows(settlement: dict, totals: dict) -> str:
+    """Corrected net vs cash already paid. Does not present the new net as one payment."""
+    if not (settlement or {}).get("correction_accounting") and not totals.get("correction_accounting"):
+        return ""
+    net = totals.get("corrected_net", totals.get("net_pay"))
+    paid = totals.get("cumulative_amount_paid", totals.get("amount_paid"))
+    due = float(totals.get("remaining_due") or 0)
+    over = float(totals.get("overpayment") or 0)
+    rows = _paystub_money_row("Corrected net", float(net or 0))
+    rows += _paystub_money_row("Previously paid", float(paid or 0))
+    if over > 0:
+        rows += _paystub_money_row("Overpayment", over)
+    else:
+        rows += _paystub_money_row("Additional amount due", due)
+    history = (settlement or {}).get("payment_history") or totals.get("payment_history") or []
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        kind = "Original payment" if entry.get("kind") == "original" else "Correction payment"
+        bits = [
+            str(entry.get("payment_date") or "").strip(),
+            str(entry.get("reference") or "").strip(),
+        ]
+        extra = " ".join(bit for bit in bits if bit)
+        label = f"{kind} — {extra}" if extra else kind
+        rows += _paystub_money_row(label, float(entry.get("amount") or 0))
+    return rows
+
+
+def _correction_settlement_html(settlement: dict, totals: dict) -> str:
+    rows = _correction_settlement_rows(settlement, totals)
+    if not rows:
+        return ""
+    return f"""
+<h2>Correction settlement</h2>
+<table class="compact">
+{rows}
+</table>"""
+
+
 def _employee_payment_method_html(payment: dict) -> str:
     label = _payment_method_label(payment.get("method"))
     pay_date = payment.get("date")
@@ -3707,13 +3846,16 @@ def _render_paystub_html(
 Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p>"""
         earnings_html = _employee_earnings_ytd_html(hours, rate, gross, ytd, line=line)
         emp_tax_table = _employee_taxes_ytd_html(details, totals, ytd)
+        shown_net = net_pay if settlement.get("correction_accounting") else net_paid
         net_pay_html = _employee_net_pay_ytd_html(
-            net_pay, net_paid, ytd, gross=gross, withheld=withheld
+            net_pay, shown_net, ytd, gross=gross, withheld=withheld
         )
         tax_balance_html = ""
         if bool(details.get("show_tax_payment_section", True)):
             tax_balance_html = _employee_tax_balance_html(totals)
-        payment_html = _employee_payment_method_html(payment)
+        payment_html = _employee_payment_method_html(payment) + _correction_settlement_html(
+            settlement, totals
+        )
         cash_receipt_html = (
             _cash_receipt_section_html(line, payment, totals) if cash_receipt_separate else ""
         )
@@ -3768,7 +3910,9 @@ Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p
 
     gross_paid_note = ""
     tax_balance = float(totals.get("tax_balance_owed") or 0)
-    if paid_full_gross or (net_paid > net_pay and withheld < emp_tax_total * 0.5):
+    if not settlement.get("correction_accounting") and (
+        paid_full_gross or (net_paid > net_pay and withheld < emp_tax_total * 0.5)
+    ):
         parts = [
             "Amount paid exceeds net pay because taxes were not withheld from this payment."
         ]
@@ -3779,11 +3923,16 @@ Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p
             )
         gross_paid_note = f"<p class='note-box'>{' '.join(parts)}</p>"
 
+    paid_to_employee_label = (
+        "Cumulative amount paid"
+        if settlement.get("correction_accounting")
+        else "Amount paid to employee"
+    )
     net_pay_html = f"""
 <h2>Net Pay</h2>
 <table class="compact">
 {_paystub_money_row('Net pay (after taxes)', net_pay)}
-{_paystub_money_row('Amount paid to employee', net_paid, True)}
+{_paystub_money_row(paid_to_employee_label, net_paid, True)}
 </table>
 {gross_paid_note}"""
 
@@ -3815,7 +3964,8 @@ Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p
 <h2>Payment Information</h2>
 <table class="compact">
 {_payment_detail_rows(payment, totals, cash_receipt_separate=False)}
-</table>"""
+</table>
+{_correction_settlement_html(settlement, totals)}"""
 
     employer_html = ""
     if not is_employee:
@@ -3836,7 +3986,7 @@ Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p
 </table>
 <h2>Settlement</h2>
 <table class="compact">
-{_paystub_money_row('Amount paid', float(totals.get('amount_paid') or 0))}
+{_paystub_money_row('Cumulative amount paid' if settlement.get('correction_accounting') else 'Amount paid', float(totals.get('amount_paid') or 0))}
 {_paystub_money_row('Amount withheld', withheld)}
 {_paystub_money_row('Prior unpaid taxes', float(totals.get('prior_unpaid_taxes') or 0))}
 {_paystub_money_row('Catch-up withholding', float(settlement.get('catch_up_withholding') or 0))}

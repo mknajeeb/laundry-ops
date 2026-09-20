@@ -180,11 +180,24 @@ def load_effective_batch_coverage(
     pay_period_start: str,
     pay_period_end: str,
 ) -> tuple[set[int], set[tuple[int, str]]]:
-    """Return (session_ids, (user_id, worker_category)) on effective batches."""
+    """Return session ids and (user, category) pairs that already own this period.
+
+    Paid, closed, and finalized batches reserve coverage as before. A batch
+    explicitly reopened for correction does too, so the missed day cannot be
+    paid on a second batch. Other approved_for_payment batches do not.
+    """
     c = conn.cursor(dictionary=True)
+    from backend.ta_helpers import table_has_column
+
+    reopen_col = (
+        "pb.correction_reopened_at,"
+        if table_has_column(c, "payout_batches", "correction_reopened_at")
+        else ""
+    )
     c.execute(
-        """
+        f"""
         SELECT pb.id, pb.worker_category, pb.status, pb.payout_details_finalized_at,
+               {reopen_col}
                pbl.user_id, pbl.source_shift_session_ids
         FROM payout_batches pb
         LEFT JOIN payout_batch_lines pbl
@@ -201,8 +214,10 @@ def load_effective_batch_coverage(
     )
     sessions: set[int] = set()
     user_cats: set[tuple[int, str]] = set()
+    from backend.payroll_correction_settlement import batch_reserves_coverage
+
     for row in c.fetchall() or []:
-        if not _batch_is_effective(row):
+        if not batch_reserves_coverage(row):
             continue
         cat = str(row.get("worker_category") or "")
         uid = row.get("user_id")
