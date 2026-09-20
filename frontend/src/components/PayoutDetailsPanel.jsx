@@ -39,6 +39,7 @@ import VisibilityIcon from "@mui/icons-material/Visibility";
 import SaveIcon from "@mui/icons-material/Save";
 import LockIcon from "@mui/icons-material/Lock";
 import LockOpenIcon from "@mui/icons-material/LockOpen";
+import { useAuth } from "../context/AuthContext";
 import FinalizeBatchNavigator from "./FinalizeBatchNavigator";
 import {
   finalizePayoutDetails,
