@@ -28,7 +28,7 @@ import {
   accountantPeriodStatusLabel,
   pickDefaultAccountantBatch,
 } from "../payroll/accountantBatchPick";
-import { normPayPeriodYmd } from "../payroll/payPeriodOptions";
+import { resolveAccountantBatchById } from "../payroll/payPeriodOptions";
 import {
   PAYROLL_REGISTER_DEDUCTION_COLUMNS,
   sumEmployeeRegisterTaxes,
@@ -152,10 +152,7 @@ function TaxCell({ line, workerName, onOpen }) {
 }
 
 export default function AccountantPayrollPanel() {
-  const [weekStartsOn, setWeekStartsOn] = useState(0);
-  const [periodStart, setPeriodStart] = useState("");
-  const [periodEnd, setPeriodEnd] = useState("");
-  const [periodExpanded, setPeriodExpanded] = useState(false);
+  const [selectedBatchId, setSelectedBatchId] = useState(null);
   const [batches, setBatches] = useState([]);
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState("");
@@ -178,15 +175,10 @@ export default function AccountantPayrollPanel() {
     loadBatches();
   }, [loadBatches]);
 
-  const periodBatch = useMemo(() => {
-    if (!periodStart || !periodEnd) return null;
-    const ps = normPayPeriodYmd(periodStart);
-    const pe = normPayPeriodYmd(periodEnd);
-    return batches.find(
-      (b) =>
-        normPayPeriodYmd(b.pay_period_start) === ps && normPayPeriodYmd(b.pay_period_end) === pe,
-    );
-  }, [batches, periodStart, periodEnd]);
+  const selectedBatch = useMemo(
+    () => resolveAccountantBatchById(batches, selectedBatchId),
+    [batches, selectedBatchId],
+  );
 
   const loadDetail = useCallback(async (batchId) => {
     if (!batchId) {
@@ -207,16 +199,13 @@ export default function AccountantPayrollPanel() {
   }, []);
 
   useEffect(() => {
-    loadDetail(periodBatch?.id);
-  }, [periodBatch?.id, loadDetail]);
+    loadDetail(selectedBatchId);
+  }, [selectedBatchId, loadDetail]);
 
   useEffect(() => {
     if (!batches.length || autoPickedRef.current) return;
     const pick = pickDefaultAccountantBatch(batches);
-    if (pick) {
-      setPeriodStart(normPayPeriodYmd(pick.pay_period_start));
-      setPeriodEnd(normPayPeriodYmd(pick.pay_period_end));
-    }
+    if (pick?.id != null) setSelectedBatchId(pick.id);
     autoPickedRef.current = true;
   }, [batches]);
 
@@ -258,7 +247,7 @@ export default function AccountantPayrollPanel() {
     return totals;
   }, [detail]);
 
-  const periodStatus = accountantPeriodStatusLabel(periodBatch || detail);
+  const periodStatus = accountantPeriodStatusLabel(selectedBatch || detail);
   const status = String(detail?.status || "");
   const workflow = detail?.payout_workflow || {};
   const finalized = workflow.payout_details_finalized;
@@ -318,7 +307,7 @@ export default function AccountantPayrollPanel() {
             <Chip
               size="small"
               label={periodStatus}
-              color={accountantPeriodStatusColor(periodBatch || detail)}
+              color={accountantPeriodStatusColor(selectedBatch || detail)}
             />
           ) : null}
         </Stack>
@@ -328,17 +317,16 @@ export default function AccountantPayrollPanel() {
         </Typography>
         {batches.length ? (
           <PayPeriodSelect
-            weekStartsOn={weekStartsOn}
             batches={batches}
-            start={periodStart}
-            end={periodEnd}
-            expanded={periodExpanded}
-            onExpandedChange={setPeriodExpanded}
+            batchId={selectedBatchId}
+            start={selectedBatch?.pay_period_start}
+            end={selectedBatch?.pay_period_end}
             batchStatusLabel={accountantPeriodStatusLabel}
             batchOnly
-            onChange={({ start, end }) => {
-              setPeriodStart(start);
-              setPeriodEnd(end);
+            minWidth={420}
+            onChange={({ batchId }) => {
+              if (batchId == null || batchId === "") return;
+              setSelectedBatchId(batchId);
             }}
           />
         ) : (

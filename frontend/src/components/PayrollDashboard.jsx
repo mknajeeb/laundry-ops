@@ -1,7 +1,13 @@
+import { useEffect, useMemo, useState } from "react";
 import { Box, Button, Chip, Paper, Stack, Typography } from "@mui/material";
 import PayrollBatchSummaryCard from "./PayrollBatchSummaryCard";
-import { normPayPeriodYmd } from "../payroll/payPeriodOptions";
-import { displayStatusLabel, displayStatusColor } from "../payroll/payrollBatchStatus";
+import {
+  defaultDashboardBatchId,
+  formatDashboardBatchChip,
+  periodBatchesForDashboard,
+  resolveDashboardBatch,
+} from "../payroll/payrollDashboardNav";
+import { displayStatusColor } from "../payroll/payrollBatchStatus";
 
 export default function PayrollDashboard({
   payPeriodStart,
@@ -11,17 +17,27 @@ export default function PayrollDashboard({
   onOpenBatches,
   primaryLoading = false,
 }) {
-  const ps = normPayPeriodYmd(payPeriodStart);
-  const pe = normPayPeriodYmd(payPeriodEnd);
-  const periodBatches = batches.filter(
-    (b) =>
-      normPayPeriodYmd(b.pay_period_start) === ps && normPayPeriodYmd(b.pay_period_end) === pe,
+  const periodBatches = useMemo(
+    () => periodBatchesForDashboard(batches, payPeriodStart, payPeriodEnd),
+    [batches, payPeriodStart, payPeriodEnd],
   );
+  const periodBatchIds = periodBatches.map((b) => b.id).join(",");
+  const [selectedBatchId, setSelectedBatchId] = useState(null);
 
-  const primaryBatch =
-    periodBatches.find((b) => b.payroll_display?.display_status !== "paid") ||
-    periodBatches[0] ||
-    null;
+  useEffect(() => {
+    setSelectedBatchId((prev) => {
+      if (prev != null && periodBatches.some((b) => String(b.id) === String(prev))) {
+        return prev;
+      }
+      return defaultDashboardBatchId(periodBatches);
+    });
+    // periodBatchIds captures membership; periodBatches is derived from the same inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- avoid re-running on array identity
+  }, [payPeriodStart, payPeriodEnd, periodBatchIds]);
+
+  const selectedBatch =
+    resolveDashboardBatch(periodBatches, selectedBatchId) ||
+    resolveDashboardBatch(periodBatches, defaultDashboardBatchId(periodBatches));
 
   const periodLabel =
     payPeriodStart && payPeriodEnd ? `${payPeriodStart} – ${payPeriodEnd}` : "Current pay period";
@@ -46,9 +62,9 @@ export default function PayrollDashboard({
         ) : null}
       </Stack>
 
-      {primaryBatch ? (
+      {selectedBatch ? (
         <PayrollBatchSummaryCard
-          batch={primaryBatch}
+          batch={selectedBatch}
           onPrimaryAction={onPrimaryAction}
           primaryLoading={primaryLoading}
           compact
@@ -69,14 +85,19 @@ export default function PayrollDashboard({
 
       {periodBatches.length > 1 ? (
         <Stack direction="row" flexWrap="wrap" gap={0.5} sx={{ mt: 1.5 }}>
-          {periodBatches.map((b) => (
-            <Chip
-              key={b.id}
-              size="small"
-              variant="outlined"
-              label={`${b.worker_category_label || b.worker_category}: ${displayStatusLabel(b)}`}
-            />
-          ))}
+          {periodBatches.map((b) => {
+            const active = String(b.id) === String(selectedBatchId);
+            return (
+              <Chip
+                key={b.id}
+                size="small"
+                color={active ? "primary" : "default"}
+                variant={active ? "filled" : "outlined"}
+                label={formatDashboardBatchChip(b)}
+                onClick={() => setSelectedBatchId(b.id)}
+              />
+            );
+          })}
         </Stack>
       ) : null}
     </Paper>

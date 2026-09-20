@@ -45,16 +45,11 @@ export function formatPayrollMoney(val) {
   return `$${n.toFixed(2)}`;
 }
 
+/**
+ * Finalize Payroll is a batch navigator/history.
+ * Hide drafts only — do not hide legitimate payout batches by workflow status
+ * (e.g. W-2 sent_to_accountant must remain selectable).
+ */
 export function batchVisibleForDetails(batch) {
-  const st = displayStatus(batch);
-  if (st === "draft") return false;
-  const cat = batch?.worker_category || batch?.payroll_display?.worker_category;
-  const internal = batch?.status;
-  if (
-    cat === "w2" &&
-    ["hours_reviewed", "sent_to_accountant", "accountant_reviewed"].includes(internal)
-  ) {
-    return false;
-  }
-  return true;
+  return displayStatus(batch) !== "draft";
 }

@@ -24,7 +24,7 @@ describe("Finalize Payroll batch navigation", () => {
     }),
     batch({
       id: 122,
-      batch_name: "W2-2026-019-1",
+      batch_name: "W2-2026-019-EVELYN",
       worker_category: "w2",
       pay_period_start: "2026-09-07",
       pay_period_end: "2026-09-13",
@@ -66,7 +66,7 @@ describe("Finalize Payroll batch navigation", () => {
     const w2 = groupFinalizeBatches(batches).find((s) => s.key === "w2");
     expect(w2.items.map((b) => b.id)).toEqual([122, 120, 112]);
     expect(w2.items.map((b) => b.batch_name)).toEqual([
-      "W2-2026-019-1",
+      "W2-2026-019-EVELYN",
       "W2-2026-019",
       "W2-2026-017",
     ]);
@@ -107,7 +107,7 @@ describe("Finalize Payroll batch navigation", () => {
     const w2 = groupFinalizeBatches(batches).find((s) => s.key === "w2").items;
     const select = (id) => w2.find((b) => b.id === id);
     expect(select(120).batch_name).toBe("W2-2026-019");
-    expect(select(122).batch_name).toBe("W2-2026-019-1");
+    expect(select(122).batch_name).toBe("W2-2026-019-EVELYN");
     expect(select(120).id).not.toBe(select(122).id);
     const samePeriod = w2.filter((b) => b.pay_period_end === "2026-09-13");
     expect(samePeriod).toHaveLength(2);

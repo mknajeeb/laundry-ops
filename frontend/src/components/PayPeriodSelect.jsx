@@ -10,6 +10,7 @@ import {
   Typography,
 } from "@mui/material";
 import {
+  accountantBatchOptionKey,
   buildPayrollPeriodChoices,
   groupPayPeriodOptionsByYear,
   normPayPeriodYmd,
@@ -24,6 +25,7 @@ export default function PayPeriodSelect({
   batches = [],
   start,
   end,
+  batchId,
   onChange,
   batchStatusLabel,
   expanded = false,
@@ -45,8 +47,13 @@ export default function PayPeriodSelect({
 
   const groups = useMemo(() => groupPayPeriodOptionsByYear(options), [options]);
 
-  const selectedKey =
-    start && end ? `${normPayPeriodYmd(start)}|${normPayPeriodYmd(end)}` : "";
+  const selectedKey = batchOnly
+    ? batchId != null && batchId !== ""
+      ? accountantBatchOptionKey(batchId)
+      : ""
+    : start && end
+      ? `${normPayPeriodYmd(start)}|${normPayPeriodYmd(end)}`
+      : "";
 
   const handleChange = (key) => {
     const opt = options.find((o) => o.key === key);
@@ -57,9 +64,9 @@ export default function PayPeriodSelect({
   return (
     <Stack spacing={0.75}>
       <FormControl size={size} sx={{ minWidth }}>
-        <InputLabel>Pay period</InputLabel>
+        <InputLabel>{batchOnly ? "Batch" : "Pay period"}</InputLabel>
         <Select
-          label="Pay period"
+          label={batchOnly ? "Batch" : "Pay period"}
           value={options.some((o) => o.key === selectedKey) ? selectedKey : ""}
           onChange={(e) => handleChange(e.target.value)}
         >
@@ -73,7 +80,7 @@ export default function PayPeriodSelect({
           ])}
         </Select>
       </FormControl>
-      {showExpand ? (
+      {showExpand && !batchOnly ? (
         <Button
           size="small"
           variant="text"
