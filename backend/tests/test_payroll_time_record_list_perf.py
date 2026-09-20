@@ -28,6 +28,8 @@ def test_list_time_records_uses_clock_in_range_not_date_fn():
         "backend.payroll_operations.ensure_payroll_hours_approved_column"
     ), patch("backend.payroll_operations.table_has_column", return_value=False), patch(
         "backend.payroll_operations._attach_role_segments_to_time_records"
+    ), patch(
+        "backend.payroll_time_record_breaks.attach_breaks_to_time_records"
     ):
         items = list_time_records(
             conn,

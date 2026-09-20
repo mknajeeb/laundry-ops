@@ -420,6 +420,9 @@ def list_time_records(
             continue
         out.append(json_safe(rec))
     _attach_role_segments_to_time_records(conn, out)
+    from backend.payroll_time_record_breaks import attach_breaks_to_time_records
+
+    attach_breaks_to_time_records(conn, out)
     return out
 
 
@@ -474,20 +477,12 @@ def _attach_role_segments_to_time_records(conn, items: list[dict]) -> None:
 
 
 def _sum_break_seconds(conn, shift_id: int) -> int:
-    chk = conn.cursor()
-    if not table_exists(chk, "shift_breaks"):
-        return 0
-    c = conn.cursor(dictionary=True)
-    c.execute(
-        "SELECT break_start_at, break_end_at FROM shift_breaks WHERE shift_session_id=%s",
-        (int(shift_id),),
+    from backend.payroll_time_record_breaks import (
+        completed_break_seconds,
+        load_session_breaks,
     )
-    total = 0
-    for row in c.fetchall() or []:
-        start, end = row.get("break_start_at"), row.get("break_end_at")
-        if start and end:
-            total += int((end - start).total_seconds())
-    return total
+
+    return completed_break_seconds(load_session_breaks(conn, int(shift_id)))
 
 
 def _geofence_for_user(conn, user_id: int, organization_id: int) -> int:
@@ -1008,16 +1003,11 @@ def update_time_record(
         updates.append("clock_out_at=NULL")
         updates.append("status=%s")
         params.append("active")
-        updates.append("total_break_seconds=%s")
-        params.append(_sum_break_seconds(conn, sid))
-        updates.append("net_work_seconds=NULL")
     else:
         updates.append("clock_out_at=%s")
         params.append(new_co)
-        br = _sum_break_seconds(conn, sid)
-        net = int((new_co - new_ci).total_seconds()) - br
-        updates.extend(["total_break_seconds=%s", "net_work_seconds=%s", "status=%s"])
-        params.extend([br, net, "completed"])
+        updates.append("status=%s")
+        params.append("completed")
 
     if has_manual:
         updates.append("manual_override=1")
@@ -1066,16 +1056,26 @@ def update_time_record(
             started_at=new_ci,
             ended_at=new_co,
         )
+    from backend.payroll_time_record_breaks import recompute_session_work_seconds
+
+    recomputed = recompute_session_work_seconds(conn, sid)
     conn.commit()
 
     # UI reloads the filtered list after save — avoid list_time_records(limit=2000).
     status = "open" if new_co is None else "pending_approval"
+    if recomputed.get("approval_cleared"):
+        status = "pending_approval"
     return {
         "id": sid,
         "user_id": int(cur["user_id"]),
         "clock_in_at": new_ci,
         "clock_out_at": new_co,
         "status": status,
+        "net_work_seconds": recomputed.get("net_work_seconds"),
+        "total_break_seconds": recomputed.get("total_break_seconds"),
+        "approved_hours": recomputed.get("approved_hours"),
+        "approval_cleared": recomputed.get("approval_cleared"),
+        "has_open_break": recomputed.get("has_open_break"),
     }
 
 
@@ -1089,6 +1089,9 @@ def _payroll_hours_approve_sets(has_manual: bool) -> list[str]:
 def approve_time_record(conn, organization_id: int, session_id: int) -> dict:
     if not _session_in_org(conn, organization_id, session_id):
         raise ValueError("Time record not found")
+    from backend.payroll_time_record_breaks import assert_no_open_break_for_approval
+
+    assert_no_open_break_for_approval(conn, int(session_id))
     chk = conn.cursor()
     ensure_payroll_hours_approved_column(chk)
     has_manual = table_has_column(chk, "shift_sessions", "manual_override")
@@ -1177,10 +1180,25 @@ def bulk_approve_time_records(
     if not valid:
         return {"approved": 0, "skipped": len(errors), "errors": errors}
 
+    from backend.payroll_time_record_breaks import (
+        OpenBreakApprovalError,
+        assert_no_open_break_for_approval,
+    )
+
+    approvable: list[int] = []
+    for sid in valid:
+        try:
+            assert_no_open_break_for_approval(conn, sid)
+            approvable.append(sid)
+        except OpenBreakApprovalError as exc:
+            errors.append({"id": sid, "error": str(exc)})
+    if not approvable:
+        return {"approved": 0, "skipped": len(errors), "errors": errors}
+
     sets = _payroll_hours_approve_sets(has_manual)
-    ph_valid = ",".join(["%s"] * len(valid))
+    ph_valid = ",".join(["%s"] * len(approvable))
     where = f"id IN ({ph_valid})"
-    params: list[Any] = list(valid)
+    params: list[Any] = list(approvable)
     if has_ss_org:
         where += " AND organization_id=%s"
         params.append(int(organization_id))
@@ -1190,7 +1208,7 @@ def bulk_approve_time_records(
         tuple(params),
     )
     conn.commit()
-    return {"approved": len(valid), "skipped": len(errors), "errors": errors}
+    return {"approved": len(approvable), "skipped": len(errors), "errors": errors}
 
 
 def delete_time_record(conn, organization_id: int, session_id: int) -> bool:
@@ -1554,13 +1572,27 @@ def update_time_record_segment(
     started_at: Any = None,
     ended_at: Any = None,
     ended_at_provided: bool = False,
+    break_conflict_resolution: Any = None,
+    resolve_break_id: Any = None,
 ) -> dict:
     """Update a single role segment without rewriting the parent attendance record.
 
     Clock-in is never changed. If the edited row is the last segment, its end
     becomes the parent clock-out and hours. Neighbor segments are not auto-adjusted
     (gaps become warnings).
+
+    A segment that overlaps a completed unpaid break is rejected unless the manager
+    explicitly resolves the conflict (delete/sync/trim the break).
     """
+    from backend.payroll_time_record_breaks import (
+        apply_break_conflict_resolution,
+        find_break_resume_sync_candidate,
+        load_session_breaks,
+        raise_segment_break_conflict,
+        recompute_session_work_seconds,
+        segment_break_conflicts,
+    )
+
     sid = int(session_id)
     seg_id = int(segment_id)
     session_row = _load_session_for_segment_edit(conn, organization_id, sid)
@@ -1569,6 +1601,7 @@ def update_time_record_segment(
     if not target:
         raise ValueError("Role segment not found")
 
+    previous_start = target.get("started_at")
     cat_provided = category_id is not None and str(category_id).strip() != ""
     rol_provided = role_id is not None and str(role_id).strip() != ""
     if cat_provided ^ rol_provided:
@@ -1637,6 +1670,54 @@ def update_time_record_segment(
         session_clock_out=session_row.get("clock_out_at"),
     )
 
+    breaks = load_session_breaks(conn, sid)
+    proposed_target = next(s for s in proposed if int(s["id"]) == seg_id)
+    conflicts = segment_break_conflicts([proposed_target], breaks)
+    sync_candidate = find_break_resume_sync_candidate(
+        target, breaks, previous_start=previous_start
+    )
+    resolution = str(break_conflict_resolution or "").strip()
+    if conflicts:
+        if not resolution or resolution in ("keep_break", "abort"):
+            raise_segment_break_conflict(
+                conflicts=conflicts,
+                sync_candidate=sync_candidate,
+                proposed_start=new_start,
+                proposed_end=new_end,
+            )
+        break_id = resolve_break_id
+        if break_id is None:
+            break_id = (
+                sync_candidate["id"]
+                if sync_candidate
+                else conflicts[0].get("break_id")
+            )
+        apply_break_conflict_resolution(
+            conn,
+            sid,
+            resolution=resolution,
+            break_id=int(break_id),
+            segment_started_at=new_start,
+        )
+        breaks = load_session_breaks(conn, sid)
+        conflicts_after = segment_break_conflicts([proposed_target], breaks)
+        if conflicts_after:
+            raise_segment_break_conflict(
+                conflicts=conflicts_after,
+                sync_candidate=None,
+                proposed_start=new_start,
+                proposed_end=new_end,
+            )
+    elif resolution in ("sync_break_end", "trim_break_to_segment_start", "shorten_break") and sync_candidate:
+        # Explicit sync offer accepted even when the new window no longer overlaps.
+        apply_break_conflict_resolution(
+            conn,
+            sid,
+            resolution=resolution,
+            break_id=int(resolve_break_id or sync_candidate["id"]),
+            segment_started_at=new_start,
+        )
+
     sets = ["started_at=%s", "ended_at=%s"]
     params: list[Any] = [new_start, new_end]
     if assignment is not None:
@@ -1688,10 +1769,17 @@ def update_time_record_segment(
     _sync_session_clock_out_from_last_segment(
         conn, session_row, proposed, edited_segment_id=seg_id
     )
+    recomputed = recompute_session_work_seconds(conn, sid)
+    session_row["net_work_seconds"] = recomputed.get("net_work_seconds")
+    session_row["total_break_seconds"] = recomputed.get("total_break_seconds")
 
     conn.commit()
 
     out_seg = next(s for s in proposed if int(s["id"]) == seg_id)
+    session_summary = _session_summary_for_segment_response(session_row)
+    session_summary["approval_cleared"] = recomputed.get("approval_cleared")
+    session_summary["has_open_break"] = recomputed.get("has_open_break")
+    session_summary["total_break_seconds"] = recomputed.get("total_break_seconds")
     return json_safe(
         {
             "id": seg_id,
@@ -1706,7 +1794,9 @@ def update_time_record_segment(
             "ended_at": out_seg.get("ended_at"),
             "change_source": out_seg.get("change_source"),
             "warnings": warnings,
-            "session": _session_summary_for_segment_response(session_row),
+            "session": session_summary,
+            "break_conflict_resolved": bool(resolution)
+            and resolution not in ("", "keep_break", "abort"),
         }
     )
 

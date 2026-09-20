@@ -1679,6 +1679,20 @@ export const deletePayrollTimeRecordSegment = (recordId, segmentId) =>
     `${API_BASE}/api/ta/payroll/time-records/${recordId}/segments/${segmentId}`,
   );
 
+export const postPayrollTimeRecordBreak = (recordId, body) =>
+  axios.post(`${API_BASE}/api/ta/payroll/time-records/${recordId}/breaks`, body);
+
+export const patchPayrollTimeRecordBreak = (recordId, breakId, body) =>
+  axios.post(
+    `${API_BASE}/api/ta/payroll/time-records/${recordId}/breaks/${breakId}/save`,
+    body,
+  );
+
+export const deletePayrollTimeRecordBreak = (recordId, breakId) =>
+  axios.delete(
+    `${API_BASE}/api/ta/payroll/time-records/${recordId}/breaks/${breakId}`,
+  );
+
 export const postApprovePayrollTimeRecord = (recordId) =>
   axios.post(`${API_BASE}/api/ta/payroll/time-records/${recordId}/approve`, {});
 

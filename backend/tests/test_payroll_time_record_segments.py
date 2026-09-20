@@ -16,6 +16,28 @@ from backend.payroll_operations import (
 )
 
 
+_RECOMPUTE_STUB = {
+    "id": 100,
+    "total_break_seconds": 0,
+    "net_work_seconds": 10000,
+    "approved_hours": round(10000 / 3600.0, 4),
+    "hours_changed": False,
+    "approval_cleared": False,
+    "has_open_break": False,
+}
+
+
+@pytest.fixture(autouse=True)
+def _stub_break_ledger_for_segment_edits():
+    with patch(
+        "backend.payroll_time_record_breaks.load_session_breaks", return_value=[]
+    ), patch(
+        "backend.payroll_time_record_breaks.recompute_session_work_seconds",
+        return_value=dict(_RECOMPUTE_STUB),
+    ):
+        yield
+
+
 def _seg(
     seg_id,
     *,

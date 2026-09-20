@@ -158,6 +158,8 @@ def test_one_day_temp_override_leaves_surrounding_profile_days():
     ), patch(
         "backend.payroll_list_lookup_cache.build_payroll_list_lookup_cache",
         return_value=_Lookup(),
+    ), patch(
+        "backend.payroll_time_record_breaks.attach_breaks_to_time_records"
     ):
         items = list_time_records(conn, 3, from_date="2026-09-14", to_date="2026-09-20")
 
@@ -263,7 +265,7 @@ def test_hour_edit_does_not_clear_classification_override():
     conn.cursor.side_effect = [MagicMock(), select_cur, update_cur]
     with patch("backend.payroll_operations._session_in_org", return_value=True), patch(
         "backend.payroll_operations.table_has_column", return_value=False
-    ), patch("backend.payroll_operations._sum_break_seconds", return_value=0), patch(
+    ), patch("backend.payroll_time_record_breaks.recompute_session_work_seconds", return_value={"id": 9, "total_break_seconds": 0, "net_work_seconds": None, "approved_hours": None, "hours_changed": False, "approval_cleared": False, "has_open_break": False}), patch(
         "backend.payroll_operations._resync_role_segments_to_session_clock", return_value=False
     ):
         update_time_record(
@@ -284,7 +286,9 @@ def test_reapprove_keeps_override():
     conn.cursor.side_effect = [MagicMock(), upd]
     with patch("backend.payroll_operations._session_in_org", return_value=True), patch(
         "backend.payroll_operations.ensure_payroll_hours_approved_column"
-    ), patch("backend.payroll_operations.table_has_column", return_value=False):
+    ), patch("backend.payroll_operations.table_has_column", return_value=False), patch(
+        "backend.payroll_time_record_breaks.assert_no_open_break_for_approval"
+    ):
         rec = approve_time_record(conn, 3, 41)
     sql = upd.execute.call_args[0][0]
     assert "payroll_hours_approved=1" in sql

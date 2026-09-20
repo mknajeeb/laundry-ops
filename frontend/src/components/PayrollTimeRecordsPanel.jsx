@@ -35,6 +35,7 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import {
   deletePayrollTimeRecord,
+  deletePayrollTimeRecordBreak,
   deletePayrollTimeRecordSegment,
   getPayrollCalendarSettings,
   getPayrollScheduleSettings,
@@ -43,11 +44,13 @@ import {
   getTaUsers,
   getTaskTrackingSelectionTree,
   patchPayrollTimeRecord,
+  patchPayrollTimeRecordBreak,
   patchPayrollTimeRecordSegment,
   postApprovePayrollTimeRecord,
   postBulkApprovePayrollTimeRecords,
   postPayrollClassificationOverride,
   postPayrollTimeRecord,
+  postPayrollTimeRecordBreak,
 } from "../api";
 import {
   formatEasternTimeShort,
@@ -92,12 +95,24 @@ function statusColor(st) {
 }
 
 function canApproveRecord(row) {
+  if (row?.has_open_break) return false;
   return (
     row?.status === "pending_approval" ||
     row?.status === "completed" ||
     (row?.status !== "approved" && row?.status !== "open" && !row?.payroll_hours_approved)
   );
 }
+
+function formatPayableComposition(row) {
+  const pc = row?.payable_composition;
+  if (!pc) return null;
+  return `Payable ${formatHoursDecimal(pc.payable_hours)} = elapsed ${formatHoursDecimal(pc.elapsed_hours)} − breaks ${formatHoursDecimal(pc.break_hours)}`;
+}
+
+const emptyBreakForm = () => ({
+  break_start_at: "",
+  break_end_at: "",
+});
 
 function toDatetimeLocal(val) {
   if (!val) return "";
@@ -239,6 +254,13 @@ export default function PayrollTimeRecordsPanel({
   const [segmentEditorError, setSegmentEditorError] = useState("");
   const [segmentWarning, setSegmentWarning] = useState("");
   const [segmentDeleteTarget, setSegmentDeleteTarget] = useState(null);
+  const [breakEditorOpen, setBreakEditorOpen] = useState(false);
+  const [breakEditorMode, setBreakEditorMode] = useState("edit");
+  const [breakForm, setBreakForm] = useState(emptyBreakForm);
+  const [breakTarget, setBreakTarget] = useState(null);
+  const [breakEditorError, setBreakEditorError] = useState("");
+  const [breakDeleteTarget, setBreakDeleteTarget] = useState(null);
+  const [breakConflict, setBreakConflict] = useState(null);
   const [saving, setSaving] = useState(false);
   const [bulkApproving, setBulkApproving] = useState(false);
 
@@ -429,7 +451,16 @@ export default function PayrollTimeRecordsPanel({
       await postApprovePayrollTimeRecord(row.id);
       await load();
     } catch (e) {
-      setError(e.response?.data?.error || e.message || "Approve failed");
+      const data = e.response?.data || {};
+      if (data.error === "open_break_blocks_approval" || data.open_breaks) {
+        setError(
+          data.message ||
+            data.error ||
+            "Resolve the open break before approving this time record.",
+        );
+      } else {
+        setError(data.error || e.message || "Approve failed");
+      }
     }
   };
 
@@ -482,7 +513,7 @@ export default function PayrollTimeRecordsPanel({
     setSegmentEditorOpen(true);
   };
 
-  const saveSegmentEditor = async () => {
+  const saveSegmentEditor = async (conflictResolution = null) => {
     if (!segmentTarget?.record?.id || !segmentTarget?.segment?.id) return;
     if (!segmentForm.started_at) {
       setSegmentEditorError("Start time is required.");
@@ -516,27 +547,141 @@ export default function PayrollTimeRecordsPanel({
     setSegmentWarning("");
     setError("");
     try {
+      const payload = {
+        category_id: Number(segmentForm.category_id),
+        role_id: Number(segmentForm.role_id),
+        started_at: startApi,
+        ended_at: endApi,
+      };
+      if (conflictResolution) {
+        payload.break_conflict_resolution = conflictResolution.key;
+        if (conflictResolution.break_id != null) {
+          payload.resolve_break_id = conflictResolution.break_id;
+        }
+      }
       const res = await patchPayrollTimeRecordSegment(
         segmentTarget.record.id,
         segmentTarget.segment.id,
-        {
-          category_id: Number(segmentForm.category_id),
-          role_id: Number(segmentForm.role_id),
-          started_at: startApi,
-          ended_at: endApi,
-        },
+        payload,
       );
       const warnings = Array.isArray(res.data?.warnings) ? res.data.warnings : [];
       setSegmentEditorOpen(false);
       setSegmentTarget(null);
+      setBreakConflict(null);
       if (warnings.length) {
         setSegmentWarning(warnings.join(" "));
       }
       await load();
     } catch (e) {
-      setSegmentEditorError(
-        e.response?.data?.error || e.message || "Role segment save failed",
+      const data = e.response?.data || {};
+      if (data.error === "segment_break_conflict" || Array.isArray(data.conflicts)) {
+        setBreakConflict({
+          recordId: segmentTarget.record.id,
+          segmentId: segmentTarget.segment.id,
+          payload: data,
+        });
+        setSegmentEditorError("");
+      } else {
+        setSegmentEditorError(data.error || e.message || "Role segment save failed");
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openBreakEdit = (row, br) => {
+    setBreakEditorMode(br?.status === "open" ? "close" : "edit");
+    setBreakTarget({ record: row, breakRow: br });
+    setBreakEditorError("");
+    setBreakForm({
+      break_start_at: toDatetimeLocal(br?.break_start_at),
+      break_end_at: toDatetimeLocal(br?.break_end_at),
+    });
+    setBreakEditorOpen(true);
+  };
+
+  const openBreakAdd = (row) => {
+    setBreakEditorMode("add");
+    setBreakTarget({ record: row, breakRow: null });
+    setBreakEditorError("");
+    setBreakForm(emptyBreakForm());
+    setBreakEditorOpen(true);
+  };
+
+  const saveBreakEditor = async () => {
+    if (!breakTarget?.record?.id) return;
+    if (breakEditorMode !== "close" && !breakForm.break_start_at) {
+      setBreakEditorError("Break start is required.");
+      return;
+    }
+    if (!breakForm.break_end_at) {
+      setBreakEditorError(
+        breakEditorMode === "close"
+          ? "Enter the break end time to close this open break. The system will not guess it."
+          : "Break end is required for a completed break.",
       );
+      return;
+    }
+    const startApi =
+      breakEditorMode === "close"
+        ? null
+        : toApiDateTimePreservingSeconds(
+            breakForm.break_start_at,
+            breakTarget.breakRow?.break_start_at,
+          );
+    const endApi = toApiDateTimePreservingSeconds(
+      breakForm.break_end_at,
+      breakTarget.breakRow?.break_end_at,
+    );
+    if (startApi && endApi && endApi <= startApi) {
+      setBreakEditorError("Break end must be after break start.");
+      return;
+    }
+    setSaving(true);
+    setBreakEditorError("");
+    setError("");
+    try {
+      if (breakEditorMode === "add") {
+        await postPayrollTimeRecordBreak(breakTarget.record.id, {
+          break_start_at: startApi,
+          break_end_at: endApi,
+        });
+      } else if (breakEditorMode === "close") {
+        await patchPayrollTimeRecordBreak(
+          breakTarget.record.id,
+          breakTarget.breakRow.id,
+          { action: "close", break_end_at: endApi },
+        );
+      } else {
+        await patchPayrollTimeRecordBreak(
+          breakTarget.record.id,
+          breakTarget.breakRow.id,
+          { break_start_at: startApi, break_end_at: endApi },
+        );
+      }
+      setBreakEditorOpen(false);
+      setBreakTarget(null);
+      await load();
+    } catch (e) {
+      setBreakEditorError(e.response?.data?.error || e.message || "Break save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const confirmBreakDelete = async () => {
+    if (!breakDeleteTarget?.record?.id || !breakDeleteTarget?.breakRow?.id) return;
+    setSaving(true);
+    setError("");
+    try {
+      await deletePayrollTimeRecordBreak(
+        breakDeleteTarget.record.id,
+        breakDeleteTarget.breakRow.id,
+      );
+      setBreakDeleteTarget(null);
+      await load();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Break delete failed");
     } finally {
       setSaving(false);
     }
@@ -805,7 +950,6 @@ export default function PayrollTimeRecordsPanel({
           <TableBody>
             {displayRows.flatMap((r) => {
               const segs = Array.isArray(r.role_segments) ? r.role_segments : [];
-              const showSegRows = segs.length >= 1;
               const multiRole = segs.length > 1;
               const parent = (
               <TableRow
@@ -868,10 +1012,20 @@ export default function PayrollTimeRecordsPanel({
                   title={
                     r.hours_level !== "normal"
                       ? `${formatHoursDecimal(r.worker_period_hours)} total for ${r.worker_name} in this period`
-                      : undefined
+                      : formatPayableComposition(r) || undefined
                   }
                 >
                   {formatHoursDecimal(r.approved_hours)}
+                  {formatPayableComposition(r) ? (
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      display="block"
+                      sx={{ fontWeight: 400, maxWidth: 160, whiteSpace: "normal" }}
+                    >
+                      {formatPayableComposition(r)}
+                    </Typography>
+                  ) : null}
                 </TableCell>
                 <TableCell align="right" sx={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
                   {formatPayrollRate(r.regular_rate)}
@@ -891,7 +1045,25 @@ export default function PayrollTimeRecordsPanel({
                   {formatPayrollMoney(r.row_total)}
                 </TableCell>
                 <TableCell sx={{ whiteSpace: "nowrap" }}>
-                  <Chip size="small" label={statusLabel(r.status)} color={statusColor(r.status)} />
+                  <Stack spacing={0.5} alignItems="flex-start">
+                    <Chip size="small" label={statusLabel(r.status)} color={statusColor(r.status)} />
+                    {r.has_open_break ? (
+                      <Chip
+                        size="small"
+                        color="error"
+                        variant="outlined"
+                        label="Open break — not deducted"
+                      />
+                    ) : null}
+                    {Array.isArray(r.segment_break_conflicts) && r.segment_break_conflicts.length ? (
+                      <Chip
+                        size="small"
+                        color="warning"
+                        variant="outlined"
+                        label="Segment overlaps break"
+                      />
+                    ) : null}
+                  </Stack>
                 </TableCell>
                 <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
                   {canApproveRecord(r) ? (
@@ -905,7 +1077,25 @@ export default function PayrollTimeRecordsPanel({
                         <CheckIcon fontSize="small" />
                       </IconButton>
                     </Tooltip>
+                  ) : r.has_open_break && r.status !== "approved" && r.status !== "open" ? (
+                    <Tooltip title="Close or remove the open break before approving">
+                      <span>
+                        <IconButton size="small" color="success" disabled aria-label="Approve blocked">
+                          <CheckIcon fontSize="small" />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
                   ) : null}
+                  <Tooltip title="Add completed break">
+                    <IconButton
+                      size="small"
+                      onClick={() => openBreakAdd(r)}
+                      aria-label="Add break"
+                      disabled={r.status === "open" || !r.clock_out_at}
+                    >
+                      <AddIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
                   <Tooltip title="Edit attendance day">
                     <IconButton size="small" onClick={() => openEdit(r)} aria-label="Edit">
                       <EditIcon fontSize="small" />
@@ -924,7 +1114,9 @@ export default function PayrollTimeRecordsPanel({
                 </TableCell>
               </TableRow>
               );
-              if (!showSegRows) return [parent];
+              const breaks = Array.isArray(r.breaks) ? r.breaks : [];
+              const showChildRows = segs.length >= 1 || breaks.length >= 1;
+              if (!showChildRows) return [parent];
               const segRows = segs.map((seg, idx) => (
                 <TableRow
                   key={`${r.id}-seg-${seg.id || idx}`}
@@ -975,7 +1167,67 @@ export default function PayrollTimeRecordsPanel({
                   </TableCell>
                 </TableRow>
               ));
-              return [parent, ...segRows];
+              const breakRows = breaks.map((br, idx) => (
+                <TableRow
+                  key={`${r.id}-break-${br.id || idx}`}
+                  sx={{ bgcolor: alpha(theme.palette.warning.main, br.status === "open" ? 0.12 : 0.05) }}
+                >
+                  <TableCell />
+                  <TableCell />
+                  <TableCell />
+                  <TableCell sx={{ pl: 2, whiteSpace: "nowrap", fontSize: "0.8125rem" }}>
+                    <Typography variant="body2" component="span" sx={{ fontWeight: 600 }}>
+                      Break
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      {br.status === "open"
+                        ? "Open — currently not deducted"
+                        : br.deducted
+                          ? "Completed — deducted from payable"
+                          : br.status || "Break"}
+                    </Typography>
+                  </TableCell>
+                  <TableCell sx={{ whiteSpace: "nowrap", fontSize: "0.8125rem" }}>
+                    {formatEasternTimeShort(br.break_start_at)}
+                  </TableCell>
+                  <TableCell sx={{ whiteSpace: "nowrap", fontSize: "0.8125rem" }}>
+                    {br.break_end_at ? formatEasternTimeShort(br.break_end_at) : "Open"}
+                  </TableCell>
+                  <TableCell
+                    align="right"
+                    sx={{ whiteSpace: "nowrap", fontSize: "0.8125rem", fontVariantNumeric: "tabular-nums" }}
+                  >
+                    {br.duration_seconds != null
+                      ? formatHoursDecimal(br.duration_seconds / 3600)
+                      : "—"}
+                  </TableCell>
+                  <TableCell colSpan={4} />
+                  <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                    <Tooltip title={br.status === "open" ? "Close open break" : "Edit break"}>
+                      <IconButton
+                        size="small"
+                        onClick={() => openBreakEdit(r, br)}
+                        aria-label="Edit break"
+                        sx={{ opacity: 0.85 }}
+                      >
+                        <EditIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Delete break">
+                      <IconButton
+                        size="small"
+                        color="error"
+                        onClick={() => setBreakDeleteTarget({ record: r, breakRow: br })}
+                        aria-label="Delete break"
+                        sx={{ opacity: 0.85 }}
+                      >
+                        <DeleteIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
+                    </Tooltip>
+                  </TableCell>
+                </TableRow>
+              ));
+              return [parent, ...segRows, ...breakRows];
             })}
             {!displayRows.length && !loading ? (
               <TableRow>
@@ -1233,8 +1485,143 @@ export default function PayrollTimeRecordsPanel({
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setSegmentEditorOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={saveSegmentEditor} disabled={saving}>
+          <Button variant="contained" onClick={() => saveSegmentEditor()} disabled={saving}>
             {saving ? "Saving…" : "Save segment"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={!!breakConflict}
+        onClose={() => !saving && setBreakConflict(null)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Segment overlaps unpaid break</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ mt: 1 }}>
+            <Alert severity="warning">
+              {breakConflict?.payload?.message ||
+                "This role segment overlaps a completed break. Choose how to resolve it — breaks are never changed silently."}
+            </Alert>
+            {(breakConflict?.payload?.conflicts || []).map((c) => (
+              <Typography key={`${c.break_id}-${c.segment_id}`} variant="body2" color="text.secondary">
+                Break #{c.break_id}: {formatEasternTimeShort(c.break_start_at)} –{" "}
+                {formatEasternTimeShort(c.break_end_at)} overlaps proposed segment (
+                {Math.round((c.overlap_seconds || 0) / 60)} min).
+              </Typography>
+            ))}
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ flexWrap: "wrap", gap: 1, justifyContent: "flex-end" }}>
+          <Button onClick={() => setBreakConflict(null)} disabled={saving}>
+            Keep break — cancel
+          </Button>
+          {(breakConflict?.payload?.resolutions || [])
+            .filter((r) => r.key !== "keep_break")
+            .map((r) => (
+              <Button
+                key={r.key}
+                variant={r.key === "delete_break" ? "outlined" : "contained"}
+                color={r.key === "delete_break" ? "error" : "primary"}
+                disabled={saving}
+                onClick={() =>
+                  saveSegmentEditor({
+                    key: r.key,
+                    break_id: r.break_id ?? breakConflict?.payload?.break_id_to_sync,
+                  })
+                }
+              >
+                {r.label}
+              </Button>
+            ))}
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={breakEditorOpen}
+        onClose={() => !saving && setBreakEditorOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>
+          {breakEditorMode === "add"
+            ? "Add completed break"
+            : breakEditorMode === "close"
+              ? "Close open break"
+              : "Edit break"}
+        </DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            {breakEditorError ? (
+              <Alert severity="error" onClose={() => setBreakEditorError("")}>
+                {breakEditorError}
+              </Alert>
+            ) : null}
+            {breakEditorMode === "close" ? (
+              <Alert severity="info">
+                Open breaks are not deducted from payable hours. Enter the real end time — the system
+                will not guess it.
+              </Alert>
+            ) : (
+              <Typography variant="body2" color="text.secondary">
+                Completed breaks must fall inside check-in/check-out, end after start, and not overlap
+                another completed break. Payable hours = elapsed − completed breaks.
+              </Typography>
+            )}
+            {breakEditorMode !== "close" ? (
+              <PayrollDateTimeField
+                label="Break start"
+                value={breakForm.break_start_at}
+                onChange={(v) => setBreakForm((f) => ({ ...f, break_start_at: v }))}
+              />
+            ) : (
+              <Typography variant="body2">
+                Started {formatEasternTimeShort(breakTarget?.breakRow?.break_start_at)}
+              </Typography>
+            )}
+            <PayrollDateTimeField
+              label="Break end"
+              value={breakForm.break_end_at}
+              onChange={(v) => setBreakForm((f) => ({ ...f, break_end_at: v }))}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setBreakEditorOpen(false)} disabled={saving}>
+            Cancel
+          </Button>
+          <Button variant="contained" onClick={saveBreakEditor} disabled={saving}>
+            {saving
+              ? "Saving…"
+              : breakEditorMode === "close"
+                ? "Close break"
+                : breakEditorMode === "add"
+                  ? "Add break"
+                  : "Save break"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={!!breakDeleteTarget} onClose={() => setBreakDeleteTarget(null)}>
+        <DialogTitle>Delete break?</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Delete this{" "}
+            {breakDeleteTarget?.breakRow?.status === "open" ? "open" : "completed"} break
+            {breakDeleteTarget?.record?.worker_name
+              ? ` for ${breakDeleteTarget.record.worker_name}`
+              : ""}
+            ? Payable hours will be recomputed from remaining completed breaks. Frozen payout lines
+            are not changed until Reopen for Correction / Refresh Hours.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setBreakDeleteTarget(null)} disabled={saving}>
+            Cancel
+          </Button>
+          <Button color="error" variant="contained" onClick={confirmBreakDelete} disabled={saving}>
+            Delete break
           </Button>
         </DialogActions>
       </Dialog>

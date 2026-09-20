@@ -5800,6 +5800,15 @@ def _payroll_time_record_update(conn, oid: int, rid: int, body: dict):
         "payroll_time_update",
         new=body,
     )
+    if rec.get("approval_cleared"):
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "shift_session",
+            rid,
+            "payroll_hours_approval_cleared",
+            remarks="payable hours changed after time-record edit",
+        )
     conn.commit()
     return rec
 
@@ -5851,8 +5860,14 @@ def payroll_time_record_approve(rid):
     conn = get_db()
     try:
         from backend.payroll_operations import approve_time_record
+        from backend.payroll_time_record_breaks import OpenBreakApprovalError
 
-        rec = approve_time_record(conn, _tenant_id(), rid)
+        try:
+            rec = approve_time_record(conn, _tenant_id(), rid)
+        except OpenBreakApprovalError as e:
+            body = {"error": str(e)}
+            body.update(e.payload or {})
+            return jsonify(body), 409
         write_audit(
             conn,
             g.ta_user["id"],
@@ -5976,6 +5991,8 @@ def _payroll_time_record_segment_update(conn, oid: int, rid: int, seg_id: int, b
         "started_at": started_raw,
         "ended_at": ended_raw,
         "ended_at_provided": ended_at_provided,
+        "break_conflict_resolution": body.get("break_conflict_resolution"),
+        "resolve_break_id": body.get("resolve_break_id"),
     }
     if "category_id" in body:
         kwargs["category_id"] = body.get("category_id")
@@ -5990,8 +6007,24 @@ def _payroll_time_record_segment_update(conn, oid: int, rid: int, seg_id: int, b
         "payroll_role_segment_update",
         new=body,
     )
+    if (rec.get("session") or {}).get("approval_cleared"):
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "shift_session",
+            rid,
+            "payroll_hours_approval_cleared",
+            remarks=f"payable hours changed after role segment {seg_id} edit",
+        )
     conn.commit()
     return rec
+
+
+def _json_break_conflict(exc):
+    body = {"error": str(exc)}
+    if getattr(exc, "payload", None):
+        body.update(exc.payload)
+    return jsonify(body), 409
 
 
 @ta_bp.route(
@@ -6004,10 +6037,14 @@ def payroll_time_record_segment_save(rid, seg_id):
     """POST alias for role-segment update (CORS-safe, mirrors time-record /save)."""
     conn = get_db()
     try:
+        from backend.payroll_time_record_breaks import BreakConflictError
+
         body = request.json or {}
         try:
             rec = _payroll_time_record_segment_update(conn, _tenant_id(), rid, seg_id, body)
             return jsonify(rec)
+        except BreakConflictError as e:
+            return _json_break_conflict(e)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
     except Exception as e:
@@ -6053,12 +6090,172 @@ def payroll_time_record_segment_mutate(rid, seg_id):
 
         body = request.json or {}
         try:
+            from backend.payroll_time_record_breaks import BreakConflictError
+
             rec = _payroll_time_record_segment_update(conn, oid, rid, seg_id, body)
             return jsonify(rec)
+        except BreakConflictError as e:
+            return _json_break_conflict(e)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
     except Exception as e:
         current_app.logger.exception("payroll_time_record_segment_mutate failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/time-records/<int:rid>/breaks", methods=["POST"])
+@require_auth
+@require_any_perm("ta.settings", "ta.override", "users.edit")
+def payroll_time_record_break_create(rid):
+    conn = get_db()
+    try:
+        from backend.payroll_time_record_breaks import create_session_break
+
+        body = request.json or {}
+        out = create_session_break(
+            conn,
+            _tenant_id(),
+            rid,
+            break_start_at=body.get("break_start_at"),
+            break_end_at=body.get("break_end_at"),
+        )
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "shift_break",
+            out.get("break", {}).get("id"),
+            "payroll_break_create",
+            new=body,
+            remarks=f"time record {rid}",
+        )
+        if (out.get("session") or {}).get("approval_cleared"):
+            write_audit(
+                conn,
+                g.ta_user["id"],
+                "shift_session",
+                rid,
+                "payroll_hours_approval_cleared",
+                remarks="payable hours changed after break create",
+            )
+        conn.commit()
+        return jsonify(out), 201
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_time_record_break_create failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route(
+    "/payroll/time-records/<int:rid>/breaks/<int:break_id>/save",
+    methods=["POST"],
+)
+@require_auth
+@require_any_perm("ta.settings", "ta.override", "users.edit")
+def payroll_time_record_break_save(rid, break_id):
+    conn = get_db()
+    try:
+        from backend.payroll_time_record_breaks import (
+            close_open_session_break,
+            update_session_break,
+        )
+
+        body = request.json or {}
+        action = str(body.get("action") or "update").strip().lower()
+        if action == "close":
+            out = close_open_session_break(
+                conn,
+                _tenant_id(),
+                rid,
+                break_id,
+                break_end_at=body.get("break_end_at"),
+            )
+            audit_action = "payroll_break_close"
+        else:
+            out = update_session_break(
+                conn,
+                _tenant_id(),
+                rid,
+                break_id,
+                break_start_at=body.get("break_start_at"),
+                break_end_at=body.get("break_end_at"),
+                end_provided="break_end_at" in body,
+            )
+            audit_action = "payroll_break_update"
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "shift_break",
+            break_id,
+            audit_action,
+            new=body,
+            remarks=f"time record {rid}",
+        )
+        if (out.get("session") or {}).get("approval_cleared"):
+            write_audit(
+                conn,
+                g.ta_user["id"],
+                "shift_session",
+                rid,
+                "payroll_hours_approval_cleared",
+                remarks=f"payable hours changed after break {audit_action}",
+            )
+        conn.commit()
+        return jsonify(out)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_time_record_break_save failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route(
+    "/payroll/time-records/<int:rid>/breaks/<int:break_id>",
+    methods=["DELETE"],
+)
+@require_auth
+@require_any_perm("ta.settings", "ta.override", "users.edit")
+def payroll_time_record_break_delete(rid, break_id):
+    conn = get_db()
+    try:
+        from backend.payroll_time_record_breaks import delete_session_break
+
+        if not user_has_perm(conn, g.ta_user["id"], "ta.settings") and not user_has_perm(
+            conn, g.ta_user["id"], "ta.override"
+        ):
+            return jsonify({"error": "Forbidden"}), 403
+        out = delete_session_break(conn, _tenant_id(), rid, break_id)
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "shift_break",
+            break_id,
+            "payroll_break_delete",
+            remarks=f"time record {rid}",
+        )
+        if (out.get("session") or {}).get("approval_cleared"):
+            write_audit(
+                conn,
+                g.ta_user["id"],
+                "shift_session",
+                rid,
+                "payroll_hours_approval_cleared",
+                remarks="payable hours changed after break delete",
+            )
+        conn.commit()
+        return jsonify(out)
+    except ValueError as e:
+        msg = str(e)
+        code = 404 if "not found" in msg.lower() else 400
+        return jsonify({"error": msg}), code
+    except Exception as e:
+        current_app.logger.exception("payroll_time_record_break_delete failed")
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()

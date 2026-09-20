@@ -17,7 +17,9 @@ def test_approve_time_record_skips_list_reload():
         "backend.payroll_operations.ensure_payroll_hours_approved_column"
     ), patch("backend.payroll_operations.table_has_column", side_effect=[True, True]), patch(
         "backend.payroll_operations.list_time_records"
-    ) as list_fn:
+    ) as list_fn, patch(
+        "backend.payroll_time_record_breaks.assert_no_open_break_for_approval"
+    ):
         rec = approve_time_record(conn, 3, 99)
 
     assert rec == {"id": 99, "status": "approved", "payroll_hours_approved": True}
@@ -41,7 +43,9 @@ def test_bulk_approve_uses_single_update():
         "backend.payroll_operations.table_has_column", side_effect=[True, True]
     ), patch("backend.payroll_operations.list_time_records") as list_fn, patch(
         "backend.payroll_operations.approve_time_record"
-    ) as approve_fn:
+    ) as approve_fn, patch(
+        "backend.payroll_time_record_breaks.assert_no_open_break_for_approval"
+    ):
         result = bulk_approve_time_records(conn, 3, session_ids=[1, 2, 2, 3])
 
     assert result == {"approved": 3, "skipped": 0, "errors": []}
@@ -69,6 +73,8 @@ def test_bulk_approve_reports_missing_ids():
 
     with patch("backend.payroll_operations.ensure_payroll_hours_approved_column"), patch(
         "backend.payroll_operations.table_has_column", side_effect=[False, True]
+    ), patch(
+        "backend.payroll_time_record_breaks.assert_no_open_break_for_approval"
     ):
         result = bulk_approve_time_records(conn, 3, session_ids=[10, 99])
 

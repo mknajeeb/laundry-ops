@@ -177,7 +177,7 @@ def test_remarks_only_day_edit_does_not_collapse_via_retag(conn):
 
     with patch("backend.payroll_operations._session_in_org", return_value=True), patch(
         "backend.payroll_operations.table_has_column", return_value=True
-    ), patch("backend.payroll_operations._sum_break_seconds", return_value=0), patch(
+    ), patch("backend.payroll_time_record_breaks.recompute_session_work_seconds", return_value={"id": 9, "total_break_seconds": 0, "net_work_seconds": None, "approved_hours": None, "hours_changed": False, "approval_cleared": False, "has_open_break": False}), patch(
         "backend.payroll_operations._resync_role_segments_to_session_clock", return_value=True
     ) as sync, patch(
         "backend.payroll_operations._apply_time_record_role_tag"
@@ -211,7 +211,7 @@ def test_day_level_role_retag_blocked_for_multi_segment(conn):
 
     with patch("backend.payroll_operations._session_in_org", return_value=True), patch(
         "backend.payroll_operations.table_has_column", return_value=False
-    ), patch("backend.payroll_operations._sum_break_seconds", return_value=0), patch(
+    ), patch("backend.payroll_time_record_breaks.recompute_session_work_seconds", return_value={"id": 9, "total_break_seconds": 0, "net_work_seconds": None, "approved_hours": None, "hours_changed": False, "approval_cleared": False, "has_open_break": False}), patch(
         "backend.payroll_operations._count_role_segments", return_value=4
     ), patch(
         "backend.payroll_operations._apply_time_record_role_tag"
@@ -246,7 +246,7 @@ def test_single_segment_day_role_retag_still_works(conn):
 
     with patch("backend.payroll_operations._session_in_org", return_value=True), patch(
         "backend.payroll_operations.table_has_column", return_value=False
-    ), patch("backend.payroll_operations._sum_break_seconds", return_value=0), patch(
+    ), patch("backend.payroll_time_record_breaks.recompute_session_work_seconds", return_value={"id": 9, "total_break_seconds": 0, "net_work_seconds": None, "approved_hours": None, "hours_changed": False, "approval_cleared": False, "has_open_break": False}), patch(
         "backend.payroll_operations._count_role_segments", return_value=1
     ), patch(
         "backend.payroll_operations._apply_time_record_role_tag"
@@ -322,7 +322,7 @@ def test_update_multi_segment_clock_in_recomputes_session_hours(conn):
 
     with patch("backend.payroll_operations._session_in_org", return_value=True), patch(
         "backend.payroll_operations.table_has_column", return_value=False
-    ), patch("backend.payroll_operations._sum_break_seconds", return_value=0), patch(
+    ), patch("backend.payroll_time_record_breaks.recompute_session_work_seconds", return_value={"id": 100, "total_break_seconds": 0, "net_work_seconds": 23400, "approved_hours": 6.5, "hours_changed": True, "approval_cleared": False, "has_open_break": False}) as recom, patch(
         "backend.payroll_operations._resync_role_segments_to_session_clock", return_value=True
     ) as sync, patch(
         "backend.payroll_operations._apply_time_record_role_tag"
@@ -338,12 +338,14 @@ def test_update_multi_segment_clock_in_recomputes_session_hours(conn):
     assert rec["status"] == "pending_approval"
     assert rec["clock_in_at"] == datetime(2026, 9, 10, 5, 30)
     assert rec["clock_out_at"] == datetime(2026, 9, 10, 12, 0)
+    assert rec["net_work_seconds"] == 23400
     tag.assert_not_called()
     sync.assert_called_once()
+    recom.assert_called_once_with(conn, 100)
     sql, params = update_cur.execute.call_args[0]
-    assert "net_work_seconds=%s" in sql
-    # 5:30 → 12:00 = 6.5 hours = 23400 seconds
-    assert 23400 in params
+    assert "clock_in_at=%s" in sql
+    assert "net_work_seconds=%s" not in sql
+    assert params[0] == datetime(2026, 9, 10, 5, 30)
 
 
 def test_resync_rejects_clock_in_past_first_segment_end(conn):

@@ -124,6 +124,8 @@ def test_list_time_records_filters_temp_by_work_date_not_today():
     ), patch(
         "backend.payroll_operations.time_record_status",
         return_value="approved",
+    ), patch(
+        "backend.payroll_time_record_breaks.attach_breaks_to_time_records"
     ):
         temp_items = list_time_records(
             conn, 1, from_date="2026-07-27", to_date="2026-08-02", worker_category="temp"
