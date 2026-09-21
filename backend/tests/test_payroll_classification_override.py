@@ -184,13 +184,9 @@ def test_multi_role_session_inherits_one_classification():
         [rec], batch_category="temp", threshold_hours=40, ot_enabled=True
     )
     assert len(lines) == 1
-    assert lines[0]["classification_provenance"] == [
-        {
-            "shift_session_id": 5,
-            "worker_category": "temp",
-            "classification_source": "record_override",
-        }
-    ]
+    assert lines[0]["classification_provenance"][0]["shift_session_id"] == 5
+    assert lines[0]["classification_provenance"][0]["worker_category"] == "temp"
+    assert lines[0]["classification_provenance"][0]["classification_source"] == "record_override"
     assert lines[0]["session_ids"] == [5]
 
 

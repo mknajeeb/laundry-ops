@@ -49,6 +49,8 @@ import {
   postApprovePayrollTimeRecord,
   postBulkApprovePayrollTimeRecords,
   postPayrollClassificationOverride,
+  postPayrollRateOverride,
+  postPayrollEmployeeWeekOtOverride,
   postPayrollTimeRecord,
   postPayrollTimeRecordBreak,
 } from "../api";
@@ -66,8 +68,11 @@ import {
 import { displayRoleLabel } from "../opsMobile/switchRoleFlowHelpers";
 import {
   CLASSIFICATION_OVERRIDE_OPTIONS,
+  OT_WEEK_OPTIONS,
   classificationSelectValue,
+  employeeWeekOtKey,
   formatRecordClassificationLabel,
+  rateOverrideInputValue,
 } from "../payroll/payrollClassification";
 import {
   formatOpenBreakCaption,
@@ -243,6 +248,10 @@ export default function PayrollTimeRecordsPanel({
   const [classNotice, setClassNotice] = useState("");
   const [classEdit, setClassEdit] = useState(null);
   const [classBusy, setClassBusy] = useState(false);
+  const [rateEdit, setRateEdit] = useState(null);
+  const [rateBusy, setRateBusy] = useState(false);
+  const [otEdit, setOtEdit] = useState(null);
+  const [otBusy, setOtBusy] = useState(false);
   const [editorError, setEditorError] = useState("");
   const [loading, setLoading] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
@@ -737,11 +746,71 @@ export default function PayrollTimeRecordsPanel({
     }
   };
 
+  const saveRateOverride = async () => {
+    if (!rateEdit?.row?.id) return;
+    setRateBusy(true);
+    setError("");
+    try {
+      const raw = String(rateEdit.value ?? "").trim();
+      await postPayrollRateOverride(rateEdit.row.id, {
+        payroll_rate_override: raw === "" ? null : raw,
+        reason: rateEdit.reason || "",
+      });
+      setRateEdit(null);
+      await load();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Could not update rate override");
+    } finally {
+      setRateBusy(false);
+    }
+  };
+
+  const saveOtWeek = async () => {
+    if (!otEdit?.row?.user_id || !otEdit?.row?.payroll_week_start) return;
+    setOtBusy(true);
+    setError("");
+    try {
+      await postPayrollEmployeeWeekOtOverride({
+        user_id: otEdit.row.user_id,
+        payroll_week_start: otEdit.row.payroll_week_start,
+        ot_mode: otEdit.value || "default",
+        reason: otEdit.reason || "",
+      });
+      setOtEdit(null);
+      await load();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Could not update overtime setting");
+    } finally {
+      setOtBusy(false);
+    }
+  };
+
+  const otControlShown = useMemo(() => {
+    const seen = new Set();
+    const first = new Set();
+    for (const r of displayRows) {
+      const key = employeeWeekOtKey(r);
+      if (!seen.has(key)) {
+        seen.add(key);
+        first.add(r.id);
+      }
+    }
+    return first;
+  }, [displayRows]);
+
+  const anyOtDisabled = displayRows.some((r) => r.ot_week_mode === "disable_ot");
+
   return (
     <Stack spacing={2} sx={{ width: "100%", minWidth: 0 }}>
       {classNotice ? (
         <Alert severity="warning" onClose={() => setClassNotice("")}>
           {classNotice}
+        </Alert>
+      ) : null}
+      {anyOtDisabled ? (
+        <Alert severity="info">
+          OT disabled for this payroll week — eligible hours stay straight-time. Session rates and
+          classifications are unchanged.
         </Alert>
       ) : null}
       {segmentWarning ? (
@@ -939,7 +1008,8 @@ export default function PayrollTimeRecordsPanel({
             >
               <TableCell>Date</TableCell>
               <TableCell>Worker</TableCell>
-              <TableCell>Cat.</TableCell>
+              <TableCell>Cat. / Rate</TableCell>
+              <TableCell>Overtime</TableCell>
               <TableCell>Role</TableCell>
               <TableCell>In</TableCell>
               <TableCell>Out</TableCell>
@@ -972,7 +1042,7 @@ export default function PayrollTimeRecordsPanel({
                 >
                   {r.worker_name}
                 </TableCell>
-                <TableCell sx={{ whiteSpace: "nowrap", minWidth: 168 }}>
+                <TableCell sx={{ whiteSpace: "nowrap", minWidth: 200 }}>
                   <Typography variant="caption" sx={{ fontWeight: 700, display: "block" }}>
                     {formatRecordClassificationLabel(r)}
                   </Typography>
@@ -985,7 +1055,7 @@ export default function PayrollTimeRecordsPanel({
                       if (next === classificationSelectValue(r)) return;
                       setClassEdit({ row: r, value: next, reason: "" });
                     }}
-                    sx={{ fontSize: 12, maxWidth: 180 }}
+                    sx={{ fontSize: 12, maxWidth: 180, display: "block" }}
                   >
                     {CLASSIFICATION_OVERRIDE_OPTIONS.map((opt) => (
                       <MenuItem key={opt.value || "default"} value={opt.value}>
@@ -993,6 +1063,82 @@ export default function PayrollTimeRecordsPanel({
                       </MenuItem>
                     ))}
                   </Select>
+                  <Stack direction="row" alignItems="center" spacing={0.5} sx={{ mt: 0.5 }}>
+                    <Typography variant="caption" color="text.secondary">
+                      Rate override $
+                    </Typography>
+                    <TextField
+                      size="small"
+                      variant="standard"
+                      placeholder="profile"
+                      value={
+                        rateEdit?.row?.id === r.id
+                          ? rateEdit.value
+                          : rateOverrideInputValue(r)
+                      }
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setRateEdit({
+                          row: r,
+                          value: v,
+                          reason: rateEdit?.row?.id === r.id ? rateEdit.reason : "",
+                          dirty: true,
+                        });
+                      }}
+                      onBlur={() => {
+                        if (!rateEdit || rateEdit.row?.id !== r.id || !rateEdit.dirty) return;
+                        const next = String(rateEdit.value ?? "").trim();
+                        const prev = rateOverrideInputValue(r);
+                        if (next === prev) {
+                          setRateEdit(null);
+                          return;
+                        }
+                        setRateEdit((prevState) =>
+                          prevState ? { ...prevState, dirty: false, confirm: true } : prevState,
+                        );
+                      }}
+                      inputProps={{ inputMode: "decimal", style: { width: 56, fontSize: 12 } }}
+                      sx={{ maxWidth: 72 }}
+                    />
+                    <Typography variant="caption" color="text.secondary">
+                      / hr
+                    </Typography>
+                  </Stack>
+                  {r.ot_week_mode === "disable_ot" ? (
+                    <Chip
+                      size="small"
+                      color="warning"
+                      label="OT disabled for this payroll week"
+                      sx={{ mt: 0.5, height: 22, fontSize: 11 }}
+                    />
+                  ) : null}
+                </TableCell>
+                <TableCell sx={{ whiteSpace: "nowrap", minWidth: 140 }}>
+                  {otControlShown.has(r.id) ? (
+                    <Select
+                      size="small"
+                      variant="standard"
+                      value={r.ot_week_mode === "disable_ot" ? "disable_ot" : "default"}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        const cur = r.ot_week_mode === "disable_ot" ? "disable_ot" : "default";
+                        if (next === cur) return;
+                        setOtEdit({ row: r, value: next, reason: "" });
+                      }}
+                      sx={{ fontSize: 12, maxWidth: 160 }}
+                      disabled={!r.payroll_week_start}
+                    >
+                      {OT_WEEK_OPTIONS.map((opt) => (
+                        <MenuItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  ) : (
+                    <Typography variant="caption" color="text.secondary">
+                      {r.ot_week_mode === "disable_ot" ? "Disabled (week)" : "—"}
+                    </Typography>
+                  )}
                 </TableCell>
                 <TableCell
                   sx={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
@@ -1698,7 +1844,7 @@ export default function PayrollTimeRecordsPanel({
               : "Use employee default"}
             {" "}
             applies to this time record only. Hours stay as entered. An approved record must be
-            approved again before it can enter payroll.
+            approved again before it can enter payroll. Rate is not changed by classification.
           </Typography>
           <TextField
             label="Reason (optional)"
@@ -1716,6 +1862,72 @@ export default function PayrollTimeRecordsPanel({
           </Button>
           <Button variant="contained" onClick={saveClassification} disabled={classBusy}>
             {classBusy ? "Saving…" : "Save classification"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={!!rateEdit?.confirm}
+        onClose={() => !rateBusy && setRateEdit(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Session rate override</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 1.5 }}>
+            {String(rateEdit?.value ?? "").trim() === ""
+              ? "Clear the override and use the employee/profile rate for this session."
+              : `Set this session to $${Number(rateEdit?.value || 0).toFixed(2)}/hr. Role segments inherit this rate. Classification is unchanged.`}
+            {" "}
+            An approved record must be approved again before it can enter payroll.
+          </Typography>
+          <TextField
+            label="Reason (optional)"
+            value={rateEdit?.reason || ""}
+            onChange={(e) =>
+              setRateEdit((prev) => (prev ? { ...prev, reason: e.target.value } : prev))
+            }
+            fullWidth
+            size="small"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRateEdit(null)} disabled={rateBusy}>
+            Cancel
+          </Button>
+          <Button variant="contained" onClick={saveRateOverride} disabled={rateBusy}>
+            {rateBusy ? "Saving…" : "Save rate"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={!!otEdit} onClose={() => !otBusy && setOtEdit(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>Overtime for payroll week</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 1.5 }}>
+            {otEdit?.value === "disable_ot"
+              ? "Disable OT for this employee’s payroll week. All eligible hours stay straight-time at each session’s rate."
+              : "Restore standard weekly overtime for this employee’s payroll week."}
+            {" "}
+            Approvals for this employee’s sessions in that week will be cleared and must be
+            reapproved before rebuilding.
+          </Typography>
+          <TextField
+            label="Reason (optional)"
+            value={otEdit?.reason || ""}
+            onChange={(e) =>
+              setOtEdit((prev) => (prev ? { ...prev, reason: e.target.value } : prev))
+            }
+            fullWidth
+            size="small"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOtEdit(null)} disabled={otBusy}>
+            Cancel
+          </Button>
+          <Button variant="contained" onClick={saveOtWeek} disabled={otBusy}>
+            {otBusy ? "Saving…" : "Save overtime setting"}
           </Button>
         </DialogActions>
       </Dialog>

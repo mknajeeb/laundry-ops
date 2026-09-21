@@ -5920,6 +5920,71 @@ def payroll_time_record_classification_override(rid):
         conn.close()
 
 
+@ta_bp.route("/payroll/time-records/<int:rid>/rate-override", methods=["POST"])
+@require_auth
+@require_any_perm("ta.settings", "ta.override", "users.edit")
+def payroll_time_record_rate_override(rid):
+    """Set or clear a session hourly rate override. Independent of classification."""
+    conn = get_db()
+    try:
+        from backend.payroll_session_rate import set_session_payroll_rate_override
+
+        body = request.json or {}
+        if "payroll_rate_override" in body:
+            value = body.get("payroll_rate_override")
+        else:
+            value = body.get("rate_override")
+        rec = set_session_payroll_rate_override(
+            conn,
+            _tenant_id(),
+            rid,
+            value=value,
+            actor_id=g.ta_user["id"],
+            reason=body.get("reason"),
+        )
+        return jsonify(rec)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_time_record_rate_override failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/employee-week-ot-override", methods=["POST"])
+@require_auth
+@require_any_perm("ta.settings", "ta.override", "users.edit")
+def payroll_employee_week_ot_override():
+    """Set employee-week OT mode (default | disable_ot). One setting per payroll week."""
+    conn = get_db()
+    try:
+        from backend.payroll_week_ot import set_employee_week_ot_override
+
+        body = request.json or {}
+        user_id = body.get("user_id")
+        week_start = body.get("payroll_week_start") or body.get("week_start")
+        if user_id is None or not week_start:
+            return jsonify({"error": "user_id and payroll_week_start are required"}), 400
+        rec = set_employee_week_ot_override(
+            conn,
+            _tenant_id(),
+            int(user_id),
+            week_start,
+            ot_mode=body.get("ot_mode") or body.get("overtime") or "default",
+            actor_id=g.ta_user["id"],
+            reason=body.get("reason"),
+        )
+        return jsonify(rec)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_employee_week_ot_override failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/time-records/<int:rid>/save", methods=["POST"])
 @require_auth
 @require_any_perm("ta.settings", "ta.override", "users.edit")

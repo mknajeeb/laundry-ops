@@ -313,6 +313,12 @@ def list_time_records(
         if has_class_override
         else ", NULL AS payroll_classification_override"
     )
+    has_rate_override = table_has_column(chk, "shift_sessions", "payroll_rate_override")
+    rate_override_sel = (
+        ", s.payroll_rate_override"
+        if has_rate_override
+        else ", NULL AS payroll_rate_override"
+    )
     review_sel = ", pc.review_state AS payroll_cycle_review_state" if has_review else ""
     jt_cols = []
     for col in (
@@ -334,7 +340,7 @@ def list_time_records(
     q = f"""
         SELECT s.id, s.user_id, s.clock_in_at, s.clock_out_at, s.status,
                s.total_break_seconds, s.net_work_seconds
-               {override_sel}{hours_approved_sel}{class_sel}{remarks_sel}{jt_sel},
+               {override_sel}{hours_approved_sel}{class_sel}{rate_override_sel}{remarks_sel}{jt_sel},
                pp.first_name, pp.last_name
                {review_sel}
         FROM shift_sessions s
@@ -364,6 +370,18 @@ def list_time_records(
     uids = sorted({int(r["user_id"]) for r in rows if r.get("user_id") is not None})
     lookup = build_payroll_list_lookup_cache(conn, int(organization_id), uids)
 
+    from backend.payroll_identity import payroll_week_bounds
+    from backend.payroll_session_rate import resolve_session_hourly_rate
+    from backend.payroll_week_ot import OT_MODE_DEFAULT, load_employee_week_ot_modes
+
+    week_starts: list = []
+    for row in rows:
+        work_day = _session_work_date_et(row.get("clock_in_at"))
+        if work_day:
+            ws, _ = payroll_week_bounds(conn, work_day, int(organization_id))
+            week_starts.append(ws)
+    ot_modes = load_employee_week_ot_modes(conn, int(organization_id), uids, week_starts)
+
     for row in rows:
         uid = int(row["user_id"])
         rate_info = lookup.rate_for(uid)
@@ -376,6 +394,16 @@ def list_time_records(
         )
         if worker_category and worker_category != "all" and cat != worker_category:
             continue
+        profile_rate = rate_info.get("hourly_rate")
+        resolved_rate, rate_source, rate_override = resolve_session_hourly_rate(
+            profile_rate, row.get("payroll_rate_override")
+        )
+        payroll_week_start = None
+        ot_week_mode = OT_MODE_DEFAULT
+        if work_day:
+            ws, _ = payroll_week_bounds(conn, work_day, int(organization_id))
+            payroll_week_start = ws.isoformat()
+            ot_week_mode = ot_modes.get((uid, payroll_week_start), OT_MODE_DEFAULT)
         net = int(row.get("net_work_seconds") or 0)
         approved_sec = net
         rec = {
@@ -389,6 +417,12 @@ def list_time_records(
             "payroll_classification_override": (
                 cat if class_source == "record_override" else None
             ),
+            "payroll_rate_override": float(rate_override) if rate_override is not None else None,
+            "resolved_hourly_rate": float(resolved_rate) if resolved_rate > 0 else None,
+            "profile_hourly_rate": float(profile_rate) if profile_rate else None,
+            "rate_source": rate_source,
+            "payroll_week_start": payroll_week_start,
+            "ot_week_mode": ot_week_mode,
             "work_date": work_day.isoformat() if work_day else str(row.get("clock_in_at") or "")[:10],
             "clock_in_at": row.get("clock_in_at"),
             "clock_out_at": row.get("clock_out_at"),
@@ -396,9 +430,8 @@ def list_time_records(
             "total_hours_display": format_hours_display(net),
             "approved_hours": round(approved_sec / 3600, 2),
             "approved_hours_display": format_hours_display(approved_sec),
-            "hourly_rate": rate_info.get("hourly_rate"),
-            "rate_source": rate_info.get("rate_source"),
-            "rate_missing": bool(rate_info.get("rate_missing")),
+            "hourly_rate": float(resolved_rate) if resolved_rate > 0 else rate_info.get("hourly_rate"),
+            "rate_missing": bool(resolved_rate <= 0),
             "status": time_record_status(row),
             "notes": row.get("period_adjustment_remarks") or "",
             "payroll_hours_approved": bool(row.get("payroll_hours_approved")),
@@ -2653,6 +2686,11 @@ def build_batch_from_time_records(
         resolve_overtime_rate,
         weekly_ot_policy_category,
     )
+    from backend.payroll_session_rate import resolve_session_hourly_rate
+    from backend.payroll_week_ot import (
+        OT_MODE_DISABLE,
+        write_line_ot_week_snapshot,
+    )
     from backend.payroll_workflow import resolve_rate_for_batch_line
 
     by_user: dict[int, list] = {}
@@ -2660,24 +2698,57 @@ def build_batch_from_time_records(
         by_user.setdefault(int(rec["user_id"]), []).append(rec)
     wrote = False
     for uid, recs in by_user.items():
-        rate = resolve_rate_for_batch_line(conn, organization_id, uid)
+        profile_rate = resolve_rate_for_batch_line(conn, organization_id, uid)
+        for rec in recs:
+            resolved, source, ov = resolve_session_hourly_rate(
+                rec.get("profile_hourly_rate")
+                if rec.get("profile_hourly_rate") is not None
+                else profile_rate,
+                rec.get("payroll_rate_override"),
+            )
+            # Prefer already-resolved list_time_records values when present.
+            if rec.get("resolved_hourly_rate") is None:
+                rec["resolved_hourly_rate"] = float(resolved) if resolved > 0 else float(profile_rate or 0)
+                rec["rate_source"] = source
+                if ov is not None:
+                    rec["payroll_rate_override"] = float(ov)
+            if rec.get("profile_hourly_rate") is None and profile_rate:
+                rec["profile_hourly_rate"] = float(profile_rate)
+            if not rec.get("hourly_rate"):
+                rec["hourly_rate"] = rec.get("resolved_hourly_rate") or profile_rate
         policy = resolve_batch_overtime_policy(
             conn, organization_id, weekly_ot_policy_category(recs)
+        )
+        week_ot_enabled: dict[str, bool] = {}
+        for rec in recs:
+            ws = str(rec.get("payroll_week_start") or "")[:10]
+            if not ws:
+                continue
+            if rec.get("ot_week_mode") == OT_MODE_DISABLE:
+                week_ot_enabled[ws] = False
+            else:
+                week_ot_enabled.setdefault(ws, bool(policy["enabled"]))
+        any_rate = any(
+            float(r.get("resolved_hourly_rate") or r.get("hourly_rate") or 0) > 0 for r in recs
         )
         payloads = aggregate_classified_batch_lines(
             recs,
             batch_category=str(batch["worker_category"]),
             threshold_hours=policy["threshold_hours"],
-            ot_enabled=bool(policy["enabled"]) and float(rate or 0) > 0,
+            ot_enabled=bool(policy["enabled"]) and any_rate,
+            week_ot_enabled=week_ot_enabled if week_ot_enabled else None,
         )
         for agg in payloads:
+            rate = float(agg.get("rate") or 0)
+            if rate <= 0:
+                rate = float(profile_rate or 0)
             ot_rate = (
                 float(
                     resolve_overtime_rate(
                         rate, multiplier=policy["multiplier"]
                     )
                 )
-                if float(agg["ot_hours"]) > 0
+                if float(agg["ot_hours"]) > 0 and rate > 0
                 else 0.0
             )
             created = add_payout_batch_line(
@@ -2700,6 +2771,9 @@ def build_batch_from_time_records(
             if created.get("id") is not None:
                 write_line_classification_provenance(
                     conn, int(created["id"]), agg["classification_provenance"]
+                )
+                write_line_ot_week_snapshot(
+                    conn, int(created["id"]), agg.get("ot_week_override_snapshot")
                 )
             wrote = True
     if not wrote:

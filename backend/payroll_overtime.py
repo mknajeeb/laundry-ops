@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any, Optional
+from typing import Any, Optional  # noqa: F401 — Optional used by week OT helpers
 
 DEFAULT_OT_THRESHOLD = Decimal("40")
 DEFAULT_OT_MULTIPLIER = Decimal("1.5")
@@ -355,6 +355,9 @@ def allocate_session_overtime(
 
     Returns session id -> (regular_hours, ot_hours). Hours stay on the session
     that worked them. Callers filter by classification after this split.
+
+    When ``enabled`` is False (employee-week disable_ot), all hours stay regular.
+    Do not invent a second OT calculator — callers feed week overrides here.
     """
     ordered = sorted(sessions or [], key=_session_sort_key)
     running = Decimal("0")
@@ -385,56 +388,133 @@ def allocate_session_overtime(
     return out
 
 
+def allocate_session_overtime_by_week(
+    sessions: list[dict],
+    *,
+    threshold: Any = DEFAULT_OT_THRESHOLD,
+    week_ot_enabled: Optional[dict[str, bool]] = None,
+    default_enabled: bool = True,
+) -> dict[int, tuple[Decimal, Decimal]]:
+    """Allocate OT per payroll week using the existing chronological calculator.
+
+    ``week_ot_enabled`` maps payroll_week_start ISO date -> enabled flag.
+    Sessions without a week key use ``default_enabled``.
+    """
+    by_week: dict[str, list[dict]] = {}
+    for rec in sessions or []:
+        ws = rec.get("payroll_week_start") or ""
+        if hasattr(ws, "isoformat"):
+            ws = ws.isoformat()
+        ws = str(ws)[:10] if ws else "_default"
+        by_week.setdefault(ws, []).append(rec)
+    out: dict[int, tuple[Decimal, Decimal]] = {}
+    flags = week_ot_enabled or {}
+    for ws, recs in by_week.items():
+        enabled = flags.get(ws, default_enabled) if ws != "_default" else default_enabled
+        out.update(
+            allocate_session_overtime(recs, threshold=threshold, enabled=bool(enabled))
+        )
+    return out
+
+
+def _session_resolved_rate(rec: dict) -> Decimal:
+    if rec.get("resolved_hourly_rate") is not None and str(rec.get("resolved_hourly_rate")).strip() != "":
+        return _q2(rec.get("resolved_hourly_rate"))
+    if rec.get("hourly_rate") is not None:
+        return _q2(rec.get("hourly_rate"))
+    return Decimal("0.00")
+
+
 def aggregate_classified_batch_lines(
     records: list[dict],
     *,
     batch_category: str,
     threshold_hours: Any = DEFAULT_OT_THRESHOLD,
     ot_enabled: bool = True,
+    week_ot_enabled: Optional[dict[str, bool]] = None,
 ) -> list[dict]:
-    """One payout-line payload per user for sessions in ``batch_category``.
+    """Payout-line payload(s) per user for sessions in ``batch_category``.
 
-    Overtime is allocated across every session in ``records`` first, including
-    other classifications, then only this category's regular/OT hours are kept.
+    Overtime is allocated across every session in ``records`` first (optionally
+    per payroll week when ``week_ot_enabled`` is provided), including other
+    classifications, then only this category's regular/OT hours are kept.
+
+    Sessions with different resolved rates become separate lines so each session
+    rate is frozen — never blended.
     """
     by_user: dict[int, list[dict]] = {}
     for rec in records or []:
         by_user.setdefault(int(rec["user_id"]), []).append(rec)
     lines = []
     for uid, recs in by_user.items():
-        alloc = allocate_session_overtime(
-            recs, threshold=threshold_hours, enabled=ot_enabled
-        )
+        if week_ot_enabled is not None:
+            alloc = allocate_session_overtime_by_week(
+                recs,
+                threshold=threshold_hours,
+                week_ot_enabled=week_ot_enabled,
+                default_enabled=ot_enabled,
+            )
+        else:
+            alloc = allocate_session_overtime(
+                recs, threshold=threshold_hours, enabled=ot_enabled
+            )
         matched = [
             r for r in sorted(recs, key=_session_sort_key) if r.get("worker_category") == batch_category
         ]
         if not matched:
             continue
-        regular = Decimal("0")
-        ot = Decimal("0")
-        provenance = []
-        session_ids = []
+        by_rate: dict[str, list[dict]] = {}
         for rec in matched:
-            sid = int(rec["id"])
-            reg_h, ot_h = alloc.get(sid, (Decimal("0.00"), Decimal("0.00")))
-            regular += reg_h
-            ot += ot_h
-            session_ids.append(sid)
-            provenance.append(
+            rate = _session_resolved_rate(rec)
+            by_rate.setdefault(f"{rate:.2f}", []).append(rec)
+        for rate_key, rate_recs in by_rate.items():
+            regular = Decimal("0")
+            ot = Decimal("0")
+            provenance = []
+            session_ids = []
+            rate = _q2(rate_key)
+            ot_week_modes = set()
+            for rec in rate_recs:
+                sid = int(rec["id"])
+                reg_h, ot_h = alloc.get(sid, (Decimal("0.00"), Decimal("0.00")))
+                regular += reg_h
+                ot += ot_h
+                session_ids.append(sid)
+                mode = rec.get("ot_week_mode") or "default"
+                ot_week_modes.add(str(mode))
+                provenance.append(
+                    {
+                        "shift_session_id": sid,
+                        "worker_category": rec.get("worker_category"),
+                        "classification_source": rec.get("classification_source") or "profile",
+                        "resolved_rate": float(rate),
+                        "rate_source": rec.get("rate_source") or "profile",
+                        "profile_rate": (
+                            float(_q2(rec["profile_hourly_rate"]))
+                            if rec.get("profile_hourly_rate") is not None
+                            else None
+                        ),
+                        "payroll_rate_override": (
+                            float(_q2(rec["payroll_rate_override"]))
+                            if rec.get("payroll_rate_override") is not None
+                            else None
+                        ),
+                        "ot_week_mode": mode,
+                        "payroll_week_start": rec.get("payroll_week_start"),
+                    }
+                )
+            # Prefer disable_ot snapshot when any contributing session had it.
+            ot_snap = "disable_ot" if "disable_ot" in ot_week_modes else "default"
+            lines.append(
                 {
-                    "shift_session_id": sid,
-                    "worker_category": rec.get("worker_category"),
-                    "classification_source": rec.get("classification_source") or "profile",
+                    "user_id": uid,
+                    "worker_name": rate_recs[0].get("worker_name") or "",
+                    "approved_hours": float(_q2(regular)),
+                    "ot_hours": float(_q2(ot)),
+                    "rate": float(rate),
+                    "session_ids": session_ids,
+                    "classification_provenance": provenance,
+                    "ot_week_override_snapshot": ot_snap,
                 }
             )
-        lines.append(
-            {
-                "user_id": uid,
-                "worker_name": matched[0].get("worker_name") or "",
-                "approved_hours": float(_q2(regular)),
-                "ot_hours": float(_q2(ot)),
-                "session_ids": session_ids,
-                "classification_provenance": provenance,
-            }
-        )
     return lines

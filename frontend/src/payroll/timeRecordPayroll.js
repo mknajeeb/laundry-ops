@@ -100,44 +100,61 @@ export function enrichTimeRecords(rows = [], rateMap = {}, { userId = "" } = {})
   let totalOtCost = 0;
 
   for (const [uid, userRows] of Object.entries(byUser)) {
-    const rateInfo = rateMap[uid] || {};
-    const regRate = Number(rateInfo.regular_rate || 0);
-    const otRate = Number(rateInfo.ot_rate || 0);
-    const otEnabled = !!rateInfo.ot_enabled;
-    const otThreshold = Number(rateInfo.ot_threshold || DEFAULT_OT_THRESHOLD);
+    const fallback = rateMap[uid] || {};
+    // Group by payroll week so disable_ot only affects that week.
+    const byWeek = {};
+    for (const r of userRows) {
+      const ws = r.payroll_week_start || "_";
+      if (!byWeek[ws]) byWeek[ws] = [];
+      byWeek[ws].push(r);
+    }
 
-    const sorted = [...userRows].sort((a, b) =>
-      String(a.clock_in_at || "").localeCompare(String(b.clock_in_at || "")),
-    );
-    let cumulative = 0;
+    for (const weekRows of Object.values(byWeek)) {
+      const sorted = [...weekRows].sort((a, b) =>
+        String(a.clock_in_at || "").localeCompare(String(b.clock_in_at || "")),
+      );
+      const weekOtDisabled = sorted.some((r) => r.ot_week_mode === "disable_ot");
+      const otThreshold = Number(fallback.ot_threshold || DEFAULT_OT_THRESHOLD);
+      let cumulative = 0;
 
-    for (const r of sorted) {
-      const hrs = Number(r.approved_hours || 0);
-      let regH = hrs;
-      let otH = 0;
-      if (otEnabled && regRate > 0) {
-        const room = Math.max(0, otThreshold - cumulative);
-        regH = Math.min(hrs, room);
-        otH = Math.max(0, hrs - regH);
+      for (const r of sorted) {
+        const hrs = Number(r.approved_hours || 0);
+        const regRate = Number(
+          r.resolved_hourly_rate ?? r.hourly_rate ?? fallback.regular_rate ?? 0,
+        );
+        const multiplier = Number(
+          (fallback.ot_rate && fallback.regular_rate
+            ? fallback.ot_rate / fallback.regular_rate
+            : null) || DEFAULT_OT_MULTIPLIER,
+        );
+        const otRate = regRate > 0 ? regRate * multiplier : 0;
+        const otEnabled = !weekOtDisabled && regRate > 0;
+        let regH = hrs;
+        let otH = 0;
+        if (otEnabled) {
+          const room = Math.max(0, otThreshold - cumulative);
+          regH = Math.min(hrs, room);
+          otH = Math.max(0, hrs - regH);
+        }
+        cumulative += hrs;
+        const baseCost = regRate > 0 ? (regH + otH) * regRate : 0;
+        const otPremium =
+          otEnabled && otRate > 0 && regRate > 0 ? otH * Math.max(0, otRate - regRate) : 0;
+        const rowTotal = baseCost + otPremium;
+        totalRegularCost += baseCost;
+        totalOtCost += otPremium;
+        economicsById[r.id] = {
+          regular_rate: regRate > 0 ? regRate : null,
+          ot_rate: otEnabled && otRate > 0 ? otRate : null,
+          regular_cost: baseCost,
+          ot_cost: otPremium,
+          ot_premium: otPremium,
+          row_total: rowTotal,
+          worker_period_hours: workerTotals[uid] || 0,
+          hours_level: workerHoursLevel(workerTotals[uid]),
+          ot_week_disabled: weekOtDisabled,
+        };
       }
-      cumulative += hrs;
-      // Base earnings include OT hours at the regular rate; ot_cost is premium only.
-      const baseCost = regRate > 0 ? (regH + otH) * regRate : 0;
-      const otPremium =
-        otEnabled && otRate > 0 && regRate > 0 ? otH * Math.max(0, otRate - regRate) : 0;
-      const rowTotal = baseCost + otPremium;
-      totalRegularCost += baseCost;
-      totalOtCost += otPremium;
-      economicsById[r.id] = {
-        regular_rate: rateInfo.regular_rate,
-        ot_rate: rateInfo.ot_rate,
-        regular_cost: baseCost,
-        ot_cost: otPremium,
-        ot_premium: otPremium,
-        row_total: rowTotal,
-        worker_period_hours: workerTotals[uid] || 0,
-        hours_level: workerHoursLevel(workerTotals[uid]),
-      };
     }
   }
 
@@ -151,6 +168,7 @@ export function enrichTimeRecords(rows = [], rateMap = {}, { userId = "" } = {})
       row_total: 0,
       worker_period_hours: workerTotals[String(r.user_id)] || 0,
       hours_level: workerHoursLevel(workerTotals[String(r.user_id)]),
+      ot_week_disabled: r.ot_week_mode === "disable_ot",
     }),
   }));
 

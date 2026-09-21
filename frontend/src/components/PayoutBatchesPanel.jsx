@@ -296,6 +296,14 @@ const BatchWorkerTable = memo(function BatchWorkerTable({
                             : ""}
                           · ${Number(ln.rate || 0).toFixed(2)}/hr
                         </Typography>
+                        {ln.ot_week_override_snapshot === "disable_ot" ? (
+                          <Chip
+                            size="small"
+                            color="warning"
+                            label="OT disabled for this payroll week"
+                            sx={{ height: 22, fontSize: 11 }}
+                          />
+                        ) : null}
                         <Typography variant="caption" color="text.secondary">
                           {linePaymentHint(ln)}
                         </Typography>

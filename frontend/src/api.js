@@ -1702,6 +1702,15 @@ export const postPayrollClassificationOverride = (recordId, body) =>
     body,
   );
 
+export const postPayrollRateOverride = (recordId, body) =>
+  axios.post(
+    `${API_BASE}/api/ta/payroll/time-records/${recordId}/rate-override`,
+    body,
+  );
+
+export const postPayrollEmployeeWeekOtOverride = (body) =>
+  axios.post(`${API_BASE}/api/ta/payroll/employee-week-ot-override`, body);
+
 export const postBulkApprovePayrollTimeRecords = (body) =>
   axios.post(`${API_BASE}/api/ta/payroll/time-records/bulk-approve`, body);
 
