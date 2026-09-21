@@ -1848,6 +1848,15 @@ export const getWorkerPayments = (params) =>
 export const getPayoutBatches = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/payout-batches`, { params });
 
+export const getPayrollAnalysisWeekAvailability = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/analysis-week-availability`, { params });
+
+export const postPayrollAnalysisWeekAvailability = (body) =>
+  axios.post(`${API_BASE}/api/ta/payroll/analysis-week-availability`, body);
+
+export const deletePayrollAnalysisWeekAvailability = (body) =>
+  axios.delete(`${API_BASE}/api/ta/payroll/analysis-week-availability`, { data: body });
+
 export const getPayrollReport = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/report`, { params });
 

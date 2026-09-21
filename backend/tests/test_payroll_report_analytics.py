@@ -1065,33 +1065,19 @@ def test_period_completeness_by_batch_terminal_status():
     }
 
 
-def test_list_org_periods_complete_sql_filters_open_batches():
-    """SQL path for terminal periods uses terminal/finalized HAVING clause."""
+def test_list_org_periods_complete_uses_manual_availability():
+    """require_complete=True uses manual availability rows, not terminal HAVING."""
+    from unittest.mock import MagicMock, patch
+
     from backend.payroll_report_analytics import list_org_periods_asc
 
-    captured = {}
-
-    class _Cur:
-        def execute(self, sql, params=None):
-            captured["sql"] = sql
-            captured["params"] = params
-
-        def fetchall(self):
-            return [
-                {"pay_period_start": "2026-06-01", "pay_period_end": "2026-06-07"},
-            ]
-
-    class _Conn:
-        def cursor(self, dictionary=False):
-            return _Cur()
-
-    # Skip coverage post-filter so this unit test only asserts the SQL gate.
-    periods = list_org_periods_asc(
-        _Conn(), 3, require_complete=True, require_work_coverage=False
-    )
+    with patch(
+        "backend.payroll_analysis_week_availability.list_available_analysis_weeks_asc",
+        return_value=[("2026-06-01", "2026-06-07")],
+    ) as mock_list:
+        periods = list_org_periods_asc(
+            MagicMock(), 3, require_complete=True, require_work_coverage=False
+        )
     assert periods == [("2026-06-01", "2026-06-07")]
-    sql = captured["sql"].lower()
-    assert "payout_details_finalized_at is not null" in sql
-    assert "'paid'" in sql and "'closed'" in sql
-    assert "worker_category = 'w2'" not in sql
-    assert captured["params"] == (3,)
+    mock_list.assert_called_once()
+    assert mock_list.call_args[0][1] == 3

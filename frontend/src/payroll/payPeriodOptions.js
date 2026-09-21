@@ -47,10 +47,15 @@ function periodKey(start, end) {
 const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /** "Sep 7" — deterministic, not locale-dependent. */
-function formatMonthDayLabel(ymd) {
+export function formatMonthDayLabel(ymd) {
   const [y, m, d] = String(ymd || "").split("-").map((x) => parseInt(x, 10));
   if (!y || !m || !d || m < 1 || m > 12) return String(ymd || "");
   return `${MONTH_SHORT[m - 1]} ${d}`;
+}
+
+/** Week label for Analysis availability, e.g. "Sep 7–Sep 13". */
+export function formatPayrollWeekLabel(start, end) {
+  return `${formatMonthDayLabel(normPayPeriodYmd(start))}\u2013${formatMonthDayLabel(normPayPeriodYmd(end))}`;
 }
 
 /** Select value for one canonical payout batch. Never a pay-period key. */

@@ -6568,6 +6568,56 @@ def payroll_payout_batch_detail(batch_id):
         conn.close()
 
 
+@ta_bp.route("/payroll/analysis-week-availability", methods=["GET", "POST", "DELETE"])
+@require_auth
+@require_any_perm("ta.settings", "ta.override", "users.edit")
+def payroll_analysis_week_availability():
+    """Manual week visibility for Payroll Analysis. Does not mutate batches."""
+    conn = get_db()
+    try:
+        from backend.payroll_analysis_week_availability import (
+            get_week_analysis_availability,
+            set_week_analysis_availability,
+        )
+
+        oid = _tenant_id()
+        if request.method == "GET":
+            ps = request.args.get("pay_period_start") or request.args.get("start")
+            pe = request.args.get("pay_period_end") or request.args.get("end")
+            if not ps or not pe:
+                return jsonify({"error": "pay_period_start and pay_period_end are required"}), 400
+            return jsonify(get_week_analysis_availability(conn, oid, ps, pe))
+
+        body = request.get_json(silent=True) or {}
+        ps = body.get("pay_period_start") or body.get("start") or request.args.get("pay_period_start")
+        pe = body.get("pay_period_end") or body.get("end") or request.args.get("pay_period_end")
+        if not ps or not pe:
+            return jsonify({"error": "pay_period_start and pay_period_end are required"}), 400
+        available = request.method == "POST"
+        if request.method == "DELETE":
+            available = False
+        elif "analysis_available" in body:
+            available = bool(body.get("analysis_available"))
+        elif body.get("action") == "remove":
+            available = False
+        rec = set_week_analysis_availability(
+            conn,
+            oid,
+            ps,
+            pe,
+            available=available,
+            actor_id=g.ta_user["id"],
+        )
+        return jsonify(rec)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_analysis_week_availability failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/payout-batches/accountant-queue", methods=["GET"])
 @require_auth
 @require_any_perm("ta.settings", "users.view", "users.edit")

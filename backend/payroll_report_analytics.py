@@ -35,13 +35,14 @@ KPI_DEFS = (
     ("avg_cost_per_hour", "Average Employer Cost / Hour", "money"),
 )
 
-# Periods appear in pickers / comparison only when every batch for that
-# period is terminal (paid/closed) or details-finalized — category mix
-# does not matter (W-2-only or Temp-only weeks are valid).
+# Periods appear in Analysis pickers / comparison only when a manager has
+# explicitly marked the payroll week available (payroll_analysis_week_availability).
+# Batch-level terminal/finalized rules still govern which batch lines contribute
+# to totals; they no longer hide an entire week.
 # Historical *complete* also requires all payroll-eligible approved work
 # for the work period to be represented on an effective batch (see
-# payroll_period_coverage). Terminal-but-uncovered periods stay visible
-# as Incomplete / payroll pending.
+# payroll_period_coverage). Manually available but uncovered/incomplete periods
+# stay visible as Incomplete / payroll pending.
 TERMINAL_BATCH_STATUSES = frozenset({"paid", "closed"})
 
 COMPLETENESS_COMPLETE = "complete"
@@ -949,38 +950,23 @@ def list_org_periods_asc(
 ) -> list[tuple[str, str]]:
     """Distinct payroll periods ascending.
 
-    When require_complete is True (default), only periods where every
-    payout batch is paid, closed, or details-finalized are returned.
+    When require_complete is True (default for Analysis period mode), only
+    weeks the manager has marked available in Analysis are returned.
+    Batch terminal status is no longer the week-visibility authority.
+
+    When require_complete is False, every distinct batch week is returned.
 
     When require_work_coverage is True, also require every payroll-eligible
     approved clock for the work period to sit on an effective batch.
-    Default False: terminal-but-uncovered periods remain listable so the UI
-    can show Incomplete / payroll pending (analytics attaches that flag).
     """
-    c = conn.cursor(dictionary=True)
     if require_complete:
-        c.execute(
-            """
-            SELECT pay_period_start, pay_period_end
-            FROM payout_batches
-            WHERE organization_id = %s
-              AND pay_period_start IS NOT NULL
-              AND pay_period_end IS NOT NULL
-            GROUP BY pay_period_start, pay_period_end
-            HAVING COUNT(*) > 0
-               AND SUM(
-                     CASE
-                       WHEN LOWER(COALESCE(status, '')) IN ('paid', 'closed')
-                         OR payout_details_finalized_at IS NOT NULL
-                       THEN 0
-                       ELSE 1
-                     END
-                   ) = 0
-            ORDER BY pay_period_start ASC, pay_period_end ASC
-            """,
-            (int(organization_id),),
+        from backend.payroll_analysis_week_availability import (
+            list_available_analysis_weeks_asc,
         )
+
+        out = list_available_analysis_weeks_asc(conn, organization_id)
     else:
+        c = conn.cursor(dictionary=True)
         c.execute(
             """
             SELECT DISTINCT pay_period_start, pay_period_end
@@ -992,12 +978,12 @@ def list_org_periods_asc(
             """,
             (int(organization_id),),
         )
-    out = []
-    for r in c.fetchall() or []:
-        ps = str(r["pay_period_start"])[:10]
-        pe = str(r["pay_period_end"])[:10]
-        if ps and pe:
-            out.append((ps, pe))
+        out = []
+        for r in c.fetchall() or []:
+            ps = str(r["pay_period_start"])[:10]
+            pe = str(r["pay_period_end"])[:10]
+            if ps and pe:
+                out.append((ps, pe))
     if require_work_coverage and out:
         from backend.payroll_period_coverage import filter_periods_with_full_work_coverage
 
@@ -1010,17 +996,30 @@ def build_period_completeness_map(
     organization_id: int,
     periods: list[tuple[str, str]],
 ) -> dict[tuple[str, str], dict[str, Any]]:
-    """Map work periods → completeness flags (batches assumed terminal)."""
+    """Map work periods → completeness flags (checks live batch terminal status)."""
     from backend.payroll_period_coverage import period_completeness_status
 
     out: dict[tuple[str, str], dict[str, Any]] = {}
+    c = conn.cursor(dictionary=True)
     for ps, pe in periods or []:
+        c.execute(
+            """
+            SELECT status, payout_details_finalized_at
+            FROM payout_batches
+            WHERE organization_id=%s
+              AND pay_period_start=%s
+              AND pay_period_end=%s
+            """,
+            (int(organization_id), str(ps)[:10], str(pe)[:10]),
+        )
+        batches = c.fetchall() or []
+        terminal = period_batches_are_complete(batches)
         out[(ps, pe)] = period_completeness_status(
             conn,
             organization_id,
             ps,
             pe,
-            batches_terminal=True,
+            batches_terminal=terminal,
         )
     return out
 
@@ -1219,7 +1218,7 @@ def build_report_analytics(
             focus_metrics = aggregate_period_metrics(detail_rows)
             analytics_rows = list(detail_rows)
     else:
-        # Period mode — terminal batches + eligible-work coverage (selected window only)
+        # Period mode — manually available weeks (batch calc eligibility unchanged)
         terminal_periods = list_org_periods_asc(
             conn,
             organization_id,

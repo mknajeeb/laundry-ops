@@ -44,6 +44,8 @@ import {
   unfinalizeAndDeletePayoutBatch,
   getPayoutBatch,
   getPayoutBatches,
+  getPayrollAnalysisWeekAvailability,
+  postPayrollAnalysisWeekAvailability,
   patchPayoutBatch,
   postPayoutBatch,
 } from "../api";
@@ -52,7 +54,7 @@ import { ContractorPrintLetterhead } from "../contractorForms/ContractorPrintShe
 import { openPrintWindow } from "../contractorForms/contractorPrint";
 import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
 import { computeEarningsBreakdown } from "../payroll/payrollOtDisplay";
-import { normPayPeriodYmd } from "../payroll/payPeriodOptions";
+import { formatPayrollWeekLabel, normPayPeriodYmd } from "../payroll/payPeriodOptions";
 import {
   displayStatusColor,
   displayStatusLabel,
@@ -384,6 +386,90 @@ export default function PayoutBatchesPanel({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [moreAnchor, setMoreAnchor] = useState(null);
   const [taxDialog, setTaxDialog] = useState({ open: false, line: null, workerName: "" });
+  const [weekAnalysisAvail, setWeekAnalysisAvail] = useState(null);
+  const [weekAnalysisBusy, setWeekAnalysisBusy] = useState(false);
+
+  const weekPeriodStart = detail?.pay_period_start || payPeriodStart || "";
+  const weekPeriodEnd = detail?.pay_period_end || payPeriodEnd || "";
+  const weekLabel =
+    weekPeriodStart && weekPeriodEnd
+      ? formatPayrollWeekLabel(weekPeriodStart, weekPeriodEnd)
+      : "";
+
+  const loadWeekAnalysisAvailability = useCallback(async (ps, pe) => {
+    if (!ps || !pe) {
+      setWeekAnalysisAvail(null);
+      return;
+    }
+    try {
+      const res = await getPayrollAnalysisWeekAvailability({
+        pay_period_start: ps,
+        pay_period_end: pe,
+      });
+      setWeekAnalysisAvail(res.data || null);
+    } catch {
+      setWeekAnalysisAvail(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadWeekAnalysisAvailability(weekPeriodStart, weekPeriodEnd);
+  }, [weekPeriodStart, weekPeriodEnd, loadWeekAnalysisAvailability]);
+
+  const makeWeekAvailableInAnalysis = async () => {
+    if (!weekPeriodStart || !weekPeriodEnd) return;
+    if (
+      !window.confirm(
+        `Make ${weekLabel} available in Payroll Analysis?\n\n` +
+          "This only controls week visibility. Incomplete batches stay incomplete — " +
+          "Analysis will use currently eligible batch data only.",
+      )
+    ) {
+      return;
+    }
+    setWeekAnalysisBusy(true);
+    setError("");
+    try {
+      const res = await postPayrollAnalysisWeekAvailability({
+        pay_period_start: weekPeriodStart,
+        pay_period_end: weekPeriodEnd,
+        analysis_available: true,
+      });
+      setWeekAnalysisAvail(res.data);
+      setInfo(`${weekLabel} is now available in Payroll Analysis.`);
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Could not make week available");
+    } finally {
+      setWeekAnalysisBusy(false);
+    }
+  };
+
+  const removeWeekFromAnalysis = async () => {
+    if (!weekPeriodStart || !weekPeriodEnd) return;
+    if (
+      !window.confirm(
+        `Remove ${weekLabel} from Payroll Analysis?\n\n` +
+          "This only hides the week. Batches, payments, and approvals are not changed.",
+      )
+    ) {
+      return;
+    }
+    setWeekAnalysisBusy(true);
+    setError("");
+    try {
+      const res = await postPayrollAnalysisWeekAvailability({
+        pay_period_start: weekPeriodStart,
+        pay_period_end: weekPeriodEnd,
+        analysis_available: false,
+      });
+      setWeekAnalysisAvail(res.data);
+      setInfo(`${weekLabel} was removed from Payroll Analysis.`);
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Could not remove week from Analysis");
+    } finally {
+      setWeekAnalysisBusy(false);
+    }
+  };
 
   const loadList = useCallback(async () => {
     setError("");
@@ -943,6 +1029,55 @@ export default function PayoutBatchesPanel({
                   primaryLoading={actionLoading}
                 />
               </Box>
+
+              {weekPeriodStart && weekPeriodEnd ? (
+                <Paper
+                  variant="outlined"
+                  sx={{ p: 1.5, mb: 1.5, bgcolor: "action.hover" }}
+                >
+                  <Stack
+                    direction={{ xs: "column", sm: "row" }}
+                    spacing={1}
+                    alignItems={{ xs: "stretch", sm: "center" }}
+                    justifyContent="space-between"
+                  >
+                    <Box>
+                      <Typography variant="subtitle2">Payroll Analysis week</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        {weekLabel}
+                        {weekAnalysisAvail?.analysis_available
+                          ? " · Available in Analysis"
+                          : " · Not in Analysis"}
+                      </Typography>
+                    </Box>
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      {weekAnalysisAvail?.analysis_available ? (
+                        <>
+                          <Chip size="small" color="success" label="Available in Analysis" />
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            color="warning"
+                            disabled={weekAnalysisBusy}
+                            onClick={removeWeekFromAnalysis}
+                          >
+                            Remove Week from Analysis
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          size="small"
+                          variant="contained"
+                          disabled={weekAnalysisBusy}
+                          onClick={makeWeekAvailableInAnalysis}
+                        >
+                          Make Week Available in Analysis
+                        </Button>
+                      )}
+                    </Stack>
+                  </Stack>
+                </Paper>
+              ) : null}
 
               {batchWarnings.length ? (
                 <Stack spacing={0.5} sx={{ mb: 1.5 }}>
