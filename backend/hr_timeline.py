@@ -21,6 +21,7 @@ HR_TIMELINE_ENTRY_TYPES = frozenset(
         "management_note",
         "offer_letter",
         "position_confirmation_letter",
+        "employment_reference_letter",
     }
 )
 
@@ -36,6 +37,7 @@ HR_TIMELINE_ENTRY_TYPE_LABELS = {
     "management_note": "Management Note",
     "offer_letter": "Offer Letter",
     "position_confirmation_letter": "Position Confirmation Letter",
+    "employment_reference_letter": "Character and Employment Reference Letter",
 }
 
 HR_TIMELINE_CATEGORIES = frozenset(
@@ -286,6 +288,22 @@ def create_position_confirmation_timeline_entry(
     """Create a position confirmation letter timeline entry."""
     payload = dict(body or {})
     payload["entry_type"] = "position_confirmation_letter"
+    if not str(payload.get("description") or "").strip():
+        raise ValueError("description is required")
+    return create_hr_timeline_entry(conn, organization_id, user_id, payload, actor_id=actor_id)
+
+
+def create_employment_reference_timeline_entry(
+    conn,
+    organization_id: int,
+    user_id: int,
+    body: dict,
+    *,
+    actor_id: int,
+) -> dict:
+    """Create a character and employment reference letter timeline entry."""
+    payload = dict(body or {})
+    payload["entry_type"] = "employment_reference_letter"
     if not str(payload.get("description") or "").strip():
         raise ValueError("description is required")
     return create_hr_timeline_entry(conn, organization_id, user_id, payload, actor_id=actor_id)

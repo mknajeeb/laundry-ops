@@ -12,6 +12,10 @@ export const HR_TIMELINE_ENTRY_TYPES = [
   { id: "management_note", label: "Management Note" },
   { id: "offer_letter", label: "Offer Letter" },
   { id: "position_confirmation_letter", label: "Position Confirmation Letter" },
+  {
+    id: "employment_reference_letter",
+    label: "Character and Employment Reference Letter",
+  },
 ];
 
 export const HR_TIMELINE_CATEGORIES = [

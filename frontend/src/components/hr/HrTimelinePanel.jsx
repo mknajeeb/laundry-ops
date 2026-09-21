@@ -54,6 +54,7 @@ import {
 import { buildW2PrefillFromHrProfile } from "../../w2Forms/w2Prefill";
 import OfferLetterPrintDocument from "./OfferLetterPrintDocument";
 import PositionConfirmationLetterDialog from "./PositionConfirmationLetterDialog";
+import EmploymentReferenceLetterDialog from "./EmploymentReferenceLetterDialog";
 import { VEEWASH_BRAND } from "../../theme/veewashBrand";
 
 function chipColor(entryType) {
@@ -63,6 +64,7 @@ function chipColor(entryType) {
   if (entryType === "recognition") return "success";
   if (entryType === "offer_letter") return "primary";
   if (entryType === "position_confirmation_letter") return "primary";
+  if (entryType === "employment_reference_letter") return "primary";
   if (entryType === "management_note") return "default";
   return "default";
 }
@@ -107,6 +109,7 @@ export default function HrTimelinePanel({
   const [hrPrefill, setHrPrefill] = useState(null);
   const [offerOpen, setOfferOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [referenceOpen, setReferenceOpen] = useState(false);
   const [offerPreviewOpen, setOfferPreviewOpen] = useState(false);
   const [offerDraft, setOfferDraft] = useState(null);
   const offerPrintRef = useRef(null);
@@ -421,6 +424,9 @@ export default function HrTimelinePanel({
               </Button>
               <Button size="small" startIcon={<PrintIcon />} variant="outlined" onClick={() => setConfirmOpen(true)}>
                 Position confirmation
+              </Button>
+              <Button size="small" startIcon={<PrintIcon />} variant="outlined" onClick={() => setReferenceOpen(true)}>
+                Employment reference
               </Button>
               <Button size="small" startIcon={<EmailIcon />} onClick={() => setEmailOpen(true)}>
                 Send discipline email
@@ -818,6 +824,21 @@ export default function HrTimelinePanel({
       <PositionConfirmationLetterDialog
         open={confirmOpen}
         onClose={() => setConfirmOpen(false)}
+        userId={userId}
+        workerName={workerName}
+        workerEmail={workerEmail}
+        managerName={managerName}
+        hrPrefill={hrPrefill}
+        onLogged={load}
+        setError={setError}
+        setInfo={setInfo}
+        busy={busy}
+        setBusy={setBusy}
+      />
+
+      <EmploymentReferenceLetterDialog
+        open={referenceOpen}
+        onClose={() => setReferenceOpen(false)}
         userId={userId}
         workerName={workerName}
         workerEmail={workerEmail}
