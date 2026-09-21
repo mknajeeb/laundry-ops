@@ -19,6 +19,7 @@ import {
 /**
  * Pay period dropdown — recent weeks by default, optional expand for full history.
  * Merges payout batch periods so accountants see periods with existing batches.
+ * Period labels are week identity only (no Paid/Pending/Draft suffix).
  */
 export default function PayPeriodSelect({
   weekStartsOn = 0,
@@ -28,6 +29,7 @@ export default function PayPeriodSelect({
   batchId,
   onChange,
   batchStatusLabel,
+  analysisAvailableKeys = null,
   expanded = false,
   onExpandedChange,
   minWidth = 280,
@@ -41,8 +43,9 @@ export default function PayPeriodSelect({
         expanded,
         batchStatusLabel,
         batchOnly,
+        analysisAvailableKeys,
       }),
-    [weekStartsOn, batches, expanded, batchStatusLabel, batchOnly],
+    [weekStartsOn, batches, expanded, batchStatusLabel, batchOnly, analysisAvailableKeys],
   );
 
   const groups = useMemo(() => groupPayPeriodOptionsByYear(options), [options]);

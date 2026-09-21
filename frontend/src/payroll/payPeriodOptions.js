@@ -122,8 +122,20 @@ export function resolveAccountantBatchById(batches = [], batchId) {
   return batches.find((b) => String(b?.id) === id) || null;
 }
 
-/** Merge batch periods with generated weeks; dedupe by start|end. */
-export function mergePayPeriodOptions(generated = [], batches = [], batchStatusLabel) {
+/** Merge batch periods with generated weeks; dedupe by start|end.
+
+  Period labels are week identity only (e.g. "Mon, Sep 14 – Sun, Sep 20").
+  Never append Paid / Pending / Draft — those are batch-level statuses.
+
+  Optional week-level Analysis flag may append " · Available in Analysis"
+  when analysisAvailableKeys contains the period key.
+*/
+export function mergePayPeriodOptions(
+  generated = [],
+  batches = [],
+  _batchStatusLabel,
+  { analysisAvailableKeys = null } = {},
+) {
   const map = new Map();
   for (const o of generated) {
     map.set(o.key, { ...o, fromBatch: false, batchStatus: null });
@@ -133,11 +145,15 @@ export function mergePayPeriodOptions(generated = [], batches = [], batchStatusL
     const end = normPayPeriodYmd(b.pay_period_end);
     if (!start || !end) continue;
     const key = periodKey(start, end);
+    // _batchStatusLabel intentionally unused: period labels are not batch statuses.
+    const analysisAvailable =
+      analysisAvailableKeys instanceof Set
+        ? analysisAvailableKeys.has(key)
+        : Array.isArray(analysisAvailableKeys)
+          ? analysisAvailableKeys.includes(key)
+          : false;
     const baseLabel = formatWeekRangeLabel(start, end);
-    const status = batchStatusLabel
-      ? batchStatusLabel(b)
-      : b.payroll_display?.display_status_label || null;
-    const label = status ? `${baseLabel} · ${status}` : baseLabel;
+    const label = analysisAvailable ? `${baseLabel} · Available in Analysis` : baseLabel;
     map.set(key, {
       start,
       end,
@@ -145,7 +161,10 @@ export function mergePayPeriodOptions(generated = [], batches = [], batchStatusL
       label,
       year: start.slice(0, 4),
       fromBatch: true,
-      batchStatus: status || b.payroll_display?.display_status || null,
+      batchStatus: null,
+      analysisAvailable: Boolean(analysisAvailable),
+      // Keep a representative batch id for callers that still sync period→batch,
+      // but do not treat it as period status.
       batchId: b.id,
     });
   }
@@ -156,11 +175,12 @@ export function mergePayPeriodOptions(generated = [], batches = [], batchStatusL
  * Default ~9 weeks (~2 months); expanded loads full history.
  * batchOnly = one option per canonical batch (For Accountant → By Batch).
  * Pay period is not unique: two batches in the same week both remain.
+ * Non-batchOnly period labels never include Paid/Pending/Draft.
  */
 export function buildPayrollPeriodChoices(
   weekStartsOn = 0,
   batches = [],
-  { expanded = false, batchStatusLabel, batchOnly = false } = {},
+  { expanded = false, batchStatusLabel, batchOnly = false, analysisAvailableKeys = null } = {},
 ) {
   if (batchOnly) {
     return buildAccountantBatchOptions(batches, batchStatusLabel);
@@ -168,7 +188,9 @@ export function buildPayrollPeriodChoices(
   const weeksBack = expanded ? 78 : 9;
   const weeksForward = expanded ? 8 : 2;
   const generated = buildPayPeriodOptions(weekStartsOn, { weeksBack, weeksForward });
-  return mergePayPeriodOptions(generated, batches, batchStatusLabel);
+  return mergePayPeriodOptions(generated, batches, batchStatusLabel, {
+    analysisAvailableKeys,
+  });
 }
 
 /** Group options by year for MUI Select ListSubheader. */
