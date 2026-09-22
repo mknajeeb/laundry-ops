@@ -66,6 +66,25 @@ class PubCursor:
         if "information_schema" in s:
             self._last = [{"cnt": 1}]
             return
+        if (
+            f"from {DAY_PUBLICATIONS_TABLE}" in s
+            and "employee_user_id, employee_name" in s
+            and "group by" not in s
+            and "order by" not in s
+            and "sum(" not in s
+        ):
+            org, rk, biz = params
+            self._last = [
+                {
+                    "employee_user_id": row["employee_user_id"],
+                    "employee_name": row["employee_name"],
+                }
+                for key, row in self.rows.items()
+                if key[0] == int(org)
+                and key[1] == str(rk).upper()
+                and key[2] == biz
+            ]
+            return
         if "from system_settings" in s:
             key = params[1] if len(params) > 1 else None
             val = self.settings.get(str(key))

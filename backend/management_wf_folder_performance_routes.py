@@ -532,6 +532,21 @@ def register_management_wf_folder_performance_routes(
                 snapshot=snap,
             )
             conn.commit()
+            # Keep employee-day publication cache current when session card is provided.
+            if out.get("ok") and isinstance(body.get("sessions"), list):
+                _attach_mutation_employee_day(
+                    cursor,
+                    oid,
+                    out,
+                    selected=selected,
+                    employee_name=body.get("employee")
+                    or body.get("employee_name")
+                    or (session_card or {}).get("employee"),
+                    employee_user_id=body.get("user_id")
+                    or body.get("employee_user_id")
+                    or (session_card or {}).get("user_id"),
+                    sessions=body.get("sessions"),
+                )
             status = 200 if out.get("ok") else 400
             return jsonify(json_safe_rinse(out)), status
         except ValueError as exc:

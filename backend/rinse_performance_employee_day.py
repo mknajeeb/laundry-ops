@@ -1046,7 +1046,11 @@ def sync_day_payload_publications(
     role_key: str = ROLE_FOLDER,
     business_date_et: date | None = None,
 ) -> None:
-    """Sync every employee-day on a Management day payload to the publication cache."""
+    """Sync every employee-day on a Management day payload to the publication cache.
+
+    Also deletes orphan publication keys for that business date so identity moves
+    (user_id/name) cannot leave stale rows beside the new key.
+    """
     raw = business_date_et or day_payload.get("selected_date_et")
     biz: date | None
     if isinstance(raw, date):
@@ -1058,7 +1062,22 @@ def sync_day_payload_publications(
             biz = None
     else:
         biz = None
-    for emp in day_payload.get("employees") or []:
+    if biz is None:
+        return
+
+    ensure_employee_day_publication_tables(cursor)
+    kept: set[tuple[int, str]] = set()
+    for emp in list(day_payload.get("employees") or []) + list(
+        day_payload.get("excluded_employees") or []
+    ):
+        name = str(emp.get("employee") or "").strip()
+        if not name:
+            continue
+        try:
+            uid_i = int(emp.get("user_id")) if emp.get("user_id") not in (None, "") else 0
+        except (TypeError, ValueError):
+            uid_i = 0
+        kept.add((uid_i, name))
         sync_employee_day_publication(
             cursor,
             organization_id,
@@ -1066,11 +1085,191 @@ def sync_day_payload_publications(
             role_key=role_key,
             business_date_et=biz,
         )
-    for emp in day_payload.get("excluded_employees") or []:
-        sync_employee_day_publication(
-            cursor,
-            organization_id,
-            emp,
-            role_key=role_key,
-            business_date_et=biz,
+
+    # Purge orphans for this date (old identity keys must not linger).
+    cursor.execute(
+        f"""
+        SELECT employee_user_id, employee_name
+        FROM {DAY_PUBLICATIONS_TABLE}
+        WHERE organization_id=%s AND role_key=%s AND business_date_et=%s
+        """,
+        (int(organization_id), str(role_key).upper(), biz),
+    )
+    for row in cursor.fetchall() or []:
+        try:
+            uid_i = int(row.get("employee_user_id") or 0)
+        except (TypeError, ValueError):
+            uid_i = 0
+        name = str(row.get("employee_name") or "").strip()
+        if (uid_i, name) in kept:
+            continue
+        cursor.execute(
+            f"""
+            DELETE FROM {DAY_PUBLICATIONS_TABLE}
+            WHERE organization_id=%s AND role_key=%s AND business_date_et=%s
+              AND employee_user_id=%s AND employee_name=%s
+            """,
+            (int(organization_id), str(role_key).upper(), biz, uid_i, name),
         )
+
+
+def _week_dates(week_start: date) -> list[date]:
+    from backend.rinse_performance_approvals import et_week_bounds
+
+    start, end = et_week_bounds(week_start)
+    out: list[date] = []
+    cur = start
+    while cur <= end:
+        out.append(cur)
+        cur = date.fromordinal(cur.toordinal() + 1)
+    return out
+
+
+def list_business_dates_needing_publication_ensure(
+    cursor,
+    organization_id: int,
+    *,
+    role_key: str,
+    week_start: date,
+) -> list[date]:
+    """Dates in the week whose publication cache is missing or stale vs approvals.
+
+    A date needs ensure when any active session approval exists and either:
+    - no publication rows exist for that date, or
+    - max(approval.updated_at/approved_at) is newer than max(publication.updated_at).
+    """
+    from backend.rinse_performance_approvals import APPROVALS_TABLE, et_week_bounds
+
+    ensure_employee_day_publication_tables(cursor)
+    start, end = et_week_bounds(week_start)
+    rk = str(role_key).upper()
+    oid = int(organization_id)
+
+    cursor.execute(
+        f"""
+        SELECT business_date_et AS d,
+               MAX(COALESCE(updated_at, approved_at, created_at)) AS max_touch
+        FROM {APPROVALS_TABLE}
+        WHERE organization_id=%s
+          AND role_key=%s
+          AND invalidated_at IS NULL
+          AND excluded_at IS NULL
+          AND business_date_et >= %s
+          AND business_date_et <= %s
+        GROUP BY business_date_et
+        """,
+        (oid, rk, start, end),
+    )
+    approval_dates: dict[date, Any] = {}
+    for row in cursor.fetchall() or []:
+        d = row.get("d")
+        if hasattr(d, "isoformat"):
+            approval_dates[d] = row.get("max_touch")
+        elif d:
+            try:
+                approval_dates[date.fromisoformat(str(d)[:10])] = row.get("max_touch")
+            except ValueError:
+                pass
+
+    if not approval_dates:
+        return []
+
+    cursor.execute(
+        f"""
+        SELECT business_date_et AS d, MAX(updated_at) AS max_touch
+        FROM {DAY_PUBLICATIONS_TABLE}
+        WHERE organization_id=%s
+          AND role_key=%s
+          AND business_date_et >= %s
+          AND business_date_et <= %s
+        GROUP BY business_date_et
+        """,
+        (oid, rk, start, end),
+    )
+    pub_dates: dict[date, Any] = {}
+    for row in cursor.fetchall() or []:
+        d = row.get("d")
+        if hasattr(d, "isoformat"):
+            pub_dates[d] = row.get("max_touch")
+        elif d:
+            try:
+                pub_dates[date.fromisoformat(str(d)[:10])] = row.get("max_touch")
+            except ValueError:
+                pass
+
+    need: list[date] = []
+    for d, approval_touch in sorted(approval_dates.items()):
+        pub_touch = pub_dates.get(d)
+        if pub_touch is None:
+            need.append(d)
+            continue
+        if approval_touch is None:
+            continue
+        # Stale when approvals moved after last publication write.
+        try:
+            if approval_touch > pub_touch:
+                need.append(d)
+        except TypeError:
+            need.append(d)
+    return need
+
+
+def ensure_employee_day_publications_for_week(
+    cursor,
+    organization_id: int,
+    *,
+    role_key: str = ROLE_FOLDER,
+    week_start: date | None = None,
+) -> dict[str, Any]:
+    """Read-through backfill: rebuild publication cache for stale/missing week days.
+
+    Reuses Management day build + attach_publication (→ recompute_employee_day_metrics)
+    + partition + sync_day_payload_publications. Same eligibility as Live/Published.
+    Idempotent: warm weeks with up-to-date pubs skip day builds.
+    """
+    from backend.management_wf_folder_performance import build_day_folder_performance
+    from backend.rinse_performance_approvals import current_et_week_start, et_week_bounds
+    from backend.rinse_performance_folder_publisher import (
+        attach_publication_status_to_day,
+        partition_employees_by_exclusion,
+    )
+
+    t0 = datetime.utcnow()
+    rk = str(role_key).upper()
+    ws = week_start or current_et_week_start()
+    start, end = et_week_bounds(ws)
+    ensure_employee_day_publication_tables(cursor)
+
+    dates = list_business_dates_needing_publication_ensure(
+        cursor, organization_id, role_key=rk, week_start=ws
+    )
+    synced: list[str] = []
+    for day_et in dates:
+        day = build_day_folder_performance(
+            cursor,
+            int(organization_id),
+            selected_date_et=day_et,
+            attach_customers=False,
+        )
+        attach_publication_status_to_day(cursor, int(organization_id), day)
+        partition_employees_by_exclusion(day)
+        sync_day_payload_publications(
+            cursor,
+            int(organization_id),
+            day,
+            role_key=rk,
+            business_date_et=day_et,
+        )
+        synced.append(day_et.isoformat())
+
+    wall_ms = round((datetime.utcnow() - t0).total_seconds() * 1000, 2)
+    return {
+        "ok": True,
+        "week_start": start.isoformat(),
+        "week_end": end.isoformat(),
+        "dates_checked": len(_week_dates(ws)),
+        "dates_synced": synced,
+        "synced_count": len(synced),
+        "wall_ms": wall_ms,
+        "strategy": "read_through_stale_or_missing_vs_approvals",
+    }
