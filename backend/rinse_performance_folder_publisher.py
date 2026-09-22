@@ -353,12 +353,17 @@ def partition_employees_by_exclusion(day: dict[str, Any]) -> dict[str, Any]:
             summary[key] = day["summary"][key]
     summary["employee_day_count"] = len(active)
     summary["excluded_employee_day_count"] = len(excluded)
+    approved = [e for e in active if e.get("dashboard_rankable") is True]
+    approved_summary = _recompute_summary_from_employees(approved)
+    approved_summary["employee_day_count"] = len(approved)
+    approved_summary["employee_count"] = len(approved)
     # Keep excluded visible in the primary list (management must not vanish them).
     day["employees"] = employees
     day["excluded_employees"] = excluded
     day["excluded_employee_count"] = len(excluded)
     day["summary"] = summary
     day["summary_active"] = summary
+    day["summary_approved"] = approved_summary
     day["summary_all_including_excluded"] = _recompute_summary_from_employees(employees)
     day["eligibility_rule"] = "included_non_excluded"
     return day

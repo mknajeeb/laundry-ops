@@ -101,6 +101,9 @@ def test_partition_keeps_excluded_visible_but_out_of_active_summary():
     assert out["summary"]["orders_completed"] == 10
     assert out["summary"]["needs_attribution_count"] == 2
     assert out["summary_all_including_excluded"]["employee_count"] == 2
+    assert out["summary_approved"]["employee_day_count"] == 1
+    assert out["summary_approved"]["orders_completed"] == 10
+    assert out["employees"][0]["dashboard_rankable"] is True
 
 
 def test_exclude_without_prior_approval_uses_snapshot():

@@ -5,17 +5,12 @@ function empKey(emp) {
   return `n:${String(emp?.employee || "").trim().toLowerCase()}`;
 }
 
-function recomputeSummary(employees) {
-  const active = (employees || []).filter(
-    (e) =>
-      String(e.day_publication_status || e.publication_status || "") !== "EXCLUDED" &&
-      !e.excluded_from_metrics
-  );
+function sumEmployees(rows) {
   let orders = 0;
   let lbs = 0;
   let hours = 0;
   let hasHours = false;
-  for (const e of active) {
+  for (const e of rows || []) {
     orders += Number(e.orders_completed) || 0;
     lbs += Number(e.total_pre_lbs) || 0;
     if (e.performance_hours != null || e.session_hours != null) {
@@ -34,10 +29,28 @@ function recomputeSummary(employees) {
     session_hours: hasHours && hours > 0 ? hours : null,
     bags_per_hour: bagsHr,
     lbs_per_hour: lbsHr,
-    employee_count: active.length,
-    employee_day_count: active.length,
+    employee_count: (rows || []).length,
+    employee_day_count: (rows || []).length,
     average_basis: "weighted_sum_orders_lbs_over_sum_hours",
   };
+}
+
+function recomputeSummary(employees) {
+  const active = (employees || []).filter(
+    (e) =>
+      String(e.day_publication_status || e.publication_status || "") !== "EXCLUDED" &&
+      !e.excluded_from_metrics
+  );
+  return sumEmployees(active);
+}
+
+function recomputeApprovedSummary(employees) {
+  const approved = (employees || []).filter(
+    (e) =>
+      e.dashboard_rankable === true ||
+      String(e.day_publication_status || e.publication_status || "") === "APPROVED"
+  );
+  return sumEmployees(approved);
 }
 
 /**
@@ -66,6 +79,10 @@ export function applyEmployeeDayPatch(prev, employeeDay) {
     ...(prev.summary || {}),
     ...recomputeSummary(employees),
   };
+  const summaryApproved = {
+    ...(prev.summary_approved || {}),
+    ...recomputeApprovedSummary(employees),
+  };
   // Preserve unmapped counters.
   for (const k of [
     "needs_attribution_count",
@@ -82,6 +99,7 @@ export function applyEmployeeDayPatch(prev, employeeDay) {
     excluded_employee_count: excluded.length,
     summary,
     summary_active: summary,
+    summary_approved: summaryApproved,
   };
 }
 

@@ -52,6 +52,10 @@ import {
   applyEmployeeDayPatch,
   employeeSessionsPayload,
 } from "./performance/applyEmployeeDayPatch";
+import {
+  createMutationReconciler,
+  shouldApplyReconcileResponse,
+} from "./performance/mutationReconcile";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import { businessTodayYmd } from "../../utils/businessTime";
 import {
@@ -155,6 +159,7 @@ function WfEmployeeDayRow({
   onExcludeDay,
   onIncludeDay,
   approveBusy,
+  rankable = true,
 }) {
   const status = employee.day_publication_status || employee.publication_status || "NEEDS_APPROVAL";
   const excluded = status === "EXCLUDED";
@@ -167,7 +172,15 @@ function WfEmployeeDayRow({
   const sessionCount = employee.session_count || (employee.sessions || []).length;
 
   return (
-    <Box sx={perfRowSx()}>
+    <Box
+      sx={perfRowSx(
+        excluded
+          ? { bgcolor: "rgba(148,163,184,0.14)", opacity: 0.92 }
+          : !rankable
+            ? { borderStyle: "dashed" }
+            : {}
+      )}
+    >
       <Stack
         direction={{ xs: "column", md: "row" }}
         alignItems={{ xs: "stretch", md: "baseline" }}
@@ -177,7 +190,7 @@ function WfEmployeeDayRow({
       >
         <Typography sx={{ ...PERF_TYPE.name, minWidth: 0 }} noWrap>
           <Box component="span" sx={PERF_TYPE.rank}>
-            #{rank}{" "}
+            {rankable ? `#${rank} ` : "— "}
           </Box>
           {employee.employee}
         </Typography>
@@ -196,12 +209,17 @@ function WfEmployeeDayRow({
         ) : null}
         {sessionCount ? (
           <Typography sx={PERF_TYPE.meta}>
-            {sessionCount} session{sessionCount === 1 ? "" : "s"}
+            {sessionCount} session{sessionCount === 1 ? "" : "s"} · 1 employee-day
           </Typography>
         ) : null}
         <Typography sx={{ ...PERF_TYPE.meta, color: dayStatusColor(status), fontWeight: 700 }}>
           {dayStatusLabel(status)}
         </Typography>
+        {!rankable && !excluded ? (
+          <Typography sx={{ ...PERF_TYPE.meta, fontWeight: 700, color: PERF_UI.secondary }}>
+            Live · not published
+          </Typography>
+        ) : null}
         <Button
           size="small"
           variant="outlined"
@@ -522,6 +540,17 @@ export default function ManagementWfFolderPerformanceSection({
   }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
   const loadInFlight = useRef(false);
   const loadGen = useRef(0);
+  const mountedRef = useRef(true);
+  const reconcilerRef = useRef(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      reconcilerRef.current?.dispose?.();
+      reconcilerRef.current = null;
+    };
+  }, []);
 
   const applyMutationResult = (body) => {
     const day = body?.employee_day;
@@ -541,8 +570,10 @@ export default function ManagementWfFolderPerformanceSection({
     return true;
   };
 
-  const refreshAfterMutation = async () => {
-    await load({ silent: true, skip_lazy_baseline: true });
+  const refreshAfterMutation = () => {
+    // Debounced + coalesced silent GET. Never fire one full rebuild per click.
+    if (!reconcilerRef.current) return;
+    reconcilerRef.current.noteMutation();
   };
 
   const patchSessionPublication = (sessionId, publication) => {
@@ -572,7 +603,12 @@ export default function ManagementWfFolderPerformanceSection({
   const load = useCallback(
     async (opts = {}) => {
       const silent = Boolean(opts.silent);
-      if (silent && loadInFlight.current) return;
+      const mutationEpochAtStart = opts.mutationEpochAtStart;
+      if (silent && loadInFlight.current) {
+        // Tell coalesced reconciler to schedule another pass — do not drop work.
+        if (typeof opts.onBusy === "function") opts.onBusy();
+        return;
+      }
       const gen = ++loadGen.current;
       loadInFlight.current = true;
       if (!silent) {
@@ -593,6 +629,19 @@ export default function ManagementWfFolderPerformanceSection({
         });
         const next = res.data || null;
         if (gen !== loadGen.current) return;
+        if (
+          silent &&
+          !shouldApplyReconcileResponse({
+            mutationEpochAtStart,
+            currentMutationEpoch: opts.getMutationEpoch
+              ? opts.getMutationEpoch()
+              : mutationEpochAtStart,
+            disposed: !mountedRef.current,
+          })
+        ) {
+          return;
+        }
+        if (!mountedRef.current) return;
         setData((prev) => {
           if (!next) return silent ? prev : next;
           if (silent && prev?.deltas && !next.deltas) {
@@ -639,6 +688,28 @@ export default function ManagementWfFolderPerformanceSection({
 
   useEffect(() => {
     load();
+  }, [load]);
+
+  useEffect(() => {
+    reconcilerRef.current?.dispose?.();
+    reconcilerRef.current = createMutationReconciler({
+      runLoad: async ({ mutationEpochAtStart, getMutationEpoch } = {}) => {
+        await load({
+          silent: true,
+          skip_lazy_baseline: true,
+          mutationEpochAtStart,
+          getMutationEpoch,
+          onBusy: () => {
+            // Poll or prior GET held the lock; keep one coalesced follow-up.
+            reconcilerRef.current?.markPending?.();
+          },
+        });
+      },
+    });
+    return () => {
+      reconcilerRef.current?.dispose?.();
+      reconcilerRef.current = null;
+    };
   }, [load]);
 
   useEffect(() => {
@@ -1172,21 +1243,49 @@ export default function ManagementWfFolderPerformanceSection({
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [data?.employees, data?.excluded_employees]);
 
+  const publishedEmployees = useMemo(
+    () =>
+      employees.filter(
+        (e) =>
+          e.dashboard_rankable === true ||
+          String(e.day_publication_status || e.publication_status || "") === "APPROVED"
+      ),
+    [employees]
+  );
+  const liveOnlyEmployees = useMemo(
+    () =>
+      employees.filter(
+        (e) =>
+          e.dashboard_rankable !== true &&
+          String(e.day_publication_status || e.publication_status || "") !== "APPROVED" &&
+          String(e.day_publication_status || e.publication_status || "") !== "EXCLUDED"
+      ),
+    [employees]
+  );
+
+  // Chart + published ranks: approved employee-days only (never session rows).
   const graphRows = useMemo(() => {
     const field = GRAPH_METRICS.find((m) => m.value === graphMetric)?.field || "lbs_per_hour";
-    return employees.map((e) => ({
+    return publishedEmployees.map((e) => ({
       name: String(e.employee || "").replace(/\s*\(.*?\)\s*/g, "").trim() || e.employee,
-      value: Number(e[field]) || 0,
+      value: Number(e[field] ?? (field === "performance_hours" ? e.session_hours : 0)) || 0,
       full: e.employee,
     }));
-  }, [employees, graphMetric]);
+  }, [publishedEmployees, graphMetric]);
+
 
   const totalHours = summary.total_hours ?? summary.session_hours;
+  const approvedSummary = data?.summary_approved || {};
   const kpiItems = [
     {
       value: fmtRate(summary.lbs_per_hour, 0),
-      label: "Team Avg lb/hr",
+      label: "Live Team lb/hr",
       accent: true,
+    },
+    {
+      value: fmtRate(approvedSummary.lbs_per_hour, 0),
+      label: "Approved lb/hr",
+      accent: false,
     },
     {
       value: benchDraft || fmtRate(data?.folder_benchmark_lbs_hr, 0),
@@ -1392,7 +1491,9 @@ export default function ManagementWfFolderPerformanceSection({
       <Typography sx={{ ...PERF_TYPE.meta, mb: 1 }}>
         Folder is the live productivity role (lb/hr · bags/hr). Other roles are reserved until publishers exist.
         {data?.excluded_employee_count
-          ? ` · ${data.excluded_employee_count} excluded employee-day(s) hidden by default.`
+          ? ` · ${data.excluded_employee_count} excluded employee-day(s)${
+              showExcluded ? " shown" : " hidden"
+            }.`
           : ""}
       </Typography>
 
@@ -1573,7 +1674,8 @@ export default function ManagementWfFolderPerformanceSection({
               }}
             >
               <Typography sx={{ ...PERF_TYPE.meta, px: 1, mb: 0.5, fontWeight: 700 }}>
-                All employees · {GRAPH_METRICS.find((m) => m.value === graphMetric)?.label || "Lb/hr"}
+                Approved employee-days ·{" "}
+                {GRAPH_METRICS.find((m) => m.value === graphMetric)?.label || "Lb/hr"}
               </Typography>
               <ResponsiveContainer width="100%" height="90%">
                 <BarChart
@@ -1601,11 +1703,17 @@ export default function ManagementWfFolderPerformanceSection({
           ) : null}
 
           <Stack spacing={0.3}>
-            {employees.map((emp, idx) => (
+            {publishedEmployees.length ? (
+              <Typography sx={{ ...PERF_TYPE.meta, fontWeight: 700, px: 0.25, pt: 0.25 }}>
+                Published ranking (approved employee-days)
+              </Typography>
+            ) : null}
+            {publishedEmployees.map((emp, idx) => (
               <WfEmployeeDayRow
-                key={`${emp.user_id || emp.employee}-${idx}`}
+                key={`pub-${emp.user_id || emp.employee}-${emp.business_date || idx}`}
                 rank={idx + 1}
                 employee={emp}
+                rankable
                 onReview={setReviewEmployee}
                 onApproveDay={approveEmployeeDay}
                 onExcludeDay={excludeEmployeeDay}
@@ -1613,6 +1721,45 @@ export default function ManagementWfFolderPerformanceSection({
                 approveBusy={controlsLocked}
               />
             ))}
+            {liveOnlyEmployees.length ? (
+              <Typography sx={{ ...PERF_TYPE.meta, fontWeight: 700, px: 0.25, pt: 0.75 }}>
+                Live Review (not published / not ranked)
+              </Typography>
+            ) : null}
+            {liveOnlyEmployees.map((emp, idx) => (
+              <WfEmployeeDayRow
+                key={`live-${emp.user_id || emp.employee}-${emp.business_date || idx}`}
+                rank={idx + 1}
+                employee={emp}
+                rankable={false}
+                onReview={setReviewEmployee}
+                onApproveDay={approveEmployeeDay}
+                onExcludeDay={excludeEmployeeDay}
+                onIncludeDay={includeEmployeeDay}
+                approveBusy={controlsLocked}
+              />
+            ))}
+            {showExcluded
+              ? employees
+                  .filter(
+                    (e) =>
+                      String(e.day_publication_status || e.publication_status || "") ===
+                      "EXCLUDED"
+                  )
+                  .map((emp, idx) => (
+                    <WfEmployeeDayRow
+                      key={`ex-${emp.user_id || emp.employee}-${emp.business_date || idx}`}
+                      rank={idx + 1}
+                      employee={emp}
+                      rankable={false}
+                      onReview={setReviewEmployee}
+                      onApproveDay={approveEmployeeDay}
+                      onExcludeDay={excludeEmployeeDay}
+                      onIncludeDay={includeEmployeeDay}
+                      approveBusy={controlsLocked}
+                    />
+                  ))
+              : null}
             {!loading && !employees.length ? (
               <Typography sx={{ py: 2, ...PERF_TYPE.body, textAlign: "center" }}>
                 No Wash & Fold folder employee-days for this window

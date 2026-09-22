@@ -12,6 +12,7 @@ describe("applyEmployeeDayPatch", () => {
           performance_hours: 5,
           lbs_per_hour: 48,
           day_publication_status: "APPROVED",
+          dashboard_rankable: true,
           sessions: [{ session_id: "2001" }, { session_id: "2002" }],
         },
         {
@@ -22,6 +23,7 @@ describe("applyEmployeeDayPatch", () => {
           performance_hours: 4,
           lbs_per_hour: 50,
           day_publication_status: "APPROVED",
+          dashboard_rankable: true,
         },
       ],
       summary: { needs_attribution_count: 3 },
@@ -34,6 +36,7 @@ describe("applyEmployeeDayPatch", () => {
       performance_hours: 3,
       lbs_per_hour: 53.3333,
       day_publication_status: "APPROVED",
+      dashboard_rankable: true,
       excluded_session_count: 1,
       sessions: [
         { session_id: "2001", publication_status: "APPROVED" },
@@ -46,8 +49,41 @@ describe("applyEmployeeDayPatch", () => {
     expect(out.summary.total_pre_lbs).toBe(360);
     expect(out.summary.total_hours).toBe(7);
     expect(out.summary.needs_attribution_count).toBe(3);
+    expect(out.summary_approved.orders_completed).toBe(18);
+    expect(out.summary_approved.employee_day_count).toBe(2);
   });
 
+  it("partial day stays in live summary but drops from approved summary", () => {
+    const prev = {
+      employees: [
+        {
+          employee: "Maria",
+          user_id: 59,
+          orders_completed: 12,
+          total_pre_lbs: 240,
+          performance_hours: 5,
+          day_publication_status: "APPROVED",
+          dashboard_rankable: true,
+        },
+      ],
+      summary: {},
+    };
+    const out = applyEmployeeDayPatch(prev, {
+      employee: "Maria",
+      user_id: 59,
+      orders_completed: 12,
+      total_pre_lbs: 240,
+      performance_hours: 5,
+      day_publication_status: "PARTIALLY_APPROVED",
+      dashboard_rankable: false,
+    });
+    expect(out.summary.employee_day_count).toBe(1);
+    expect(out.summary.lbs_per_hour).toBe(48);
+    expect(out.summary_approved.employee_day_count).toBe(0);
+  });
+});
+
+describe("employeeSessionsPayload", () => {
   it("employeeSessionsPayload preserves publication stamps", () => {
     const rows = employeeSessionsPayload({
       employee: "Maria",
