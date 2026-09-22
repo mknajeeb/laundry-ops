@@ -51,6 +51,7 @@ import {
 import {
   applyEmployeeDayPatch,
   employeeSessionsPayload,
+  sameEmployee,
 } from "./performance/applyEmployeeDayPatch";
 import {
   createMutationReconciler,
@@ -131,13 +132,13 @@ const SORT_OPTIONS = [
   { value: "hours", label: "Most hours" },
 ];
 
-function sessionPublishPayload(session) {
+function sessionPublishPayload(session, employee) {
   return {
     session_id: session.session_id,
     session_code: session.session_code,
     segment_id: session.segment_id,
-    user_id: session.user_id ?? session.employee_user_id,
-    employee: session.employee,
+    user_id: session.user_id ?? session.employee_user_id ?? employee?.user_id,
+    employee: session.employee || employee?.employee,
     total_pre_lbs: session.total_pre_lbs,
     performance_hours: session.performance_hours,
     lbs_per_hour: session.lbs_per_hour,
@@ -148,6 +149,8 @@ function sessionPublishPayload(session) {
     performance_basis: session.performance_basis,
     role_status: session.role_status,
     include_in_authoritative_aggregate: session.include_in_authoritative_aggregate,
+    publication_status: session.publication_status || session.publication?.status,
+    publication: session.publication,
   };
 }
 
@@ -530,14 +533,21 @@ export default function ManagementWfFolderPerformanceSection({
   const [graphMetric, setGraphMetric] = useState("lbs_hr");
   const [reviewEmployee, setReviewEmployee] = useState(null);
 
-  // Keep Review drawer in sync after approve/exclude/edit-day reloads.
+  // Keep Review drawer in sync after approve/exclude/edit-day patches.
+  // Match by user_id first so a name collision / duplicate row cannot revive a stale day.
   useEffect(() => {
     if (!reviewEmployee?.employee || !data) return;
-    const name = String(reviewEmployee.employee).toLowerCase();
     const pool = [...(data.employees || []), ...(data.excluded_employees || [])];
-    const next = pool.find((e) => String(e.employee || "").toLowerCase() === name);
-    if (next) setReviewEmployee(next);
+    const next =
+      pool.find((e) => sameEmployee(e, reviewEmployee)) ||
+      pool.find(
+        (e) =>
+          String(e.employee || "").toLowerCase() ===
+          String(reviewEmployee.employee || "").toLowerCase()
+      );
+    if (next && next !== reviewEmployee) setReviewEmployee(next);
   }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const loadInFlight = useRef(false);
   const loadGen = useRef(0);
   const mountedRef = useRef(true);
@@ -555,17 +565,19 @@ export default function ManagementWfFolderPerformanceSection({
   const applyMutationResult = (body) => {
     const day = body?.employee_day;
     if (!day) return false;
-    setData((prev) => applyEmployeeDayPatch(prev, day));
+    // Preserve open-review user_id if the API patch omitted it (legacy session card).
+    const enriched = {
+      ...day,
+      user_id:
+        day.user_id != null && day.user_id !== ""
+          ? day.user_id
+          : reviewEmployee?.user_id ?? day.user_id,
+      employee: day.employee || reviewEmployee?.employee,
+    };
+    setData((prev) => applyEmployeeDayPatch(prev, enriched));
     setReviewEmployee((prev) => {
-      if (!prev) return prev;
-      const sameUser =
-        prev.user_id != null &&
-        day.user_id != null &&
-        String(prev.user_id) === String(day.user_id);
-      const sameName =
-        String(prev.employee || "").toLowerCase() ===
-        String(day.employee || "").toLowerCase();
-      return sameUser || sameName ? day : prev;
+      if (!prev) return enriched;
+      return sameEmployee(prev, enriched) ? enriched : prev;
     });
     return true;
   };
@@ -834,9 +846,9 @@ export default function ManagementWfFolderPerformanceSection({
       const emp = reviewEmployee;
       const res = await postManagementPerformanceApproveSession("FOLDER", session.session_id, {
         date_et: day,
-        session: sessionPublishPayload(session),
+        session: sessionPublishPayload(session, emp),
         employee: emp?.employee || session.employee,
-        user_id: emp?.user_id,
+        user_id: emp?.user_id ?? session.user_id,
         employee_sessions: employeeSessionsPayload(emp),
       });
       const body = res.data || {};
@@ -908,7 +920,7 @@ export default function ManagementWfFolderPerformanceSection({
         date_et: session.selected_date_et || dateEt,
         employee: emp?.employee || session.employee,
         user_id: emp?.user_id,
-        session: sessionPublishPayload(session),
+        session: sessionPublishPayload(session, emp),
         employee_sessions: employeeSessionsPayload(emp),
       });
       const body = res.data || {};
@@ -1016,7 +1028,7 @@ export default function ManagementWfFolderPerformanceSection({
         published_metric_value: rate,
         reason: editReason || undefined,
         approve_if_needed: true,
-        session: sessionPublishPayload(editSession),
+        session: sessionPublishPayload(editSession, reviewEmployee),
       });
       const body = res.data || {};
       if (!body.ok) {
@@ -1025,6 +1037,7 @@ export default function ManagementWfFolderPerformanceSection({
       }
       setPubMessage(`Saved manager value for ${editSession.session_code || editSession.session_id}`);
       setEditSession(null);
+      applyMutationResult(body);
       void refreshAfterMutation();
     } catch (err) {
       setError(apiErr(err, "Save failed"));
@@ -1041,7 +1054,7 @@ export default function ManagementWfFolderPerformanceSection({
       const emp = reviewEmployee;
       const res = await postManagementPerformanceExcludeSession("FOLDER", session.session_id, {
         date_et: session.selected_date_et || dateEt,
-        session: sessionPublishPayload(session),
+        session: sessionPublishPayload(session, emp),
         employee: emp?.employee || session.employee,
         user_id: emp?.user_id,
         employee_sessions: employeeSessionsPayload(emp),
@@ -1069,7 +1082,7 @@ export default function ManagementWfFolderPerformanceSection({
       const emp = reviewEmployee;
       const res = await postManagementPerformanceIncludeSession("FOLDER", session.session_id, {
         date_et: session.selected_date_et || dateEt,
-        session: sessionPublishPayload(session),
+        session: sessionPublishPayload(session, emp),
         employee: emp?.employee || session.employee,
         user_id: emp?.user_id,
         employee_sessions: employeeSessionsPayload(emp),

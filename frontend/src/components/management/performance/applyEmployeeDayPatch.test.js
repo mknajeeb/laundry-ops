@@ -1,4 +1,81 @@
-import { applyEmployeeDayPatch, employeeSessionsPayload } from "./applyEmployeeDayPatch";
+import {
+  applyEmployeeDayPatch,
+  employeeSessionsPayload,
+  partitionPublishedLiveExcluded,
+} from "./applyEmployeeDayPatch";
+
+/**
+ * Simulate the backend mutation_employee_day compose that stamps one session
+ * then derives day_publication_status / dashboard_rankable.
+ */
+function stampSessionAndCompose(employeeDay, sessionId, status) {
+  const sessions = (employeeDay.sessions || []).map((s) => {
+    if (String(s.session_id) !== String(sessionId)) return { ...s };
+    return {
+      ...s,
+      publication_status: status,
+      publication: { ...(s.publication || {}), status, excluded: status === "EXCLUDED" },
+    };
+  });
+  const included = sessions.filter((s) => (s.publication_status || s.publication?.status) !== "EXCLUDED");
+  const approved = included.filter((s) => (s.publication_status || s.publication?.status) === "APPROVED");
+  let dayStatus = "NEEDS_APPROVAL";
+  if (included.length === 0) dayStatus = "EXCLUDED";
+  else if (approved.length === included.length) dayStatus = "APPROVED";
+  else if (approved.length > 0) dayStatus = "PARTIALLY_APPROVED";
+  return {
+    ...employeeDay,
+    sessions,
+    day_publication_status: dayStatus,
+    publication_status: dayStatus,
+    dashboard_rankable: dayStatus === "APPROVED",
+  };
+}
+
+function tarannumInitial() {
+  return {
+    employee: "Tarannum",
+    user_id: 42,
+    orders_completed: 30,
+    total_pre_lbs: 600,
+    performance_hours: 8,
+    lbs_per_hour: 75,
+    day_publication_status: "PARTIALLY_APPROVED",
+    dashboard_rankable: false,
+    sessions: [
+      {
+        session_id: "wf01",
+        session_code: "WF-01",
+        publication_status: "UNAPPROVED",
+        publication: { status: "UNAPPROVED" },
+        orders_completed: 10,
+        total_pre_lbs: 200,
+        performance_hours: 3,
+        role_status: "closed",
+      },
+      {
+        session_id: "wf02",
+        session_code: "WF-02",
+        publication_status: "UNAPPROVED",
+        publication: { status: "UNAPPROVED" },
+        orders_completed: 10,
+        total_pre_lbs: 200,
+        performance_hours: 2.5,
+        role_status: "closed",
+      },
+      {
+        session_id: "wf03",
+        session_code: "WF-03",
+        publication_status: "APPROVED",
+        publication: { status: "APPROVED" },
+        orders_completed: 10,
+        total_pre_lbs: 200,
+        performance_hours: 2.5,
+        role_status: "closed",
+      },
+    ],
+  };
+}
 
 describe("applyEmployeeDayPatch", () => {
   it("updates employee-day and recomputes weighted summary without full reload", () => {
@@ -80,6 +157,95 @@ describe("applyEmployeeDayPatch", () => {
     expect(out.summary.employee_day_count).toBe(1);
     expect(out.summary.lbs_per_hour).toBe(48);
     expect(out.summary_approved.employee_day_count).toBe(0);
+  });
+
+  it("merges name-only patch onto existing user_id row without duplicating", () => {
+    const prev = {
+      employees: [tarannumInitial()],
+      summary: {},
+      summary_approved: {},
+    };
+    // Bug reproduction: API returned employee_day without user_id.
+    const patch = {
+      ...stampSessionAndCompose(tarannumInitial(), "wf01", "APPROVED"),
+      user_id: null,
+    };
+    const out = applyEmployeeDayPatch(prev, patch);
+    expect(out.employees).toHaveLength(1);
+    expect(out.employees[0].user_id).toBe(42);
+    expect(out.employees[0].day_publication_status).toBe("PARTIALLY_APPROVED");
+    expect(out.employees[0].sessions.find((s) => s.session_code === "WF-01").publication_status).toBe(
+      "APPROVED"
+    );
+  });
+});
+
+describe("Tarannum 3-session approve → Published (mutation patch only)", () => {
+  it("approve WF-01 then WF-02 moves one employee-day Live → Published before reconcile GET", () => {
+    let data = {
+      employees: [tarannumInitial()],
+      summary: {},
+      summary_approved: {},
+    };
+    let reviewModal = data.employees[0];
+
+    // --- Approve WF-01 ---
+    const after01 = stampSessionAndCompose(reviewModal, "wf01", "APPROVED");
+    // Simulate response that may omit user_id (production bug path).
+    data = applyEmployeeDayPatch(data, { ...after01, user_id: null });
+    reviewModal = data.employees.find((e) => e.employee === "Tarannum");
+
+    expect(reviewModal.sessions.find((s) => s.session_code === "WF-01").publication_status).toBe(
+      "APPROVED"
+    );
+    expect(reviewModal.day_publication_status).toBe("PARTIALLY_APPROVED");
+    expect(reviewModal.dashboard_rankable).toBe(false);
+    {
+      const { published, live } = partitionPublishedLiveExcluded(data.employees);
+      expect(published.map((e) => e.employee)).not.toContain("Tarannum");
+      expect(live).toHaveLength(1);
+      expect(live[0].employee).toBe("Tarannum");
+    }
+    expect(data.summary_approved.employee_day_count).toBe(0);
+    // Rates unchanged by approval alone.
+    expect(reviewModal.orders_completed).toBe(30);
+    expect(reviewModal.total_pre_lbs).toBe(600);
+    expect(reviewModal.lbs_per_hour).toBe(75);
+
+    // --- Approve WF-02 (using modal state after first patch) ---
+    const after02 = stampSessionAndCompose(reviewModal, "wf02", "APPROVED");
+    data = applyEmployeeDayPatch(data, after02);
+    reviewModal = data.employees.find((e) => e.employee === "Tarannum");
+
+    expect(reviewModal.day_publication_status).toBe("APPROVED");
+    expect(reviewModal.dashboard_rankable).toBe(true);
+    expect(reviewModal.sessions.every((s) => s.publication_status === "APPROVED")).toBe(true);
+    {
+      const { published, live } = partitionPublishedLiveExcluded(data.employees);
+      expect(live.map((e) => e.employee)).not.toContain("Tarannum");
+      expect(published).toHaveLength(1);
+      expect(published[0].employee).toBe("Tarannum");
+      expect(published[0].user_id).toBe(42);
+    }
+    expect(data.summary_approved.employee_day_count).toBe(1);
+    expect(data.summary_approved.orders_completed).toBe(30);
+    expect(data.summary.employee_day_count).toBe(1);
+    // Still exactly one observation.
+    expect(data.employees.filter((e) => e.employee === "Tarannum")).toHaveLength(1);
+
+    // --- Disapprove WF-03 → back to Live / Partial ---
+    const afterDis = stampSessionAndCompose(reviewModal, "wf03", "UNAPPROVED");
+    data = applyEmployeeDayPatch(data, afterDis);
+    reviewModal = data.employees.find((e) => e.employee === "Tarannum");
+    expect(reviewModal.day_publication_status).toBe("PARTIALLY_APPROVED");
+    expect(reviewModal.dashboard_rankable).toBe(false);
+    {
+      const { published, live } = partitionPublishedLiveExcluded(data.employees);
+      expect(published).toHaveLength(0);
+      expect(live).toHaveLength(1);
+      expect(live[0].employee).toBe("Tarannum");
+    }
+    expect(data.summary_approved.employee_day_count).toBe(0);
   });
 });
 

@@ -322,17 +322,23 @@ def register_management_wf_folder_performance_routes(
                 session=session_card,
             )
             conn.commit()
-            if out.get("ok") and session_card:
+            sessions = body.get("employee_sessions") or body.get("sessions")
+            if out.get("ok") and (sessions or session_card):
+                # Prefer top-level body user_id/employee — session cards often omit user_id,
+                # and a null user_id makes the frontend patch miss the existing employee-day row.
                 _attach_mutation_employee_day(
                     cursor,
                     oid,
                     out,
                     selected=selected,
-                    employee_name=session_card.get("employee"),
-                    employee_user_id=session_card.get("user_id")
-                    or session_card.get("employee_user_id"),
-                    sessions=body.get("employee_sessions")
-                    or ([session_card] if session_card else None),
+                    employee_name=body.get("employee")
+                    or body.get("employee_name")
+                    or (session_card or {}).get("employee"),
+                    employee_user_id=body.get("user_id")
+                    or body.get("employee_user_id")
+                    or (session_card or {}).get("user_id")
+                    or (session_card or {}).get("employee_user_id"),
+                    sessions=sessions or ([session_card] if session_card else None),
                     session_id=str(session_id),
                     publication=out.get("publication") or {"status": "APPROVED"},
                     mark_status="APPROVED",

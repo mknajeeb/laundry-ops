@@ -5,6 +5,22 @@ function empKey(emp) {
   return `n:${String(emp?.employee || "").trim().toLowerCase()}`;
 }
 
+function sameEmployee(a, b) {
+  if (!a || !b) return false;
+  if (
+    a.user_id != null &&
+    a.user_id !== "" &&
+    b.user_id != null &&
+    b.user_id !== "" &&
+    String(a.user_id) === String(b.user_id)
+  ) {
+    return true;
+  }
+  const an = String(a.employee || "").trim().toLowerCase();
+  const bn = String(b.employee || "").trim().toLowerCase();
+  return Boolean(an) && an === bn;
+}
+
 function sumEmployees(rows) {
   let orders = 0;
   let lbs = 0;
@@ -56,21 +72,43 @@ function recomputeApprovedSummary(employees) {
 /**
  * Merge one employee_day into dashboard state.
  * Returns next data object (or prev if patch unusable).
+ *
+ * Matches by user_id OR employee name so a patch missing user_id still replaces
+ * the existing row (never duplicates into Live + Published).
  */
 export function applyEmployeeDayPatch(prev, employeeDay) {
   if (!prev || !employeeDay || !employeeDay.employee) return prev;
-  const key = empKey(employeeDay);
   const mergeList = (list) => {
     const rows = [...(list || [])];
-    const idx = rows.findIndex((e) => empKey(e) === key);
+    const idx = rows.findIndex((e) => sameEmployee(e, employeeDay));
     if (idx >= 0) {
-      rows[idx] = { ...rows[idx], ...employeeDay };
+      // Prefer patch fields; keep prior user_id if patch omitted it.
+      const prior = rows[idx];
+      rows[idx] = {
+        ...prior,
+        ...employeeDay,
+        user_id: employeeDay.user_id != null && employeeDay.user_id !== ""
+          ? employeeDay.user_id
+          : prior.user_id,
+        sessions: employeeDay.sessions != null ? employeeDay.sessions : prior.sessions,
+      };
     } else {
       rows.push(employeeDay);
     }
     return rows;
   };
   let employees = mergeList(prev.employees);
+  // Deduplicate if a prior bug left both u:id and n:name rows.
+  const seen = new Set();
+  employees = employees.filter((e) => {
+    const k = empKey(e);
+    // Also collapse name-only duplicates of a user_id row.
+    const nameK = `n:${String(e.employee || "").trim().toLowerCase()}`;
+    if (seen.has(k) || (e.user_id != null && seen.has(nameK))) return false;
+    seen.add(k);
+    if (e.user_id != null) seen.add(nameK);
+    return true;
+  });
   // Keep excluded_employees mirror in sync.
   const excluded = employees.filter(
     (e) => String(e.day_publication_status || e.publication_status || "") === "EXCLUDED"
@@ -125,3 +163,25 @@ export function employeeSessionsPayload(employee) {
     publication: s.publication,
   }));
 }
+
+/** Partition helpers for tests / UI — same rules as the Performance section. */
+export function partitionPublishedLiveExcluded(employees) {
+  const rows = employees || [];
+  const published = rows.filter(
+    (e) =>
+      e.dashboard_rankable === true ||
+      String(e.day_publication_status || e.publication_status || "") === "APPROVED"
+  );
+  const live = rows.filter(
+    (e) =>
+      e.dashboard_rankable !== true &&
+      String(e.day_publication_status || e.publication_status || "") !== "APPROVED" &&
+      String(e.day_publication_status || e.publication_status || "") !== "EXCLUDED"
+  );
+  const excluded = rows.filter(
+    (e) => String(e.day_publication_status || e.publication_status || "") === "EXCLUDED"
+  );
+  return { published, live, excluded };
+}
+
+export { sameEmployee, empKey };
