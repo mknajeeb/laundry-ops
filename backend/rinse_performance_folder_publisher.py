@@ -338,7 +338,7 @@ def partition_employees_by_exclusion(day: dict[str, Any]) -> dict[str, Any]:
     for emp in employees:
         st = str(emp.get("day_publication_status") or emp.get("publication_status") or "")
         emp["excluded_from_metrics"] = st == "EXCLUDED"
-        emp["metrics_basis"] = emp.get("metrics_basis") or "included_non_excluded"
+        emp["metrics_basis"] = emp.get("metrics_basis") or "approved_non_excluded"
         emp["dashboard_rankable"] = st == "APPROVED"
     summary = dict(day.get("summary") or {})
     summary.update(_recompute_summary_from_employees(active))
@@ -365,7 +365,7 @@ def partition_employees_by_exclusion(day: dict[str, Any]) -> dict[str, Any]:
     day["summary_active"] = summary
     day["summary_approved"] = approved_summary
     day["summary_all_including_excluded"] = _recompute_summary_from_employees(employees)
-    day["eligibility_rule"] = "included_non_excluded"
+    day["eligibility_rule"] = "approved_non_excluded"
     return day
 
 

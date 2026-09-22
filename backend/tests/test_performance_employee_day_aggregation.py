@@ -143,7 +143,8 @@ def test_multiple_included_sessions_weighted_not_averaged():
     assert abs(float(emp["lbs_per_hour"]) - 45.0) > 1.0
 
 
-def test_include_restores_contribution_once():
+def test_include_as_unapproved_does_not_restore_performance():
+    """Include returns visibility; Performance waits until APPROVED."""
     sessions = [
         _sess(sid="1", code="WF-01", status="APPROVED", bags=10, lbs=100, hours=2.0),
         _sess(
@@ -162,6 +163,13 @@ def test_include_restores_contribution_once():
     assert emp["orders_completed"] == 10
     sessions[1]["publication_status"] = "UNAPPROVED"
     sessions[1]["publication"] = {"status": "UNAPPROVED", "excluded": False}
+    recompute_employee_day_metrics(emp)
+    # Still only WF-01 contributes to Performance
+    assert emp["orders_completed"] == 10
+    assert emp["total_pre_lbs"] == 100.0
+    assert emp["all_visible_orders_completed"] == 15
+    sessions[1]["publication_status"] = "APPROVED"
+    sessions[1]["publication"] = {"status": "APPROVED"}
     recompute_employee_day_metrics(emp)
     assert emp["orders_completed"] == 15
     assert emp["total_pre_lbs"] == 150.0
@@ -480,8 +488,8 @@ def test_employee_day_override_key_prefers_user_id():
     assert a != b
 
 
-def test_disapprove_changes_status_only_not_metrics():
-    """UNAPPROVE is status-only; included metrics stay from session calculated fields."""
+def test_disapprove_drops_performance_metrics_keeps_session_visible():
+    """UNAPPROVE removes contribution from Performance; session remains in the day."""
     sessions = [
         _sess(
             sid="1",
@@ -503,39 +511,30 @@ def test_disapprove_changes_status_only_not_metrics():
     ]
     emp = {"employee": "A", "user_id": 1, "sessions": sessions}
     recompute_employee_day_metrics(emp)
-    before = (
-        emp["orders_completed"],
-        emp["total_pre_lbs"],
-        emp["performance_hours"],
-        emp["lbs_per_hour"],
-    )
+    assert emp["orders_completed"] == 15
+    assert abs(float(emp["lbs_per_hour"]) - (286.0 / 6.1)) < 0.01
     assert derive_employee_day_publication_status(sessions)["status"] == "APPROVED"
 
     sessions[0]["publication_status"] = "UNAPPROVED"
     sessions[0]["publication"] = {"status": "UNAPPROVED"}
     recompute_employee_day_metrics(emp)
-    after = (
-        emp["orders_completed"],
-        emp["total_pre_lbs"],
-        emp["performance_hours"],
-        emp["lbs_per_hour"],
-    )
-    assert after == before
+    assert emp["orders_completed"] == 0
+    assert emp["total_pre_lbs"] == 0
+    assert emp["performance_hours"] is None or emp["performance_hours"] == 0
+    assert emp["lbs_per_hour"] is None
+    assert len(emp.get("sessions") or sessions) >= 1
     assert derive_employee_day_publication_status(sessions)["status"] == "NEEDS_APPROVAL"
 
     sessions[0]["publication_status"] = "APPROVED"
     sessions[0]["publication"] = {"status": "APPROVED"}
     recompute_employee_day_metrics(emp)
-    assert (
-        emp["orders_completed"],
-        emp["total_pre_lbs"],
-        emp["performance_hours"],
-        emp["lbs_per_hour"],
-    ) == before
+    assert emp["orders_completed"] == 15
+    assert abs(float(emp["lbs_per_hour"]) - (286.0 / 6.1)) < 0.01
     assert derive_employee_day_publication_status(sessions)["status"] == "APPROVED"
 
 
 def test_avg_weight_does_not_mutate_session_bag_lbs():
+    """Override may recompute day lbs from bags; approved-session bag lbs stay intact."""
     s1 = _sess(sid="1", code="A", status="APPROVED", bags=15, lbs=286, hours=6.1)
     s2 = _sess(
         sid="2",
@@ -550,4 +549,6 @@ def test_avg_weight_does_not_mutate_session_bag_lbs():
     recompute_employee_day_metrics(emp, average_weight_override=20.0)
     assert s1["total_pre_lbs"] == 286
     assert s2["total_pre_lbs"] == 27
+    # Only APPROVED session contributes: 15 bags * 20 override
     assert emp["total_pre_lbs"] == 300.0
+    assert emp["orders_completed"] == 15

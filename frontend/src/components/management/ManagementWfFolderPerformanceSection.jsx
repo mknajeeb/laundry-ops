@@ -1292,12 +1292,12 @@ export default function ManagementWfFolderPerformanceSection({
   const kpiItems = [
     {
       value: fmtRate(summary.lbs_per_hour, 0),
-      label: "Live Team lb/hr",
+      label: "Team lb/hr (approved)",
       accent: true,
     },
     {
       value: fmtRate(approvedSummary.lbs_per_hour, 0),
-      label: "Approved lb/hr",
+      label: "Published lb/hr",
       accent: false,
     },
     {
@@ -1882,25 +1882,34 @@ export default function ManagementWfFolderPerformanceSection({
                 bgcolor: PERF_UI.rowBg,
               }}
             >
-              <Typography sx={{ fontWeight: 800, fontSize: 13, mb: 0.75 }}>Day summary</Typography>
+              <Typography sx={{ fontWeight: 800, fontSize: 13, mb: 0.75 }}>
+                Day summary · Performance (approved sessions)
+              </Typography>
               <Typography sx={{ ...PERF_TYPE.meta }}>
-                Included {fmtCount(reviewEmployee?.included_session_count ?? reviewEmployee?.session_count)} ·
+                Approved {fmtCount(reviewEmployee?.approved_session_count ?? reviewEmployee?.included_session_count)} ·
+                Pending {fmtCount(reviewEmployee?.pending_session_count || 0)} ·
                 Excluded {fmtCount(reviewEmployee?.excluded_session_count || 0)} · Bags{" "}
                 {fmtCount(reviewEmployee?.orders_completed)} · Pounds{" "}
                 {fmtLbs(reviewEmployee?.total_pre_lbs, { compact: true })}
                 {reviewEmployee?.day_average_weight_is_override
                   ? ` (calc ${fmtLbs(reviewEmployee?.calculated_total_pre_lbs, { compact: true })})`
                   : ""}{" "}
-                · Hours {fmtHours(reviewEmployee?.performance_hours)} · Avg Weight{" "}
-                {reviewEmployee?.day_average_weight != null
-                  ? `${Number(reviewEmployee.day_average_weight).toFixed(2)} lb/bag`
-                  : "—"}
-                {reviewEmployee?.day_average_weight_is_override ? " (override)" : ""} ·{" "}
+                · Hours {fmtHours(reviewEmployee?.performance_hours)} ·{" "}
                 {fmtRate(reviewEmployee?.lbs_per_hour)} lb/hr ·{" "}
                 {dayStatusLabel(
                   reviewEmployee?.day_publication_status || reviewEmployee?.publication_status
                 )}
               </Typography>
+              {reviewEmployee?.all_visible_orders_completed != null &&
+              Number(reviewEmployee.all_visible_orders_completed) !==
+                Number(reviewEmployee.orders_completed || 0) ? (
+                <Typography sx={{ ...PERF_TYPE.meta, mt: 0.5, fontStyle: "italic" }}>
+                  All visible (incl. pending): {fmtCount(reviewEmployee.all_visible_orders_completed)}{" "}
+                  bags · {fmtLbs(reviewEmployee.all_visible_total_pre_lbs, { compact: true })} ·{" "}
+                  {fmtHours(reviewEmployee.all_visible_performance_hours)} — not the Performance
+                  result
+                </Typography>
+              ) : null}
             </Box>
 
             <Typography sx={{ fontWeight: 800, fontSize: 13 }}>Sessions</Typography>

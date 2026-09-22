@@ -1,13 +1,15 @@
 """Employee-day Performance aggregation and day-level overrides.
 
 Invariant: one employee + one America/New_York calendar day = one Performance
-result. Excluded sessions (excluded_at IS NOT NULL) contribute zero. Daily rate
-is always Σ included pounds / Σ included Folder hours — never an average of
-session rates.
+result. Performance eligibility is APPROVED ∩ non-excluded sessions only.
+Pending / Needs Approval / Disapproved sessions remain visible in Review but
+contribute zero until approved. Excluded sessions are neither active-visible
+nor eligible. Daily rate is always Σ approved pounds / Σ approved Folder hours
+— never an average of session rates.
 
 Day Average Weight (lb/bag) is applied once:
 
-    effective_pounds = average_weight × included_bag_count
+    effective_pounds = average_weight × approved_bag_count
 
 Do not apply the same average independently to every session.
 """
@@ -23,6 +25,10 @@ from backend.ta_helpers import table_exists
 
 DAY_OVERRIDES_TABLE = "rinse_performance_employee_day_overrides"
 DAY_OVERRIDE_EVENTS_TABLE = "rinse_performance_employee_day_override_events"
+
+# Authoritative Performance eligibility: APPROVED and non-excluded sessions only.
+# Visibility of pending sessions is separate (see session_is_visible_non_excluded).
+DASHBOARD_ELIGIBILITY = "approved_non_excluded"
 
 _SCHEMA_READY = False
 
@@ -45,8 +51,46 @@ def session_is_excluded(session: Mapping[str, Any] | None) -> bool:
     return False
 
 
+def session_publication_status(session: Mapping[str, Any] | None) -> str:
+    if not session:
+        return ""
+    return str(
+        session.get("publication_status")
+        or (session.get("publication") or {}).get("status")
+        or ""
+    ).upper()
+
+
+def session_is_approved_for_metrics(session: Mapping[str, Any] | None) -> bool:
+    """True when publication stamp is APPROVED (and not excluded)."""
+    if not session or session_is_excluded(session):
+        return False
+    return session_publication_status(session) == "APPROVED"
+
+
 def session_is_included_for_metrics(session: Mapping[str, Any] | None) -> bool:
-    """Countable toward employee-day bags/lbs/hours/rates."""
+    """Countable toward employee-day Performance bags/lbs/hours/rates.
+
+    Visibility ≠ eligibility: non-excluded sessions remain visible in Review, but
+    only APPROVED (and non-excluded) sessions contribute to Performance metrics.
+    Pending / Needs Approval / Disapproved sessions contribute zero until approved.
+    """
+    if not session:
+        return False
+    if session_is_excluded(session):
+        return False
+    if not session.get("include_in_authoritative_aggregate", True):
+        return False
+    if not session_is_approved_for_metrics(session):
+        return False
+    status = str(session.get("role_status") or "").lower()
+    if status == "unresolved":
+        return False
+    return True
+
+
+def session_is_visible_non_excluded(session: Mapping[str, Any] | None) -> bool:
+    """Operational visibility in Review (not Performance eligibility)."""
     if not session:
         return False
     if session_is_excluded(session):
@@ -54,11 +98,8 @@ def session_is_included_for_metrics(session: Mapping[str, Any] | None) -> bool:
     if not session.get("include_in_authoritative_aggregate", True):
         return False
     status = str(session.get("role_status") or "").lower()
-    if status in {"open", "unresolved"}:
-        # Open sessions may still contribute live hours when flagged authoritative.
-        # Unresolved never contributes.
-        if status == "unresolved":
-            return False
+    if status == "unresolved":
+        return False
     return True
 
 
@@ -346,17 +387,27 @@ def recompute_employee_day_metrics(
     *,
     average_weight_override: float | None = None,
 ) -> dict[str, Any]:
-    """Rewrite employee card totals from included sessions only (+ optional day avg wt)."""
+    """Rewrite employee card Performance totals from APPROVED non-excluded sessions.
+
+    Also attaches clearly labeled all-visible (non-excluded) operational totals so
+    Review can show raw day activity without conflating it with Performance.
+    """
     sessions = list(emp.get("sessions") or [])
     included: list[dict[str, Any]] = []
+    visible: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
     for raw in sessions:
         sess = dict(raw)
         if session_is_excluded(sess):
             excluded.append(sess)
             continue
+        if session_is_visible_non_excluded(sess):
+            visible.append(sess)
         if session_is_included_for_metrics(sess):
             included.append(sess)
+        elif session_is_visible_non_excluded(sess):
+            pending.append(sess)
 
     calc_orders = sum(int(s.get("orders_completed") or 0) for s in included)
     calc_lbs = round(sum(float(s.get("total_pre_lbs") or 0) for s in included), 2)
@@ -367,6 +418,15 @@ def recompute_employee_day_metrics(
     ]
     has_hours = bool(hours_vals)
     calc_hours = round(sum(hours_vals), 4) if has_hours else None
+
+    vis_orders = sum(int(s.get("orders_completed") or 0) for s in visible)
+    vis_lbs = round(sum(float(s.get("total_pre_lbs") or 0) for s in visible), 2)
+    vis_hours_vals = [
+        float(s["performance_hours"])
+        for s in visible
+        if s.get("performance_hours") is not None
+    ]
+    vis_hours = round(sum(vis_hours_vals), 4) if vis_hours_vals else None
 
     override = None
     if average_weight_override is not None:
@@ -398,6 +458,7 @@ def recompute_employee_day_metrics(
     ends = [t for t in ends if t]
     any_open = any(str(s.get("role_status") or "").lower() == "open" for s in included)
 
+    # Authoritative Performance fields = approved subset only.
     emp["orders_completed"] = calc_orders
     emp["total_pre_lbs"] = effective_lbs
     emp["calculated_total_pre_lbs"] = calc_lbs
@@ -408,14 +469,22 @@ def recompute_employee_day_metrics(
     emp["session_hours"] = calc_hours
     emp["session_count"] = len(sessions)
     emp["included_session_count"] = len(included)
+    emp["approved_session_count"] = len(included)
+    emp["pending_session_count"] = len(pending)
     emp["excluded_session_count"] = len(excluded)
+    emp["visible_session_count"] = len(visible)
+    # Operational all-visible totals (non-excluded) — not the Performance result.
+    emp["all_visible_orders_completed"] = vis_orders
+    emp["all_visible_total_pre_lbs"] = vis_lbs
+    emp["all_visible_performance_hours"] = vis_hours
     emp["day_average_weight"] = avg_weight
     emp["day_average_weight_override"] = override if is_override else None
     emp["day_average_weight_is_override"] = is_override
     emp["credited_weight_basis"] = (
         "DAY_AVERAGE_WEIGHT_OVERRIDE" if is_override else "EVIDENCE_PRE"
     )
-    emp["aggregate_method"] = "weighted_totals_included_only"
+    emp["aggregate_method"] = "weighted_totals_approved_non_excluded"
+    emp["metrics_basis"] = DASHBOARD_ELIGIBILITY
     emp["duration_label"] = _fmt_duration_hours(calc_hours)
     if starts or ends:
         from backend.management_wf_folder_performance import _fmt_clock  # noqa: PLC0415
@@ -622,15 +691,11 @@ def apply_employee_day_end_time(
 # ---------------------------------------------------------------------------
 # Mutation-response helpers (fast path — no full bag rebuild)
 # ---------------------------------------------------------------------------
-
-DASHBOARD_ELIGIBILITY = "included_non_excluded"
-"""Live Management Performance rates use every non-excluded session.
-
-Disapprove/Reopen flips publication to UNAPPROVED but does NOT remove bags/lbs/hours
-from the employee-day rate. Exclude is the only publication action that zeros a
-session's contribution. Fully APPROVED employee-days are marked dashboard_rankable
-for published/team surfaces that opt into approved-only ranking.
-"""
+# Live Management Performance rates use APPROVED non-excluded sessions only.
+# Pending / Needs Approval / Disapproved remain visible in Review but contribute
+# zero until approved. Exclude zeros contribution and marks EXCLUDED.
+# Fully APPROVED employee-days are dashboard_rankable for Published boards.
+# DASHBOARD_ELIGIBILITY (module top) = approved_non_excluded.
 
 
 def apply_session_publication_patch(
@@ -701,7 +766,7 @@ def compose_employee_day_from_sessions(
     emp["day_publication_status"] = day_pub["status"]
     emp["day_publication"] = day_pub
     emp["publication_status"] = day_pub["status"]
-    # Rankable for approved-only team boards; live rates still use included_non_excluded.
+    # Rankable for approved-only team boards; Performance rates use approved subset.
     emp["dashboard_rankable"] = day_pub["status"] == "APPROVED"
     emp["eligibility_rule"] = DASHBOARD_ELIGIBILITY
     return emp
@@ -761,8 +826,9 @@ def mutation_employee_day_payload(
         "performance_unit": "employee_day",
         "eligibility_rule": DASHBOARD_ELIGIBILITY,
         "eligibility_note": (
-            "Rates include every non-excluded session. Disapprove does not drop "
-            "hours/bags; Exclude does. Team boards may filter to dashboard_rankable "
-            "(fully APPROVED) employee-days."
+            "Performance rates use APPROVED non-excluded sessions only. "
+            "Pending sessions stay visible in Review but contribute zero until "
+            "approved. Exclude removes a session from calculations. "
+            "dashboard_rankable requires a fully APPROVED employee-day."
         ),
     }

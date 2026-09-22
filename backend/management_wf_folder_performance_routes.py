@@ -183,8 +183,10 @@ def _annotate_dashboard(cursor, oid: int, payload: dict, selected: date) -> dict
             "metrics": ["lbs_per_hour", "bags_per_hour", "pounds", "orders", "hours"],
             "live": True,
             "note": (
-                "Folder Performance unit is employee-day. Live rates use included "
-                "(non-excluded) sessions. dashboard_rankable marks fully APPROVED days."
+                "Folder Performance unit is employee-day. Performance rates use "
+                "APPROVED non-excluded sessions only; pending sessions stay visible "
+                "in Review but contribute zero until approved. dashboard_rankable "
+                "marks fully APPROVED days for Published boards."
             ),
         }
     ]
