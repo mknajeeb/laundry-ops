@@ -617,3 +617,152 @@ def apply_employee_day_end_time(
         "end_time_et": end_time_et,
         "business_date_et": selected_date_et.isoformat(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Mutation-response helpers (fast path — no full bag rebuild)
+# ---------------------------------------------------------------------------
+
+DASHBOARD_ELIGIBILITY = "included_non_excluded"
+"""Live Management Performance rates use every non-excluded session.
+
+Disapprove/Reopen flips publication to UNAPPROVED but does NOT remove bags/lbs/hours
+from the employee-day rate. Exclude is the only publication action that zeros a
+session's contribution. Fully APPROVED employee-days are marked dashboard_rankable
+for published/team surfaces that opt into approved-only ranking.
+"""
+
+
+def apply_session_publication_patch(
+    sessions: Sequence[Mapping[str, Any]],
+    *,
+    session_id: str | None = None,
+    publication: Mapping[str, Any] | None = None,
+    session_ids: Sequence[str] | None = None,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return shallow-copied sessions with one/many publication stamps updated."""
+    targets: set[str] = set()
+    if session_id:
+        targets.add(str(session_id).strip())
+    for sid in session_ids or []:
+        if sid:
+            targets.add(str(sid).strip())
+    pub = dict(publication or {})
+    if status:
+        pub["status"] = str(status).upper()
+    st = str(pub.get("status") or status or "").upper()
+    out: list[dict[str, Any]] = []
+    for raw in sessions or []:
+        sess = dict(raw)
+        sid = str(sess.get("session_id") or "")
+        if targets and sid in targets:
+            sess["publication_status"] = st or sess.get("publication_status")
+            prev = dict(sess.get("publication") or {})
+            prev.update(pub)
+            if st:
+                prev["status"] = st
+                prev["excluded"] = st == "EXCLUDED"
+            sess["publication"] = prev
+            sess["publication_status"] = prev.get("status") or st
+        out.append(sess)
+    return out
+
+
+def compose_employee_day_from_sessions(
+    *,
+    employee_name: str,
+    employee_user_id: int | None,
+    sessions: Sequence[Mapping[str, Any]],
+    average_weight_override: float | None = None,
+    selected_date_et: date | str | None = None,
+) -> dict[str, Any]:
+    """Authoritative employee-day card from session facts + publication stamps.
+
+    Does not touch bag attribution. Used after Approve/Exclude/Include/Unapprove/
+    Edit Day average-weight so the UI can update without a full Performance rebuild.
+    """
+    from backend.rinse_performance_approvals import derive_employee_day_publication_status
+
+    emp: dict[str, Any] = {
+        "employee": employee_name,
+        "user_id": employee_user_id,
+        "sessions": [dict(s) for s in (sessions or [])],
+        "selected_date_et": (
+            selected_date_et.isoformat()
+            if isinstance(selected_date_et, date)
+            else (str(selected_date_et) if selected_date_et else None)
+        ),
+        "performance_unit": "employee_day",
+        "metrics_basis": DASHBOARD_ELIGIBILITY,
+    }
+    recompute_employee_day_metrics(emp, average_weight_override=average_weight_override)
+    day_pub = derive_employee_day_publication_status(emp["sessions"])
+    emp["day_publication_status"] = day_pub["status"]
+    emp["day_publication"] = day_pub
+    emp["publication_status"] = day_pub["status"]
+    # Rankable for approved-only team boards; live rates still use included_non_excluded.
+    emp["dashboard_rankable"] = day_pub["status"] == "APPROVED"
+    emp["eligibility_rule"] = DASHBOARD_ELIGIBILITY
+    return emp
+
+
+def load_override_for_employee(
+    cursor,
+    organization_id: int,
+    *,
+    business_date_et: date,
+    employee_user_id: int | None,
+    employee_name: str,
+    role_key: str = ROLE_FOLDER,
+) -> float | None:
+    overrides = load_day_average_weight_overrides(
+        cursor,
+        organization_id,
+        role_key=role_key,
+        business_date_et=business_date_et,
+    )
+    try:
+        key = employee_day_override_key(
+            employee_user_id=employee_user_id,
+            employee_name=employee_name,
+        )
+    except ValueError:
+        return None
+    return overrides.get(key)
+
+
+def mutation_employee_day_payload(
+    cursor,
+    organization_id: int,
+    *,
+    selected_date_et: date,
+    employee_name: str,
+    employee_user_id: int | None,
+    sessions: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Build employee_day + compact summary fields for mutation API responses."""
+    ov = load_override_for_employee(
+        cursor,
+        organization_id,
+        business_date_et=selected_date_et,
+        employee_user_id=employee_user_id,
+        employee_name=employee_name,
+    )
+    emp = compose_employee_day_from_sessions(
+        employee_name=employee_name,
+        employee_user_id=employee_user_id,
+        sessions=sessions,
+        average_weight_override=ov,
+        selected_date_et=selected_date_et,
+    )
+    return {
+        "employee_day": emp,
+        "performance_unit": "employee_day",
+        "eligibility_rule": DASHBOARD_ELIGIBILITY,
+        "eligibility_note": (
+            "Rates include every non-excluded session. Disapprove does not drop "
+            "hours/bags; Exclude does. Team boards may filter to dashboard_rankable "
+            "(fully APPROVED) employee-days."
+        ),
+    }

@@ -318,7 +318,12 @@ def _recompute_summary_from_employees(employees: list[dict[str, Any]]) -> dict[s
 
 
 def partition_employees_by_exclusion(day: dict[str, Any]) -> dict[str, Any]:
-    """Split active vs excluded employee-days; recompute active summary."""
+    """Tag excluded employee-days; recompute active summary.
+
+    Excluded employee-days remain in ``employees`` so Review/leaderboard can show
+    an EXCLUDED badge. They are also mirrored in ``excluded_employees``. Active
+    summary / rates never include EXCLUDED days.
+    """
     employees = list(day.get("employees") or [])
     active = [
         e
@@ -330,6 +335,11 @@ def partition_employees_by_exclusion(day: dict[str, Any]) -> dict[str, Any]:
         for e in employees
         if str(e.get("day_publication_status") or e.get("publication_status") or "") == "EXCLUDED"
     ]
+    for emp in employees:
+        st = str(emp.get("day_publication_status") or emp.get("publication_status") or "")
+        emp["excluded_from_metrics"] = st == "EXCLUDED"
+        emp["metrics_basis"] = emp.get("metrics_basis") or "included_non_excluded"
+        emp["dashboard_rankable"] = st == "APPROVED"
     summary = dict(day.get("summary") or {})
     summary.update(_recompute_summary_from_employees(active))
     # Preserve unmapped counts from original summary.
@@ -341,12 +351,16 @@ def partition_employees_by_exclusion(day: dict[str, Any]) -> dict[str, Any]:
     ):
         if key in (day.get("summary") or {}):
             summary[key] = day["summary"][key]
-    day["employees"] = active
+    summary["employee_day_count"] = len(active)
+    summary["excluded_employee_day_count"] = len(excluded)
+    # Keep excluded visible in the primary list (management must not vanish them).
+    day["employees"] = employees
     day["excluded_employees"] = excluded
     day["excluded_employee_count"] = len(excluded)
     day["summary"] = summary
     day["summary_active"] = summary
     day["summary_all_including_excluded"] = _recompute_summary_from_employees(employees)
+    day["eligibility_rule"] = "included_non_excluded"
     return day
 
 

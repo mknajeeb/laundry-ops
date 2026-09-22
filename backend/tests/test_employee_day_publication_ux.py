@@ -69,7 +69,7 @@ def test_derive_employee_day_statuses():
     )
 
 
-def test_partition_hides_excluded_from_active_summary():
+def test_partition_keeps_excluded_visible_but_out_of_active_summary():
     day = {
         "employees": [
             {
@@ -90,10 +90,13 @@ def test_partition_hides_excluded_from_active_summary():
         "summary": {"needs_attribution_count": 2},
     }
     out = partition_employees_by_exclusion(day)
-    assert len(out["employees"]) == 1
-    assert out["employees"][0]["employee"] == "Tarannum"
+    # Excluded stay visible for management Review (do not vanish).
+    assert len(out["employees"]) == 2
+    assert out["employees"][1]["excluded_from_metrics"] is True
+    assert out["employees"][1]["dashboard_rankable"] is False
     assert len(out["excluded_employees"]) == 1
     assert out["excluded_employees"][0]["employee"].startswith("Mrs Chen")
+    # Active summary still excludes them.
     assert out["summary"]["employee_count"] == 1
     assert out["summary"]["orders_completed"] == 10
     assert out["summary"]["needs_attribution_count"] == 2

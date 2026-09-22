@@ -68,12 +68,67 @@ def _actor(me: dict) -> tuple[int | None, str | None]:
     return actor_id, str(actor_name) if actor_name else None
 
 
-def _annotate_dashboard(cursor, oid: int, payload: dict, selected: date) -> dict:
-    """Attach publication status + employee-day badges; hide excluded by default.
+def _attach_mutation_employee_day(
+    cursor,
+    oid: int,
+    out: dict,
+    *,
+    selected: date,
+    employee_name: str | None,
+    employee_user_id: int | None,
+    sessions: list | None,
+    session_id: str | None = None,
+    publication: dict | None = None,
+    mark_status: str | None = None,
+) -> dict:
+    """Attach authoritative employee_day to a mutation response (no full rebuild)."""
+    from backend.rinse_performance_employee_day import (
+        apply_session_publication_patch,
+        mutation_employee_day_payload,
+    )
 
-    Reconcile-on-GET previously invalidated every approval after Approve because
-    list payloads strip nested orders while approve fingerprints included them.
-    Fingerprint no longer depends on orders; reconcile remains on mutation paths.
+    if not employee_name and not sessions:
+        return out
+    sess = list(sessions or [])
+    if session_id and (publication or mark_status):
+        sess = apply_session_publication_patch(
+            sess,
+            session_id=session_id,
+            publication=publication,
+            status=mark_status,
+        )
+    elif mark_status and sessions:
+        # Day-level exclude/include: stamp every session.
+        sess = apply_session_publication_patch(
+            sess,
+            session_ids=[str(s.get("session_id")) for s in sess if s.get("session_id")],
+            status=mark_status,
+            publication=publication,
+        )
+    try:
+        patch = mutation_employee_day_payload(
+            cursor,
+            oid,
+            selected_date_et=selected,
+            employee_name=str(employee_name or (sess[0].get("employee") if sess else "") or ""),
+            employee_user_id=int(employee_user_id) if employee_user_id is not None else None,
+            sessions=sess,
+        )
+        out.update(patch)
+    except Exception:
+        # Never fail the mutation write because of a patch compose error.
+        pass
+    return out
+
+
+def _annotate_dashboard(cursor, oid: int, payload: dict, selected: date) -> dict:
+    """Attach publication status + employee-day badges.
+
+    Excluded employee-days remain visible (EXCLUDED badge) but are omitted from
+    active summary rates. Reconcile-on-GET previously invalidated every approval
+    after Approve because list payloads strip nested orders while approve
+    fingerprints included them. Fingerprint no longer depends on orders;
+    reconcile remains on mutation paths.
 
     Day-override tables are ensured here (Performance GET) so schema exists before
     Edit Day writes; prefer applying sql/rinse_performance_employee_day_overrides_v1.sql
@@ -125,9 +180,12 @@ def _annotate_dashboard(cursor, oid: int, payload: dict, selected: date) -> dict
         {
             "role_key": "FOLDER",
             "display_name": "Folder",
-            "metrics": ["lbs_per_hour", "bags_per_hour", "pounds", "orders"],
+            "metrics": ["lbs_per_hour", "bags_per_hour", "pounds", "orders", "hours"],
             "live": True,
-            "note": "Folder is the only live Productivity role with lb/hr and bags/hr attribution.",
+            "note": (
+                "Folder Performance unit is employee-day. Live rates use included "
+                "(non-excluded) sessions. dashboard_rankable marks fully APPROVED days."
+            ),
         }
     ]
     return payload
@@ -264,6 +322,21 @@ def register_management_wf_folder_performance_routes(
                 session=session_card,
             )
             conn.commit()
+            if out.get("ok") and session_card:
+                _attach_mutation_employee_day(
+                    cursor,
+                    oid,
+                    out,
+                    selected=selected,
+                    employee_name=session_card.get("employee"),
+                    employee_user_id=session_card.get("user_id")
+                    or session_card.get("employee_user_id"),
+                    sessions=body.get("employee_sessions")
+                    or ([session_card] if session_card else None),
+                    session_id=str(session_id),
+                    publication=out.get("publication") or {"status": "APPROVED"},
+                    mark_status="APPROVED",
+                )
             status = 200 if out.get("ok") else 400
             return jsonify(json_safe_rinse(out)), status
         except ValueError as exc:
@@ -335,6 +408,12 @@ def register_management_wf_folder_performance_routes(
             blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
             if blocked:
                 return blocked
+            body = request.get_json(silent=True) or {}
+            selected, err = _selected_date_et(
+                body.get("date_et") or body.get("selected_date_et")
+            )
+            if err:
+                return err
             actor_id, actor_name = _actor(me)
             out = unapprove_session(
                 cursor,
@@ -346,6 +425,23 @@ def register_management_wf_folder_performance_routes(
                 reason="manual_unapprove",
             )
             conn.commit()
+            sessions = body.get("employee_sessions") or body.get("sessions")
+            session_card = body.get("session") if isinstance(body.get("session"), dict) else None
+            if out.get("ok") and (sessions or session_card):
+                _attach_mutation_employee_day(
+                    cursor,
+                    oid,
+                    out,
+                    selected=selected or business_today(),
+                    employee_name=body.get("employee")
+                    or (session_card or {}).get("employee"),
+                    employee_user_id=body.get("user_id")
+                    or (session_card or {}).get("user_id"),
+                    sessions=sessions or ([session_card] if session_card else None),
+                    session_id=str(session_id),
+                    publication={"status": "UNAPPROVED"},
+                    mark_status="UNAPPROVED",
+                )
             return jsonify(json_safe_rinse(out))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
@@ -469,6 +565,23 @@ def register_management_wf_folder_performance_routes(
                 snapshot=snap,
             )
             conn.commit()
+            sessions = body.get("employee_sessions") or body.get("sessions")
+            session_card = body.get("session") if isinstance(body.get("session"), dict) else None
+            if out.get("ok") and (sessions or session_card):
+                _attach_mutation_employee_day(
+                    cursor,
+                    oid,
+                    out,
+                    selected=selected,
+                    employee_name=body.get("employee")
+                    or (session_card or {}).get("employee"),
+                    employee_user_id=body.get("user_id")
+                    or (session_card or {}).get("user_id"),
+                    sessions=sessions or ([session_card] if session_card else None),
+                    session_id=str(session_id),
+                    publication=out.get("publication") or {"status": "EXCLUDED"},
+                    mark_status="EXCLUDED",
+                )
             status = 200 if out.get("ok") else 400
             return jsonify(json_safe_rinse(out)), status
         except Exception as exc:
@@ -516,6 +629,18 @@ def register_management_wf_folder_performance_routes(
                 sessions=sessions,
             )
             conn.commit()
+            if out.get("ok") and sessions:
+                _attach_mutation_employee_day(
+                    cursor,
+                    oid,
+                    out,
+                    selected=selected,
+                    employee_name=body.get("employee") or body.get("employee_name"),
+                    employee_user_id=body.get("user_id") or body.get("employee_user_id"),
+                    sessions=sessions,
+                    mark_status="APPROVED",
+                    publication={"status": "APPROVED"},
+                )
             status = 200 if out.get("ok") else 400
             return jsonify(json_safe_rinse(out)), status
         except Exception as exc:
@@ -564,6 +689,18 @@ def register_management_wf_folder_performance_routes(
                 sessions=sessions,
             )
             conn.commit()
+            if out.get("ok") and sessions:
+                _attach_mutation_employee_day(
+                    cursor,
+                    oid,
+                    out,
+                    selected=selected,
+                    employee_name=body.get("employee") or body.get("employee_name"),
+                    employee_user_id=body.get("user_id") or body.get("employee_user_id"),
+                    sessions=sessions,
+                    mark_status="EXCLUDED",
+                    publication={"status": "EXCLUDED", "excluded": True},
+                )
             status = 200 if out.get("ok") else 400
             return jsonify(json_safe_rinse(out)), status
         except Exception as exc:
@@ -594,6 +731,7 @@ def register_management_wf_folder_performance_routes(
                 return blocked
             body = request.get_json(silent=True) or {}
             actor_id, actor_name = _actor(me)
+            sessions = body.get("sessions") if isinstance(body.get("sessions"), list) else None
             out = include_folder_employee_day(
                 cursor,
                 oid,
@@ -602,7 +740,7 @@ def register_management_wf_folder_performance_routes(
                 session_ids=body.get("session_ids")
                 or [
                     str(s.get("session_id"))
-                    for s in (body.get("sessions") or [])
+                    for s in (sessions or [])
                     if isinstance(s, dict) and s.get("session_id")
                 ],
                 actor_user_id=actor_id,
@@ -610,6 +748,21 @@ def register_management_wf_folder_performance_routes(
                 reason=(body.get("reason") or None),
             )
             conn.commit()
+            selected, _err = _selected_date_et(
+                body.get("date_et") or body.get("selected_date_et")
+            )
+            if out.get("ok") and sessions and selected:
+                _attach_mutation_employee_day(
+                    cursor,
+                    oid,
+                    out,
+                    selected=selected,
+                    employee_name=body.get("employee") or body.get("employee_name"),
+                    employee_user_id=body.get("user_id") or body.get("employee_user_id"),
+                    sessions=sessions,
+                    mark_status="UNAPPROVED",
+                    publication={"status": "UNAPPROVED", "excluded": False},
+                )
             status = 200 if out.get("ok") else 400
             return jsonify(json_safe_rinse(out)), status
         except Exception as exc:
@@ -710,6 +863,17 @@ def register_management_wf_folder_performance_routes(
 
             if results.get("ok"):
                 conn.commit()
+                sessions = body.get("sessions") if isinstance(body.get("sessions"), list) else None
+                if sessions:
+                    _attach_mutation_employee_day(
+                        cursor,
+                        oid,
+                        results,
+                        selected=selected,
+                        employee_name=str(emp_name or "").strip(),
+                        employee_user_id=int(emp_uid) if emp_uid is not None else None,
+                        sessions=sessions,
+                    )
             else:
                 conn.rollback()
             status = 200 if results.get("ok") else 400
@@ -743,6 +907,11 @@ def register_management_wf_folder_performance_routes(
             if blocked:
                 return blocked
             body = request.get_json(silent=True) or {}
+            selected, err = _selected_date_et(
+                body.get("date_et") or body.get("selected_date_et")
+            )
+            if err:
+                return err
             actor_id, actor_name = _actor(me)
             out = include_session_publication(
                 cursor,
@@ -754,6 +923,23 @@ def register_management_wf_folder_performance_routes(
                 reason=(body.get("reason") or None),
             )
             conn.commit()
+            sessions = body.get("employee_sessions") or body.get("sessions")
+            session_card = body.get("session") if isinstance(body.get("session"), dict) else None
+            if out.get("ok") and (sessions or session_card):
+                _attach_mutation_employee_day(
+                    cursor,
+                    oid,
+                    out,
+                    selected=selected or business_today(),
+                    employee_name=body.get("employee")
+                    or (session_card or {}).get("employee"),
+                    employee_user_id=body.get("user_id")
+                    or (session_card or {}).get("user_id"),
+                    sessions=sessions or ([session_card] if session_card else None),
+                    session_id=str(session_id),
+                    publication=out.get("publication") or {"status": "UNAPPROVED"},
+                    mark_status="UNAPPROVED",
+                )
             status = 200 if out.get("ok") else 400
             return jsonify(json_safe_rinse(out)), status
         except Exception as exc:

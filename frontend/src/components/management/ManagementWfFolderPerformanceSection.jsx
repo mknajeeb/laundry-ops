@@ -48,6 +48,10 @@ import {
   putManagementFolderBenchmark,
   postVeewashStep1Correction,
 } from "../../api";
+import {
+  applyEmployeeDayPatch,
+  employeeSessionsPayload,
+} from "./performance/applyEmployeeDayPatch";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import { businessTodayYmd } from "../../utils/businessTime";
 import {
@@ -108,17 +112,19 @@ function dayStatusColor(status) {
 }
 
 const GRAPH_METRICS = [
-  { value: "lbs_hr", label: "Lb/hr", field: "lbs_per_hour" },
+  { value: "lbs_hr", label: "Folding lb/hr", field: "lbs_per_hour" },
   { value: "bags_hr", label: "Bags/hr", field: "bags_per_hour" },
-  { value: "pounds", label: "Pounds", field: "total_pre_lbs" },
-  { value: "orders", label: "Orders", field: "orders_completed" },
+  { value: "pounds", label: "Total pounds", field: "total_pre_lbs" },
+  { value: "orders", label: "Total bags", field: "orders_completed" },
+  { value: "hours", label: "Hours worked", field: "performance_hours" },
 ];
 
 const SORT_OPTIONS = [
   { value: "lbs_hr", label: "Highest lb/hr" },
-  { value: "orders", label: "Most orders" },
-  { value: "pounds", label: "Most pounds" },
   { value: "bags_hr", label: "Highest bags/hr" },
+  { value: "orders", label: "Most bags" },
+  { value: "pounds", label: "Most pounds" },
+  { value: "hours", label: "Most hours" },
 ];
 
 function sessionPublishPayload(session) {
@@ -500,7 +506,7 @@ export default function ManagementWfFolderPerformanceSection({
   const [editDayAvgWeight, setEditDayAvgWeight] = useState("");
   const [editDayEndTime, setEditDayEndTime] = useState("");
   const [editDayReason, setEditDayReason] = useState("");
-  const [showExcluded, setShowExcluded] = useState(false);
+  const [showExcluded, setShowExcluded] = useState(true); // Excluded remain visible
   const [roleKey, setRoleKey] = useState("FOLDER");
   const [employeeFilter, setEmployeeFilter] = useState("all");
   const [graphMetric, setGraphMetric] = useState("lbs_hr");
@@ -516,6 +522,28 @@ export default function ManagementWfFolderPerformanceSection({
   }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
   const loadInFlight = useRef(false);
   const loadGen = useRef(0);
+
+  const applyMutationResult = (body) => {
+    const day = body?.employee_day;
+    if (!day) return false;
+    setData((prev) => applyEmployeeDayPatch(prev, day));
+    setReviewEmployee((prev) => {
+      if (!prev) return prev;
+      const sameUser =
+        prev.user_id != null &&
+        day.user_id != null &&
+        String(prev.user_id) === String(day.user_id);
+      const sameName =
+        String(prev.employee || "").toLowerCase() ===
+        String(day.employee || "").toLowerCase();
+      return sameUser || sameName ? day : prev;
+    });
+    return true;
+  };
+
+  const refreshAfterMutation = async () => {
+    await load({ silent: true, skip_lazy_baseline: true });
+  };
 
   const patchSessionPublication = (sessionId, publication) => {
     const sid = String(sessionId || "");
@@ -732,9 +760,13 @@ export default function ManagementWfFolderPerformanceSection({
     setError("");
     try {
       const day = session.selected_date_et || dateEt;
+      const emp = reviewEmployee;
       const res = await postManagementPerformanceApproveSession("FOLDER", session.session_id, {
         date_et: day,
         session: sessionPublishPayload(session),
+        employee: emp?.employee || session.employee,
+        user_id: emp?.user_id,
+        employee_sessions: employeeSessionsPayload(emp),
       });
       const body = res.data || {};
       if (!body.ok) {
@@ -742,7 +774,8 @@ export default function ManagementWfFolderPerformanceSection({
         return;
       }
       setPubMessage(`Approved ${session.session_code || session.session_id}`);
-      await load({ skip_lazy_baseline: true });
+      applyMutationResult(body);
+      void refreshAfterMutation();
     } catch (err) {
       setError(apiErr(err, "Approve failed"));
     } finally {
@@ -760,7 +793,7 @@ export default function ManagementWfFolderPerformanceSection({
         date_et: dateEt,
         user_id: employee.user_id,
         employee: employee.employee,
-        sessions: (employee.sessions || []).map(sessionPublishPayload),
+        sessions: employeeSessionsPayload(employee),
       });
       const body = res.data || {};
       if (body.ok === false && body.status === "employee_not_found") {
@@ -771,7 +804,8 @@ export default function ManagementWfFolderPerformanceSection({
         `Approved ${employee.employee}: ${body.approved || 0} session(s)` +
           (body.already_approved ? ` · ${body.already_approved} already` : "")
       );
-      await load({ skip_lazy_baseline: true });
+      applyMutationResult(body);
+      void refreshAfterMutation();
     } catch (err) {
       setError(apiErr(err, "Approve employee day failed"));
     } finally {
@@ -797,8 +831,14 @@ export default function ManagementWfFolderPerformanceSection({
     setPubMessage("");
     setError("");
     try {
+      const emp = reviewEmployee;
       const res = await postManagementPerformanceUnapproveSession("FOLDER", session.session_id, {
         reason: "manual_unapprove",
+        date_et: session.selected_date_et || dateEt,
+        employee: emp?.employee || session.employee,
+        user_id: emp?.user_id,
+        session: sessionPublishPayload(session),
+        employee_sessions: employeeSessionsPayload(emp),
       });
       const body = res.data || {};
       if (body.ok === false) {
@@ -806,7 +846,8 @@ export default function ManagementWfFolderPerformanceSection({
         return;
       }
       setPubMessage(`Disapproved ${session.session_code || session.session_id}`);
-      await load({ skip_lazy_baseline: true });
+      applyMutationResult(body);
+      void refreshAfterMutation();
     } catch (err) {
       setError(apiErr(err, "Disapprove failed"));
     } finally {
@@ -849,6 +890,7 @@ export default function ManagementWfFolderPerformanceSection({
       user_id: reviewEmployee.user_id,
       employee: reviewEmployee.employee,
       reason: editDayReason || undefined,
+      sessions: employeeSessionsPayload(reviewEmployee),
     };
     const avg = editDayAvgWeight.trim();
     if (avg !== "") {
@@ -878,7 +920,8 @@ export default function ManagementWfFolderPerformanceSection({
       }
       setPubMessage(`Updated day for ${reviewEmployee.employee}`);
       setEditDayOpen(false);
-      await load({ skip_lazy_baseline: true });
+      applyMutationResult(body);
+      void refreshAfterMutation();
     } catch (err) {
       setError(apiErr(err, "Edit Day failed"));
     } finally {
@@ -911,7 +954,7 @@ export default function ManagementWfFolderPerformanceSection({
       }
       setPubMessage(`Saved manager value for ${editSession.session_code || editSession.session_id}`);
       setEditSession(null);
-      await load({ skip_lazy_baseline: true });
+      void refreshAfterMutation();
     } catch (err) {
       setError(apiErr(err, "Save failed"));
     } finally {
@@ -924,9 +967,13 @@ export default function ManagementWfFolderPerformanceSection({
     setApproveBusy(true);
     setError("");
     try {
+      const emp = reviewEmployee;
       const res = await postManagementPerformanceExcludeSession("FOLDER", session.session_id, {
         date_et: session.selected_date_et || dateEt,
         session: sessionPublishPayload(session),
+        employee: emp?.employee || session.employee,
+        user_id: emp?.user_id,
+        employee_sessions: employeeSessionsPayload(emp),
       });
       const body = res.data || {};
       if (!body.ok) {
@@ -934,7 +981,8 @@ export default function ManagementWfFolderPerformanceSection({
         return;
       }
       setPubMessage(`Excluded ${session.session_code || session.session_id}`);
-      await load({ skip_lazy_baseline: true });
+      applyMutationResult(body);
+      void refreshAfterMutation();
     } catch (err) {
       setError(apiErr(err, "Exclude failed"));
     } finally {
@@ -947,14 +995,22 @@ export default function ManagementWfFolderPerformanceSection({
     setApproveBusy(true);
     setError("");
     try {
-      const res = await postManagementPerformanceIncludeSession("FOLDER", session.session_id, {});
+      const emp = reviewEmployee;
+      const res = await postManagementPerformanceIncludeSession("FOLDER", session.session_id, {
+        date_et: session.selected_date_et || dateEt,
+        session: sessionPublishPayload(session),
+        employee: emp?.employee || session.employee,
+        user_id: emp?.user_id,
+        employee_sessions: employeeSessionsPayload(emp),
+      });
       const body = res.data || {};
       if (!body.ok) {
         setError(body.error || body.status || "Include failed");
         return;
       }
       setPubMessage(`Included ${session.session_code || session.session_id}`);
-      await load({ skip_lazy_baseline: true });
+      applyMutationResult(body);
+      void refreshAfterMutation();
     } catch (err) {
       setError(apiErr(err, "Include failed"));
     } finally {
@@ -971,7 +1027,7 @@ export default function ManagementWfFolderPerformanceSection({
         date_et: dateEt,
         user_id: employee.user_id,
         employee: employee.employee,
-        sessions: (employee.sessions || []).map(sessionPublishPayload),
+        sessions: employeeSessionsPayload(employee),
       });
       const body = res.data || {};
       if (!body.ok) {
@@ -979,8 +1035,8 @@ export default function ManagementWfFolderPerformanceSection({
         return;
       }
       setPubMessage(`Excluded ${employee.employee} for ${dateEt}`);
-      setReviewEmployee(null);
-      await load({ skip_lazy_baseline: true });
+      applyMutationResult(body);
+      void refreshAfterMutation();
     } catch (err) {
       setError(apiErr(err, "Exclude failed"));
     } finally {
@@ -994,9 +1050,10 @@ export default function ManagementWfFolderPerformanceSection({
     setError("");
     try {
       const res = await postManagementPerformanceIncludeEmployeeDay("FOLDER", {
+        date_et: dateEt,
         user_id: employee.user_id,
         employee: employee.employee,
-        sessions: employee.sessions || [],
+        sessions: employeeSessionsPayload(employee),
         session_ids: (employee.sessions || []).map((s) => s.session_id).filter(Boolean),
       });
       const body = res.data || {};
@@ -1005,7 +1062,8 @@ export default function ManagementWfFolderPerformanceSection({
         return;
       }
       setPubMessage(`Included ${employee.employee}`);
-      await load({ skip_lazy_baseline: true });
+      applyMutationResult(body);
+      void refreshAfterMutation();
     } catch (err) {
       setError(apiErr(err, "Include failed"));
     } finally {
@@ -1069,9 +1127,18 @@ export default function ManagementWfFolderPerformanceSection({
   const outsideFolderSessionCount = data?.outside_folder_session_count || 0;
 
   const employees = useMemo(() => {
-    const active = [...(data?.employees || [])];
-    const excluded = [...(data?.excluded_employees || [])];
-    let rows = showExcluded ? [...active, ...excluded] : active;
+    // Backend now keeps EXCLUDED days inside employees[]; excluded_employees is a mirror.
+    const byKey = new Map();
+    for (const e of [...(data?.employees || []), ...(data?.excluded_employees || [])]) {
+      const k = e.user_id != null ? `u:${e.user_id}` : `n:${String(e.employee || "").toLowerCase()}`;
+      byKey.set(k, e);
+    }
+    let rows = [...byKey.values()];
+    if (!showExcluded) {
+      rows = rows.filter(
+        (e) => String(e.day_publication_status || e.publication_status || "") !== "EXCLUDED"
+      );
+    }
     if (employeeFilter !== "all") {
       rows = rows.filter(
         (e) =>
@@ -1085,6 +1152,10 @@ export default function ManagementWfFolderPerformanceSection({
       rows.sort((a, b) => (b.bags_per_hour || 0) - (a.bags_per_hour || 0));
     } else if (sortBy === "pounds") {
       rows.sort((a, b) => (b.total_pre_lbs || 0) - (a.total_pre_lbs || 0));
+    } else if (sortBy === "hours") {
+      rows.sort(
+        (a, b) => (b.performance_hours || b.session_hours || 0) - (a.performance_hours || a.session_hours || 0)
+      );
     } else {
       rows.sort((a, b) => (b.orders_completed || 0) - (a.orders_completed || 0));
     }
@@ -1112,16 +1183,28 @@ export default function ManagementWfFolderPerformanceSection({
 
   const totalHours = summary.total_hours ?? summary.session_hours;
   const kpiItems = [
-    { value: fmtCount(summary.orders_completed), label: "Orders", accent: false },
     {
-      value: fmtLbs(summary.total_pre_lbs, { compact: true }).replace(/ lb$/, ""),
-      label: "Pounds",
+      value: fmtRate(summary.lbs_per_hour, 0),
+      label: "Team Avg lb/hr",
+      accent: true,
+    },
+    {
+      value: benchDraft || fmtRate(data?.folder_benchmark_lbs_hr, 0),
+      label: "Target lb/hr",
       accent: false,
     },
-    { value: fmtCount(summary.employee_count), label: "Employees", accent: false },
-    { value: fmtHours(totalHours), label: "Total Hours", accent: false },
-    { value: fmtRate(summary.bags_per_hour), label: "Avg Bags/hr", accent: false },
-    { value: fmtRate(summary.lbs_per_hour, 0), label: "Avg lb/hr", accent: true },
+    {
+      value: fmtCount(summary.employee_day_count ?? summary.employee_count),
+      label: "Employee-Days",
+      accent: false,
+    },
+    { value: fmtHours(totalHours), label: "Included Hours", accent: false },
+    {
+      value: fmtLbs(summary.total_pre_lbs, { compact: true }).replace(/ lb$/, ""),
+      label: "Included Pounds",
+      accent: false,
+    },
+    { value: fmtCount(summary.orders_completed), label: "Included Bags", accent: false },
   ];
 
   const kpiInline = (
@@ -1712,7 +1795,7 @@ export default function ManagementWfFolderPerformanceSection({
                       Orders
                       <ChevronRightIcon sx={{ fontSize: 14 }} />
                     </Button>
-                    {!isOpen && !excluded ? (
+                    {!isOpen ? (
                       <Button
                         size="small"
                         sx={{ textTransform: "none" }}
@@ -1722,7 +1805,7 @@ export default function ManagementWfFolderPerformanceSection({
                         Edit Session
                       </Button>
                     ) : null}
-                    {!isOpen && pub !== "APPROVED" && !excluded ? (
+                    {!isOpen && pub !== "APPROVED" ? (
                       <Button
                         size="small"
                         sx={{ textTransform: "none" }}
