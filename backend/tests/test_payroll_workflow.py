@@ -139,10 +139,10 @@ def test_available_actions_use_display_status():
 
     assert "approve_hours" in _available_batch_actions({"status": "draft"})
     assert "send_to_accountant" in _available_batch_actions(
-        {"status": "hours_reviewed", "worker_category": "w2"}
+        {"status": "hours_reviewed", "worker_category": "w2", "send_to_accountant": 1}
     )
     assert "send_to_accountant" not in _available_batch_actions(
-        {"status": "hours_reviewed", "worker_category": "temp"}
+        {"status": "hours_reviewed", "worker_category": "temp", "send_to_accountant": 0}
     )
     assert "mark_paid" in _available_batch_actions(
         {

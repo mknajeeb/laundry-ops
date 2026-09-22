@@ -113,8 +113,8 @@ describe("payPeriodOptions accountant batch status", () => {
     expect(week.map((o) => o.batchId)).toEqual([122, 120]);
     expect(week.map((o) => o.key)).toEqual(["batch:122", "batch:120"]);
     expect(week.map((o) => o.label)).toEqual([
-      "Sep 7\u2013Sep 13 · W2-2026-019-EVELYN · Pending",
-      "Sep 7\u2013Sep 13 · W2-2026-019 · Pending",
+      "W2-2026-019-EVELYN · Pending · Sep 7\u2013Sep 13",
+      "W2-2026-019 · Pending · Sep 7\u2013Sep 13",
     ]);
     expect(new Set(options.map((o) => o.key)).size).toBe(options.length);
   });
@@ -147,7 +147,7 @@ describe("payPeriodOptions accountant batch status", () => {
     expect(paidWeek[0]).toMatchObject({
       batchId: 112,
       key: "batch:112",
-      label: "Aug 24\u2013Aug 30 · W2-2026-017 · Paid",
+      label: "W2-2026-017 · Paid · Aug 24\u2013Aug 30",
       batchStatus: "Paid",
     });
     expect(resolveAccountantBatchById(samePeriodBatches, paidWeek[0].batchId)?.id).toBe(112);
@@ -236,6 +236,9 @@ describe("pay-period label is not a batch payment status", () => {
     expect(byName["1099-2026-020-MINA"]).toContain("Paid");
     // Batch labels still include name + status; period collapse does not.
     expect(formatAccountantByBatchOptionLabel(sep14Week[3], "Paid")).toContain("Paid");
+    expect(formatAccountantByBatchOptionLabel(sep14Week[3], "Paid")).toMatch(
+      /^1099-2026-020-MINA · Paid ·/,
+    );
   });
 
   it("may append Available in Analysis as the only week-level suffix", () => {

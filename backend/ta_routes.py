@@ -6430,8 +6430,9 @@ def payroll_payout_batches():
             uid = int(g.ta_user["id"])
             accountant_visible_only = is_accountant_batch_list_view(conn, uid)
             worker_category = request.args.get("worker_category")
+            # Accountant list is filtered by persisted send_to_accountant, not category.
             if accountant_visible_only:
-                worker_category = "w2"
+                worker_category = None
             return jsonify(
                 {
                     "items": list_payout_batches(

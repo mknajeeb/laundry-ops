@@ -191,12 +191,14 @@ def accountant_w2_only_scope(conn, user_id: int) -> bool:
 
 
 def accountant_may_access_batch(conn, user_id: int, batch: Optional[dict]) -> bool:
-    """Deny external accountants access to non-W-2 batches."""
+    """Deny external accountants access to batches not routed to them."""
     if not batch:
         return False
     if not accountant_w2_only_scope(conn, user_id):
         return True
-    return str(batch.get("worker_category") or "").strip() == "w2"
+    from backend.payroll_worker_categories import batch_send_to_accountant_enabled
+
+    return batch_send_to_accountant_enabled(batch)
 
 
 def can_process_accountant_batch(conn, user_id: int) -> bool:
@@ -1303,13 +1305,8 @@ def finalize_blockers(batch: dict, lines: list[dict]) -> list[str]:
     if batch.get("payout_details_finalized_at"):
         return ["Payout details already finalized"]
     if not can_finalize_payout_details(batch):
-        cat = str(batch.get("worker_category") or "w2")
-        if cat == "w2" and str(batch.get("status") or "") not in (
-            "approved_for_payment",
-            "paid",
-            "closed",
-        ):
-            return ["W-2 batches must be approved for payment before finalize"]
+        if not batch_ready_for_payout_details(batch):
+            return ["Batch is not ready to finalize payout details"]
         return ["Batch is not ready to finalize payout details"]
     mode = batch_document_mode(batch)
     blockers: list[str] = []

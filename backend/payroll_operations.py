@@ -21,6 +21,8 @@ from backend.payroll_identity import (
 from backend.payroll_worker_categories import (
     CATEGORY_LABELS,
     WORKER_CATEGORIES,
+    batch_send_to_accountant_enabled,
+    default_send_to_accountant_for_category,
 )
 from backend.ta_helpers import invalidate_schema_cache, json_safe, table_exists, table_has_column
 
@@ -220,6 +222,7 @@ def ensure_payout_batches_tables(cursor) -> None:
               total_adjustments DECIMAL(12,2) NOT NULL DEFAULT 0,
               total_payout_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
               documents_missing_count INT NOT NULL DEFAULT 0,
+              send_to_accountant TINYINT(1) NOT NULL DEFAULT 0,
               sent_to_accountant_at DATETIME NULL,
               paid_at DATETIME NULL,
               created_by INT NULL,
@@ -231,6 +234,28 @@ def ensure_payout_batches_tables(cursor) -> None:
             ) ENGINE=InnoDB
             """
         )
+    if table_exists(cursor, "payout_batches") and not table_has_column(
+        cursor, "payout_batches", "send_to_accountant"
+    ):
+        try:
+            cursor.execute(
+                """
+                ALTER TABLE payout_batches
+                ADD COLUMN send_to_accountant TINYINT(1) NOT NULL DEFAULT 0
+                """
+            )
+        except Exception as exc:
+            if getattr(exc, "args", (None,))[0] != 1060:
+                raise
+        # Additive backfill only: category defaults. Does not touch statuses or payments.
+        cursor.execute(
+            """
+            UPDATE payout_batches
+            SET send_to_accountant = 1
+            WHERE worker_category = 'w2' AND send_to_accountant = 0
+            """
+        )
+        invalidate_schema_cache()
     if not table_exists(cursor, "payout_batch_lines"):
         cursor.execute(
             """
@@ -1936,6 +1961,7 @@ def list_payout_batches(
         params.append(worker_category)
     if accountant_visible_only:
         q += (
+            " AND COALESCE(send_to_accountant, 0) = 1"
             " AND status IN ("
             "'sent_to_accountant', 'accountant_reviewed', "
             "'approved_for_payment', 'paid', 'closed'"
@@ -2008,13 +2034,17 @@ def create_payout_batch(
     if freq not in ("weekly", "biweekly"):
         freq = "biweekly"
     name = (body.get("batch_name") or "").strip() or f"{CATEGORY_LABELS[cat]} {body.get('pay_period_start')}"
+    if "send_to_accountant" in body and body.get("send_to_accountant") is not None:
+        send_flag = 1 if batch_send_to_accountant_enabled({"send_to_accountant": body.get("send_to_accountant"), "worker_category": cat}) else 0
+    else:
+        send_flag = 1 if default_send_to_accountant_for_category(cat) else 0
     c = conn.cursor()
     c.execute(
         """
         INSERT INTO payout_batches (
           organization_id, batch_name, worker_category, pay_period_start, pay_period_end,
-          payout_frequency, status, notes, created_by
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+          payout_frequency, status, notes, send_to_accountant, created_by
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             int(organization_id),
@@ -2025,6 +2055,7 @@ def create_payout_batch(
             freq,
             str(body.get("status") or "draft"),
             body.get("notes"),
+            send_flag,
             created_by,
         ),
     )
@@ -2061,6 +2092,18 @@ def update_payout_batch(
         if key in body and body[key] is not None:
             fields.append(f"{col}=%s")
             vals.append(body[key])
+    if "send_to_accountant" in body and body.get("send_to_accountant") is not None:
+        fields.append("send_to_accountant=%s")
+        vals.append(
+            1
+            if batch_send_to_accountant_enabled(
+                {
+                    "send_to_accountant": body.get("send_to_accountant"),
+                    "worker_category": batch.get("worker_category"),
+                }
+            )
+            else 0
+        )
     if not fields:
         return batch
     vals.extend([int(batch_id), int(organization_id)])

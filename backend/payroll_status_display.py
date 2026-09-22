@@ -55,9 +55,10 @@ def compute_display_status(batch: dict) -> str:
 
 
 def _skips_accountant_review(batch: dict) -> bool:
-    from backend.payroll_worker_categories import skips_accountant_review
+    """True when this batch does not route to accountant (persisted flag)."""
+    from backend.payroll_worker_categories import batch_send_to_accountant_enabled
 
-    return skips_accountant_review(batch.get("worker_category"))
+    return not batch_send_to_accountant_enabled(batch)
 
 
 def compute_primary_action(batch: dict) -> dict[str, str]:
@@ -72,12 +73,7 @@ def compute_primary_action(batch: dict) -> dict[str, str]:
         if not skips_accountant:
             if st == "hours_reviewed":
                 return {"action": "send_to_accountant", "label": "Send to Accountant"}
-            if st in ("sent_to_accountant", "accountant_reviewed"):
-                return {
-                    "action": "await_accountant",
-                    "label": "Awaiting Accountant",
-                    "disabled": True,
-                }
+            # After handoff, Finance enters details — accountant UI click is not required.
             return {"action": "enter_details", "label": "Enter Payroll Details"}
         cat = str(batch.get("worker_category") or "")
         if cat == "contractor_1099":
@@ -93,7 +89,7 @@ def compute_primary_action(batch: dict) -> dict[str, str]:
 
 
 def batch_ready_for_payout_details(batch: dict) -> bool:
-    """Whether payment/deduction details can be entered (varies by worker type)."""
+    """Whether payment/deduction details can be entered (varies by routing flag)."""
     st = str(batch.get("status") or "")
     if _skips_accountant_review(batch):
         return st in (
@@ -102,15 +98,25 @@ def batch_ready_for_payout_details(batch: dict) -> bool:
             "paid",
             "closed",
         )
-    return st in ("approved_for_payment", "paid", "closed")
+    # Routed to accountant: Finance may proceed once handed off (including legacy
+    # sent_to_accountant rows that never got a Payroll Processed click).
+    return st in (
+        "sent_to_accountant",
+        "accountant_reviewed",
+        "approved_for_payment",
+        "paid",
+        "closed",
+    )
 
 
 def can_finalize_payout_details(batch: dict) -> bool:
-    """W-2 requires accountant processing before paystubs are finalized."""
+    """Finalize when batch is ready for details; W-2 no longer waits on accountant click."""
     if not batch_ready_for_payout_details(batch):
         return False
-    if str(batch.get("worker_category") or "") == "w2":
+    if not _skips_accountant_review(batch):
         return str(batch.get("status") or "") in (
+            "sent_to_accountant",
+            "accountant_reviewed",
             "approved_for_payment",
             "paid",
             "closed",
@@ -186,8 +192,11 @@ def _money_summary(batch: dict) -> dict[str, Any]:
 
 
 def build_payroll_display(batch: dict) -> dict[str, Any]:
+    from backend.payroll_worker_categories import batch_send_to_accountant_enabled
+
     display_status = compute_display_status(batch)
     primary = compute_primary_action(batch)
+    send_flag = batch_send_to_accountant_enabled(batch)
     return json_safe(
         {
             "display_status": display_status,
@@ -198,7 +207,9 @@ def build_payroll_display(batch: dict) -> dict[str, Any]:
             "pay_period_start": batch.get("pay_period_start"),
             "pay_period_end": batch.get("pay_period_end"),
             "worker_category": batch.get("worker_category"),
-            "skips_accountant_review": _skips_accountant_review(batch),
+            "skips_accountant_review": not send_flag,
+            "send_to_accountant": send_flag,
+            "accountant_routing_label": "Required" if send_flag else "Not required",
         }
     )
 
@@ -210,10 +221,13 @@ def enrich_batch_payroll_display(batch: dict) -> dict:
 
 def enrich_list_item_payroll_display(batch: dict) -> dict:
     """Light enrichment for batch list rows (no line-level summary)."""
+    from backend.payroll_worker_categories import batch_send_to_accountant_enabled
+
     display_status = compute_display_status(batch)
     primary = compute_primary_action(batch)
     gross = float(batch.get("total_payout_amount") or 0)
     worker_count = batch.get("worker_count")
+    send_flag = batch_send_to_accountant_enabled(batch)
     batch["payroll_display"] = json_safe(
         {
             "display_status": display_status,
@@ -231,7 +245,9 @@ def enrich_list_item_payroll_display(batch: dict) -> dict:
             "pay_period_start": batch.get("pay_period_start"),
             "pay_period_end": batch.get("pay_period_end"),
             "worker_category": batch.get("worker_category"),
-            "skips_accountant_review": _skips_accountant_review(batch),
+            "skips_accountant_review": not send_flag,
+            "send_to_accountant": send_flag,
+            "accountant_routing_label": "Required" if send_flag else "Not required",
         }
     )
     return batch

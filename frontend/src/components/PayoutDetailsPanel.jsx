@@ -1175,7 +1175,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                     {finalized
                       ? "Batch finalized — ready to pay or mark paid"
                       : detail.status === "sent_to_accountant"
-                        ? "Awaiting accountant to confirm payroll processed"
+                        ? "Enter taxes from accountant payroll run, then finalize"
                         : "Enter taxes from accountant payroll run, then finalize"}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">

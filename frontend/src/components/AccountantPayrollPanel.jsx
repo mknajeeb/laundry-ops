@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
-  Button,
   Chip,
   Link,
   Paper,
@@ -22,7 +21,7 @@ import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import PayPeriodSelect from "./PayPeriodSelect";
 import PayrollBatchSummaryCard from "./PayrollBatchSummaryCard";
 import TaxWithheldBreakdownDialog from "./TaxWithheldBreakdownDialog";
-import { getPayoutBatchDetails, getPayoutBatches, processPayoutBatch } from "../api";
+import { getPayoutBatchDetails, getPayoutBatches } from "../api";
 import {
   accountantPeriodStatusColor,
   accountantPeriodStatusLabel,
@@ -158,13 +157,13 @@ export default function AccountantPayrollPanel() {
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [loading, setLoading] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
   const [taxDialog, setTaxDialog] = useState({ open: false, line: null, workerName: "" });
   const autoPickedRef = useRef(false);
 
   const loadBatches = useCallback(async () => {
     try {
-      const res = await getPayoutBatches({ worker_category: "w2" });
+      // Server scopes accountant users to send_to_accountant=Yes batches.
+      const res = await getPayoutBatches({});
       setBatches(res.data?.items || []);
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Could not load batches");
@@ -251,27 +250,7 @@ export default function AccountantPayrollPanel() {
   const status = String(detail?.status || "");
   const workflow = detail?.payout_workflow || {};
   const finalized = workflow.payout_details_finalized;
-
-  const canConfirmProcessed = detail?.can_process_as_accountant && status === "sent_to_accountant";
-  const financePending = status === "approved_for_payment" && !finalized;
-
-  const confirmPayrollProcessed = async () => {
-    if (!detail?.id) return;
-    setSubmitting(true);
-    setError("");
-    setInfo("");
-    try {
-      const res = await processPayoutBatch(detail.id);
-      setDetail(res.data);
-      setInfo("Payroll processed — finance admin can now enter tax details and finalize.");
-      await loadBatches();
-      await loadDetail(res.data.id);
-    } catch (e) {
-      setError(e.response?.data?.error || e.message || "Could not confirm payroll");
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  const financePending = ["sent_to_accountant", "accountant_reviewed", "approved_for_payment"].includes(status) && !finalized;
 
   const colSpan = 7 + DEDUCTION_COLUMNS.length + 3;
 
@@ -312,8 +291,9 @@ export default function AccountantPayrollPanel() {
           ) : null}
         </Stack>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Confirm when payroll has been processed externally. Finance admin enters deductions,
-          updates net pay, and prints or emails paystubs on the Finalize Payroll tab.
+          Batches routed to accountant (Send to Accountant = Yes). Finance enters deductions,
+          updates net pay, and prints or emails paystubs on the Finalize Payroll tab — no
+          accountant acknowledgement is required to unblock Finance.
         </Typography>
         {batches.length ? (
           <PayPeriodSelect
@@ -346,10 +326,10 @@ export default function AccountantPayrollPanel() {
             </Typography>
             <Stack spacing={1.5}>
               <WorkflowStep
-                active={canConfirmProcessed}
-                done={status !== "sent_to_accountant" && status !== "hours_reviewed"}
-                label="Confirm payroll processed"
-                description="You run payroll in your external system — no tax entry here."
+                active={false}
+                done={Boolean(detail?.sent_to_accountant_at) || status !== "hours_reviewed"}
+                label="Batch released to accountant"
+                description="Manager sent this batch. Review documents as needed — no action required here to unblock Finance."
               />
               <WorkflowStep
                 active={financePending}
@@ -506,18 +486,6 @@ export default function AccountantPayrollPanel() {
           </Paper>
 
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            {canConfirmProcessed ? (
-              <Button
-                variant="contained"
-                size="large"
-                disabled={submitting}
-                onClick={confirmPayrollProcessed}
-                startIcon={<CheckCircleOutlineIcon />}
-                sx={{ bgcolor: VEEWASH_BRAND.primary, px: 3 }}
-              >
-                Confirm payroll processed
-              </Button>
-            ) : null}
             {financePending ? (
               <Chip
                 icon={<HourglassEmptyIcon />}

@@ -65,15 +65,15 @@ export function accountantBatchOptionKey(batchId) {
 
 /**
  * For Accountant → By Batch label.
- * A pay period is not a batch id, so the name is always included.
- * Example: "Sep 7–Sep 13 · W2-2026-019 · Pending"
+ * Batch name first, status second, period last.
+ * Example: "W2-2026-019 · Paid · Sep 7–Sep 13"
  */
 export function formatAccountantByBatchOptionLabel(batch, status) {
   const start = normPayPeriodYmd(batch?.pay_period_start);
   const end = normPayPeriodYmd(batch?.pay_period_end);
   const period = `${formatMonthDayLabel(start)}\u2013${formatMonthDayLabel(end)}`;
   const name = batch?.batch_name || (batch?.id != null ? `Batch ${batch.id}` : "Batch");
-  return status ? `${period} · ${name} · ${status}` : `${period} · ${name}`;
+  return status ? `${name} · ${status} · ${period}` : `${name} · ${period}`;
 }
 
 /**

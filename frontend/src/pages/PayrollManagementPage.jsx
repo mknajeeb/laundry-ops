@@ -206,12 +206,13 @@ export default function PayrollManagementPage() {
         try {
           await patchPayoutBatch(batch.id, { action });
           refreshBatches();
-          const cat = batch.worker_category || batch.payroll_display?.worker_category;
           const skipsAccountant =
-            batch.payroll_display?.skips_accountant_review ||
-            cat === "temp" ||
-            cat === "contractor_1099";
+            batch.payroll_display?.skips_accountant_review === true ||
+            batch.payroll_display?.send_to_accountant === false;
           if (action === "approve_hours" && skipsAccountant) {
+            setDetailsBatchId(batch.id);
+            goToTab("payout_details", batch.id);
+          } else if (action === "send_to_accountant") {
             setDetailsBatchId(batch.id);
             goToTab("payout_details", batch.id);
           } else {

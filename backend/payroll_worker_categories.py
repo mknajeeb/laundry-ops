@@ -52,6 +52,30 @@ def skips_accountant_review(worker_category: Optional[str]) -> bool:
     return is_vendor_receipt_category(worker_category)
 
 
+def default_send_to_accountant_for_category(worker_category: Optional[str]) -> bool:
+    """Default routing for newly created batches. W-2 Yes; 1099/Temp/Try Out No."""
+    return str(worker_category or "").strip() == "w2"
+
+
+def batch_send_to_accountant_enabled(batch: Optional[dict]) -> bool:
+    """Persisted per-batch routing flag. Falls back to category default if unset."""
+    if not batch:
+        return False
+    raw = batch.get("send_to_accountant")
+    if raw is None:
+        return default_send_to_accountant_for_category(batch.get("worker_category"))
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return int(raw) == 1
+    s = str(raw).strip().lower()
+    if s in ("1", "true", "yes", "y"):
+        return True
+    if s in ("0", "false", "no", "n", ""):
+        return False
+    return default_send_to_accountant_for_category(batch.get("worker_category"))
+
+
 def classify_employment_category(code: Optional[str], name: Optional[str] = None) -> str:
     """Map an employment_categories row to a payroll worker_category.
 

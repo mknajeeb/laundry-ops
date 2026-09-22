@@ -1008,15 +1008,15 @@ def enrich_payout_batch(
 
 def _available_batch_actions(batch: dict) -> list[str]:
     from backend.payroll_status_display import compute_display_status
+    from backend.payroll_worker_categories import batch_send_to_accountant_enabled
 
     ds = compute_display_status(batch)
-    cat = str(batch.get("worker_category") or "w2")
     st = str(batch.get("status") or "")
     actions: list[str] = []
     if ds == "draft":
         actions.append("approve_hours")
     elif ds == "ready_for_payroll":
-        if cat == "w2" and st == "hours_reviewed":
+        if batch_send_to_accountant_enabled(batch) and st == "hours_reviewed":
             actions.append("send_to_accountant")
     elif ds == "ready_to_pay":
         actions.append("mark_paid")
@@ -1026,12 +1026,18 @@ def _available_batch_actions(batch: dict) -> list[str]:
 
 
 def validate_batch_for_workflow(batch: dict, action: str) -> None:
+    from backend.payroll_worker_categories import batch_send_to_accountant_enabled
+
     missing = batch.get("missing_rates") or []
     if action in ("hours_reviewed", "send_to_accountant") and missing:
         names = ", ".join(m.get("worker_name") or "?" for m in missing[:5])
         extra = f" (+{len(missing) - 5} more)" if len(missing) > 5 else ""
         raise ValueError(f"Cannot proceed — missing hourly rate for: {names}{extra}")
-    if action == "send_to_accountant" and str(batch.get("worker_category")) == "w2":
+    if (
+        action == "send_to_accountant"
+        and batch_send_to_accountant_enabled(batch)
+        and str(batch.get("worker_category") or "") == "w2"
+    ):
         if not MANUAL_TAX_DEDUCTIONS_ONLY:
             missing_w4 = batch.get("missing_w4") or []
             if missing_w4:
@@ -1040,7 +1046,7 @@ def validate_batch_for_workflow(batch: dict, action: str) -> None:
                     fields = ", ".join(m.get("missing_fields") or ["tax profile"])
                     parts.append(f"{m.get('worker_name') or '?'} ({fields})")
                 raise ValueError(
-                    "Cannot send W-2 batch — incomplete tax profile for: " + "; ".join(parts)
+                    "Cannot send batch — incomplete tax profile for: " + "; ".join(parts)
                 )
             incomplete_lines = [
                 ln
@@ -1049,7 +1055,7 @@ def validate_batch_for_workflow(batch: dict, action: str) -> None:
             ]
             if incomplete_lines:
                 raise ValueError(
-                    "Cannot send W-2 batch — tax estimates incomplete. Complete employee W-4/payroll profiles."
+                    "Cannot send batch — tax estimates incomplete. Complete employee W-4/payroll profiles."
                 )
     lines = batch.get("lines") or []
     if action in ("hours_reviewed", "send_to_accountant") and not lines:
@@ -1197,14 +1203,18 @@ def apply_batch_workflow_action(
             (int(batch_id), int(organization_id)),
         )
     elif action == "send_to_accountant":
-        if str(batch.get("worker_category")) != "w2":
-            raise ValueError("Only W-2 batches use accountant review")
+        from backend.payroll_worker_categories import batch_send_to_accountant_enabled
+
+        if not batch_send_to_accountant_enabled(batch):
+            raise ValueError("This batch is not routed to accountant (Send to Accountant = No)")
         if str(batch.get("status") or "") != "hours_reviewed":
             raise ValueError("Approve hours before sending to accountant")
         validate_batch_for_workflow(batch, action)
+        # Smallest safe handoff: stamp accountant release and unlock Finance immediately.
+        # Do not leave batches blocked on an accountant "Payroll Processed" click.
         c.execute(
             """
-            UPDATE payout_batches SET status='sent_to_accountant',
+            UPDATE payout_batches SET status='approved_for_payment',
             sent_to_accountant_at=COALESCE(sent_to_accountant_at, NOW()),
             approved_by=COALESCE(approved_by, %s), updated_at=CURRENT_TIMESTAMP
             WHERE id=%s AND organization_id=%s

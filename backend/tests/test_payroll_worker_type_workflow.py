@@ -13,6 +13,7 @@ def test_w2_primary_send_to_accountant_after_approve():
         {
             "status": "hours_reviewed",
             "worker_category": "w2",
+            "send_to_accountant": 1,
             "total_payout_amount": 500,
         }
     )
@@ -21,17 +22,18 @@ def test_w2_primary_send_to_accountant_after_approve():
     assert action["label"] == "Send to Accountant"
 
 
-def test_w2_primary_awaiting_accountant_when_sent():
+def test_w2_primary_enter_details_after_handoff_without_accountant_click():
     batch = enrich_batch_payroll_display(
         {
             "status": "sent_to_accountant",
             "worker_category": "w2",
+            "send_to_accountant": 1,
             "total_payout_amount": 500,
         }
     )
     action = batch["payroll_display"]["primary_action"]
-    assert action["action"] == "await_accountant"
-    assert action.get("disabled") is True
+    assert action["action"] == "enter_details"
+    assert action.get("disabled") is not True
 
 
 def test_w2_primary_enter_details_after_accountant():
@@ -39,6 +41,7 @@ def test_w2_primary_enter_details_after_accountant():
         {
             "status": "approved_for_payment",
             "worker_category": "w2",
+            "send_to_accountant": 1,
             "total_payout_amount": 500,
         }
     )
@@ -51,6 +54,7 @@ def test_temp_primary_enter_details_after_approve():
         {
             "status": "hours_reviewed",
             "worker_category": "temp",
+            "send_to_accountant": 0,
             "total_payout_amount": 300,
         }
     )
@@ -63,6 +67,7 @@ def test_contractor_primary_enter_details_after_approve():
         {
             "status": "hours_reviewed",
             "worker_category": "contractor_1099",
+            "send_to_accountant": 0,
             "total_payout_amount": 400,
         }
     )
@@ -73,26 +78,32 @@ def test_contractor_primary_enter_details_after_approve():
 
 def test_batch_ready_w2_requires_accountant():
     assert not batch_ready_for_payout_details(
-        {"status": "hours_reviewed", "worker_category": "w2"}
+        {"status": "hours_reviewed", "worker_category": "w2", "send_to_accountant": 1}
     )
     assert batch_ready_for_payout_details(
-        {"status": "approved_for_payment", "worker_category": "w2"}
+        {"status": "approved_for_payment", "worker_category": "w2", "send_to_accountant": 1}
+    )
+    assert batch_ready_for_payout_details(
+        {"status": "sent_to_accountant", "worker_category": "w2", "send_to_accountant": 1}
     )
 
 
 def test_batch_ready_temp_after_hours_reviewed():
     assert batch_ready_for_payout_details(
-        {"status": "hours_reviewed", "worker_category": "temp"}
+        {"status": "hours_reviewed", "worker_category": "temp", "send_to_accountant": 0}
     )
 
 
-def test_finalize_w2_requires_accountant():
+def test_finalize_w2_requires_handoff_not_accountant_click():
     assert not can_finalize_payout_details(
-        {"status": "hours_reviewed", "worker_category": "w2"}
+        {"status": "hours_reviewed", "worker_category": "w2", "send_to_accountant": 1}
     )
     assert can_finalize_payout_details(
-        {"status": "approved_for_payment", "worker_category": "w2"}
+        {"status": "approved_for_payment", "worker_category": "w2", "send_to_accountant": 1}
     )
     assert can_finalize_payout_details(
-        {"status": "hours_reviewed", "worker_category": "temp"}
+        {"status": "sent_to_accountant", "worker_category": "w2", "send_to_accountant": 1}
+    )
+    assert can_finalize_payout_details(
+        {"status": "hours_reviewed", "worker_category": "temp", "send_to_accountant": 0}
     )

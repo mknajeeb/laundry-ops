@@ -375,6 +375,7 @@ export default function PayoutBatchesPanel({
   const [draft, setDraft] = useState({
     batch_name: "",
     worker_category: "w2",
+    send_to_accountant: true,
     pay_period_start: payPeriodStart || "",
     pay_period_end: payPeriodEnd || "",
     payout_frequency: "biweekly",
@@ -537,6 +538,7 @@ export default function PayoutBatchesPanel({
     setDraft({
       batch_name: "",
       worker_category: "w2",
+      send_to_accountant: true,
       pay_period_start: payPeriodStart || "",
       pay_period_end: payPeriodEnd || "",
       payout_frequency: "biweekly",
@@ -577,6 +579,7 @@ export default function PayoutBatchesPanel({
         pay_period_end: draft.pay_period_end,
         payout_frequency: draft.payout_frequency,
         notes: draft.notes,
+        send_to_accountant: draft.send_to_accountant,
       });
       setDetail(res.data);
       setEditOpen(false);
@@ -770,9 +773,14 @@ export default function PayoutBatchesPanel({
   const workerLines = detail?.lines || [];
 
   const openEditBatch = () => {
+    const sendFlag =
+      detail?.payroll_display?.send_to_accountant ??
+      detail?.send_to_accountant ??
+      detail?.worker_category === "w2";
     setDraft({
       batch_name: detail.batch_name || "",
       worker_category: detail.worker_category || "temp",
+      send_to_accountant: Boolean(sendFlag),
       pay_period_start: detail.pay_period_start || "",
       pay_period_end: detail.pay_period_end || "",
       payout_frequency: detail.payout_frequency || "biweekly",
@@ -846,7 +854,13 @@ export default function PayoutBatchesPanel({
             size="small"
             value={draft.worker_category}
             onChange={(_, value) => {
-              if (value) setDraft({ ...draft, worker_category: value });
+              if (value) {
+                setDraft({
+                  ...draft,
+                  worker_category: value,
+                  send_to_accountant: value === "w2",
+                });
+              }
             }}
           >
             {CATEGORY_BATCH.map((o) => (
@@ -862,7 +876,13 @@ export default function PayoutBatchesPanel({
           <Select
             label="Worker category"
             value={draft.worker_category}
-            onChange={(e) => setDraft({ ...draft, worker_category: e.target.value })}
+            onChange={(e) =>
+              setDraft({
+                ...draft,
+                worker_category: e.target.value,
+                send_to_accountant: e.target.value === "w2",
+              })
+            }
           >
             {CATEGORY_BATCH.map((o) => (
               <MenuItem key={o.value} value={o.value}>
@@ -872,6 +892,31 @@ export default function PayoutBatchesPanel({
           </Select>
         </FormControl>
       )}
+      <Box>
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.75 }}>
+          Send to Accountant (this batch only)
+        </Typography>
+        <ToggleButtonGroup
+          exclusive
+          fullWidth
+          size="small"
+          value={draft.send_to_accountant ? "yes" : "no"}
+          onChange={(_, value) => {
+            if (value == null) return;
+            setDraft({ ...draft, send_to_accountant: value === "yes" });
+          }}
+        >
+          <ToggleButton value="yes" sx={{ flex: 1, py: 1 }}>
+            Yes
+          </ToggleButton>
+          <ToggleButton value="no" sx={{ flex: 1, py: 1 }}>
+            No
+          </ToggleButton>
+        </ToggleButtonGroup>
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.75 }}>
+          Applies only to this payout batch — not the whole pay period or worker category.
+        </Typography>
+      </Box>
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
         <TextField
           fullWidth
@@ -1028,6 +1073,13 @@ export default function PayoutBatchesPanel({
                   onPrimaryAction={(actionKey) => handlePrimaryAction(actionKey)}
                   primaryLoading={actionLoading}
                 />
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
+                  Accountant:{" "}
+                  {detail?.payroll_display?.send_to_accountant || detail?.send_to_accountant
+                    ? "Required"
+                    : "Not required"}{" "}
+                  (this batch)
+                </Typography>
               </Box>
 
               {weekPeriodStart && weekPeriodEnd ? (
