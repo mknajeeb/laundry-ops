@@ -25,6 +25,9 @@ from backend.ta_helpers import table_exists
 
 DAY_OVERRIDES_TABLE = "rinse_performance_employee_day_overrides"
 DAY_OVERRIDE_EVENTS_TABLE = "rinse_performance_employee_day_override_events"
+# Derived/cache artifact for Rinse Hub Published boards — never a second calculator.
+# Written only from compose_employee_day_from_sessions / mutation_employee_day_payload.
+DAY_PUBLICATIONS_TABLE = "rinse_performance_employee_day_publications"
 
 # Authoritative Performance eligibility: APPROVED and non-excluded sessions only.
 # Visibility of pending sessions is separate (see session_is_visible_non_excluded).
@@ -821,6 +824,17 @@ def mutation_employee_day_payload(
         average_weight_override=ov,
         selected_date_et=selected_date_et,
     )
+    # Keep Rinse Hub derived publications in sync (cache only — same employee-day).
+    try:
+        sync_employee_day_publication(
+            cursor,
+            organization_id,
+            emp,
+            role_key=ROLE_FOLDER,
+            business_date_et=selected_date_et,
+        )
+    except Exception:
+        pass
     return {
         "employee_day": emp,
         "performance_unit": "employee_day",
@@ -832,3 +846,231 @@ def mutation_employee_day_payload(
             "dashboard_rankable requires a fully APPROVED employee-day."
         ),
     }
+
+
+def _sessions_publication_snapshot(sessions: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Compact session rows for Employee → Day → Sessions drilldown."""
+    out: list[dict[str, Any]] = []
+    for s in sessions or []:
+        pub = str(
+            s.get("publication_status")
+            or (s.get("publication") or {}).get("status")
+            or ""
+        ).upper()
+        out.append(
+            {
+                "session_id": s.get("session_id"),
+                "session_code": s.get("session_code") or s.get("session_id"),
+                "publication_status": pub,
+                "orders_completed": int(s.get("orders_completed") or 0),
+                "total_pre_lbs": float(s.get("total_pre_lbs") or 0),
+                "performance_hours": (
+                    float(s["performance_hours"])
+                    if s.get("performance_hours") is not None
+                    else None
+                ),
+                "lbs_per_hour": (
+                    float(s["lbs_per_hour"]) if s.get("lbs_per_hour") is not None else None
+                ),
+            }
+        )
+    return out
+
+
+def ensure_employee_day_publication_tables(cursor) -> None:
+    """Derived employee-day publication cache for Rinse Hub weekly boards."""
+    if not table_exists(cursor, DAY_PUBLICATIONS_TABLE):
+        cursor.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {DAY_PUBLICATIONS_TABLE} (
+              id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+              organization_id INT NOT NULL,
+              role_key VARCHAR(32) NOT NULL,
+              business_date_et DATE NOT NULL,
+              employee_user_id INT NOT NULL DEFAULT 0,
+              employee_name VARCHAR(255) NOT NULL,
+              orders_completed INT NOT NULL DEFAULT 0,
+              total_pre_lbs DECIMAL(14,4) NOT NULL DEFAULT 0,
+              performance_hours DECIMAL(14,6) NULL,
+              bags_per_hour DECIMAL(14,4) NULL,
+              published_numerator DECIMAL(14,4) NOT NULL DEFAULT 0,
+              published_denominator DECIMAL(14,6) NOT NULL DEFAULT 0,
+              published_metric_value DECIMAL(14,4) NULL,
+              included_session_count INT NOT NULL DEFAULT 0,
+              session_count INT NOT NULL DEFAULT 0,
+              day_publication_status VARCHAR(32) NOT NULL DEFAULT 'NEEDS_APPROVAL',
+              dashboard_rankable TINYINT(1) NOT NULL DEFAULT 0,
+              sessions_json MEDIUMTEXT NULL,
+              updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+              UNIQUE KEY uq_emp_day_pub
+                (organization_id, role_key, business_date_et, employee_user_id, employee_name),
+              KEY idx_emp_day_pub_week
+                (organization_id, role_key, business_date_et, dashboard_rankable),
+              KEY idx_emp_day_pub_emp
+                (organization_id, role_key, employee_user_id, business_date_et)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        return
+    # Idempotent column ensure for older drafts of this table.
+    for col, ddl in (
+        ("bags_per_hour", "ADD COLUMN bags_per_hour DECIMAL(14,4) NULL"),
+        ("sessions_json", "ADD COLUMN sessions_json MEDIUMTEXT NULL"),
+    ):
+        try:
+            cursor.execute(f"ALTER TABLE {DAY_PUBLICATIONS_TABLE} {ddl}")
+        except Exception:
+            pass
+
+
+def sync_employee_day_publication(
+    cursor,
+    organization_id: int,
+    emp: Mapping[str, Any],
+    *,
+    role_key: str = ROLE_FOLDER,
+    business_date_et: date | None = None,
+) -> None:
+    """Upsert/clear derived publication row from an authoritative employee-day.
+
+    Source of truth remains compose/recompute — this table is a Rinse-safe cache.
+    - EXCLUDED days are deleted (not Published, not By-Employee active).
+    - PARTIAL / NEEDS_APPROVAL days are stored with dashboard_rankable=0 so
+      By Employee can show Status, while Published boards filter rankable=1.
+    - Fully APPROVED days store complete approved-day totals (never a lone session).
+    """
+    import json
+
+    ensure_employee_day_publication_tables(cursor)
+    name = str(emp.get("employee") or "").strip()
+    if not name:
+        return
+    biz = business_date_et
+    if biz is None:
+        raw = emp.get("selected_date_et")
+        if isinstance(raw, date):
+            biz = raw
+        elif raw:
+            biz = date.fromisoformat(str(raw)[:10])
+    if biz is None:
+        return
+    uid = emp.get("user_id")
+    try:
+        uid_i = int(uid) if uid is not None and uid != "" else 0
+    except (TypeError, ValueError):
+        uid_i = 0
+
+    day_status = str(
+        emp.get("day_publication_status") or emp.get("publication_status") or ""
+    ).upper()
+    if day_status == "EXCLUDED":
+        cursor.execute(
+            f"""
+            DELETE FROM {DAY_PUBLICATIONS_TABLE}
+            WHERE organization_id=%s AND role_key=%s AND business_date_et=%s
+              AND employee_user_id=%s AND employee_name=%s
+            """,
+            (int(organization_id), str(role_key).upper(), biz, uid_i, name),
+        )
+        return
+
+    rankable = emp.get("dashboard_rankable") is True or day_status == "APPROVED"
+    lbs = float(emp.get("total_pre_lbs") or 0)
+    hours = emp.get("performance_hours")
+    hours_f = float(hours) if hours is not None else 0.0
+    bags = int(emp.get("orders_completed") or 0)
+    rate = emp.get("lbs_per_hour")
+    bags_hr = emp.get("bags_per_hour")
+    sessions_json = json.dumps(_sessions_publication_snapshot(emp.get("sessions") or []))
+
+    # Published board filters dashboard_rankable=1. Partial days keep rankable=0
+    # so a single approved session can never appear as a weekly observation.
+    cursor.execute(
+        f"""
+        INSERT INTO {DAY_PUBLICATIONS_TABLE} (
+          organization_id, role_key, business_date_et, employee_user_id, employee_name,
+          orders_completed, total_pre_lbs, performance_hours, bags_per_hour,
+          published_numerator, published_denominator, published_metric_value,
+          included_session_count, session_count, day_publication_status,
+          dashboard_rankable, sessions_json
+        ) VALUES (
+          %s,%s,%s,%s,%s,
+          %s,%s,%s,%s,
+          %s,%s,%s,
+          %s,%s,%s,
+          %s,%s
+        )
+        ON DUPLICATE KEY UPDATE
+          orders_completed=VALUES(orders_completed),
+          total_pre_lbs=VALUES(total_pre_lbs),
+          performance_hours=VALUES(performance_hours),
+          bags_per_hour=VALUES(bags_per_hour),
+          published_numerator=VALUES(published_numerator),
+          published_denominator=VALUES(published_denominator),
+          published_metric_value=VALUES(published_metric_value),
+          included_session_count=VALUES(included_session_count),
+          session_count=VALUES(session_count),
+          day_publication_status=VALUES(day_publication_status),
+          dashboard_rankable=VALUES(dashboard_rankable),
+          sessions_json=VALUES(sessions_json),
+          employee_name=VALUES(employee_name)
+        """,
+        (
+            int(organization_id),
+            str(role_key).upper(),
+            biz,
+            uid_i,
+            name,
+            bags,
+            lbs,
+            hours_f if hours is not None else None,
+            float(bags_hr) if bags_hr is not None else None,
+            lbs,
+            hours_f,
+            float(rate) if rate is not None else None,
+            int(emp.get("included_session_count") or emp.get("approved_session_count") or 0),
+            int(emp.get("session_count") or len(emp.get("sessions") or [])),
+            day_status or ("APPROVED" if rankable else "NEEDS_APPROVAL"),
+            1 if rankable else 0,
+            sessions_json,
+        ),
+    )
+
+
+def sync_day_payload_publications(
+    cursor,
+    organization_id: int,
+    day_payload: Mapping[str, Any],
+    *,
+    role_key: str = ROLE_FOLDER,
+    business_date_et: date | None = None,
+) -> None:
+    """Sync every employee-day on a Management day payload to the publication cache."""
+    raw = business_date_et or day_payload.get("selected_date_et")
+    biz: date | None
+    if isinstance(raw, date):
+        biz = raw
+    elif raw:
+        try:
+            biz = date.fromisoformat(str(raw)[:10])
+        except ValueError:
+            biz = None
+    else:
+        biz = None
+    for emp in day_payload.get("employees") or []:
+        sync_employee_day_publication(
+            cursor,
+            organization_id,
+            emp,
+            role_key=role_key,
+            business_date_et=biz,
+        )
+    for emp in day_payload.get("excluded_employees") or []:
+        sync_employee_day_publication(
+            cursor,
+            organization_id,
+            emp,
+            role_key=role_key,
+            business_date_et=biz,
+        )

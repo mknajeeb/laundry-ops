@@ -84,8 +84,13 @@ def register_rinse_dashboard_routes(
                 return jsonify({"error": "Forbidden"}), 403
             oid = int(user_org_id(me))
             week_start = _parse_week_start(request.args.get("week_start"), parse_date_value)
+            metric = (request.args.get("metric") or "").strip() or None
             payload = build_role_leaderboard(
-                cursor, oid, role_key=role_key, week_start=week_start
+                cursor,
+                oid,
+                role_key=role_key,
+                week_start=week_start,
+                metric=metric,
             )
             if payload.get("error") == "role_not_available":
                 return jsonify(json_safe_rinse(payload)), 404
@@ -158,9 +163,10 @@ def register_rinse_dashboard_routes(
             oid = int(user_org_id(me))
             week_start = _parse_week_start(request.args.get("week_start"), parse_date_value)
             try:
-                last_n = int(request.args.get("last_n") or 5)
+                last_n = int(request.args.get("last_n") or 7)
             except (TypeError, ValueError):
-                last_n = 5
+                last_n = 7
+            metric = (request.args.get("metric") or "").strip() or None
             payload = build_employee_role_history(
                 cursor,
                 oid,
@@ -168,6 +174,7 @@ def register_rinse_dashboard_routes(
                 role_key=role_key,
                 week_start=week_start,
                 last_n=last_n,
+                metric=metric,
             )
             if payload.get("error") == "role_not_available":
                 return jsonify(json_safe_rinse(payload)), 404

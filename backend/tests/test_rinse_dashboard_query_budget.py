@@ -52,10 +52,11 @@ def _closed_session(**overrides):
 
 
 class SnapshotCursor:
-    """In-memory approval store that understands set-based read SQL."""
+    """In-memory approval + employee-day publication store for set-based read SQL."""
 
     def __init__(self):
         self.rows: list[dict] = []
+        self.pub_rows: list[dict] = []
         self.settings = {"rinse_folding_lbs_per_hour_target": "40"}
         self.query_count = 0
         self.statements: list[str] = []
@@ -187,7 +188,65 @@ class SnapshotCursor:
                 out.append(dict(r))
             return out
 
-        # Leaderboard GROUP BY
+        def active_pub(org, role=None, week_start=None, week_end=None, uid=None, name=None, roles=None, rankable_only=True):
+            out = []
+            for r in self.pub_rows:
+                if int(r["organization_id"]) != int(org):
+                    continue
+                if rankable_only and not int(r.get("dashboard_rankable") or 0):
+                    continue
+                if role and r["role_key"] != str(role).upper():
+                    continue
+                if roles and r["role_key"] not in {str(x).upper() for x in roles}:
+                    continue
+                biz = r["business_date_et"]
+                if week_start is not None and biz < week_start:
+                    continue
+                if week_end is not None and biz > week_end:
+                    continue
+                if uid is not None and int(r.get("employee_user_id") or -1) != int(uid):
+                    continue
+                if name is not None and str(r.get("employee_name") or "") != str(name):
+                    continue
+                out.append(dict(r))
+            return out
+
+        # Employee-day publication leaderboard GROUP BY
+        if (
+            "from rinse_performance_employee_day_publications" in s
+            and "sum(published_numerator)" in s
+            and "group by employee_user_id, employee_name" in s
+        ):
+            org, rk, ws, we = params
+            rows = active_pub(org, role=rk, week_start=ws, week_end=we)
+            grouped = {}
+            for r in rows:
+                key = (r.get("employee_user_id"), r.get("employee_name"))
+                g = grouped.setdefault(
+                    key,
+                    {
+                        "employee_user_id": r.get("employee_user_id"),
+                        "employee_name": r.get("employee_name"),
+                        "sum_num": 0.0,
+                        "sum_den": 0.0,
+                        "sum_bags": 0,
+                        "sum_lbs": 0.0,
+                        "sum_hours": 0.0,
+                        "employee_day_count": 0,
+                        "session_count": 0,
+                    },
+                )
+                g["sum_num"] += float(r["published_numerator"])
+                g["sum_den"] += float(r["published_denominator"])
+                g["sum_bags"] += int(r.get("orders_completed") or 0)
+                g["sum_lbs"] += float(r.get("total_pre_lbs") or 0)
+                g["sum_hours"] += float(r.get("performance_hours") or 0)
+                g["employee_day_count"] += 1
+                g["session_count"] += int(r.get("included_session_count") or 0)
+            self._last = list(grouped.values())
+            return
+
+        # Legacy approvals leaderboard (kept for older tests / dual-read)
         if "sum(published_numerator)" in s and "group by employee_user_id, employee_name" in s and "role_key =" in s:
             org, rk, ws, we = params
             rows = active(org, role=rk, week_start=ws, week_end=we)
@@ -201,13 +260,36 @@ class SnapshotCursor:
                         "employee_name": r.get("employee_name"),
                         "sum_num": 0.0,
                         "sum_den": 0.0,
+                        "sum_bags": 0,
+                        "sum_lbs": 0.0,
+                        "sum_hours": 0.0,
+                        "employee_day_count": 0,
                         "session_count": 0,
                     },
                 )
                 g["sum_num"] += float(r["published_numerator"])
                 g["sum_den"] += float(r["published_denominator"])
                 g["session_count"] += 1
+                g["employee_day_count"] += 1
             self._last = list(grouped.values())
+            return
+
+        # Publication employee-day list for one employee (By Employee history)
+        if (
+            "from rinse_performance_employee_day_publications" in s
+            and "order by business_date_et" in s
+        ):
+            org, rk, ws, we, emp = params
+            if "employee_user_id" in s:
+                rows = active_pub(
+                    org, role=rk, week_start=ws, week_end=we, uid=emp, rankable_only=False
+                )
+            else:
+                rows = active_pub(
+                    org, role=rk, week_start=ws, week_end=we, name=emp, rankable_only=False
+                )
+            rows.sort(key=lambda r: str(r.get("business_date_et")))
+            self._last = rows
             return
 
         # Week aggregate for one employee+role
@@ -232,19 +314,14 @@ class SnapshotCursor:
             return
 
         # Employee detail / employees: GROUP BY role_key (+ optional employee filter)
-        if "sum(published_numerator)" in s and "group by role_key" in s:
+        if "published_numerator" in s and "group by role_key" in s:
             org = int(params[0])
             ws = params[1]
             we = params[2]
-            idx = 3
             roles = None
             uid = None
             name = None
             if "role_key in" in s:
-                # count placeholders roughly from remaining until employee filter
-                # params: org, ws, we, *roles, [uid|name]
-                n_roles = s.count("%s") - 3  # rough; refine below
-                # Better parse: if employee_user_id at end
                 if "employee_user_id=%s" in s or "employee_user_id = %s" in s:
                     uid = params[-1]
                     roles = list(params[3:-1])
@@ -253,7 +330,21 @@ class SnapshotCursor:
                     roles = list(params[3:-1])
                 else:
                     roles = list(params[3:])
-            rows = active(org, week_start=ws, week_end=we, uid=uid, name=name, roles=roles)
+            use_pub = "rinse_performance_employee_day_publications" in s
+            # By Employee list includes partial days; metrics still CASE WHEN rankable.
+            rows = (
+                active_pub(
+                    org,
+                    week_start=ws,
+                    week_end=we,
+                    uid=uid,
+                    name=name,
+                    roles=roles,
+                    rankable_only=False,
+                )
+                if use_pub
+                else active(org, week_start=ws, week_end=we, uid=uid, name=name, roles=roles)
+            )
             grouped = {}
             for r in rows:
                 key = (r.get("role_key"), r.get("employee_user_id"), r.get("employee_name"))
@@ -265,12 +356,29 @@ class SnapshotCursor:
                         "employee_name": r.get("employee_name"),
                         "sum_num": 0.0,
                         "sum_den": 0.0,
+                        "sum_bags": 0,
+                        "sum_lbs": 0.0,
+                        "sum_hours": 0.0,
+                        "employee_day_count": 0,
+                        "visible_day_count": 0,
                         "session_count": 0,
                     },
                 )
+                g["visible_day_count"] += 1
+                rankable = bool(int(r.get("dashboard_rankable") or 0))
+                if use_pub and not rankable:
+                    continue
                 g["sum_num"] += float(r["published_numerator"])
                 g["sum_den"] += float(r["published_denominator"])
-                g["session_count"] += 1
+                if use_pub:
+                    g["sum_bags"] += int(r.get("orders_completed") or 0)
+                    g["sum_lbs"] += float(r.get("total_pre_lbs") or 0)
+                    g["sum_hours"] += float(r.get("performance_hours") or 0)
+                    g["employee_day_count"] += 1
+                    g["session_count"] += int(r.get("included_session_count") or 0)
+                else:
+                    g["session_count"] += 1
+                    g["employee_day_count"] += 1
             self._last = list(grouped.values())
             return
 
@@ -324,22 +432,51 @@ def _reset_module_state():
 
 
 def _seed(cursor: SnapshotCursor, n_employees=20, sessions_per=5):
+    """Seed one fully APPROVED employee-day publication per (employee, date).
+
+    Also keeps legacy approval rows for dual-path tests; Rinse V2 reads publications.
+    """
     with patch("backend.rinse_performance_approvals.table_exists", return_value=True):
         for e in range(n_employees):
             for s in range(sessions_per):
                 d = DAY - timedelta(days=s)
+                lbs = float(80 + e)
+                hours = 2.0
+                bags = 4
                 sess = _closed_session(
                     session_id=f"WF-{e}-{s}",
                     employee=f"Emp{e}",
                     user_id=1000 + e,
-                    total_pre_lbs=80 + e,
-                    performance_hours=2.0,
-                    lbs_per_hour=(80 + e) / 2.0,
+                    total_pre_lbs=lbs,
+                    performance_hours=hours,
+                    lbs_per_hour=lbs / hours,
+                    orders_completed=bags,
                     start_time=f"{d.isoformat()}T08:00:00",
                     end_time=f"{d.isoformat()}T10:00:00",
                 )
                 snap = session_card_to_snapshot(sess, business_date_et=d)
                 upsert_approved_snapshot(cursor, 3, role_key=ROLE_FOLDER, snapshot=snap)
+                # One publication row per employee-day (fully approved).
+                cursor.pub_rows.append(
+                    {
+                        "organization_id": 3,
+                        "role_key": ROLE_FOLDER,
+                        "business_date_et": d,
+                        "employee_user_id": 1000 + e,
+                        "employee_name": f"Emp{e}",
+                        "orders_completed": bags,
+                        "total_pre_lbs": lbs,
+                        "performance_hours": hours,
+                        "published_numerator": lbs,
+                        "published_denominator": hours,
+                        "published_metric_value": lbs / hours,
+                        "included_session_count": 1,
+                        "session_count": 1,
+                        "day_publication_status": "APPROVED",
+                        "dashboard_rankable": 1,
+                        "sessions_json": "[]",
+                    }
+                )
 
 
 class TestSnapshotOnlyGuard:
@@ -394,23 +531,31 @@ class TestQueryBudgets:
 
     def test_last_n_uses_limit_not_full_history(self):
         cur = SnapshotCursor()
-        # 40 historical sessions for one employee
+        # Many historical employee-days for one employee
         with patch("backend.rinse_performance_approvals.table_exists", return_value=True), patch(
             "backend.rinse_folding_settings.table_exists", return_value=True
         ):
             for i in range(40):
                 d = DAY - timedelta(days=i)
-                sess = _closed_session(
-                    session_id=f"WF-hist-{i}",
-                    user_id=42,
-                    employee="Jennifer",
-                    start_time=f"{d.isoformat()}T08:00:00",
-                )
-                upsert_approved_snapshot(
-                    cur,
-                    3,
-                    role_key=ROLE_FOLDER,
-                    snapshot=session_card_to_snapshot(sess, business_date_et=d),
+                cur.pub_rows.append(
+                    {
+                        "organization_id": 3,
+                        "role_key": ROLE_FOLDER,
+                        "business_date_et": d,
+                        "employee_user_id": 42,
+                        "employee_name": "Jennifer",
+                        "orders_completed": 4,
+                        "total_pre_lbs": 92.0,
+                        "performance_hours": 2.0,
+                        "published_numerator": 92.0,
+                        "published_denominator": 2.0,
+                        "published_metric_value": 46.0,
+                        "included_session_count": 1,
+                        "session_count": 1,
+                        "day_publication_status": "APPROVED",
+                        "dashboard_rankable": 1,
+                        "sessions_json": "[]",
+                    }
                 )
             clear_benchmark_cache()
             hist = build_employee_role_history(
@@ -421,11 +566,11 @@ class TestQueryBudgets:
                 week_start=DAY - timedelta(days=DAY.weekday()),
                 last_n=5,
             )
-            assert len(hist["sessions"]) == 5
+            # Week window returns employee-days; chart sessions capped to last_n.
+            assert len(hist["sessions"]) <= 5
             assert hist["query_count"] <= 4
-            # Must be LIMIT-bounded (ORDER BY … DESC LIMIT N) — not a full history pull
             stmts = " ".join(hist["perf"]["statements"]).lower()
-            assert "limit" in stmts or "order by business_date_et desc" in stmts
+            assert "rinse_performance_employee_day_publications" in stmts
             assert hist["query_count"] <= 4
 
     def test_no_n_plus_one_statements(self):
@@ -450,21 +595,53 @@ class TestWeightedAggregation:
         with patch("backend.rinse_performance_approvals.table_exists", return_value=True), patch(
             "backend.rinse_folding_settings.table_exists", return_value=True
         ):
-            for sess in (
-                _closed_session(session_id="WF-1", total_pre_lbs=80, performance_hours=2, lbs_per_hour=40),
-                _closed_session(session_id="WF-2", total_pre_lbs=60, performance_hours=1, lbs_per_hour=60),
-            ):
-                upsert_approved_snapshot(
-                    cur,
-                    3,
-                    role_key=ROLE_FOLDER,
-                    snapshot=session_card_to_snapshot(sess, business_date_et=DAY),
-                )
+            # Two approved employee-days (not session rows) → weighted week rate
+            cur.pub_rows.append(
+                {
+                    "organization_id": 3,
+                    "role_key": ROLE_FOLDER,
+                    "business_date_et": DAY,
+                    "employee_user_id": 42,
+                    "employee_name": "Jennifer",
+                    "orders_completed": 4,
+                    "total_pre_lbs": 80.0,
+                    "performance_hours": 2.0,
+                    "published_numerator": 80.0,
+                    "published_denominator": 2.0,
+                    "published_metric_value": 40.0,
+                    "included_session_count": 1,
+                    "session_count": 1,
+                    "day_publication_status": "APPROVED",
+                    "dashboard_rankable": 1,
+                    "sessions_json": "[]",
+                }
+            )
+            cur.pub_rows.append(
+                {
+                    "organization_id": 3,
+                    "role_key": ROLE_FOLDER,
+                    "business_date_et": DAY - timedelta(days=1),
+                    "employee_user_id": 42,
+                    "employee_name": "Jennifer",
+                    "orders_completed": 3,
+                    "total_pre_lbs": 60.0,
+                    "performance_hours": 1.0,
+                    "published_numerator": 60.0,
+                    "published_denominator": 1.0,
+                    "published_metric_value": 60.0,
+                    "included_session_count": 1,
+                    "session_count": 1,
+                    "day_publication_status": "APPROVED",
+                    "dashboard_rankable": 1,
+                    "sessions_json": "[]",
+                }
+            )
             clear_benchmark_cache()
             week_start = DAY - timedelta(days=DAY.weekday())
             payload = build_role_leaderboard(cur, 3, role_key=ROLE_FOLDER, week_start=week_start)
             assert payload["team_weekly_avg"] == 46.6667
             assert payload["leaderboard"][0]["weekly_avg"] == 46.6667
+            assert payload["approved_employee_day_count"] == 2
 
 
 class TestPayloadAndLoad:
@@ -483,7 +660,10 @@ class TestPayloadAndLoad:
                 payload["leaderboard"][0]["sessions"], int
             )
             assert size < 50_000
-            assert "orders" not in json_blob(payload)
+            # Compact leaderboard: no nested order arrays (orders_completed int is fine)
+            blob = json_blob(payload)
+            assert '"orders":' not in blob
+            assert "orders_completed" in blob
 
     def test_concurrent_reads(self):
         cur = SnapshotCursor()
@@ -494,6 +674,7 @@ class TestPayloadAndLoad:
             # each thread gets own cursor view of same data via shared rows list
             c = SnapshotCursor()
             c.rows = list(cur.rows)
+            c.pub_rows = list(cur.pub_rows)
             c.settings = dict(cur.settings)
             with patch("backend.rinse_folding_settings.table_exists", return_value=True), patch(
                 "backend.rinse_performance_approvals.table_exists", return_value=True
@@ -531,10 +712,10 @@ class TestExplainShape:
         sql = explain_leaderboard_sql().lower()
         assert "group by" in sql
         assert "sum(published_numerator)" in sql
-        assert "invalidated_at is null" in sql
+        assert "dashboard_rankable = 1" in sql
         assert "organization_id" in sql
         assert "business_date_et" in sql
-        # No SELECT * of sessions for aggregation path
+        assert "rinse_performance_employee_day_publications" in sql
         assert "select *" not in sql.replace("explain", "")
 
 

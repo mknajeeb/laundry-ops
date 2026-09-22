@@ -144,6 +144,16 @@ def _annotate_dashboard(cursor, oid: int, payload: dict, selected: date) -> dict
     attach_publication_status_to_day(cursor, oid, payload)
     partition_employees_by_exclusion(payload)
 
+    # Backfill Rinse Hub publication cache from authoritative employee-days.
+    try:
+        from backend.rinse_performance_employee_day import sync_day_payload_publications
+
+        sync_day_payload_publications(
+            cursor, oid, payload, business_date_et=selected
+        )
+    except Exception:
+        pass
+
     # Deltas were computed from pre-publication live sums; recompute from
     # included-only summaries so excluded sessions cannot inflate comparisons.
     deltas = payload.get("deltas")

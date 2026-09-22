@@ -1,9 +1,14 @@
-"""Rinse-safe read projections — snapshot-only, set-based, query-budgeted.
+"""Rinse-safe read projections — employee-day publication cache, set-based.
 
 HARD RULES:
 - Never import or call live Management Performance builders.
 - Prefer 1–3 SQL queries per endpoint (hard ceiling documented per handler).
 - No N+1. No per-employee queries. No unbounded history on page load.
+
+Published eligibility: dashboard_rankable=1 (fully APPROVED employee-days only).
+Weekly rates: Σ day pounds / Σ day hours — never AVG of session or day rates.
+rinse_performance_employee_day_publications is a derived cache only; metrics
+come from Management compose/recompute_employee_day_metrics.
 """
 
 from __future__ import annotations
@@ -67,6 +72,11 @@ def _ensure_tables_once(cursor) -> int:
         before = getattr(cursor, "_rinse_qcount", None)
         ensure_rinse_performance_approval_tables(cursor)
         _ensure_read_indexes(cursor)
+        from backend.rinse_performance_employee_day import (
+            ensure_employee_day_publication_tables,
+        )
+
+        ensure_employee_day_publication_tables(cursor)
         _TABLES_READY = True
         after = getattr(cursor, "_rinse_qcount", None)
         if before is not None and after is not None:
@@ -233,6 +243,15 @@ def build_rinse_meta(cursor, organization_id: int) -> dict[str, Any]:
             {"id": "issues", "label": "Issues", "enabled": False},
         ],
         "performance_roles": roles,
+        "performance_unit": "employee_day",
+        "eligibility_rule": "dashboard_rankable",
+        "metrics": [
+            {"key": "lbs_hr", "label": "Folding Speed", "unit": "lb/hr"},
+            {"key": "bags_hr", "label": "Bags/hr", "unit": "bags/hr"},
+            {"key": "pounds", "label": "Pounds", "unit": "lb"},
+            {"key": "bags", "label": "Bags / Orders", "unit": "bags"},
+            {"key": "hours", "label": "Hours", "unit": "hr"},
+        ],
         "query_count": q,
         "perf": {"query_count": q, "ensure_queries": q_ensure, "wall_ms": wall_ms},
     }
@@ -240,25 +259,52 @@ def build_rinse_meta(cursor, organization_id: int) -> dict[str, Any]:
     return payload
 
 
+
+
 # ---------------------------------------------------------------------------
-# Role leaderboard — preferably 2 queries (GROUP BY + benchmark)
+# Role leaderboard — employee-day publications (not raw approved sessions)
 # ---------------------------------------------------------------------------
-_LEADERBOARD_SQL = f"""
+_DAY_LEADERBOARD_SQL = """
 SELECT
   employee_user_id,
   employee_name,
   SUM(published_numerator) AS sum_num,
   SUM(published_denominator) AS sum_den,
-  COUNT(*) AS session_count
-FROM {APPROVALS_TABLE}
+  SUM(orders_completed) AS sum_bags,
+  SUM(total_pre_lbs) AS sum_lbs,
+  SUM(COALESCE(performance_hours, 0)) AS sum_hours,
+  COUNT(*) AS employee_day_count,
+  SUM(included_session_count) AS session_count
+FROM {table}
 WHERE organization_id = %s
   AND role_key = %s
-  AND invalidated_at IS NULL
-  AND excluded_at IS NULL
+  AND dashboard_rankable = 1
   AND business_date_et >= %s
   AND business_date_et <= %s
 GROUP BY employee_user_id, employee_name
 """
+
+
+def _metric_value_for_row(
+    *,
+    metric: str,
+    sum_lbs: float,
+    sum_hours: float,
+    sum_bags: int,
+    weekly_avg: float | None,
+) -> float | None:
+    m = str(metric or "lbs_hr").lower()
+    if m in {"lbs_hr", "lb_hr", "folding_speed", "lbs_per_hour"}:
+        return weekly_avg
+    if m in {"bags_hr", "bags_per_hour"}:
+        return _rate(float(sum_bags), sum_hours)
+    if m in {"pounds", "lbs", "total_pre_lbs"}:
+        return round(sum_lbs, 2)
+    if m in {"bags", "orders", "orders_completed"}:
+        return float(sum_bags)
+    if m in {"hours", "performance_hours"}:
+        return round(sum_hours, 4) if sum_hours else None
+    return weekly_avg
 
 
 def build_role_leaderboard(
@@ -267,7 +313,15 @@ def build_role_leaderboard(
     *,
     role_key: str,
     week_start: date | None = None,
+    metric: str | None = None,
 ) -> dict[str, Any]:
+    """Published weekly board from fully APPROVED employee-days only.
+
+    Never ranks a single approved session from a partially approved day.
+    Weekly rate = Σ day pounds / Σ day hours (never AVG of session rates).
+    """
+    from backend.rinse_performance_employee_day import DAY_PUBLICATIONS_TABLE
+
     t0 = time.perf_counter()
     rk = str(role_key).upper()
     if not role_is_publishable(rk):
@@ -280,60 +334,126 @@ def build_role_leaderboard(
     role = get_role(rk)
     assert role is not None
     start, end = resolve_week(week_start)
+    metric_key = str(metric or "lbs_hr").lower()
     cur = wrap_cursor(cursor)
     _ensure_tables_once(cur)
 
-    cur.execute(_LEADERBOARD_SQL, (int(organization_id), rk, start, end))
+    sql = _DAY_LEADERBOARD_SQL.format(table=DAY_PUBLICATIONS_TABLE)
+    cur.execute(sql, (int(organization_id), rk, start, end))
     rows = [dict(r) for r in (cur.fetchall() or [])]
 
     bench = get_folder_benchmark_cached(cur, organization_id) if rk == ROLE_FOLDER else None
 
     team_num = 0.0
     team_den = 0.0
-    team_sessions = 0
+    team_days = 0
+    team_bags = 0
+    team_lbs = 0.0
+    team_hours = 0.0
     leaderboard = []
     for r in rows:
         num = float(r.get("sum_num") or 0)
         den = float(r.get("sum_den") or 0)
-        sess_n = int(r.get("session_count") or 0)
+        day_n = int(r.get("employee_day_count") or 0)
+        bags = int(r.get("sum_bags") or 0)
+        lbs = float(r.get("sum_lbs") or 0)
+        hours = float(r.get("sum_hours") or 0)
         avg = _rate(num, den)
+        selected = _metric_value_for_row(
+            metric=metric_key,
+            sum_lbs=lbs,
+            sum_hours=hours,
+            sum_bags=bags,
+            weekly_avg=avg,
+        )
         if den > 0:
             team_num += num
             team_den += den
-        team_sessions += sess_n
-        vs = None if avg is None or bench is None else round(float(avg) - float(bench), 4)
+        team_days += day_n
+        team_bags += bags
+        team_lbs += lbs
+        team_hours += hours
+        vs = None
+        if (
+            metric_key in {"lbs_hr", "lb_hr", "folding_speed", "lbs_per_hour"}
+            and selected is not None
+            and bench is not None
+        ):
+            vs = round(float(selected) - float(bench), 4)
         leaderboard.append(
             {
-                "employee_id": _employee_id_from_agg(r.get("employee_user_id"), r.get("employee_name")),
+                "employee_id": _employee_id_from_agg(
+                    r.get("employee_user_id"), r.get("employee_name")
+                ),
                 "employee_user_id": r.get("employee_user_id"),
                 "name": r.get("employee_name"),
                 "weekly_avg": avg,
+                "metric_value": selected,
                 "vs_benchmark": vs,
-                "sessions": sess_n,
+                "vs_target": vs,
+                "employee_days": day_n,
+                "days": day_n,
+                "sessions": int(r.get("session_count") or 0),
+                "orders_completed": bags,
+                "bags": bags,
+                "total_pre_lbs": round(lbs, 2),
+                "pounds": round(lbs, 2),
+                "performance_hours": round(hours, 4) if hours else None,
+                "hours": round(hours, 4) if hours else None,
             }
         )
+
     leaderboard.sort(
         key=lambda e: (
-            -(e["weekly_avg"] if e["weekly_avg"] is not None else -1e18),
+            -(e["metric_value"] if e.get("metric_value") is not None else -1e18),
             str(e.get("name") or "").casefold(),
         )
     )
     for i, row in enumerate(leaderboard, start=1):
         row["rank"] = i
 
+    team_avg = _rate(team_num, team_den)
+    unit_map = {
+        "lbs_hr": "lb/hr",
+        "bags_hr": "bags/hr",
+        "pounds": "lb",
+        "bags": "bags",
+        "hours": "hr",
+    }
+    label_map = {
+        "lbs_hr": "Folding Speed",
+        "bags_hr": "Bags/hr",
+        "pounds": "Pounds",
+        "bags": "Bags / Orders",
+        "hours": "Hours",
+    }
+
     q = int(cur._rinse_qcount)
     wall_ms = round((time.perf_counter() - t0) * 1000, 2)
     payload = {
         "role_key": rk,
         "display_name": role["display_name"],
-        "metric_key": role["metric_key"],
-        "metric_label": role["metric_label"],
-        "unit": role["unit"],
+        "metric_key": metric_key,
+        "metric_label": label_map.get(metric_key, role["metric_label"]),
+        "unit": unit_map.get(metric_key, role["unit"]),
+        "performance_unit": "employee_day",
+        "eligibility_rule": "dashboard_rankable",
         "benchmark": bench,
         "week_start": start.isoformat(),
         "week_end": end.isoformat(),
-        "team_weekly_avg": _rate(team_num, team_den),
-        "approved_session_count": team_sessions,
+        "team_weekly_avg": team_avg,
+        "team_metric_value": _metric_value_for_row(
+            metric=metric_key,
+            sum_lbs=team_lbs,
+            sum_hours=team_hours,
+            sum_bags=team_bags,
+            weekly_avg=team_avg,
+        ),
+        "approved_employee_day_count": team_days,
+        "approved_session_count": team_days,
+        "included_hours": round(team_hours, 4) if team_hours else 0,
+        "included_pounds": round(team_lbs, 2),
+        "included_bags": team_bags,
         "leaderboard": leaderboard,
         "query_count": q,
         "perf": {
@@ -347,29 +467,28 @@ def build_role_leaderboard(
         endpoint="role_leaderboard",
         query_count=q,
         wall_ms=wall_ms,
-        rows_grouped=len(rows),
+        rows=len(rows),
     )
     return payload
 
 
-# ---------------------------------------------------------------------------
-# Employees cross-role list — 1 week scan for all live roles + 1 benchmark
-# ---------------------------------------------------------------------------
-_EMPLOYEES_WEEK_SQL = f"""
+_EMPLOYEES_WEEK_SQL = """
 SELECT
   role_key,
   employee_user_id,
   employee_name,
-  SUM(published_numerator) AS sum_num,
-  SUM(published_denominator) AS sum_den,
-  COUNT(*) AS session_count
-FROM {APPROVALS_TABLE}
+  SUM(CASE WHEN dashboard_rankable = 1 THEN published_numerator ELSE 0 END) AS sum_num,
+  SUM(CASE WHEN dashboard_rankable = 1 THEN published_denominator ELSE 0 END) AS sum_den,
+  SUM(CASE WHEN dashboard_rankable = 1 THEN orders_completed ELSE 0 END) AS sum_bags,
+  SUM(CASE WHEN dashboard_rankable = 1 THEN total_pre_lbs ELSE 0 END) AS sum_lbs,
+  SUM(CASE WHEN dashboard_rankable = 1 THEN COALESCE(performance_hours, 0) ELSE 0 END) AS sum_hours,
+  SUM(CASE WHEN dashboard_rankable = 1 THEN 1 ELSE 0 END) AS employee_day_count,
+  COUNT(*) AS visible_day_count
+FROM {table}
 WHERE organization_id = %s
-  AND invalidated_at IS NULL
-  AND excluded_at IS NULL
   AND business_date_et >= %s
   AND business_date_et <= %s
-  AND role_key IN ({{role_placeholders}})
+  AND role_key IN ({role_placeholders})
 GROUP BY role_key, employee_user_id, employee_name
 """
 
@@ -380,6 +499,8 @@ def build_employees_list(
     *,
     week_start: date | None = None,
 ) -> dict[str, Any]:
+    from backend.rinse_performance_employee_day import DAY_PUBLICATIONS_TABLE
+
     t0 = time.perf_counter()
     start, end = resolve_week(week_start)
     visible = rinse_visible_roles()
@@ -395,7 +516,9 @@ def build_employees_list(
     cur = wrap_cursor(cursor)
     _ensure_tables_once(cur)
     placeholders = ",".join(["%s"] * len(role_keys))
-    sql = _EMPLOYEES_WEEK_SQL.format(role_placeholders=placeholders)
+    sql = _EMPLOYEES_WEEK_SQL.format(
+        table=DAY_PUBLICATIONS_TABLE, role_placeholders=placeholders
+    )
     cur.execute(sql, tuple([int(organization_id), start, end] + role_keys))
     rows = [dict(r) for r in (cur.fetchall() or [])]
 
@@ -428,7 +551,13 @@ def build_employees_list(
                 "unit": meta.get("unit"),
                 "weekly_avg": avg,
                 "benchmark": benches.get(rk),
-                "sessions": int(r.get("session_count") or 0),
+                "employee_days": int(r.get("employee_day_count") or 0),
+                "days": int(r.get("employee_day_count") or 0),
+                "visible_days": int(r.get("visible_day_count") or r.get("employee_day_count") or 0),
+                "sessions": int(r.get("employee_day_count") or 0),
+                "bags": int(r.get("sum_bags") or 0),
+                "pounds": round(float(r.get("sum_lbs") or 0), 2),
+                "hours": round(float(r.get("sum_hours") or 0), 4),
             }
         )
 
@@ -438,6 +567,7 @@ def build_employees_list(
     payload = {
         "week_start": start.isoformat(),
         "week_end": end.isoformat(),
+        "performance_unit": "employee_day",
         "employees": employees,
         "query_count": q,
         "perf": {"query_count": q, "wall_ms": wall_ms, "rows_grouped": len(rows)},
@@ -453,7 +583,8 @@ def build_employee_detail(
     employee_id: str,
     week_start: date | None = None,
 ) -> dict[str, Any]:
-    """Cross-role week summary for one employee — 1–2 queries."""
+    from backend.rinse_performance_employee_day import DAY_PUBLICATIONS_TABLE
+
     t0 = time.perf_counter()
     start, end = resolve_week(week_start)
     uid, name = _parse_employee_id(employee_id)
@@ -464,8 +595,7 @@ def build_employee_detail(
 
     clauses = [
         "organization_id=%s",
-        "invalidated_at IS NULL",
-        "excluded_at IS NULL",
+        "dashboard_rankable = 1",
         "business_date_et >= %s",
         "business_date_et <= %s",
     ]
@@ -486,8 +616,11 @@ def build_employee_detail(
         SELECT role_key, employee_user_id, employee_name,
                SUM(published_numerator) AS sum_num,
                SUM(published_denominator) AS sum_den,
-               COUNT(*) AS session_count
-        FROM {APPROVALS_TABLE}
+               SUM(orders_completed) AS sum_bags,
+               SUM(total_pre_lbs) AS sum_lbs,
+               SUM(COALESCE(performance_hours, 0)) AS sum_hours,
+               COUNT(*) AS employee_day_count
+        FROM {DAY_PUBLICATIONS_TABLE}
         WHERE {" AND ".join(clauses)}
         GROUP BY role_key, employee_user_id, employee_name
         """,
@@ -512,9 +645,16 @@ def build_employee_detail(
                 "display_name": meta.get("display_name"),
                 "metric_key": meta.get("metric_key"),
                 "unit": meta.get("unit"),
-                "weekly_avg": _rate(float(r.get("sum_num") or 0), float(r.get("sum_den") or 0)),
+                "weekly_avg": _rate(
+                    float(r.get("sum_num") or 0), float(r.get("sum_den") or 0)
+                ),
                 "benchmark": benches.get(rk),
-                "sessions": int(r.get("session_count") or 0),
+                "employee_days": int(r.get("employee_day_count") or 0),
+                "days": int(r.get("employee_day_count") or 0),
+                "sessions": int(r.get("employee_day_count") or 0),
+                "bags": int(r.get("sum_bags") or 0),
+                "pounds": round(float(r.get("sum_lbs") or 0), 2),
+                "hours": round(float(r.get("sum_hours") or 0), 4),
             }
         )
     q = int(cur._rinse_qcount)
@@ -525,6 +665,7 @@ def build_employee_detail(
         "name": display_name,
         "week_start": start.isoformat(),
         "week_end": end.isoformat(),
+        "performance_unit": "employee_day",
         "roles_summary": roles_summary,
         "query_count": q,
         "perf": {"query_count": q, "wall_ms": wall_ms},
@@ -533,47 +674,30 @@ def build_employee_detail(
     return payload
 
 
-# ---------------------------------------------------------------------------
-# Employee + role history — week aggregate + LIMIT last_n (≤3 queries)
-# ---------------------------------------------------------------------------
-_LAST_N_SQL = f"""
+_EMP_DAYS_WEEK_SQL = """
 SELECT
-  session_id,
   business_date_et,
-  published_metric_value,
-  published_quantity,
-  published_duration_hours,
-  published_session_start_et,
-  published_session_end_et,
-  employee_name,
-  employee_user_id
-FROM {APPROVALS_TABLE}
-WHERE organization_id = %s
-  AND role_key = %s
-  AND invalidated_at IS NULL
-  AND excluded_at IS NULL
-  AND {{emp_clause}}
-ORDER BY business_date_et DESC, published_session_start_et DESC, id DESC
-LIMIT %s
-"""
-
-_WEEK_AGG_SQL = f"""
-SELECT
   employee_name,
   employee_user_id,
-  SUM(published_numerator) AS sum_num,
-  SUM(published_denominator) AS sum_den,
-  COUNT(*) AS session_count
-FROM {APPROVALS_TABLE}
+  orders_completed,
+  total_pre_lbs,
+  performance_hours,
+  bags_per_hour,
+  published_metric_value,
+  published_numerator,
+  published_denominator,
+  day_publication_status,
+  dashboard_rankable,
+  included_session_count,
+  session_count,
+  sessions_json
+FROM {table}
 WHERE organization_id = %s
   AND role_key = %s
-  AND invalidated_at IS NULL
-  AND excluded_at IS NULL
   AND business_date_et >= %s
   AND business_date_et <= %s
-  AND {{emp_clause}}
-GROUP BY employee_name, employee_user_id
-LIMIT 1
+  AND {emp_clause}
+ORDER BY business_date_et ASC
 """
 
 
@@ -585,17 +709,28 @@ def build_employee_role_history(
     role_key: str,
     week_start: date | None = None,
     last_n: int = 5,
+    metric: str | None = None,
 ) -> dict[str, Any]:
+    """Employee → Day hierarchy for the selected week (sessions nested per day)."""
+    from backend.rinse_performance_employee_day import DAY_PUBLICATIONS_TABLE
+
     t0 = time.perf_counter()
     rk = str(role_key).upper()
     if not role_is_publishable(rk):
-        return {"error": "role_not_available", "role_key": rk, "sessions": [], "query_count": 0}
+        return {
+            "error": "role_not_available",
+            "role_key": rk,
+            "employee_days": [],
+            "sessions": [],
+            "query_count": 0,
+        }
     role = get_role(rk)
     assert role is not None
     start, end = resolve_week(week_start)
-    n = int(last_n or 5)
-    if n not in (5, 10, 20):
-        n = 5
+    metric_key = str(metric or "lbs_hr").lower()
+    n = int(last_n or 7)
+    if n not in (5, 7, 10, 20):
+        n = 7
     uid, name = _parse_employee_id(employee_id)
 
     if uid is not None:
@@ -608,72 +743,123 @@ def build_employee_role_history(
     cur = wrap_cursor(cursor)
     _ensure_tables_once(cur)
 
-    week_sql = _WEEK_AGG_SQL.format(emp_clause=emp_clause)
-    cur.execute(week_sql, (int(organization_id), rk, start, end, emp_param))
-    week_row = cur.fetchone()
-    week = dict(week_row) if week_row else {}
-
-    last_sql = _LAST_N_SQL.format(emp_clause=emp_clause)
-    cur.execute(last_sql, (int(organization_id), rk, emp_param, n))
-    last_rows = [dict(r) for r in (cur.fetchall() or [])]
-    # Chronological for chart (oldest → newest)
-    last_rows.reverse()
+    sql = _EMP_DAYS_WEEK_SQL.format(table=DAY_PUBLICATIONS_TABLE, emp_clause=emp_clause)
+    cur.execute(sql, (int(organization_id), rk, start, end, emp_param))
+    day_rows = [dict(r) for r in (cur.fetchall() or [])]
 
     bench = get_folder_benchmark_cached(cur, organization_id) if rk == ROLE_FOLDER else None
 
     display_name = name
-    if week.get("employee_name"):
-        display_name = week.get("employee_name")
-    elif last_rows:
-        display_name = last_rows[0].get("employee_name") or display_name
+    if day_rows:
+        display_name = day_rows[0].get("employee_name") or display_name
 
-    sessions_out = []
-    for r in last_rows:
+    sum_num = 0.0
+    sum_den = 0.0
+    sum_bags = 0
+    sum_lbs = 0.0
+    sum_hours = 0.0
+    published_days = 0
+    employee_days: list[dict[str, Any]] = []
+    for r in day_rows:
         biz = r.get("business_date_et")
-        sessions_out.append(
+        date_s = biz.isoformat() if hasattr(biz, "isoformat") else str(biz or "")
+        lbs = float(r.get("total_pre_lbs") or 0)
+        hours = (
+            float(r.get("performance_hours") or 0)
+            if r.get("performance_hours") is not None
+            else 0.0
+        )
+        bags = int(r.get("orders_completed") or 0)
+        day_rate = (
+            float(r["published_metric_value"])
+            if r.get("published_metric_value") is not None
+            else _rate(lbs, hours)
+        )
+        metric_value = _metric_value_for_row(
+            metric=metric_key,
+            sum_lbs=lbs,
+            sum_hours=hours,
+            sum_bags=bags,
+            weekly_avg=day_rate,
+        )
+        sessions = []
+        raw_json = r.get("sessions_json")
+        if raw_json:
+            try:
+                sessions = json.loads(raw_json) if isinstance(raw_json, str) else list(raw_json)
+            except Exception:
+                sessions = []
+        rankable = bool(int(r.get("dashboard_rankable") or 0))
+        if rankable:
+            published_days += 1
+            sum_num += float(r.get("published_numerator") or lbs)
+            sum_den += float(r.get("published_denominator") or hours)
+            sum_bags += bags
+            sum_lbs += lbs
+            sum_hours += hours
+        employee_days.append(
             {
-                "session_id": r.get("session_id"),
-                "date": biz.isoformat() if hasattr(biz, "isoformat") else str(biz or ""),
-                "metric_value": (
-                    float(r["published_metric_value"])
-                    if r.get("published_metric_value") is not None
-                    else None
-                ),
-                "quantity": (
-                    float(r["published_quantity"])
-                    if r.get("published_quantity") is not None
-                    else None
-                ),
-                "duration_hours": (
-                    float(r["published_duration_hours"])
-                    if r.get("published_duration_hours") is not None
-                    else None
-                ),
+                "date": date_s,
+                "metric_value": metric_value,
+                "lbs_per_hour": day_rate,
+                "pounds": round(lbs, 2),
+                "bags": bags,
+                "orders_completed": bags,
+                "hours": round(hours, 4) if hours else None,
+                "performance_hours": round(hours, 4) if hours else None,
+                "status": r.get("day_publication_status")
+                or ("APPROVED" if rankable else "NEEDS_APPROVAL"),
+                "dashboard_rankable": rankable,
+                "included_session_count": int(r.get("included_session_count") or 0),
+                "session_count": int(r.get("session_count") or len(sessions)),
+                "sessions": sessions,
             }
         )
 
+    chart_days = employee_days[-n:] if len(employee_days) > n else employee_days
+    sessions_out = [
+        {
+            "session_id": f"day:{d['date']}",
+            "date": d["date"],
+            "metric_value": d["metric_value"],
+            "quantity": d["pounds"],
+            "duration_hours": d["hours"],
+            "status": d["status"],
+            "dashboard_rankable": d["dashboard_rankable"],
+        }
+        for d in chart_days
+    ]
+
+    weekly_avg = _rate(sum_num, sum_den)
     q = int(cur._rinse_qcount)
     wall_ms = round((time.perf_counter() - t0) * 1000, 2)
     payload = {
         "employee_id": str(employee_id),
-        "employee_user_id": uid if uid is not None else week.get("employee_user_id"),
+        "employee_user_id": uid
+        if uid is not None
+        else (day_rows[0].get("employee_user_id") if day_rows else None),
         "name": display_name,
         "role_key": rk,
         "display_name": role["display_name"],
-        "metric_key": role["metric_key"],
+        "metric_key": metric_key,
         "metric_label": role["metric_label"],
         "unit": role["unit"],
         "benchmark": bench,
         "week_start": start.isoformat(),
         "week_end": end.isoformat(),
-        "weekly_avg": _rate(float(week.get("sum_num") or 0), float(week.get("sum_den") or 0)),
+        "weekly_avg": weekly_avg,
+        "approved_employee_day_count": published_days,
+        "included_bags": sum_bags,
+        "included_pounds": round(sum_lbs, 2),
+        "included_hours": round(sum_hours, 4) if sum_hours else 0,
         "last_n": n,
+        "employee_days": employee_days,
         "sessions": sessions_out,
         "query_count": q,
         "perf": {
             "query_count": q,
             "wall_ms": wall_ms,
-            "last_n_rows": len(sessions_out),
+            "employee_day_rows": len(employee_days),
             "statements": list(cur.statements),
         },
     }
@@ -682,8 +868,9 @@ def build_employee_role_history(
 
 
 def explain_leaderboard_sql() -> str:
-    """Canonical EXPLAIN target for ops / acceptance."""
-    return f"EXPLAIN {_LEADERBOARD_SQL.strip()}"
+    from backend.rinse_performance_employee_day import DAY_PUBLICATIONS_TABLE
+
+    return f"EXPLAIN {_DAY_LEADERBOARD_SQL.format(table=DAY_PUBLICATIONS_TABLE).strip()}"
 
 
 def assert_no_live_management_imports() -> None:
@@ -713,7 +900,6 @@ def assert_no_live_management_imports() -> None:
                     raise AssertionError(f"forbidden symbol import: {alias.name}")
 
 
-# Re-export setting key for tests / docs
 BENCHMARK_SETTING_KEY = KEY_LBS_PER_HOUR
 
 
