@@ -616,6 +616,39 @@ def _employees(rows: Sequence[Mapping[str, Any]]) -> list[str]:
     )
 
 
+def _performance_for_employee_filter(
+    performance: Sequence[Mapping[str, Any]] | None,
+    employee_filter: str | None,
+) -> list[Mapping[str, Any]]:
+    """Employee-scoped performance rows, or the full day list when unfiltered."""
+    rows = list(performance or [])
+    if not employee_filter:
+        return rows
+    needle = str(employee_filter).strip().casefold()
+    if not needle:
+        return rows
+    return [
+        p
+        for p in rows
+        if str(p.get("employee") or "").strip().casefold() == needle
+    ]
+
+
+def _sort_hours_for_summary(
+    performance: Sequence[Mapping[str, Any]] | None,
+    employee_filter: str | None,
+) -> float:
+    """Authoritative SORT hours matching the active employee filter.
+
+    No filter → sum of applicable employee SORT role hours for the day.
+    Employee filter → that employee's SORT role hours only.
+    """
+    return sum(
+        float(p.get("sort_hours") or 0)
+        for p in _performance_for_employee_filter(performance, employee_filter)
+    )
+
+
 def chronology_payload_from_views(
     views: Mapping[str, Any],
     stage: str,
@@ -683,6 +716,9 @@ def chronology_payload_from_views(
             for i, row in enumerate(loads, start=1)
         ]
 
+    payload_washer_loads = list(views.get("washer_loads") or [])
+    payload_dryer_loads = list(views.get("dryer_loads") or [])
+
     for i, row in enumerate(rows, start=1):
         row["index"] = i
 
@@ -711,7 +747,11 @@ def chronology_payload_from_views(
             "segment. No duration, gap, or session."
         )
     elif stage == "sorting":
-        sort_hours = sum(float(p.get("sort_hours") or 0) for p in views.get("performance") or [])
+        # Bags come from filtered sorting rows; SORT hours must use the same
+        # employee scope (never org-wide hours under an employee filter).
+        sort_hours = _sort_hours_for_summary(
+            views.get("performance") or [], employee_filter
+        )
         bags = len({r["bag_id"] for r in rows})
         summary = {
             "total_bags": bags,
@@ -724,14 +764,30 @@ def chronology_payload_from_views(
         rules = (
             "One row per bag: qualifying sorting add-photos inside the employee's SORT "
             "segment. Wash-handoff add-photos are excluded. Open SORT hours end at the "
-            "current time; closed segments end at the segment end. No start-to-end session."
+            "current time; closed segments end at the segment end. No start-to-end session. "
+            "Summary SORT hours and bags/hr use the same employee scope as the rows."
         )
     elif stage in ("washing", "drying"):
-        wash_n = len(views.get("washer_loads") or [])
-        dry_n = len(views.get("dryer_loads") or [])
+        # Load KPIs must match the employee/bag/machine filter used for rows.
+        payload_washer_loads = _apply_filters(
+            list(views.get("washer_loads") or []),
+            employee_filter=employee_filter,
+            bag_id_filter=bag_id_filter,
+            machine_filter=machine_filter,
+            machine_keys=("washer_rack",),
+        )
+        payload_dryer_loads = _apply_filters(
+            list(views.get("dryer_loads") or []),
+            employee_filter=employee_filter,
+            bag_id_filter=bag_id_filter,
+            machine_filter=machine_filter,
+            machine_keys=("dryer_rack",),
+        )
+        wash_n = len(payload_washer_loads)
+        dry_n = len(payload_dryer_loads)
         bags = len(
-            {r["bag_id"] for r in (views.get("washer_loads") or [])}
-            | {r["bag_id"] for r in (views.get("dryer_loads") or [])}
+            {r["bag_id"] for r in payload_washer_loads}
+            | {r["bag_id"] for r in payload_dryer_loads}
         )
         summary = {
             "washer_loads": wash_n,
@@ -745,7 +801,8 @@ def chronology_payload_from_views(
         rules = (
             "Washer loads are start-cleaning on a washer rack. Dryer loads are drying on "
             "a dryer rack. Both count only inside OPERATOR time. Dedupe is bag + timestamp "
-            "+ rack, so two machines in the same minute stay two loads."
+            "+ rack, so two machines in the same minute stay two loads. Summary load and "
+            "unique-bag counts use the same employee filter as the displayed rows."
         )
     else:
         machines = sorted({str(r.get("machine") or "") for r in rows if r.get("machine")})
@@ -770,6 +827,7 @@ def chronology_payload_from_views(
             "machines": machines,
             "event_purposes": None,
             "grouping_rules": rules,
+            # Facility-wide per-employee breakdown; not narrowed by the row filter.
             "operational_performance": views.get("performance") or [],
             "raw_json_loaded": False,
         }
@@ -789,9 +847,10 @@ def chronology_payload_from_views(
         ),
         "event_purposes": None,
         "grouping_rules": rules,
+        # Facility-wide per-employee breakdown; not narrowed by the row filter.
         "operational_performance": views.get("performance") or [],
-        "washer_loads": list(views.get("washer_loads") or []),
-        "dryer_loads": list(views.get("dryer_loads") or []),
+        "washer_loads": payload_washer_loads,
+        "dryer_loads": payload_dryer_loads,
         "raw_json_loaded": False,
     }
 
