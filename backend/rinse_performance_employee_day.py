@@ -1130,9 +1130,13 @@ def list_business_dates_needing_publication_ensure(
     organization_id: int,
     *,
     role_key: str,
-    week_start: date,
+    week_start: date | None = None,
+    date_start: date | None = None,
+    date_end: date | None = None,
 ) -> list[date]:
-    """Dates in the week whose publication cache is missing or stale vs approvals.
+    """Dates in range whose publication cache is missing or stale vs approvals.
+
+    Prefer ``date_start``/``date_end``. Legacy ``week_start`` expands to Mon–Sun.
 
     A date needs ensure when any active session approval exists and either:
     - no publication rows exist for that date, or
@@ -1141,7 +1145,14 @@ def list_business_dates_needing_publication_ensure(
     from backend.rinse_performance_approvals import APPROVALS_TABLE, et_week_bounds
 
     ensure_employee_day_publication_tables(cursor)
-    start, end = et_week_bounds(week_start)
+    if date_start is not None and date_end is not None:
+        start, end = date_start, date_end
+    elif week_start is not None:
+        start, end = et_week_bounds(week_start)
+    else:
+        return []
+    if end < start:
+        return []
     rk = str(role_key).upper()
     oid = int(organization_id)
 
@@ -1214,21 +1225,20 @@ def list_business_dates_needing_publication_ensure(
     return need
 
 
-def ensure_employee_day_publications_for_week(
+def ensure_employee_day_publications_for_range(
     cursor,
     organization_id: int,
     *,
     role_key: str = ROLE_FOLDER,
-    week_start: date | None = None,
+    date_start: date,
+    date_end: date,
 ) -> dict[str, Any]:
-    """Read-through backfill: rebuild publication cache for stale/missing week days.
+    """Read-through backfill for an arbitrary bounded ET date range.
 
-    Reuses Management day build + attach_publication (→ recompute_employee_day_metrics)
-    + partition + sync_day_payload_publications. Same eligibility as Live/Published.
-    Idempotent: warm weeks with up-to-date pubs skip day builds.
+    Only stale/missing dates rebuild (set-based detection, sequential rebuild).
+    Idempotent: warm ranges with up-to-date pubs skip day builds.
     """
     from backend.management_wf_folder_performance import build_day_folder_performance
-    from backend.rinse_performance_approvals import current_et_week_start, et_week_bounds
     from backend.rinse_performance_folder_publisher import (
         attach_publication_status_to_day,
         partition_employees_by_exclusion,
@@ -1236,12 +1246,17 @@ def ensure_employee_day_publications_for_week(
 
     t0 = datetime.utcnow()
     rk = str(role_key).upper()
-    ws = week_start or current_et_week_start()
-    start, end = et_week_bounds(ws)
+    start, end = date_start, date_end
+    if end < start:
+        raise ValueError("date_end_before_date_start")
     ensure_employee_day_publication_tables(cursor)
 
     dates = list_business_dates_needing_publication_ensure(
-        cursor, organization_id, role_key=rk, week_start=ws
+        cursor,
+        organization_id,
+        role_key=rk,
+        date_start=start,
+        date_end=end,
     )
     synced: list[str] = []
     for day_et in dates:
@@ -1262,14 +1277,38 @@ def ensure_employee_day_publications_for_week(
         )
         synced.append(day_et.isoformat())
 
+    checked = (end - start).days + 1
     wall_ms = round((datetime.utcnow() - t0).total_seconds() * 1000, 2)
     return {
         "ok": True,
+        "date_start": start.isoformat(),
+        "date_end": end.isoformat(),
         "week_start": start.isoformat(),
         "week_end": end.isoformat(),
-        "dates_checked": len(_week_dates(ws)),
+        "dates_checked": checked,
         "dates_synced": synced,
         "synced_count": len(synced),
         "wall_ms": wall_ms,
         "strategy": "read_through_stale_or_missing_vs_approvals",
     }
+
+
+def ensure_employee_day_publications_for_week(
+    cursor,
+    organization_id: int,
+    *,
+    role_key: str = ROLE_FOLDER,
+    week_start: date | None = None,
+) -> dict[str, Any]:
+    """Read-through backfill for a calendar Mon–Sun week (legacy wrapper)."""
+    from backend.rinse_performance_approvals import current_et_week_start, et_week_bounds
+
+    ws = week_start or current_et_week_start()
+    start, end = et_week_bounds(ws)
+    return ensure_employee_day_publications_for_range(
+        cursor,
+        organization_id,
+        role_key=role_key,
+        date_start=start,
+        date_end=end,
+    )
