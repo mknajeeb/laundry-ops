@@ -15,6 +15,8 @@ import {
   Switch,
   Tab,
   Tabs,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
   useMediaQuery,
   useTheme,
@@ -31,17 +33,24 @@ import {
   bulkSetWeeklyScheduleEmployer,
   cascadeWeeklySchedule,
   createWeeklyScheduleEntry,
+  createWeeklyScheduleResponsibility,
   deleteWeeklyScheduleEntry,
+  deleteWeeklyScheduleResponsibility,
   duplicateWeeklyScheduleEntry,
   getWeeklySchedule,
   moveWeeklyScheduleEntry,
   setWeeklyScheduleExclusion,
   updateWeeklyScheduleEntry,
   updateWeeklyScheduleDisplaySettings,
+  updateWeeklyScheduleResponsibility,
 } from "../api";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import WeeklyScheduleCascadeDialog from "../components/weeklySchedule/WeeklyScheduleCascadeDialog";
 import WeeklyScheduleEntryDialog from "../components/weeklySchedule/WeeklyScheduleEntryDialog";
+import WeeklyScheduleManageRolesDialog from "../components/weeklySchedule/WeeklyScheduleManageRolesDialog";
+import WeeklyScheduleTimeRoleView from "../components/weeklySchedule/WeeklyScheduleTimeRoleView";
+import WeeklyScheduleResponsibilityChip from "../components/weeklySchedule/WeeklyScheduleResponsibilityChip";
+import { ASSIGNMENT_KIND, buildTimeRoleDays } from "../components/weeklySchedule/weeklyScheduleTimeBlocks";
 import WeeklyScheduleDayHeader from "../components/weeklySchedule/WeeklyScheduleDayHeader";
 import WeeklyScheduleEmployeeCell from "../components/weeklySchedule/WeeklyScheduleEmployeeCell";
 import WeeklyScheduleShiftCard from "../components/weeklySchedule/WeeklyScheduleShiftCard";
@@ -66,12 +75,17 @@ import {
   normalizeWeekStart,
   shiftWeek,
 } from "../components/weeklySchedule/weeklyScheduleDates";
-import { exportWeeklyScheduleCsv } from "../components/weeklySchedule/weeklyScheduleExport";
+import {
+  exportWeeklyScheduleCsv,
+  exportWeeklyScheduleTimeRoleCsv,
+} from "../components/weeklySchedule/weeklyScheduleExport";
 import WeeklySchedulePrintTable from "../components/weeklySchedule/WeeklySchedulePrintTable";
+import WeeklyScheduleTimeRolePrint from "../components/weeklySchedule/WeeklyScheduleTimeRolePrint";
 import WeeklyScheduleViewTabs from "../components/weeklySchedule/WeeklyScheduleViewTabs";
 import {
   filterEntriesByScheduleView,
   hasRoleViewFilter,
+  resolveRoleViewRoles,
   SCHEDULE_VIEW_ALL,
   scheduleViewSummaryLabel,
   visibleDayIndices,
@@ -82,7 +96,12 @@ import {
   computeFilteredDaySummaries,
   computeWeekSummary,
   scheduleCellBackground,
+  scheduleRoleCatalog,
+  setScheduleRoleCatalog,
 } from "../components/weeklySchedule/weeklyScheduleRoles";
+
+const VIEW_MODE = { EMPLOYEE: "employee", TIME_ROLE: "time_role" };
+
 
 function daySummary(day) {
   return {
@@ -132,10 +151,12 @@ function ScheduleDayCell({
   handleSetEmployer,
   organizationSlug = null,
   compact = false,
+  cellResponsibilities = [],
+  openEditResponsibility,
 }) {
   const cellKey = `${employee.user_id}:${dow}`;
   const isDropTarget = dropTarget === cellKey;
-  const isEmpty = cellEntries.length === 0;
+  const isEmpty = cellEntries.length === 0 && cellResponsibilities.length === 0;
   const canAddShift = !excluded && canEdit;
   const cellBg = scheduleCellBackground({
     entries: cellEntries,
@@ -210,6 +231,13 @@ function ScheduleDayCell({
           onDragEnd={canEdit ? () => setDraggingId(null) : undefined}
         />
       ))}
+      {cellResponsibilities.map((item) => (
+        <WeeklyScheduleResponsibilityChip
+          key={`r${item.id}`}
+          item={item}
+          onClick={canEdit && !excluded ? openEditResponsibility : undefined}
+        />
+      ))}
       {canAddShift && isEmpty ? (
         <Box
           className="schedule-cell-add"
@@ -265,6 +293,10 @@ export default function WeeklySchedulePage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingEntry, setEditingEntry] = useState(null);
   const [dialogDefaults, setDialogDefaults] = useState({ userId: null, day: 0 });
+  const [editingResponsibility, setEditingResponsibility] = useState(null);
+  const [dialogError, setDialogError] = useState("");
+  const [viewMode, setViewMode] = useState(VIEW_MODE.EMPLOYEE);
+  const [rolesOpen, setRolesOpen] = useState(false);
   const [draggingId, setDraggingId] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
   const [showExcluded, setShowExcluded] = useState(false);
@@ -301,6 +333,12 @@ export default function WeeklySchedulePage() {
   const scheduleEndTimeEnabled = display.schedule_end_time_enabled !== false;
   const hiddenScheduleRoles = display.hidden_schedule_roles || [];
   const daysOnly = !scheduleEndTimeEnabled;
+
+  // Registered during render so every child (chips, filters, dialogs) sees the org's role settings.
+  const roleCatalog = useMemo(() => {
+    setScheduleRoleCatalog(data?.role_catalog);
+    return scheduleRoleCatalog();
+  }, [data?.role_catalog]);
 
   useEffect(() => {
     if (data?.display) {
@@ -370,23 +408,72 @@ export default function WeeklySchedulePage() {
     [data?.entries, data?.employees, employerTab, organizationSlug],
   );
 
-  const tabEmployees = useMemo(
+  const shiftTabEmployees = useMemo(
     () => filterEmployeesByEmployerTab(data?.employees || [], employerTab, data?.entries || [], organizationSlug),
     [data?.employees, data?.entries, employerTab, organizationSlug],
   );
+
+  const addableForTab = useMemo(
+    () =>
+      addableEmployeesForEmployerTab(
+        data?.employees || [],
+        employerTab,
+        data?.entries || [],
+        organizationSlug,
+      ),
+    [data?.employees, data?.entries, employerTab, organizationSlug],
+  );
+
+  /** Daily responsibilities follow the employee's tab (they carry no shift employer of their own). */
+  const tabResponsibilities = useMemo(() => {
+    const ids = new Set([...shiftTabEmployees, ...addableForTab].map((e) => Number(e.user_id)));
+    return (data?.daily_responsibilities || []).filter((item) => ids.has(Number(item.user_id)));
+  }, [data?.daily_responsibilities, shiftTabEmployees, addableForTab]);
+
+  const tabEmployees = useMemo(() => {
+    const ids = new Set(shiftTabEmployees.map((e) => Number(e.user_id)));
+    const extra = addableForTab.filter(
+      (e) => !ids.has(Number(e.user_id)) && tabResponsibilities.some((r) => Number(r.user_id) === Number(e.user_id)),
+    );
+    if (!extra.length) return shiftTabEmployees;
+    return [...shiftTabEmployees, ...extra].sort((a, b) =>
+      String(a.display_name || "").localeCompare(String(b.display_name || "")),
+    );
+  }, [shiftTabEmployees, addableForTab, tabResponsibilities]);
 
   const viewEntries = useMemo(
     () => filterEntriesByScheduleView(tabEntries, selectedRoleView, dayViewTab),
     [tabEntries, selectedRoleView, dayViewTab],
   );
 
+  const viewResponsibilities = useMemo(() => {
+    const roles = resolveRoleViewRoles(selectedRoleView);
+    return tabResponsibilities.filter((item) => {
+      if (roles && !roles.includes(item.role)) return false;
+      if (dayViewTab !== SCHEDULE_VIEW_ALL && Number(item.day_of_week) !== Number(dayViewTab)) return false;
+      return true;
+    });
+  }, [tabResponsibilities, selectedRoleView, dayViewTab]);
+
   const viewEmployees = useMemo(() => {
     if (!hasRoleViewFilter(selectedRoleView) && dayViewTab === SCHEDULE_VIEW_ALL) {
       return tabEmployees;
     }
-    const userIds = new Set(viewEntries.map((entry) => Number(entry.user_id)));
+    const userIds = new Set(
+      [...viewEntries, ...viewResponsibilities].map((item) => Number(item.user_id)),
+    );
     return tabEmployees.filter((employee) => userIds.has(Number(employee.user_id)));
-  }, [tabEmployees, viewEntries, selectedRoleView, dayViewTab]);
+  }, [tabEmployees, viewEntries, viewResponsibilities, selectedRoleView, dayViewTab]);
+
+  const responsibilitiesByCell = useMemo(() => {
+    const map = {};
+    for (const item of viewResponsibilities) {
+      const key = `${item.user_id}:${item.day_of_week}`;
+      if (!map[key]) map[key] = [];
+      map[key].push(item);
+    }
+    return map;
+  }, [viewResponsibilities]);
 
   const visibleDayColumns = useMemo(() => visibleDayIndices(dayViewTab), [dayViewTab]);
   const visibleDayLabels = useMemo(
@@ -443,16 +530,40 @@ export default function WeeklySchedulePage() {
     return viewEmployees.filter((e) => !e.excluded);
   }, [viewEmployees, showExcluded]);
 
-  const addableEmployees = useMemo(
-    () =>
-      addableEmployeesForEmployerTab(
-        data?.employees || [],
-        employerTab,
-        data?.entries || [],
-        organizationSlug,
-      ),
-    [data?.employees, data?.entries, employerTab, organizationSlug],
+  const visibleUserIds = useMemo(
+    () => new Set(visibleEmployees.map((e) => Number(e.user_id))),
+    [visibleEmployees],
   );
+  const timeViewEntries = useMemo(
+    () => viewEntries.filter((entry) => visibleUserIds.has(Number(entry.user_id))),
+    [viewEntries, visibleUserIds],
+  );
+  const timeViewResponsibilities = useMemo(
+    () => viewResponsibilities.filter((item) => visibleUserIds.has(Number(item.user_id))),
+    [viewResponsibilities, visibleUserIds],
+  );
+  const employeesById = useMemo(
+    () => Object.fromEntries((data?.employees || []).map((e) => [e.user_id, e])),
+    [data?.employees],
+  );
+  const timeRoleDays = useMemo(
+    () =>
+      buildTimeRoleDays(timeViewEntries, {
+        dayIndices: visibleDayColumns,
+        employeesById,
+        responsibilities: timeViewResponsibilities,
+        selectedRoles: resolveRoleViewRoles(selectedRoleView),
+        endTimeEnabled: scheduleEndTimeEnabled,
+      }),
+    // roleCatalog: grouping reads role order and labels from the registered catalog.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [timeViewEntries, visibleDayColumns, employeesById, timeViewResponsibilities, selectedRoleView, scheduleEndTimeEnabled, roleCatalog],
+  );
+
+  const addableEmployees = useMemo(() => {
+    const ids = new Set(tabEmployees.map((e) => Number(e.user_id)));
+    return addableForTab.filter((e) => !ids.has(Number(e.user_id)));
+  }, [addableForTab, tabEmployees]);
 
   const excludedCount = useMemo(
     () => viewEmployees.filter((e) => e.excluded).length,
@@ -482,39 +593,104 @@ export default function WeeklySchedulePage() {
     }
   };
 
-  const openCreate = (userId, day) => {
+  const openCreate = (userId, day, extras = {}) => {
     setEditingEntry(null);
-    setDialogDefaults({ userId, day });
+    setEditingResponsibility(null);
+    setDialogError("");
+    setDialogDefaults({ userId, day, ...extras });
     setDialogOpen(true);
   };
 
   const openEdit = (entry) => {
     setEditingEntry(entry);
+    setEditingResponsibility(null);
+    setDialogError("");
     setDialogDefaults({ userId: entry.user_id, day: entry.day_of_week });
     setDialogOpen(true);
   };
 
+  const openEditResponsibility = (item) => {
+    setEditingEntry(null);
+    setEditingResponsibility(item);
+    setDialogError("");
+    setDialogDefaults({ userId: item.user_id, day: item.day_of_week, kind: ASSIGNMENT_KIND.RESPONSIBILITY });
+    setDialogOpen(true);
+  };
+
+  const openCreateFromTimeView = ({ day, role, startTime, endTime, kind }) => {
+    openCreate(null, day, { role, startTime, endTime, kind, pickEmployee: true });
+  };
+
+  const pickerEmployees = useMemo(
+    () =>
+      [...tabEmployees.filter((e) => !e.excluded), ...addableEmployees].sort((a, b) =>
+        String(a.display_name || "").localeCompare(String(b.display_name || "")),
+      ),
+    [tabEmployees, addableEmployees],
+  );
+
   const handleSave = async (form) => {
     setSaving(true);
-    setError("");
+    setDialogError("");
+    const { kind, ...body } = form;
     try {
-      if (editingEntry?.id) {
-        const res = await updateWeeklyScheduleEntry(editingEntry.id, form);
-        setData(res.data);
+      let res;
+      if (kind === ASSIGNMENT_KIND.RESPONSIBILITY) {
+        res = editingResponsibility?.id
+          ? await updateWeeklyScheduleResponsibility(editingResponsibility.id, body)
+          : await createWeeklyScheduleResponsibility({ week_start: weekStart, ...body });
+      } else if (editingEntry?.id) {
+        res = await updateWeeklyScheduleEntry(editingEntry.id, body);
       } else {
-        const res = await createWeeklyScheduleEntry({
+        res = await createWeeklyScheduleEntry({
           week_start: weekStart,
-          employer_affiliation: form.employer_affiliation || defaultShiftEmployerForTab(employerTab),
-          ...form,
+          employer_affiliation: body.employer_affiliation || defaultShiftEmployerForTab(employerTab),
+          ...body,
         });
-        setData(res.data);
       }
+      setData(res.data);
       setDialogOpen(false);
     } catch (e) {
-      setError(e?.response?.data?.error || "Failed to save shift");
+      setDialogError(e?.response?.data?.error || "Failed to save assignment");
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleDialogDelete = async () => {
+    if (editingResponsibility?.id) {
+      if (!window.confirm("Remove this daily responsibility?")) return;
+      setSaving(true);
+      setDialogError("");
+      try {
+        const res = await deleteWeeklyScheduleResponsibility(editingResponsibility.id);
+        setData(res.data);
+        setDialogOpen(false);
+      } catch (e) {
+        setDialogError(e?.response?.data?.error || "Failed to remove responsibility");
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+    if (editingEntry?.id) {
+      if (!window.confirm("Delete this shift?")) return;
+      setSaving(true);
+      setDialogError("");
+      try {
+        const res = await deleteWeeklyScheduleEntry(editingEntry.id);
+        setData(res.data);
+        setDialogOpen(false);
+      } catch (e) {
+        setDialogError(e?.response?.data?.error || "Failed to delete shift");
+      } finally {
+        setSaving(false);
+      }
+    }
+  };
+
+  const handleCatalogChange = (roles) => {
+    setData((prev) => (prev ? { ...prev, role_catalog: roles } : prev));
   };
 
   const handleDelete = async (entry) => {
@@ -590,6 +766,15 @@ export default function WeeklySchedulePage() {
 
   const handleExport = () => {
     const viewSuffix = scheduleViewLabel ? ` - ${scheduleViewLabel}` : "";
+    if (viewMode === VIEW_MODE.TIME_ROLE) {
+      exportWeeklyScheduleTimeRoleCsv({
+        days: timeRoleDays,
+        weekStart,
+        tabLabel: `${ENTITY_TAB_LABELS[employerTab]}${viewSuffix}`,
+        scheduleEndTimeEnabled,
+      });
+      return;
+    }
     exportWeeklyScheduleCsv({
       employees: visibleEmployees,
       entries: viewEntries,
@@ -600,6 +785,7 @@ export default function WeeklySchedulePage() {
       dayLabels: visibleDayLabels.length === 7 ? undefined : visibleDayLabels,
       dayIndices: visibleDayColumns.length === 7 ? undefined : visibleDayColumns,
       daySummaries: filteredDaySummaries,
+      responsibilities: timeViewResponsibilities,
     });
   };
 
@@ -678,6 +864,7 @@ export default function WeeklySchedulePage() {
     handleDuplicate,
     handleSetEmployer,
     organizationSlug,
+    openEditResponsibility,
   };
 
   return (
@@ -793,6 +980,25 @@ export default function WeeklySchedulePage() {
                   <ChevronRightIcon fontSize="small" />
                 </IconButton>
               </Stack>
+              <ToggleButtonGroup
+                size="small"
+                exclusive
+                value={viewMode}
+                onChange={(_, value) => value && setViewMode(value)}
+                sx={{
+                  height: 30,
+                  "& .MuiToggleButton-root": {
+                    px: 1,
+                    py: 0.25,
+                    fontWeight: 700,
+                    fontSize: "0.74rem",
+                    textTransform: "none",
+                  },
+                }}
+              >
+                <ToggleButton value={VIEW_MODE.EMPLOYEE}>By employee</ToggleButton>
+                <ToggleButton value={VIEW_MODE.TIME_ROLE}>By time &amp; role</ToggleButton>
+              </ToggleButtonGroup>
               {canEdit && addableEmployees.length ? (
                 <Select
                   size="small"
@@ -829,6 +1035,16 @@ export default function WeeklySchedulePage() {
                   sx={{ fontWeight: 700, py: 0.35 }}
                 >
                   User mapping
+                </Button>
+              ) : null}
+              {canEdit ? (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => setRolesOpen(true)}
+                  sx={{ fontWeight: 700, py: 0.35 }}
+                >
+                  Manage roles
                 </Button>
               ) : null}
               {canEdit ? (
@@ -924,6 +1140,8 @@ export default function WeeklySchedulePage() {
               dayTab={dayViewTab}
               onDayTabChange={setDayViewTab}
               hiddenRoles={hiddenScheduleRoles}
+              roleCatalog={roleCatalog}
+              responsibilities={tabResponsibilities}
             />
           ) : null}
 
@@ -1051,7 +1269,17 @@ export default function WeeklySchedulePage() {
                 }}
                 className="weekly-schedule-grid-scroll"
               >
-                {isMobile ? (
+                {viewMode === VIEW_MODE.TIME_ROLE ? (
+                  <WeeklyScheduleTimeRoleView
+                    weekStart={weekStart}
+                    days={timeRoleDays}
+                    endTimeEnabled={scheduleEndTimeEnabled}
+                    canEdit={canEdit}
+                    onEditEntry={openEdit}
+                    onEditResponsibility={openEditResponsibility}
+                    onAdd={openCreateFromTimeView}
+                  />
+                ) : isMobile ? (
                   <Stack spacing={1.5} className="weekly-schedule-mobile-stack" sx={{ pb: 2 }}>
                   {(visibleEmployees || []).map((employee) => {
                     const excluded = Boolean(employee.excluded);
@@ -1084,7 +1312,8 @@ export default function WeeklySchedulePage() {
                             const dayLabel = DAY_LABELS[dow];
                             const cellKey = `${employee.user_id}:${dow}`;
                             const cellEntries = entriesByCell[cellKey] || [];
-                            if (!cellEntries.length && excluded) return null;
+                            const cellResponsibilities = responsibilitiesByCell[cellKey] || [];
+                            if (!cellEntries.length && !cellResponsibilities.length && excluded) return null;
                             return (
                               <ScheduleDayCell
                                 key={cellKey}
@@ -1092,6 +1321,7 @@ export default function WeeklySchedulePage() {
                                 dow={dow}
                                 dayLabel={dayLabel}
                                 cellEntries={cellEntries}
+                                cellResponsibilities={cellResponsibilities}
                                 excluded={excluded}
                                 compact
                                 {...cellProps}
@@ -1197,6 +1427,7 @@ export default function WeeklySchedulePage() {
                                 dow={dow}
                                 dayLabel={dayLabel}
                                 cellEntries={cellEntries}
+                                cellResponsibilities={responsibilitiesByCell[cellKey] || []}
                                 excluded={excluded}
                                 {...cellProps}
                               />
@@ -1230,19 +1461,29 @@ export default function WeeklySchedulePage() {
           <div className="weekly-schedule-print-doc-header">
             <div className="weekly-schedule-print-doc-title">
               Weekly Schedule — {ENTITY_TAB_LABELS[employerTab]}
+              {viewMode === VIEW_MODE.TIME_ROLE ? " — By time & role" : ""}
               {scheduleViewLabel ? ` — ${scheduleViewLabel}` : ""}
             </div>
             <div className="weekly-schedule-print-doc-subtitle">{formatWeekRange(weekStart)}</div>
           </div>
-          <WeeklySchedulePrintTable
-            employees={visibleEmployees}
-            entries={viewEntries}
-            dayLabels={visibleDayLabels}
-            dayIndices={visibleDayColumns}
-            daySummaries={filteredDaySummaries}
-            showRoleLabels={showRoleLabels}
-            daysOnly={daysOnly}
-          />
+          {viewMode === VIEW_MODE.TIME_ROLE ? (
+            <WeeklyScheduleTimeRolePrint
+              days={timeRoleDays}
+              weekStart={weekStart}
+              endTimeEnabled={scheduleEndTimeEnabled}
+            />
+          ) : (
+            <WeeklySchedulePrintTable
+              employees={visibleEmployees}
+              entries={viewEntries}
+              dayLabels={visibleDayLabels}
+              dayIndices={visibleDayColumns}
+              daySummaries={filteredDaySummaries}
+              showRoleLabels={showRoleLabels}
+              daysOnly={daysOnly}
+              responsibilities={timeViewResponsibilities}
+            />
+          )}
         </Box>
       ) : null}
 
@@ -1250,11 +1491,26 @@ export default function WeeklySchedulePage() {
         open={dialogOpen && canEdit}
         onClose={() => setDialogOpen(false)}
         onSave={handleSave}
+        onDelete={editingEntry?.id || editingResponsibility?.id ? handleDialogDelete : undefined}
         saving={saving}
+        error={dialogError}
         entry={editingEntry}
+        responsibility={editingResponsibility}
         defaultUserId={dialogDefaults.userId}
         defaultDay={dialogDefaults.day}
+        defaultKind={dialogDefaults.kind}
+        defaultRole={dialogDefaults.role}
+        defaultStartTime={dialogDefaults.startTime}
+        defaultEndTime={dialogDefaults.endTime}
+        employees={dialogDefaults.pickEmployee ? pickerEmployees : undefined}
         scheduleEndTimeEnabled={scheduleEndTimeEnabled}
+      />
+      <WeeklyScheduleManageRolesDialog
+        open={rolesOpen && canEdit}
+        onClose={() => setRolesOpen(false)}
+        roles={roleCatalog}
+        groups={data?.role_groups || []}
+        onCatalogChange={handleCatalogChange}
       />
       <WeeklyScheduleCascadeDialog
         open={cascadeOpen && canEdit}

@@ -2209,6 +2209,188 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    # Operational schedule roles (job assignments) — not account permission roles.
+    @app.route("/rinse/shift-analysis/weekly-schedule/roles", methods=["GET"])
+    def rinse_shift_analysis_weekly_schedule_roles_get():
+        from backend.weekly_schedule_roles import list_role_catalog, role_groups_payload
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            return jsonify(
+                json_safe_rinse(
+                    {"roles": list_role_catalog(cursor, tenant_oid), "groups": role_groups_payload()}
+                )
+            )
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/roles", methods=["POST"])
+    def rinse_shift_analysis_weekly_schedule_roles_create():
+        from backend.weekly_schedule_roles import create_role, list_role_catalog
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            role, err = create_role(cursor, tenant_oid, request.get_json(silent=True) or {})
+            if err:
+                return jsonify({"error": err}), 400
+            conn.commit()
+            return (
+                jsonify(json_safe_rinse({"role": role, "roles": list_role_catalog(cursor, tenant_oid)})),
+                201,
+            )
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/roles/<role_code>", methods=["PUT"])
+    def rinse_shift_analysis_weekly_schedule_roles_update(role_code: str):
+        from backend.weekly_schedule_roles import list_role_catalog, update_role
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            role, err = update_role(cursor, tenant_oid, role_code, request.get_json(silent=True) or {})
+            if err:
+                status = 404 if err == "schedule role not found" else 400
+                return jsonify({"error": err}), status
+            conn.commit()
+            return jsonify(json_safe_rinse({"role": role, "roles": list_role_catalog(cursor, tenant_oid)}))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/responsibilities", methods=["POST"])
+    def rinse_shift_analysis_weekly_schedule_responsibility_create():
+        from backend.planned_weekly_schedule import build_week_payload, normalize_week_start
+        from backend.planned_weekly_schedule_responsibilities import create_responsibility
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            week_start = normalize_week_start((body.get("week_start") or "").strip() or None)
+            if not isinstance(week_start, date):
+                return jsonify({"error": "week_start required (YYYY-MM-DD)"}), 400
+            item, err = create_responsibility(conn, cursor, tenant_oid, week_start=week_start, data=body)
+            if err:
+                return jsonify({"error": err}), 400
+            conn.commit()
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
+            payload["responsibility"] = item
+            return jsonify(json_safe_rinse(payload)), 201
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/responsibilities/<int:responsibility_id>", methods=["PUT"])
+    def rinse_shift_analysis_weekly_schedule_responsibility_update(responsibility_id: int):
+        from backend.planned_weekly_schedule import build_week_payload
+        from backend.planned_weekly_schedule_responsibilities import update_responsibility
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            item, err = update_responsibility(
+                conn, cursor, tenant_oid, responsibility_id, request.get_json(silent=True) or {}
+            )
+            if err:
+                status = 404 if err == "responsibility not found" else 400
+                return jsonify({"error": err}), status
+            conn.commit()
+            week_start = date.fromisoformat(str(item["week_start"])[:10])
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
+            payload["responsibility"] = item
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/responsibilities/<int:responsibility_id>", methods=["DELETE"])
+    def rinse_shift_analysis_weekly_schedule_responsibility_delete(responsibility_id: int):
+        from backend.planned_weekly_schedule import build_week_payload
+        from backend.planned_weekly_schedule_responsibilities import (
+            delete_responsibility,
+            get_responsibility,
+        )
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            existing = get_responsibility(cursor, tenant_oid, responsibility_id)
+            if not existing or not delete_responsibility(cursor, tenant_oid, responsibility_id):
+                return jsonify({"error": "responsibility not found"}), 404
+            conn.commit()
+            week_start = date.fromisoformat(str(existing["week_start"])[:10])
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/api/rinse/sync/both", methods=["POST"])
     def rinse_sync_both():
         """Run Ready for Vendor presence sync first, then At Vendor scheduled scrape."""

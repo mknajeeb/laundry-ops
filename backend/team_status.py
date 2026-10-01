@@ -38,6 +38,9 @@ _PLANNED_ROLE_DISPLAY: dict[str, tuple[str, Optional[str]]] = {
     "hd_folder": ("Folder", "Rinse Hang Dry"),
     "attendant": ("Attendant", None),
     "non_rinse_folder": ("Folder", "Non-Rinse"),
+    "lint_cleaning": ("Lint Cleaning", None),
+    "floor_cleaning": ("Floor Cleaning", None),
+    "washer_cleaning": ("Washer Cleaning", None),
 }
 
 
@@ -985,7 +988,11 @@ def build_team_status_week(
 
     # Scheduled hours for the payroll week from planned schedule (Sunday weeks may
     # span two planned weeks — load both Sunday anchors that cover the range).
-    from backend.planned_weekly_schedule import list_week_entries, normalize_week_start
+    from backend.planned_weekly_schedule import (
+        list_week_entries,
+        normalize_week_start,
+        scheduled_hours_by_user_day,
+    )
 
     scheduled_by_user: dict[int, float] = {}
     scheduled_by_user_day: dict[int, dict[str, float]] = {}
@@ -1003,14 +1010,13 @@ def build_team_status_week(
         except Exception:
             entries = []
         schedulable_uids = _schedulable_user_ids(conn, oid)
-        for entry in _filter_planned_entries_for_schedulable(entries, schedulable_uids):
-            entry_date = ws + timedelta(days=int(entry.get("day_of_week") or 0))
+        planned = _filter_planned_entries_for_schedulable(entries, schedulable_uids)
+        for (uid, dow), hrs in scheduled_hours_by_user_day(planned).items():
+            entry_date = ws + timedelta(days=int(dow))
             if entry_date < week_start or entry_date > week_end:
                 continue
-            uid = int(entry.get("user_id") or 0)
             if not uid:
                 continue
-            hrs = float(entry.get("hours") or 0)
             scheduled_by_user[uid] = float(scheduled_by_user.get(uid) or 0) + hrs
             day_map = scheduled_by_user_day.setdefault(uid, {})
             ymd = entry_date.isoformat()
@@ -1106,7 +1112,7 @@ def build_team_status_upcoming(
         raise ValueError("Invalid date_et")
     oid = int(organization_id)
 
-    from backend.planned_weekly_schedule import _load_workers, _workers_index
+    from backend.planned_weekly_schedule import _load_workers, _workers_index, scheduled_hours_by_user_day
 
     entries = _load_planned_day_entries(conn, oid, day)
     entries = _saturday_template_entries_for_upcoming_sunday(
@@ -1134,7 +1140,9 @@ def build_team_status_upcoming(
 
     rows: list[dict] = []
     staff_ids: set[int] = set()
-    total_scheduled_hours = 0.0
+    total_scheduled_hours = sum(
+        hrs for (uid, _), hrs in scheduled_hours_by_user_day(entries).items() if uid
+    )
     for entry in entries:
         uid = int(entry.get("user_id") or 0)
         if not uid:
@@ -1147,7 +1155,6 @@ def build_team_status_upcoming(
         )
         ap = _planned_assignment_payload(list(entry.get("roles") or []))
         hrs = float(entry.get("hours") or 0)
-        total_scheduled_hours += hrs
         staff_ids.add(uid)
         start_s = _format_time_hhmm(entry.get("start_time"))
         end_s = _format_time_hhmm(entry.get("end_time"))

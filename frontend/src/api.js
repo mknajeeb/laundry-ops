@@ -913,6 +913,24 @@ export const getWeeklyScheduleDisplaySettings = () =>
 export const updateWeeklyScheduleDisplaySettings = (body) =>
   axios.put(`${API_BASE}/rinse/shift-analysis/weekly-schedule/display-settings`, body, { timeout: 30000 });
 
+export const getWeeklyScheduleRoles = () =>
+  axios.get(`${API_BASE}/rinse/shift-analysis/weekly-schedule/roles`, { timeout: 30000 });
+
+export const createWeeklyScheduleRole = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/roles`, body, { timeout: 30000 });
+
+export const updateWeeklyScheduleRole = (roleCode, body) =>
+  axios.put(`${API_BASE}/rinse/shift-analysis/weekly-schedule/roles/${encodeURIComponent(roleCode)}`, body, { timeout: 30000 });
+
+export const createWeeklyScheduleResponsibility = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/responsibilities`, body, { timeout: 30000 });
+
+export const updateWeeklyScheduleResponsibility = (id, body) =>
+  axios.put(`${API_BASE}/rinse/shift-analysis/weekly-schedule/responsibilities/${encodeURIComponent(id)}`, body, { timeout: 30000 });
+
+export const deleteWeeklyScheduleResponsibility = (id) =>
+  axios.delete(`${API_BASE}/rinse/shift-analysis/weekly-schedule/responsibilities/${encodeURIComponent(id)}`, { timeout: 30000 });
+
 export const getShiftAnalysisSummary = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/summary`, { params, timeout: 60000 });
 

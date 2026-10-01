@@ -12,7 +12,7 @@ import {
   Typography,
 } from "@mui/material";
 import { getWeeklyScheduleDisplaySettings, updateWeeklyScheduleDisplaySettings } from "../../api";
-import { WEEKLY_SCHEDULE_ROLES } from "./weeklyScheduleRoles";
+import { scheduleRoleCatalog } from "./weeklyScheduleRoles";
 
 export default function WeeklyScheduleDisplaySettingsPanel() {
   const [settings, setSettings] = useState(null);
@@ -149,17 +149,17 @@ export default function WeeklyScheduleDisplaySettingsPanel() {
             Hidden shifts are removed from their schedule and role filters.
           </Typography>
           <FormGroup row sx={{ gap: 0.5 }}>
-            {WEEKLY_SCHEDULE_ROLES.map((role) => (
+            {scheduleRoleCatalog().map((role) => (
               <FormControlLabel
-                key={role.value}
+                key={role.code}
                 control={
                   <Checkbox
                     size="small"
-                    checked={hiddenRoles.includes(role.value)}
-                    onChange={() => handleHiddenRoleToggle(role.value)}
+                    checked={hiddenRoles.includes(role.code)}
+                    onChange={() => handleHiddenRoleToggle(role.code)}
                   />
                 }
-                label={role.label}
+                label={role.name}
               />
             ))}
           </FormGroup>

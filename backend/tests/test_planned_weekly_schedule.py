@@ -37,8 +37,121 @@ class _FakeCursor:
         self._id = 0
         self.rows: list[dict] = []
         self.exclusions: list[dict] = []
+        self.roles: list[dict] = []
+        self.responsibilities: list[dict] = []
+        self._resp_id = 0
         self.connection = object()
         self._rowcount = 0
+
+    def _execute_roles(self, sql_norm, params):
+        if "insert into weekly_schedule_roles" in sql_norm:
+            org_id, code, name, group, order, active, timed, remarks = params
+            row = {
+                "organization_id": org_id,
+                "code": code,
+                "name": name,
+                "role_group": group,
+                "display_order": order,
+                "active": active,
+                "uses_time_slots": timed,
+                "remarks_enabled": remarks,
+            }
+            self.roles = [
+                r for r in self.roles if not (r["organization_id"] == org_id and r["code"] == code)
+            ] + [row]
+            return
+        (org_id,) = params
+        self._last = [r for r in self.roles if r["organization_id"] == org_id]
+
+    def _execute_responsibilities(self, sql_norm, params):
+        if sql_norm.startswith("insert"):
+            org_id, week_start, user_id, dow, role, remarks = params
+            if "insert ignore" in sql_norm and any(
+                r["organization_id"] == org_id
+                and r["week_start"] == week_start
+                and r["user_id"] == user_id
+                and r["day_of_week"] == dow
+                and r["role"] == role
+                for r in self.responsibilities
+            ):
+                return
+            self._resp_id += 1
+            self.responsibilities.append(
+                {
+                    "id": self._resp_id,
+                    "organization_id": org_id,
+                    "week_start": week_start,
+                    "user_id": user_id,
+                    "day_of_week": dow,
+                    "role": role,
+                    "remarks": remarks,
+                }
+            )
+            self._id = self._resp_id
+            return
+        if sql_norm.startswith("update"):
+            user_id, dow, role, remarks, org_id, rid = params
+            for r in self.responsibilities:
+                if r["organization_id"] == org_id and r["id"] == rid:
+                    r.update({"user_id": user_id, "day_of_week": dow, "role": role, "remarks": remarks})
+            return
+        if sql_norm.startswith("delete"):
+            before = len(self.responsibilities)
+            if "and id =" in sql_norm:
+                org_id, rid = params
+                self.responsibilities = [
+                    r for r in self.responsibilities if not (r["organization_id"] == org_id and r["id"] == rid)
+                ]
+            elif "user_id" in sql_norm and "day_of_week >=" in sql_norm:
+                org_id, user_id, week_start, min_dow = params
+                self.responsibilities = [
+                    r
+                    for r in self.responsibilities
+                    if not (
+                        r["organization_id"] == org_id
+                        and r["user_id"] == user_id
+                        and r["week_start"] == week_start
+                        and r["day_of_week"] >= min_dow
+                    )
+                ]
+            elif "user_id" in sql_norm:
+                org_id, user_id, week_start = params
+                self.responsibilities = [
+                    r
+                    for r in self.responsibilities
+                    if not (
+                        r["organization_id"] == org_id and r["user_id"] == user_id and r["week_start"] > week_start
+                    )
+                ]
+            else:
+                org_id, week_start = params
+                self.responsibilities = [
+                    r
+                    for r in self.responsibilities
+                    if not (r["organization_id"] == org_id and r["week_start"] == week_start)
+                ]
+            self._rowcount = before - len(self.responsibilities)
+            return
+        if "and id =" in sql_norm:
+            org_id, rid = params
+            self._last = [r for r in self.responsibilities if r["organization_id"] == org_id and r["id"] == rid]
+            return
+        if "and role =" in sql_norm:
+            org_id, week_start, user_id, dow, role = params
+            self._last = [
+                r
+                for r in self.responsibilities
+                if r["organization_id"] == org_id
+                and r["week_start"] == week_start
+                and r["user_id"] == user_id
+                and r["day_of_week"] == dow
+                and r["role"] == role
+            ]
+            return
+        org_id, week_start = params
+        self._last = [
+            r for r in self.responsibilities if r["organization_id"] == org_id and r["week_start"] == week_start
+        ]
 
     def execute(self, sql, params=None):
         sql_norm = " ".join(sql.split()).lower()
@@ -46,7 +159,16 @@ class _FakeCursor:
         if "show tables" in sql_norm or "information_schema" in sql_norm:
             self._last = [{"cnt": 1}]
             return
-        if "create table" in sql_norm:
+        if "create table" in sql_norm or sql_norm.startswith("alter table"):
+            return
+        if sql_norm.startswith("show columns"):
+            self._last = [{"Field": "x", "Type": "varchar(64)"}]
+            return
+        if "weekly_schedule_roles" in sql_norm:
+            self._execute_roles(sql_norm, params)
+            return
+        if "planned_weekly_schedule_responsibilities" in sql_norm:
+            self._execute_responsibilities(sql_norm, params)
             return
         if "insert ignore into planned_weekly_schedule_exclusions" in sql_norm:
             org_id, week_start, user_id = params
@@ -119,6 +241,7 @@ class _FakeCursor:
                 "end_time": params[6],
                 "break_minutes": params[7],
                 "employer_affiliation": params[8] if len(params) > 8 else None,
+                "role_assignments": params[9] if len(params) > 9 else None,
             }
             self.rows.append(row)
             return
@@ -150,7 +273,7 @@ class _FakeCursor:
                         count += 1
                 self._rowcount = count
                 return
-            entry_id = params[8] if len(params) > 8 else params[7]
+            entry_id = params[-1]
             for row in self.rows:
                 if row["id"] == entry_id:
                     row.update(
@@ -162,6 +285,7 @@ class _FakeCursor:
                             "end_time": params[4],
                             "break_minutes": params[5],
                             "employer_affiliation": params[6] if len(params) > 8 else row.get("employer_affiliation"),
+                            "role_assignments": params[7] if len(params) > 9 else row.get("role_assignments"),
                         }
                     )
             return
@@ -1518,3 +1642,365 @@ def test_build_week_payload_excludes_affiliation_none_worker():
     assert all(int(e["user_id"]) != 29 for e in payload["employees"])
     assert all(int(e["user_id"]) != 29 for e in payload["entries"])
     assert any(int(e["user_id"]) == 10 for e in payload["employees"])
+
+
+# --- Configurable roles, per-role time ranges, daily responsibilities ---------------------------
+
+from backend.planned_weekly_schedule import scheduled_hours_by_user_day  # noqa: E402
+from backend.planned_weekly_schedule_responsibilities import (  # noqa: E402
+    create_responsibility,
+    update_responsibility,
+)
+from backend.weekly_schedule_roles import create_role, list_role_catalog, update_role  # noqa: E402
+
+WEEK = date(2026, 6, 14)
+
+
+def _patched():
+    return (
+        patch("backend.planned_weekly_schedule.table_exists", return_value=True),
+        patch("backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()),
+    )
+
+
+def _create(cursor, data):
+    p1, p2 = _patched()
+    with p1, p2:
+        return create_entry(MagicMock(), cursor, 1, week_start=WEEK, data=data)
+
+
+def test_role_catalog_includes_new_operational_roles():
+    catalog = {r["code"]: r for r in list_role_catalog(_FakeCursor(), 1)}
+    for code in ("lint_cleaning", "floor_cleaning", "washer_cleaning"):
+        assert catalog[code]["uses_time_slots"] is True
+        assert catalog[code]["remarks_enabled"] is True
+        assert catalog[code]["role_group"] == "CLEANING"
+    for code in ("drop_off_customer", "self_service"):
+        assert catalog[code]["uses_time_slots"] is False
+        assert catalog[code]["remarks_enabled"] is True
+    orders = [r["display_order"] for r in catalog.values()]
+    assert orders == sorted(orders)
+
+
+def test_custom_role_create_and_builtin_override():
+    cursor = _FakeCursor()
+    role, err = create_role(cursor, 1, {"name": "Towel Restock", "role_group": "SELF_SERVICE"})
+    assert err is None
+    assert role["code"] == "custom_towel_restock"
+    assert role["builtin"] is False
+    _, err = create_role(cursor, 1, {"name": "towel restock"})
+    assert err and "already exists" in err
+    updated, err = update_role(cursor, 1, "sort", {"display_order": 5, "remarks_enabled": True})
+    assert err is None and updated["display_order"] == 5 and updated["remarks_enabled"] is True
+    catalog = list_role_catalog(cursor, 1)
+    assert catalog[0]["code"] == "sort"
+    assert any(r["code"] == "custom_towel_restock" for r in catalog)
+    # Other orgs are unaffected.
+    assert not any(r["code"] == "custom_towel_restock" for r in list_role_catalog(cursor, 2))
+
+
+def test_role_time_ranges_inside_one_shift_count_hours_once():
+    cursor = _FakeCursor()
+    entry, err = _create(
+        cursor,
+        {
+            "user_id": 10,
+            "day_of_week": 1,
+            "start_time": "02:00",
+            "end_time": "08:00",
+            "assignments": [
+                {"role": "sort", "start_time": "02:00", "end_time": "05:00"},
+                {"role": "wash", "start_time": "05:00", "end_time": "08:00"},
+            ],
+        },
+    )
+    assert err is None
+    assert entry["hours"] == 6.0
+    assert entry["roles"] == ["sort", "wash"]
+    ranges = {(a["role"], a["start_time"], a["end_time"], a["full_shift"]) for a in entry["assignments"]}
+    assert ranges == {("sort", "02:00", "05:00", False), ("wash", "05:00", "08:00", False)}
+
+    role_hours = allocate_role_hours_by_day([entry])[1]
+    assert role_hours["sort"] == 3.0 and role_hours["wash"] == 3.0
+    totals = compute_schedule_totals([entry], {10: {"default_hourly_rate": 20}})
+    assert totals["employee_totals"][10]["total_hours"] == 6.0
+    assert totals["day_totals"][1]["total_hours"] == 6.0
+
+
+def test_role_time_range_must_fit_shift_and_supports_overnight():
+    cursor = _FakeCursor()
+    _, err = _create(
+        cursor,
+        {
+            "user_id": 10,
+            "day_of_week": 1,
+            "start_time": "09:00",
+            "end_time": "12:00",
+            "assignments": [{"role": "fold", "start_time": "11:00", "end_time": "13:00"}],
+        },
+    )
+    assert err and "within the shift" in err
+
+    entry, err = _create(
+        cursor,
+        {
+            "user_id": 10,
+            "day_of_week": 1,
+            "start_time": "22:00",
+            "end_time": "06:00",
+            "assignments": [
+                {"role": "fold", "full_shift": True},
+                {"role": "lint_cleaning", "start_time": "01:00", "end_time": "02:00", "remarks": "Dryers 1-6"},
+            ],
+        },
+    )
+    assert err is None
+    assert entry["hours"] == 8.0
+    lint = next(a for a in entry["assignments"] if a["role"] == "lint_cleaning")
+    assert lint["remarks"] == "Dryers 1-6" and lint["full_shift"] is False
+
+
+def test_remarks_only_kept_for_roles_with_remarks_enabled():
+    cursor = _FakeCursor()
+    entry, err = _create(
+        cursor,
+        {
+            "user_id": 10,
+            "day_of_week": 2,
+            "start_time": "09:00",
+            "end_time": "17:00",
+            "assignments": [
+                {"role": "fold", "remarks": "ignored"},
+                {"role": "floor_cleaning", "start_time": "16:00", "end_time": "17:00", "remarks": "Mop back room"},
+            ],
+        },
+    )
+    assert err is None
+    by_role = {a["role"]: a for a in entry["assignments"]}
+    assert by_role["fold"]["remarks"] is None
+    assert by_role["floor_cleaning"]["remarks"] == "Mop back room"
+
+
+def test_untimed_role_rejected_on_timed_shift():
+    _, err = _create(
+        _FakeCursor(),
+        {"user_id": 10, "day_of_week": 0, "start_time": "09:00", "end_time": "12:00", "roles": ["self_service"]},
+    )
+    assert err and "daily responsibility" in err
+
+
+def test_deactivated_role_blocks_new_assignments_but_keeps_existing():
+    cursor = _FakeCursor()
+    entry, err = _create(
+        cursor,
+        {"user_id": 10, "day_of_week": 3, "start_time": "09:00", "end_time": "12:00", "roles": ["weigher"]},
+    )
+    assert err is None
+    update_role(cursor, 1, "weigher", {"active": False})
+    _, err = _create(
+        cursor,
+        {"user_id": 20, "day_of_week": 3, "start_time": "09:00", "end_time": "12:00", "roles": ["weigher"]},
+    )
+    assert err and "inactive" in err
+    p1, p2 = _patched()
+    with p1, p2:
+        kept, err = update_entry(MagicMock(), cursor, 1, entry["id"], {"end_time": "13:00"})
+    assert err is None
+    assert kept["roles"] == ["weigher"] and kept["hours"] == 4.0
+
+
+def test_deactivated_role_cannot_be_added_as_another_row_on_existing_shift():
+    cursor = _FakeCursor()
+    entry, err = _create(
+        cursor,
+        {
+            "user_id": 10,
+            "day_of_week": 3,
+            "start_time": "09:00",
+            "end_time": "13:00",
+            "assignments": [
+                {"role": "fold", "full_shift": True},
+                {"role": "weigher", "start_time": "09:00", "end_time": "10:00"},
+            ],
+        },
+    )
+    assert err is None
+    update_role(cursor, 1, "weigher", {"active": False})
+    p1, p2 = _patched()
+    with p1, p2:
+        _, err = update_entry(
+            MagicMock(),
+            cursor,
+            1,
+            entry["id"],
+            {
+                "assignments": [
+                    {"role": "fold", "full_shift": True},
+                    {"role": "weigher", "start_time": "09:00", "end_time": "10:00"},
+                    {"role": "weigher", "start_time": "11:00", "end_time": "12:00"},
+                ],
+            },
+        )
+        assert err and "inactive" in err
+        kept, err = update_entry(
+            MagicMock(),
+            cursor,
+            1,
+            entry["id"],
+            {
+                "assignments": [
+                    {"role": "fold", "full_shift": True},
+                    {"role": "weigher", "start_time": "10:00", "end_time": "11:00"},
+                ],
+            },
+        )
+    assert err is None
+    weigher = [a for a in kept["assignments"] if a["role"] == "weigher"]
+    assert len(weigher) == 1 and weigher[0]["start_time"] == "10:00"
+
+
+def test_update_without_roles_preserves_role_ranges_and_remarks():
+    cursor = _FakeCursor()
+    entry, _ = _create(
+        cursor,
+        {
+            "user_id": 10,
+            "day_of_week": 4,
+            "start_time": "06:00",
+            "end_time": "14:00",
+            "assignments": [
+                {"role": "wash", "full_shift": True},
+                {"role": "washer_cleaning", "start_time": "13:00", "end_time": "14:00", "remarks": "Bank A"},
+            ],
+        },
+    )
+    p1, p2 = _patched()
+    with p1, p2:
+        moved, err = move_entry(MagicMock(), cursor, 1, entry["id"], user_id=20, day_of_week=5)
+    assert err is None
+    cleaning = next(a for a in moved["assignments"] if a["role"] == "washer_cleaning")
+    assert (cleaning["start_time"], cleaning["end_time"], cleaning["remarks"]) == ("13:00", "14:00", "Bank A")
+
+
+def test_daily_responsibility_has_no_hours_and_coexists_with_shift():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    _create(cursor, {"user_id": 10, "day_of_week": 1, "start_time": "09:00", "end_time": "17:00", "roles": ["fold"]})
+    p1, p2 = _patched()
+    with p1, p2:
+        item, err = create_responsibility(
+            conn, cursor, 1, week_start=WEEK, data={"user_id": 10, "day_of_week": 1, "role": "self_service", "remarks": "Front counter"}
+        )
+        assert err is None
+        assert item["remarks"] == "Front counter"
+        _, dup_err = create_responsibility(
+            conn, cursor, 1, week_start=WEEK, data={"user_id": 10, "day_of_week": 1, "role": "self_service"}
+        )
+        assert dup_err and "already has" in dup_err
+        _, timed_err = create_responsibility(
+            conn, cursor, 1, week_start=WEEK, data={"user_id": 10, "day_of_week": 1, "role": "fold"}
+        )
+        assert timed_err and "requires start and end" in timed_err
+        updated, err = update_responsibility(conn, cursor, 1, item["id"], {"remarks": "Back counter"})
+        assert err is None and updated["remarks"] == "Back counter"
+        payload = build_week_payload(conn, cursor, 1, week_start=WEEK)
+    assert [r["role"] for r in payload["daily_responsibilities"]] == ["self_service"]
+    alice = next(e for e in payload["employees"] if e["user_id"] == 10)
+    assert alice["total_hours"] == 8.0
+    assert payload["totals"]["day_totals"][1]["total_hours"] == 8.0
+    assert any(r["code"] == "self_service" for r in payload["role_catalog"])
+
+
+def test_scheduled_hours_dedupe_overlapping_entries_same_employee_day():
+    base = {"organization_id": 1, "week_start": WEEK, "user_id": 10, "day_of_week": 0}
+    shift = serialize_entry({**base, "id": 1, "role": "fold", "start_time": time(2, 0), "end_time": time(8, 0), "break_minutes": 30})
+    stacked = serialize_entry({**base, "id": 2, "role": "sort", "start_time": time(2, 0), "end_time": time(5, 0), "break_minutes": 0})
+    later = serialize_entry({**base, "id": 3, "role": "fold", "start_time": time(9, 0), "end_time": time(11, 0), "break_minutes": 0})
+    hours = scheduled_hours_by_user_day([shift, stacked, later])
+    assert hours[(10, 0)] == 7.5  # (2:00-8:00 minus 30m break) + 9:00-11:00
+
+
+def _shift(entry_id, start, end, break_minutes, *, user_id=10, day=0, role="fold"):
+    return serialize_entry(
+        {
+            "id": entry_id,
+            "organization_id": 1,
+            "week_start": WEEK,
+            "user_id": user_id,
+            "day_of_week": day,
+            "role": role,
+            "start_time": start,
+            "end_time": end,
+            "break_minutes": break_minutes,
+        }
+    )
+
+
+def test_scheduled_hours_separate_shifts_keep_each_break():
+    morning = _shift(1, time(6, 0), time(10, 0), 15)
+    evening = _shift(2, time(14, 0), time(20, 0), 30)
+    adjacent = _shift(3, time(10, 0), time(14, 0), 15, day=1)
+    adjacent_prev = _shift(4, time(6, 0), time(10, 0), 15, day=1)
+    hours = scheduled_hours_by_user_day([morning, evening, adjacent, adjacent_prev])
+    assert hours[(10, 0)] == 9.25  # 3.75 + 5.5: unchanged from summing entries
+    assert hours[(10, 1)] == 7.5  # touching shifts are not merged; both breaks deducted
+
+
+def test_scheduled_hours_overlapping_shifts_with_breaks_count_once():
+    first = _shift(1, time(8, 0), time(14, 0), 30)
+    second = _shift(2, time(12, 0), time(16, 0), 15)
+    assert first["hours"] + second["hours"] == 9.25  # the old double-counted total
+    assert scheduled_hours_by_user_day([first, second])[(10, 0)] == 7.5  # 8:00-16:00 minus 30m
+
+
+def test_scheduled_hours_overnight_shifts():
+    overnight = _shift(1, time(22, 0), time(6, 0), 30)
+    inside = _shift(2, time(23, 0), time(3, 0), 0, role="sort")
+    early = _shift(3, time(2, 0), time(6, 0), 0, day=1)
+    late = _shift(4, time(22, 0), time(6, 0), 30, day=1)
+    hours = scheduled_hours_by_user_day([overnight, inside, early, late])
+    assert overnight["hours"] == 7.5
+    assert hours[(10, 0)] == 7.5  # 23:00-03:00 sits inside the overnight shift
+    assert hours[(10, 1)] == 11.5  # 02:00-06:00 and 22:00-06:00 do not overlap
+
+
+def test_compute_schedule_totals_dedupes_overlap_hours_and_cost():
+    entries = [
+        _shift(1, time(8, 0), time(14, 0), 30),
+        _shift(2, time(12, 0), time(16, 0), 15, role="sort"),
+        _shift(3, time(9, 0), time(13, 0), 0, user_id=20),
+    ]
+    totals = compute_schedule_totals(entries, {10: {"default_hourly_rate": 20.0}, 20: {"default_hourly_rate": 20.0}})
+    assert totals["employee_totals"][10]["total_hours"] == 7.5
+    assert totals["employee_totals"][10]["estimated_cost"] == 150.0
+    assert totals["day_totals"][0]["total_hours"] == 11.5
+    assert totals["day_totals"][0]["employee_count"] == 2
+
+
+def test_carry_forward_copies_role_ranges_and_responsibilities():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    _create(
+        cursor,
+        {
+            "user_id": 10,
+            "day_of_week": 1,
+            "start_time": "02:00",
+            "end_time": "08:00",
+            "assignments": [
+                {"role": "sort", "start_time": "02:00", "end_time": "05:00"},
+                {"role": "fold", "start_time": "05:00", "end_time": "08:00"},
+            ],
+        },
+    )
+    p1, p2 = _patched()
+    with p1, p2:
+        create_responsibility(conn, cursor, 1, week_start=WEEK, data={"user_id": 10, "day_of_week": 1, "role": "drop_off_customer"})
+        with patch("backend.planned_weekly_schedule.schedulable_worker_user_ids", return_value={10, 20}):
+            result = carry_forward_week_schedule(
+                conn, cursor, 1, target_week_start=date(2026, 6, 21), source_week_start=WEEK
+            )
+        copied = list_week_entries(cursor, 1, week_start=date(2026, 6, 21))
+    assert result["responsibilities_copied"] == 1
+    assert {(a["role"], a["start_time"]) for a in copied[0]["assignments"]} == {("sort", "02:00"), ("fold", "05:00")}
+    assert any(r["week_start"] == date(2026, 6, 21) for r in cursor.responsibilities)

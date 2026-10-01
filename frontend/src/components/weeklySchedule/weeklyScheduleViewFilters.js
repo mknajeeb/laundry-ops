@@ -2,16 +2,17 @@
 
 import { DAY_LABELS } from "./weeklyScheduleDates";
 import {
+  entryRoleAssignments,
   parseEntryRoles,
-  ROLE_STYLES,
-  WEEKLY_SCHEDULE_ROLES,
+  scheduleRoleCatalog,
+  scheduleRoleLabel,
 } from "./weeklyScheduleRoles";
 
 export const SCHEDULE_VIEW_ALL = "all";
 
 export function normalizeRoleViewSelection(selectedRoles) {
   if (!Array.isArray(selectedRoles)) return [];
-  const valid = new Set(WEEKLY_SCHEDULE_ROLES.map((role) => role.value));
+  const valid = new Set(scheduleRoleCatalog().map((role) => role.code));
   return [...new Set(selectedRoles.filter((role) => valid.has(role)))];
 }
 
@@ -27,7 +28,7 @@ export function resolveRoleViewRoles(selectedRoles) {
 export function roleViewLabel(selectedRoles) {
   const roles = normalizeRoleViewSelection(selectedRoles);
   if (!roles.length) return null;
-  return roles.map((role) => ROLE_STYLES[role]?.label || role).join(" · ");
+  return roles.map((role) => scheduleRoleLabel(role)).join(" · ");
 }
 
 export function toggleRoleViewSelection(selectedRoles, roleKey) {
@@ -86,31 +87,49 @@ export function countDayShifts(entries, dayOfWeek) {
   return (entries || []).filter((entry) => Number(entry.day_of_week) === dayOfWeek).length;
 }
 
+/** Role filter chips: active timed roles plus any role present in the shown entries. */
 export function buildRoleViewTabs(entries, { hiddenRoles = [] } = {}) {
   const hidden = new Set(hiddenRoles || []);
-  const visibleRoles = WEEKLY_SCHEDULE_ROLES.filter((role) => !hidden.has(role.value));
   const list = entries || [];
   const tabs = [{ value: SCHEDULE_VIEW_ALL, label: "All", count: list.length }];
-  for (const role of visibleRoles) {
-    tabs.push({
-      value: role.value,
-      label: role.label,
-      count: countRoleAssignments(list, role.value),
-    });
+  for (const role of scheduleRoleCatalog()) {
+    if (hidden.has(role.code)) continue;
+    const count = countRoleAssignments(list, role.code);
+    const pickable = role.active !== false && role.uses_time_slots !== false;
+    if (!pickable && !count) continue;
+    tabs.push({ value: role.code, label: role.name || scheduleRoleLabel(role.code), count });
   }
   return tabs;
 }
 
+/** Restrict a shift's role assignments to the selected role filter (all when no filter). */
+export function filterAssignmentsByRoleView(entry, selectedRoles) {
+  const roles = resolveRoleViewRoles(selectedRoles);
+  const assignments = entryRoleAssignments(entry);
+  if (!roles) return assignments;
+  return assignments.filter((a) => roles.includes(a.role));
+}
+
 export const COMPACT_DAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
-export function buildDayViewTabs(entries, { compact = false } = {}) {
+export function filterResponsibilitiesByRoleView(responsibilities, selectedRoles) {
+  const roles = resolveRoleViewRoles(selectedRoles);
+  if (!roles) return responsibilities || [];
+  return (responsibilities || []).filter((item) => roles.includes(item.role));
+}
+
+/** Day chips count shifts plus daily responsibilities on each day. */
+export function buildDayViewTabs(entries, { compact = false, responsibilities = [] } = {}) {
   const list = entries || [];
-  const tabs = [{ value: SCHEDULE_VIEW_ALL, label: compact ? "All" : "All Days", count: list.length }];
+  const daily = responsibilities || [];
+  const tabs = [
+    { value: SCHEDULE_VIEW_ALL, label: compact ? "All" : "All Days", count: list.length + daily.length },
+  ];
   DAY_LABELS.forEach((label, dow) => {
     tabs.push({
       value: String(dow),
       label: compact ? COMPACT_DAY_LABELS[dow] : label,
-      count: countDayShifts(list, dow),
+      count: countDayShifts(list, dow) + countDayShifts(daily, dow),
     });
   });
   return tabs;

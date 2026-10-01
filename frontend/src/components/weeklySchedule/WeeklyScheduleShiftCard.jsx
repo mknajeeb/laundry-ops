@@ -26,7 +26,13 @@ import {
   SHIFT_ENTITY,
 } from "./weeklyScheduleEmployerTabs";
 import { entityLabel } from "../../payroll/businessEntity";
-import { entryRoleCardStyle, parseEntryRoles, roleLabels } from "./weeklyScheduleRoles";
+import {
+  entryRoleAssignments,
+  entryRoleCardStyle,
+  parseEntryRoles,
+  roleCompactLabel,
+  roleLabels,
+} from "./weeklyScheduleRoles";
 import ScheduleRoleChip from "./ScheduleRoleChip";
 
 export default function WeeklyScheduleShiftCard({
@@ -58,6 +64,9 @@ export default function WeeklyScheduleShiftCard({
   const breakSuffix = scheduleEndTimeEnabled && showBreakMinutes && breakMin > 0 ? ` · −${breakMin}m break` : "";
   const hoursLabel = Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`;
   const roleTooltip = showRoleLabels ? roleLabels(roles) : "";
+  const assignmentDetails = showRoleLabels
+    ? entryRoleAssignments(entry).filter((a) => a.remarks || (!a.full_shift && scheduleEndTimeEnabled))
+    : [];
   const hasActions = Boolean((onEdit || onDuplicate || onDelete || onSetEmployer) && !muted);
   const shiftEmployer = resolveEntryEmployerAffiliation(entry, employee, organizationSlug);
   const canSetEmployer = Boolean(onSetEmployer && !muted);
@@ -163,6 +172,29 @@ export default function WeeklyScheduleShiftCard({
               ))}
             </Stack>
           ) : null}
+          {assignmentDetails.map((a) => (
+            <Typography
+              key={`${a.role}-${a.start_time}`}
+              variant="caption"
+              sx={{
+                display: "block",
+                mt: 0.2,
+                color: "text.secondary",
+                fontSize: "0.62rem",
+                lineHeight: 1.25,
+                whiteSpace: "normal",
+                wordBreak: "break-word",
+              }}
+            >
+              <Box component="span" sx={{ fontWeight: 800 }}>
+                {roleCompactLabel(a.role)}
+              </Box>
+              {!a.full_shift && scheduleEndTimeEnabled
+                ? ` ${formatTime12(a.start_time)}–${formatTime12(a.end_time)}`
+                : ""}
+              {a.remarks ? ` · ${a.remarks}` : ""}
+            </Typography>
+          ))}
         </Box>
 
         {hasActions ? (

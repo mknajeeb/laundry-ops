@@ -106,6 +106,41 @@
   margin-bottom: 0;
 }
 
+.weekly-schedule-print-tr-time {
+  width: 16%;
+}
+
+.weekly-schedule-print-tr-role {
+  width: 16%;
+}
+
+.weekly-schedule-print-tr-count {
+  width: 4%;
+}
+
+.weekly-schedule-print-tr-people {
+  width: 28%;
+}
+
+.weekly-schedule-print-time-role tbody {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.weekly-schedule-print-tr-day td {
+  background: #e2e8f0;
+  font-weight: 800;
+  font-size: 9.5pt;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.weekly-schedule-print-tr-daily td {
+  background: #f8fafc;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
 @media print {
   html,
   body {

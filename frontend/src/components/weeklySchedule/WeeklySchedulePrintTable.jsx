@@ -7,6 +7,7 @@ import {
   ROLE_ORDER,
   ROLE_STYLES,
   roleLabels,
+  sortRoles,
 } from "./weeklyScheduleRoles";
 import { formatDayShiftsText } from "./weeklyScheduleExport";
 
@@ -16,7 +17,7 @@ function DayHeaderTotals({ summary, daysOnly = false }) {
   const hours = Number(summary.hours || 0);
   const hoursLabel = Number.isInteger(hours) ? `${hours}` : hours.toFixed(1);
   const roleParts = [];
-  for (const role of ROLE_ORDER) {
+  for (const role of sortRoles(ROLE_ORDER)) {
     const count = Number(summary[role] || 0);
     if (count <= 0) continue;
     const label = ROLE_COMPACT_LABELS[role] || ROLE_STYLES[role]?.label || role;
@@ -48,6 +49,7 @@ export default function WeeklySchedulePrintTable({
   daySummaries = null,
   showRoleLabels = true,
   daysOnly = false,
+  responsibilities = [],
 }) {
   const labels = dayLabels || [];
   const indices = dayIndices || labels.map((_, index) => index);
@@ -89,11 +91,15 @@ export default function WeeklySchedulePrintTable({
                     Number(entry.user_id) === Number(employee.user_id) &&
                     Number(entry.day_of_week) === dow,
                 );
-                const text = formatDayShiftsText(cellEntries, {
-                  showRoleLabels,
-                  forExport: true,
-                  scheduleEndTimeEnabled: !daysOnly,
-                });
+                const cellResponsibilities = (responsibilities || []).filter(
+                  (item) =>
+                    Number(item.user_id) === Number(employee.user_id) && Number(item.day_of_week) === dow,
+                );
+                const text = formatDayShiftsText(
+                  cellEntries,
+                  { showRoleLabels, forExport: true, scheduleEndTimeEnabled: !daysOnly },
+                  cellResponsibilities,
+                );
                 return (
                   <td key={`${employee.user_id}-${label}`} className="weekly-schedule-print-td-day">
                     {text

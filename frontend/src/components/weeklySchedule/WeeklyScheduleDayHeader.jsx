@@ -1,11 +1,11 @@
 import { Box, Stack, Typography } from "@mui/material";
-import { HOUR_TRACKED_ROLES, ROLE_ORDER } from "./weeklyScheduleRoles";
+import { HOUR_TRACKED_ROLES, ROLE_ORDER, sortRoles } from "./weeklyScheduleRoles";
 import ScheduleRoleChip from "./ScheduleRoleChip";
 
 const HOUR_TRACKED = new Set(HOUR_TRACKED_ROLES);
 
 function roleCountLines(summary) {
-  return ROLE_ORDER.map((key) => ({
+  return sortRoles(ROLE_ORDER).map((key) => ({
     key,
     count: Number(summary?.[key] || 0),
     hours: HOUR_TRACKED.has(key) ? Number(summary?.[`${key}_hours`] || 0) : null,

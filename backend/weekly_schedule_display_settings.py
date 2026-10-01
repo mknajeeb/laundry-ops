@@ -10,7 +10,7 @@ from backend.payroll_employer_affiliation import (
     EMPLOYER_AFFILIATION_BOTH,
     EMPLOYER_AFFILIATION_RINSE,
 )
-from backend.planned_weekly_schedule import VALID_ROLES, parse_weekly_roles
+from backend.planned_weekly_schedule import is_schedule_role_code, parse_weekly_roles
 from backend.ta_helpers import table_exists
 
 KEY_WEEKLY_SCHEDULE_DISPLAY = "weekly_schedule_display_settings"
@@ -68,7 +68,7 @@ def normalize_hidden_roles_for_rinse_viewers(raw: Any) -> list[str]:
     out: list[str] = []
     for item in items:
         role = str(item or "").strip().lower()
-        if role in VALID_ROLES and role not in out:
+        if is_schedule_role_code(role) and role not in out:
             out.append(role)
     return out
 
@@ -228,8 +228,15 @@ def apply_rinse_viewer_scope(
         for row in employees
         if row.get("user_id") is not None
     }
+    from backend.planned_weekly_schedule_responsibilities import filter_responsibilities_for_view
+
     out["employees"] = employees
     out["entries"] = entries
+    out["daily_responsibilities"] = filter_responsibilities_for_view(
+        out.get("daily_responsibilities") or [],
+        allowed_user_ids=allowed_user_ids,
+        hidden_roles=hidden,
+    )
     out["excluded_user_ids"] = excluded_user_ids
     out["totals"] = compute_schedule_totals(
         entries,

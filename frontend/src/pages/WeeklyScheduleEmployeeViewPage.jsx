@@ -14,6 +14,7 @@ import PrintIcon from "@mui/icons-material/Print";
 import { getWeeklySchedule } from "../api";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import WeeklyScheduleShiftCard from "../components/weeklySchedule/WeeklyScheduleShiftCard";
+import WeeklyScheduleResponsibilityChip from "../components/weeklySchedule/WeeklyScheduleResponsibilityChip";
 import {
   DAY_LABELS,
   currentWeekStart,
@@ -23,6 +24,9 @@ import {
   employeeScheduleRoles,
   formatEmployeeWeeklySummary,
   roleLabels,
+  scheduleRoleLabel,
+  setScheduleRoleCatalog,
+  sortRoles,
 } from "../components/weeklySchedule/weeklyScheduleRoles";
 import "../components/weeklySchedule/weeklySchedulePrint.css";
 
@@ -72,7 +76,23 @@ export default function WeeklyScheduleEmployeeViewPage() {
     return map;
   }, [data?.entries, userId]);
 
+  const responsibilitiesByDay = useMemo(() => {
+    const map = {};
+    for (const item of data?.daily_responsibilities || []) {
+      if (String(item.user_id) !== String(userId)) continue;
+      const key = Number(item.day_of_week);
+      if (!map[key]) map[key] = [];
+      map[key].push(item);
+    }
+    return map;
+  }, [data?.daily_responsibilities, userId]);
+
+  useMemo(() => setScheduleRoleCatalog(data?.role_catalog), [data?.role_catalog]);
+
   const scheduleRoles = employeeScheduleRoles(employee?.user_id, data?.entries);
+  const responsibilityRoles = sortRoles([
+    ...new Set(Object.values(responsibilitiesByDay).flat().map((item) => item.role)),
+  ]);
   const display = data?.display || {};
   const showRoleLabels = display.show_role_labels !== false;
   const showBreakMinutes = display.show_break_minutes !== false;
@@ -152,6 +172,11 @@ export default function WeeklyScheduleEmployeeViewPage() {
                 Roles: {roleLabels(scheduleRoles)}
               </Typography>
             ) : null}
+            {responsibilityRoles.length ? (
+              <Typography variant="body2" sx={{ mt: 0.5, fontWeight: 700 }}>
+                Daily responsibilities: {responsibilityRoles.map((role) => scheduleRoleLabel(role)).join(", ")}
+              </Typography>
+            ) : null}
             <Typography variant="body2" sx={{ mt: 0.5, fontWeight: 600, opacity: 0.95 }}>
               {formatEmployeeWeeklySummary(employee, { daysOnly })}
             </Typography>
@@ -170,6 +195,8 @@ export default function WeeklyScheduleEmployeeViewPage() {
             >
               {DAY_LABELS.map((dayLabel, dow) => {
                 const cellEntries = entriesByCell[dow] || [];
+                const cellResponsibilities = responsibilitiesByDay[dow] || [];
+                const hasWork = cellEntries.length > 0 || cellResponsibilities.length > 0;
                 return (
                   <Box
                     key={dayLabel}
@@ -178,7 +205,7 @@ export default function WeeklyScheduleEmployeeViewPage() {
                       py: 1,
                       borderBottom: { xs: "1px solid #e2e8f0", md: "none" },
                       borderLeft: { md: dow === 0 ? "none" : "1px solid #e2e8f0" },
-                      bgcolor: cellEntries.length ? "#f8fafc" : "#fff",
+                      bgcolor: hasWork ? "#f8fafc" : "#fff",
                       minHeight: { md: 120 },
                     }}
                   >
@@ -193,22 +220,24 @@ export default function WeeklyScheduleEmployeeViewPage() {
                     >
                       {dayLabel}
                     </Typography>
-                    {cellEntries.length ? (
-                      cellEntries.map((entry) => (
-                        <WeeklyScheduleShiftCard
-                          key={entry.id}
-                          entry={entry}
-                          muted
-                          showRoleLabels={showRoleLabels}
-                          showBreakMinutes={showBreakMinutes}
-                          scheduleEndTimeEnabled={scheduleEndTimeEnabled}
-                        />
-                      ))
-                    ) : (
+                    {cellEntries.map((entry) => (
+                      <WeeklyScheduleShiftCard
+                        key={entry.id}
+                        entry={entry}
+                        muted
+                        showRoleLabels={showRoleLabels}
+                        showBreakMinutes={showBreakMinutes}
+                        scheduleEndTimeEnabled={scheduleEndTimeEnabled}
+                      />
+                    ))}
+                    {cellResponsibilities.map((item) => (
+                      <WeeklyScheduleResponsibilityChip key={`r${item.id}`} item={item} />
+                    ))}
+                    {!hasWork ? (
                       <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>
                         Off
                       </Typography>
-                    )}
+                    ) : null}
                   </Box>
                 );
               })}

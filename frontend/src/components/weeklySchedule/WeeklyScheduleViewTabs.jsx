@@ -5,6 +5,7 @@ import {
   buildDayViewTabs,
   buildRoleViewTabs,
   filterEntriesByRoleView,
+  filterResponsibilitiesByRoleView,
   hasRoleViewFilter,
   SCHEDULE_VIEW_ALL,
   toggleRoleViewSelection,
@@ -58,14 +59,21 @@ export default function WeeklyScheduleViewTabs({
   dayTab = SCHEDULE_VIEW_ALL,
   onDayTabChange,
   hiddenRoles = [],
+  roleCatalog = null,
+  responsibilities = [],
 }) {
   const roleTabs = useMemo(
     () => buildRoleViewTabs(entries, { hiddenRoles }),
-    [entries, hiddenRoles],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tabs read the registered role catalog
+    [entries, hiddenRoles, roleCatalog],
   );
   const dayTabs = useMemo(
-    () => buildDayViewTabs(filterEntriesByRoleView(entries, selectedRoles), { compact: true }),
-    [entries, selectedRoles],
+    () =>
+      buildDayViewTabs(filterEntriesByRoleView(entries, selectedRoles), {
+        compact: true,
+        responsibilities: filterResponsibilitiesByRoleView(responsibilities, selectedRoles),
+      }),
+    [entries, selectedRoles, responsibilities],
   );
 
   const allRoleTab = roleTabs.find((tab) => tab.value === SCHEDULE_VIEW_ALL);

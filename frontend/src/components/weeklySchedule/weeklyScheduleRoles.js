@@ -14,6 +14,11 @@ export const ROLE_ORDER = [
   "hd_folder",
   "non_rinse_folder",
   "attendant",
+  "lint_cleaning",
+  "floor_cleaning",
+  "washer_cleaning",
+  "drop_off_customer",
+  "self_service",
 ];
 
 /** Roles that show scheduled-hour totals in day/week summaries (PT kept separate). */
@@ -31,10 +36,75 @@ export const WEEKLY_SCHEDULE_ROLES = [
   { value: "hd_folder", label: "HD Folder" },
   { value: "non_rinse_folder", label: "Non-Rinse Folder" },
   { value: "attendant", label: "Attendant" },
+  { value: "lint_cleaning", label: "Lint Cleaning" },
+  { value: "floor_cleaning", label: "Floor Cleaning" },
+  { value: "washer_cleaning", label: "Washer Cleaning" },
+  { value: "drop_off_customer", label: "Drop Off Customer" },
+  { value: "self_service", label: "Self Service" },
 ];
+
+const UNTIMED_DEFAULT_ROLES = new Set(["drop_off_customer", "self_service"]);
+const REMARKS_DEFAULT_ROLES = new Set([
+  "lint_cleaning",
+  "floor_cleaning",
+  "washer_cleaning",
+  "drop_off_customer",
+  "self_service",
+]);
+const DEFAULT_ROLE_NAMES = Object.fromEntries(WEEKLY_SCHEDULE_ROLES.map((r) => [r.value, r.label]));
+
+/** Fallback catalog when the week payload has not provided the org's role settings yet. */
+export const DEFAULT_ROLE_CATALOG = WEEKLY_SCHEDULE_ROLES.map((role, index) => ({
+  code: role.value,
+  name: role.label,
+  role_group: null,
+  display_order: (index + 1) * 10,
+  active: true,
+  uses_time_slots: !UNTIMED_DEFAULT_ROLES.has(role.value),
+  remarks_enabled: REMARKS_DEFAULT_ROLES.has(role.value),
+  builtin: true,
+}));
 
 const ROLE_ORDER_INDEX = Object.fromEntries(ROLE_ORDER.map((role, index) => [role, index]));
 const HOUR_TRACKED_ROLE_SET = new Set(HOUR_TRACKED_ROLES);
+
+let activeRoleCatalog = null;
+let activeRoleIndex = null;
+let activeRoleOrder = null;
+
+/** Register the org's role settings (from the week payload) for labels, order, and pickers. */
+export function setScheduleRoleCatalog(catalog) {
+  if (!Array.isArray(catalog) || !catalog.length) {
+    activeRoleCatalog = null;
+    activeRoleIndex = null;
+    activeRoleOrder = null;
+    return;
+  }
+  activeRoleCatalog = [...catalog].sort(
+    (a, b) => Number(a.display_order || 0) - Number(b.display_order || 0)
+      || String(a.name || "").localeCompare(String(b.name || "")),
+  );
+  activeRoleIndex = Object.fromEntries(activeRoleCatalog.map((role) => [role.code, role]));
+  activeRoleOrder = Object.fromEntries(activeRoleCatalog.map((role, index) => [role.code, index]));
+}
+
+export function scheduleRoleCatalog() {
+  return activeRoleCatalog || DEFAULT_ROLE_CATALOG;
+}
+
+export function scheduleRoleInfo(code) {
+  if (activeRoleIndex) return activeRoleIndex[code] || null;
+  return DEFAULT_ROLE_CATALOG.find((role) => role.code === code) || null;
+}
+
+export function scheduleRoleLabel(code) {
+  return scheduleRoleInfo(code)?.name || ROLE_STYLES[code]?.label || code;
+}
+
+function roleOrderIndex(code) {
+  if (activeRoleOrder) return activeRoleOrder[code] ?? 999;
+  return ROLE_ORDER_INDEX[code] ?? 99;
+}
 
 /** Short labels for tight grid cells and day headers. */
 export const ROLE_COMPACT_LABELS = {
@@ -49,16 +119,36 @@ export const ROLE_COMPACT_LABELS = {
   hd_folder: "HD Fold",
   non_rinse_folder: "NR Fold",
   attendant: "Attend",
+  lint_cleaning: "Lint",
+  floor_cleaning: "Floor",
+  washer_cleaning: "Washer Cl",
+  drop_off_customer: "Drop Off",
+  self_service: "Self Svc",
 };
 
 export function roleCompactLabel(roleKey) {
-  return ROLE_COMPACT_LABELS[roleKey] || ROLE_STYLES[roleKey]?.label || roleKey;
+  const name = scheduleRoleInfo(roleKey)?.name;
+  if (name && name !== DEFAULT_ROLE_NAMES[roleKey]) return name;
+  return ROLE_COMPACT_LABELS[roleKey] || name || ROLE_STYLES[roleKey]?.label || roleKey;
 }
 
 export function sortRoles(roles) {
-  return [...(roles || [])].sort(
-    (a, b) => (ROLE_ORDER_INDEX[a] ?? 99) - (ROLE_ORDER_INDEX[b] ?? 99),
-  );
+  return [...(roles || [])].sort((a, b) => roleOrderIndex(a) - roleOrderIndex(b));
+}
+
+/** Neutral styling for org-defined roles without a dedicated palette. */
+export const CUSTOM_ROLE_STYLE = {
+  accent: "#475569",
+  bg: "#f1f5f9",
+  hoverBg: "#e2e8f0",
+  chipBg: "#f8fafc",
+  cellBg: "#f8fafc",
+  border: "rgba(71, 85, 105, 0.28)",
+  label: "Role",
+};
+
+export function roleStyle(roleKey) {
+  return ROLE_STYLES[roleKey] || CUSTOM_ROLE_STYLE;
 }
 
 /** Role accents — distinct card fills, borders, and chip tints. */
@@ -162,6 +252,51 @@ export const ROLE_STYLES = {
     border: "rgba(180, 83, 9, 0.28)",
     label: "Attendant",
   },
+  lint_cleaning: {
+    accent: "#57534e",
+    bg: "#f5f5f4",
+    hoverBg: "#e7e5e4",
+    chipBg: "#fafaf9",
+    cellBg: "#fafaf9",
+    border: "rgba(87, 83, 78, 0.28)",
+    label: "Lint Cleaning",
+  },
+  floor_cleaning: {
+    accent: "#4d7c0f",
+    bg: "#ecfccb",
+    hoverBg: "#d9f99d",
+    chipBg: "#f7fee7",
+    cellBg: "#fbfef3",
+    border: "rgba(77, 124, 15, 0.28)",
+    label: "Floor Cleaning",
+  },
+  washer_cleaning: {
+    accent: "#0e7490",
+    bg: "#cffafe",
+    hoverBg: "#a5f3fc",
+    chipBg: "#ecfeff",
+    cellBg: "#f5feff",
+    border: "rgba(14, 116, 144, 0.28)",
+    label: "Washer Cleaning",
+  },
+  drop_off_customer: {
+    accent: "#9d174d",
+    bg: "#fce7f3",
+    hoverBg: "#fbcfe8",
+    chipBg: "#fdf2f8",
+    cellBg: "#fff5fa",
+    border: "rgba(157, 23, 77, 0.28)",
+    label: "Drop Off Customer",
+  },
+  self_service: {
+    accent: "#a16207",
+    bg: "#fef9c3",
+    hoverBg: "#fef08a",
+    chipBg: "#fefce8",
+    cellBg: "#fffef2",
+    border: "rgba(161, 98, 7, 0.28)",
+    label: "Self Service",
+  },
   folder: {
     accent: VEEWASH_DASHBOARD.tealDark,
     bg: VEEWASH_DASHBOARD.tealLight,
@@ -255,9 +390,76 @@ function mergeIntervalHours(intervals) {
 }
 
 /**
- * Allocate scheduled hours to hour-tracked roles from role segments.
- * Multi-role entries split segment hours evenly across their hour-tracked roles.
- * Overlapping segments for the same employee/day/role are merged (no double-count).
+ * Role assignments inside a shift. Each has its own time range; `full_shift` ones span the shift.
+ * Older payloads without `assignments` treat every role as covering the whole shift.
+ */
+export function entryRoleAssignments(entry) {
+  if (Array.isArray(entry?.assignments) && entry.assignments.length) {
+    return entry.assignments.filter((a) => a?.role);
+  }
+  return parseEntryRoles(entry).map((role) => ({
+    role,
+    start_time: entry?.start_time || null,
+    end_time: entry?.end_time || null,
+    remarks: null,
+    full_shift: true,
+  }));
+}
+
+/** Place a wall-clock range on the shift timeline (shift end may run past midnight). */
+export function placeOnShiftTimeline(segStart, segEnd, shiftStart) {
+  const start = segStart < shiftStart ? segStart + 24 * 60 : segStart;
+  let end = segEnd;
+  while (end <= start) end += 24 * 60;
+  return { start, end };
+}
+
+/**
+ * Paid scheduled hours per `${user_id}|${day_of_week}`.
+ * Overlapping shifts for the same employee/day count their combined span once (largest break).
+ */
+export function scheduledHoursByUserDay(entries) {
+  const out = new Map();
+  const timed = new Map();
+  for (const entry of entries || []) {
+    const key = `${Number(entry.user_id)}|${Number(entry.day_of_week || 0)}`;
+    const hours = Math.max(0, Number(entry.hours || 0));
+    const interval = hours > 0 ? entryIntervalMinutes(entry) : null;
+    if (!interval) {
+      out.set(key, (out.get(key) || 0) + hours);
+      continue;
+    }
+    const list = timed.get(key) || [];
+    list.push({ start: interval.start, end: interval.end, breakMin: interval.breakMin, hours });
+    timed.set(key, list);
+  }
+  for (const [key, items] of timed.entries()) {
+    items.sort((a, b) => a.start - b.start || a.end - b.end);
+    const clusters = [];
+    for (const item of items) {
+      const last = clusters[clusters.length - 1];
+      if (last && item.start < Math.max(...last.map((c) => c.end))) last.push(item);
+      else clusters.push([item]);
+    }
+    let total = out.get(key) || 0;
+    for (const cluster of clusters) {
+      if (cluster.length === 1) {
+        total += cluster[0].hours;
+        continue;
+      }
+      const span = Math.max(...cluster.map((c) => c.end)) - cluster[0].start;
+      total += Math.max(0, span - Math.max(...cluster.map((c) => c.breakMin))) / 60;
+    }
+    out.set(key, total);
+  }
+  return out;
+}
+
+/**
+ * Allocate scheduled hours to hour-tracked roles.
+ * Each role assignment counts over its own range inside the shift; concurrent hour-tracked
+ * assignments split that time evenly and the shift break is pro-rated.
+ * Overlapping time for the same employee/day/role across entries is merged (no double-count).
  */
 export function allocateRoleHoursByDay(entries) {
   const byDay = Array.from({ length: 7 }, () => {
@@ -266,35 +468,57 @@ export function allocateRoleHoursByDay(entries) {
     return hours;
   });
 
-  /** @type {Map<string, Array<{start:number,end:number,hours:number}>>} */
+  /** @type {Map<string, Array<{start:number,end:number,hours:number,direct?:boolean}>>} */
   const buckets = new Map();
+  const push = (key, item) => {
+    const list = buckets.get(key) || [];
+    list.push(item);
+    buckets.set(key, list);
+  };
 
   for (const entry of entries || []) {
     const uid = Number(entry.user_id);
     const dow = Number(entry.day_of_week || 0);
     if (!Number.isInteger(dow) || dow < 0 || dow > 6) continue;
 
-    const roles = parseEntryRoles(entry);
-    const hourRoles = roles.filter((role) => HOUR_TRACKED_ROLE_SET.has(role));
-    if (!hourRoles.length) continue;
+    const assignments = entryRoleAssignments(entry).filter((a) => HOUR_TRACKED_ROLE_SET.has(a.role));
+    if (!assignments.length) continue;
 
     const interval = entryIntervalMinutes(entry);
-    const segmentHours = interval
-      ? interval.hours
-      : Math.max(0, Number(entry.hours || 0));
-    if (segmentHours <= 0) continue;
-
-    const share = segmentHours / hourRoles.length;
-    for (const role of hourRoles) {
-      const key = `${uid}|${dow}|${role}`;
-      const list = buckets.get(key) || [];
-      if (interval) {
-        list.push({ start: interval.start, end: interval.end, hours: share });
-      } else {
-        // No clock range — accumulate share directly via a zero-width placeholder.
-        list.push({ start: 0, end: 0, hours: share, direct: true });
+    if (!interval) {
+      const segmentHours = Math.max(0, Number(entry.hours || 0));
+      if (segmentHours <= 0) continue;
+      const roles = [...new Set(assignments.map((a) => a.role))];
+      for (const role of roles) {
+        push(`${uid}|${dow}|${role}`, { start: 0, end: 0, hours: segmentHours / roles.length, direct: true });
       }
-      buckets.set(key, list);
+      continue;
+    }
+
+    const wall = interval.end - interval.start;
+    if (interval.hours <= 0 || wall <= 0) continue;
+    const paidRatio = (interval.hours * 60) / wall;
+    const ranges = [];
+    for (const a of assignments) {
+      const segStart = parseTimeToMinutes(normalizeTimeHm(a.start_time));
+      const segEnd = parseTimeToMinutes(normalizeTimeHm(a.end_time));
+      if (a.full_shift !== false || segStart == null || segEnd == null) {
+        ranges.push({ role: a.role, start: interval.start, end: interval.end });
+        continue;
+      }
+      const placed = placeOnShiftTimeline(segStart, segEnd, interval.start);
+      const start = Math.max(placed.start, interval.start);
+      const end = Math.min(placed.end, interval.end);
+      if (end > start) ranges.push({ role: a.role, start, end });
+    }
+    const bounds = [...new Set(ranges.flatMap((r) => [r.start, r.end]))].sort((x, y) => x - y);
+    for (let i = 0; i < bounds.length - 1; i += 1) {
+      const left = bounds[i];
+      const right = bounds[i + 1];
+      const active = [...new Set(ranges.filter((r) => r.start <= left && r.end >= right).map((r) => r.role))];
+      if (!active.length) continue;
+      const share = (((right - left) / 60) * paidRatio) / active.length;
+      for (const role of active) push(`${uid}|${dow}|${role}`, { start: left, end: right, hours: share });
     }
   }
 
@@ -307,10 +531,8 @@ export function allocateRoleHoursByDay(entries) {
     let hours = direct.reduce((sum, item) => sum + item.hours, 0);
     if (timed.length) {
       if (hasOverlappingIntervals(timed)) {
-        // Preserve multi-role weight when merging overlaps (all shares equal for a role key).
-        const weight = timed[0].hours > 0 && timed[0].end > timed[0].start
-          ? timed[0].hours / ((timed[0].end - timed[0].start) / 60)
-          : 1;
+        const span = timed.reduce((sum, item) => sum + (item.end - item.start) / 60, 0);
+        const weight = span > 0 ? timed.reduce((sum, item) => sum + item.hours, 0) / span : 1;
         hours += mergeIntervalHours(timed) * Math.min(1, weight || 1);
       } else {
         hours += timed.reduce((sum, item) => sum + item.hours, 0);
@@ -346,8 +568,7 @@ export function sumRoleHoursAcrossDays(dayRoleHours) {
 
 export function primaryRoleStyle(entry) {
   const roles = parseEntryRoles(entry);
-  const key = roles[0] || "fold";
-  return ROLE_STYLES[key] || ROLE_STYLES.fold;
+  return roleStyle(roles[0] || "fold");
 }
 
 function blendRoleColors(colors, direction = "135deg") {
@@ -362,7 +583,7 @@ function blendRoleColors(colors, direction = "135deg") {
 export function entryRoleCardStyle(entryOrRoles) {
   const roles = Array.isArray(entryOrRoles) ? sortRoles(entryOrRoles) : parseEntryRoles(entryOrRoles);
   const keys = roles.length ? roles : ["fold"];
-  const styles = keys.map((key) => ROLE_STYLES[key] || ROLE_STYLES.fold);
+  const styles = keys.map((key) => roleStyle(key));
   const primary = styles[0];
 
   if (styles.length === 1) {
@@ -388,7 +609,7 @@ export function entryRoleCardStyle(entryOrRoles) {
 
 export function roleStripeGradient(roles) {
   const keys = sortRoles(roles.length ? roles : ["fold"]);
-  const colors = keys.map((k) => (ROLE_STYLES[k] || ROLE_STYLES.fold).accent);
+  const colors = keys.map((k) => roleStyle(k).accent);
   if (colors.length === 1) return colors[0];
   const step = 100 / colors.length;
   const stops = colors.map((c, i) => `${c} ${i * step}%, ${c} ${(i + 1) * step}%`).join(", ");
@@ -396,7 +617,7 @@ export function roleStripeGradient(roles) {
 }
 
 export function roleLabels(roles) {
-  return sortRoles(roles).map((r) => ROLE_STYLES[r]?.label || r).join(" · ");
+  return sortRoles(roles).map((r) => scheduleRoleLabel(r)).join(" · ");
 }
 
 /** Morning vs afternoon card styling — classified by shift start time (before 2 PM = morning). */
@@ -440,9 +661,9 @@ export function employeeWeeklyRoleCounts(userId, entries) {
   }
   return sortRoles(Object.keys(counts)).map((key) => ({
     key,
-    label: ROLE_STYLES[key]?.label || key,
+    label: scheduleRoleLabel(key),
     count: counts[key],
-    style: ROLE_STYLES[key] || ROLE_STYLES.fold,
+    style: roleStyle(key),
   }));
 }
 
@@ -469,7 +690,7 @@ export function deriveEmployeePrimaryRole(userId, entries) {
   }
   const ranked = Object.entries(counts).sort((a, b) => {
     if (b[1] !== a[1]) return b[1] - a[1];
-    return (ROLE_ORDER_INDEX[a[0]] ?? 99) - (ROLE_ORDER_INDEX[b[0]] ?? 99);
+    return roleOrderIndex(a[0]) - roleOrderIndex(b[0]);
   });
   return ranked[0]?.[0] || null;
 }
@@ -499,12 +720,14 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
   const roleCounts = Object.fromEntries(ROLE_ORDER.map((role) => [role, 0]));
   const scheduledUserIds = new Set();
 
+  for (const hours of scheduledHoursByUserDay(filteredEntries).values()) {
+    totalHours += hours;
+  }
+
   for (const entry of filteredEntries) {
     const uid = Number(entry.user_id);
     scheduledUserIds.add(uid);
     totalDays += 1;
-    const hours = Number(entry.hours || 0);
-    totalHours += hours;
     const roles = parseEntryRoles(entry);
     const countedRoles = roles.length ? roles : ["fold"];
     for (const role of countedRoles) {
@@ -588,8 +811,6 @@ export function computeFilteredDaySummaries(data, { userIds = null, includeExclu
 
     filteredEntries.push(entry);
     const dow = Number(entry.day_of_week || 0);
-    const hours = Number(entry.hours || 0);
-    summaries[dow].hours += hours;
     peopleByDay[dow].add(uid);
 
     const roles = parseEntryRoles(entry);
@@ -597,6 +818,11 @@ export function computeFilteredDaySummaries(data, { userIds = null, includeExclu
     for (const role of countedRoles) {
       if (role in summaries[dow]) summaries[dow][role] += 1;
     }
+  }
+
+  for (const [key, hours] of scheduledHoursByUserDay(filteredEntries).entries()) {
+    const dow = Number(key.split("|")[1]);
+    if (summaries[dow]) summaries[dow].hours += hours;
   }
 
   const roleHoursByDay = allocateRoleHoursByDay(filteredEntries);
@@ -625,8 +851,7 @@ export function cellRoleBackground(entries) {
   const roleCounts = {};
   for (const entry of entries) {
     for (const roleKey of parseEntryRoles(entry)) {
-      const key = ROLE_STYLES[roleKey] ? roleKey : "fold";
-      roleCounts[key] = (roleCounts[key] || 0) + 1;
+      roleCounts[roleKey] = (roleCounts[roleKey] || 0) + 1;
     }
   }
 
@@ -634,17 +859,17 @@ export function cellRoleBackground(entries) {
     Object.entries(roleCounts)
       .sort((a, b) => {
         if (b[1] !== a[1]) return b[1] - a[1];
-        return (ROLE_ORDER_INDEX[a[0]] ?? 99) - (ROLE_ORDER_INDEX[b[0]] ?? 99);
+        return roleOrderIndex(a[0]) - roleOrderIndex(b[0]);
       })
       .map(([key]) => key),
   );
   if (!roles.length) return null;
 
   if (roles.length === 1) {
-    return (ROLE_STYLES[roles[0]] || ROLE_STYLES.fold).cellBg;
+    return roleStyle(roles[0]).cellBg;
   }
 
-  const colors = roles.map((key) => (ROLE_STYLES[key] || ROLE_STYLES.fold).cellBg);
+  const colors = roles.map((key) => roleStyle(key).cellBg);
   const step = 100 / colors.length;
   const stops = colors.map((color, i) => `${color} ${i * step}%, ${color} ${(i + 1) * step}%`).join(", ");
   return `linear-gradient(135deg, ${stops})`;

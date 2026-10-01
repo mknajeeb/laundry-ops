@@ -1,10 +1,10 @@
 import { Chip } from "@mui/material";
-import { formatRoleHoursLabel, HOUR_TRACKED_ROLES, ROLE_STYLES, roleCompactLabel } from "./weeklyScheduleRoles";
+import { formatRoleHoursLabel, HOUR_TRACKED_ROLES, roleCompactLabel, roleStyle } from "./weeklyScheduleRoles";
 
 const HOUR_TRACKED = new Set(HOUR_TRACKED_ROLES);
 
 export default function ScheduleRoleChip({ roleKey, count = null, hours = null, sx = {} }) {
-  const style = ROLE_STYLES[roleKey] || ROLE_STYLES.fold;
+  const style = roleStyle(roleKey);
   const label = roleCompactLabel(roleKey);
   let text = label;
   if (count != null && HOUR_TRACKED.has(roleKey) && hours != null && Number(hours) > 0) {

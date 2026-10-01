@@ -2,6 +2,7 @@ import { formatTime12 } from "../datetime/scheduleTimeUi";
 import {
   computeFilteredDaySummaries,
   employeeScheduleRoles,
+  entryRoleAssignments,
   formatRoleHoursLabel,
   HOUR_TRACKED_ROLES,
   parseEntryRoles,
@@ -9,9 +10,11 @@ import {
   ROLE_ORDER,
   ROLE_STYLES,
   roleLabels,
+  scheduleRoleLabel,
   sortRoles,
 } from "./weeklyScheduleRoles";
 import { DAY_LABELS } from "./weeklyScheduleDates";
+import { dayDateLabel, timeBlockLabel } from "./weeklyScheduleTimeBlocks";
 
 /** Excel-safe text — no smart quotes, en-dashes, or middle dots. */
 export function exportAsciiText(value) {
@@ -26,14 +29,36 @@ export function exportAsciiText(value) {
 
 function exportRoleLabels(roles) {
   return sortRoles(roles)
-    .map((r) => ROLE_STYLES[r]?.label || r)
+    .map((r) => scheduleRoleLabel(r))
     .join(" / ");
+}
+
+/** Per-role ranges inside a shift and assignment remarks, e.g. "Sort 2:00 AM - 5:00 AM | Lint Cleaning: Dryers". */
+export function formatAssignmentDetails(entry, { scheduleEndTimeEnabled = true } = {}) {
+  return entryRoleAssignments(entry)
+    .filter((a) => a.remarks || (a.full_shift === false && scheduleEndTimeEnabled))
+    .map((a) => {
+      const range =
+        a.full_shift === false && scheduleEndTimeEnabled
+          ? ` ${formatTime12(a.start_time)} - ${formatTime12(a.end_time)}`
+          : "";
+      return `${scheduleRoleLabel(a.role)}${range}${a.remarks ? `: ${a.remarks}` : ""}`;
+    })
+    .join(" | ");
+}
+
+export function formatResponsibilityText(item, { forExport = false } = {}) {
+  const text = `${scheduleRoleLabel(item.role)} (daily)${item.remarks ? `: ${item.remarks}` : ""}`;
+  return forExport ? exportAsciiText(text) : text;
 }
 
 export function formatShiftEntryText(entry, { showRoleLabels = true, forExport = false, scheduleEndTimeEnabled = true } = {}) {
   const hours = Number(entry.hours || 0);
   const hoursLabel = Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`;
-  const roleText = showRoleLabels ? ` ${exportRoleLabels(parseEntryRoles(entry))}` : "";
+  const details = showRoleLabels ? formatAssignmentDetails(entry, { scheduleEndTimeEnabled }) : "";
+  const roleText = showRoleLabels
+    ? ` ${exportRoleLabels(parseEntryRoles(entry))}${details ? ` [${details}]` : ""}`
+    : "";
   const start = formatTime12(entry.start_time);
   const end = formatTime12(entry.end_time);
   const range = scheduleEndTimeEnabled
@@ -45,11 +70,12 @@ export function formatShiftEntryText(entry, { showRoleLabels = true, forExport =
   return forExport ? exportAsciiText(text) : text;
 }
 
-export function formatDayShiftsText(entries, options) {
+export function formatDayShiftsText(entries, options, responsibilities = []) {
   const forExport = options?.forExport === true;
-  return (entries || [])
-    .map((entry) => formatShiftEntryText(entry, { ...options, forExport }))
-    .join(forExport ? "; " : "; ");
+  return [
+    ...(entries || []).map((entry) => formatShiftEntryText(entry, { ...options, forExport })),
+    ...(responsibilities || []).map((item) => formatResponsibilityText(item, { forExport })),
+  ].join("; ");
 }
 
 function csvCell(value) {
@@ -62,7 +88,7 @@ function csvCell(value) {
 
 export function formatDayRoleTotalsText(summary, { daysOnly = false, forExport = false } = {}) {
   const parts = [];
-  for (const role of ROLE_ORDER) {
+  for (const role of sortRoles(ROLE_ORDER)) {
     const count = Number(summary?.[role] || 0);
     if (count <= 0) continue;
     const label = ROLE_COMPACT_LABELS[role] || ROLE_STYLES[role]?.label || role;
@@ -87,6 +113,7 @@ export function buildWeeklyScheduleCsvRows({
   dayLabels = null,
   dayIndices = null,
   daySummaries = null,
+  responsibilities = [],
 }) {
   const columnDays = dayIndices || [0, 1, 2, 3, 4, 5, 6];
   const columnLabels = dayLabels || columnDays.map((dow) => DAY_LABELS[dow]);
@@ -111,7 +138,18 @@ export function buildWeeklyScheduleCsvRows({
           Number(entry.user_id) === Number(employee.user_id) &&
           Number(entry.day_of_week) === dow,
       );
-      row.push(csvCell(formatDayShiftsText(cellEntries, { showRoleLabels, forExport: true, scheduleEndTimeEnabled })));
+      const cellResponsibilities = (responsibilities || []).filter(
+        (item) => Number(item.user_id) === Number(employee.user_id) && Number(item.day_of_week) === dow,
+      );
+      row.push(
+        csvCell(
+          formatDayShiftsText(
+            cellEntries,
+            { showRoleLabels, forExport: true, scheduleEndTimeEnabled },
+            cellResponsibilities,
+          ),
+        ),
+      );
     }
 
     if (scheduleEndTimeEnabled) {
@@ -147,6 +185,25 @@ export function buildWeeklyScheduleCsvRows({
   return lines;
 }
 
+function csvFileName({ weekStart, tabLabel, filename }) {
+  const safeTab = String(tabLabel || "schedule")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  return filename || `weekly-schedule-${weekStart}-${safeTab || "schedule"}.csv`;
+}
+
+function downloadCsv(lines, downloadName) {
+  const body = `\uFEFF${lines.join("\r\n")}`;
+  const blob = new Blob([body], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = downloadName;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 export function exportWeeklyScheduleCsv({
   employees,
   entries,
@@ -158,6 +215,7 @@ export function exportWeeklyScheduleCsv({
   dayLabels = null,
   dayIndices = null,
   daySummaries = null,
+  responsibilities = [],
 }) {
   const lines = buildWeeklyScheduleCsvRows({
     employees,
@@ -167,21 +225,56 @@ export function exportWeeklyScheduleCsv({
     dayLabels,
     dayIndices,
     daySummaries,
+    responsibilities,
   });
+  downloadCsv(lines, csvFileName({ weekStart, tabLabel, filename }));
+}
 
-  const safeTab = String(tabLabel || "schedule")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-  const downloadName =
-    filename || `weekly-schedule-${weekStart}-${safeTab || "schedule"}.csv`;
+function peopleRemarks(people) {
+  return people
+    .filter((person) => person.remarks)
+    .map((person) => `${person.name}: ${person.remarks}`)
+    .join("; ");
+}
 
-  const body = `\uFEFF${lines.join("\r\n")}`;
-  const blob = new Blob([body], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = downloadName;
-  anchor.click();
-  URL.revokeObjectURL(url);
+/** By Time & Role export: one row per day / time block / role, then that day's daily responsibilities. */
+export function buildTimeRoleCsvRows({ days, weekStart, scheduleEndTimeEnabled = true }) {
+  const headers = ["Day", "Date", "Time", "Role", "Count", "Employees", "Remarks"];
+  const lines = [headers.map(csvCell).join(",")];
+  for (const day of days || []) {
+    const dayCells = [csvCell(DAY_LABELS[day.dow]), csvCell(dayDateLabel(weekStart, day.dow))];
+    for (const block of day.blocks) {
+      const time = timeBlockLabel(block, scheduleEndTimeEnabled, " - ");
+      for (const group of block.roles) {
+        lines.push(
+          [
+            ...dayCells,
+            csvCell(time),
+            csvCell(group.label),
+            String(group.count),
+            csvCell(group.people.map((person) => person.name).join(", ")),
+            csvCell(peopleRemarks(group.people)),
+          ].join(","),
+        );
+      }
+    }
+    for (const group of day.responsibilities) {
+      lines.push(
+        [
+          ...dayCells,
+          csvCell("Daily responsibility"),
+          csvCell(group.label),
+          String(group.count),
+          csvCell(group.people.map((person) => person.name).join(", ")),
+          csvCell(peopleRemarks(group.people)),
+        ].join(","),
+      );
+    }
+  }
+  return lines;
+}
+
+export function exportWeeklyScheduleTimeRoleCsv({ days, weekStart, tabLabel, scheduleEndTimeEnabled = true }) {
+  const lines = buildTimeRoleCsvRows({ days, weekStart, scheduleEndTimeEnabled });
+  downloadCsv(lines, csvFileName({ weekStart, tabLabel: `${tabLabel || "schedule"} by time and role` }));
 }
