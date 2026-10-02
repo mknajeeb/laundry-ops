@@ -5,6 +5,7 @@ import {
   entryRoleAssignments,
   formatRoleHoursLabel,
   HOUR_TRACKED_ROLES,
+  NO_ROLE_LABEL,
   parseEntryRoles,
   ROLE_COMPACT_LABELS,
   ROLE_HOURS_EXPLANATION,
@@ -57,8 +58,9 @@ export function formatShiftEntryText(entry, { showRoleLabels = true, forExport =
   const hours = Number(entry.hours || 0);
   const hoursLabel = Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`;
   const details = showRoleLabels ? formatAssignmentDetails(entry, { scheduleEndTimeEnabled }) : "";
+  const roles = parseEntryRoles(entry);
   const roleText = showRoleLabels
-    ? ` ${exportRoleLabels(parseEntryRoles(entry))}${details ? ` [${details}]` : ""}`
+    ? ` ${roles.length ? exportRoleLabels(roles) : NO_ROLE_LABEL}${details ? ` [${details}]` : ""}`
     : "";
   const start = formatTime12(entry.start_time);
   const end = formatTime12(entry.end_time);

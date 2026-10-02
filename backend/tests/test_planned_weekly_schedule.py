@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date, time, timedelta
 from unittest.mock import MagicMock, patch
 
 from backend.planned_weekly_schedule import (
@@ -403,6 +403,11 @@ class _FakeCursor:
             elif len(params) == 1:
                 (org_id,) = params
                 self._last = [r for r in self.rows if r["organization_id"] == org_id]
+            elif "week_start >= %s" in sql_norm:
+                org_id, from_week = params
+                self._last = [
+                    r for r in self.rows if r["organization_id"] == org_id and r["week_start"] >= from_week
+                ]
             else:
                 org_id, week_start = params
                 self._last = [
@@ -2174,13 +2179,59 @@ def test_cleaning_on_shifts_migrates_to_tasks_once_with_times_in_instructions():
         result = ensure_cleaning_tasks_migrated(cursor, 1)
         assert ensure_cleaning_tasks_migrated(cursor, 1) is None
     assert [m["entry_id"] for m in result["moved"]] == [1, 2]
-    assert [r["id"] for r in cursor.rows] == [2, 3]
-    assert cursor.rows[0]["role"] == "fold" and cursor.rows[0]["role_assignments"] is None
+    assert [r["id"] for r in cursor.rows] == [1, 2, 3]
+    lint_shift = cursor.rows[0]
+    assert lint_shift["role"] == "" and lint_shift["role_assignments"] is None
+    assert (lint_shift["start_time"], lint_shift["end_time"]) == (time(9, 0), time(16, 0))
+    assert cursor.rows[1]["role"] == "fold" and cursor.rows[1]["role_assignments"] is None
     tasks = {(t["user_id"], t["day_of_week"], t["role"]): t["remarks"] for t in cursor.responsibilities}
     assert tasks == {
         (10, 0, "lint_cleaning"): "Before starting the break · Previously scheduled 9:00 AM – 4:00 PM",
         (20, 1, "floor_cleaning"): "Previously scheduled 1:00 PM – 2:00 PM",
     }
+
+
+def test_task_conversion_keeps_shift_hours_and_is_safe_to_rerun():
+    from backend.planned_weekly_schedule_responsibilities import migrate_timed_tasks_to_responsibilities
+
+    cursor = _FakeCursor()
+    base = {"organization_id": 1, "employer_affiliation": "rinse_exclusive", "day_of_week": 0, "user_id": 10}
+    cursor.rows = [
+        {
+            **base, "id": 1, "week_start": WEEK, "role": "lint_cleaning", "break_minutes": 30,
+            "start_time": time(9, 0), "end_time": time(16, 0),
+            "role_assignments": '[{"role":"lint_cleaning","remarks":"Before starting the break"}]',
+        },
+        {
+            **base, "id": 2, "week_start": WEEK - timedelta(days=7), "role": "lint_cleaning", "break_minutes": 0,
+            "start_time": time(9, 0), "end_time": time(16, 0), "role_assignments": None,
+        },
+    ]
+    p1, p2 = _patched()
+    with p1, p2:
+        first = migrate_timed_tasks_to_responsibilities(cursor, 1, task_roles={"lint_cleaning"}, from_week=WEEK)
+        cursor.responsibilities[0]["remarks"] = "Edited by the manager"
+        again = migrate_timed_tasks_to_responsibilities(cursor, 1, task_roles={"lint_cleaning"}, from_week=WEEK)
+        payload = build_week_payload(MagicMock(), cursor, 1, week_start=WEEK)
+    assert [m["entry_id"] for m in first["moved"]] == [1] and first["moved"][0]["shift_kept_without_role"]
+    assert again["moved"] == []
+    assert len(cursor.rows) == 2 and cursor.rows[1]["role"] == "lint_cleaning"
+    assert [t["remarks"] for t in cursor.responsibilities] == ["Edited by the manager"]
+    entry = payload["entries"][0]
+    assert entry["role"] == "" and entry["roles"] == [] and entry["assignments"] == []
+    assert entry["hours"] == 6.5
+    assert payload["employees"][0]["total_hours"] == 6.5
+
+
+def test_shift_can_be_saved_without_a_production_role():
+    from backend.planned_weekly_schedule import _validate_entry_payload
+
+    payload, err = _validate_entry_payload(
+        {"user_id": 10, "day_of_week": 0, "start_time": "09:00", "end_time": "16:00", "assignments": []}
+    )
+    assert err is None and payload["role"] == "" and payload["role_assignments"] is None
+    _, err = _validate_entry_payload({"user_id": 10, "day_of_week": 0, "start_time": "09:00", "end_time": "16:00"})
+    assert err == "at least one role is required"
 
 
 def _template_patches(current_week=WEEK):

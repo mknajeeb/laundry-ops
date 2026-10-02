@@ -261,6 +261,33 @@ describe("hours summaries above the time-and-role view", () => {
   });
 });
 
+describe("shifts kept without a production role", () => {
+  const noRole = shift(1, 1, "09:00", "16:00", "fold", { role: "", roles: [], assignments: [], hours: 6.5, break_minutes: 30 });
+
+  it("keeps hours, counts no role, and shows a No role group", () => {
+    const summary = summarizeScheduleHours([noRole], new Map([[1, employeesById[1]]]));
+    expect(summary.totalHours).toBe(6.5);
+    expect(summary.roles).toEqual([]);
+    expect(summary.unassignedHours).toBe(6.5);
+    const [day] = buildTimeRoleDays([noRole], { dayIndices: [1], employeesById });
+    expect(day.blocks[0].roles.map((r) => [r.role, r.label])).toEqual([["__no_role__", "No role"]]);
+    const [filtered] = buildTimeRoleDays([noRole], { dayIndices: [1], employeesById, selectedRoles: ["fold"] });
+    expect(filtered.blocks).toEqual([]);
+  });
+
+  it("labels the shift No role in the employee export", () => {
+    const lines = buildWeeklyScheduleCsvRows({
+      employees: [employeesById[1]],
+      entries: [noRole],
+      dayIndices: [1],
+      dayLabels: ["Mon"],
+      daySummaries: [],
+    });
+    expect(lines[1]).toContain("9:00 AM - 4:00 PM");
+    expect(lines[1]).toContain("No role");
+  });
+});
+
 describe("new shift category", () => {
   it("defaults to Rinse Exclusive when the employee may hold it", () => {
     const shared = { user_id: 1, can_work_rinse: true, can_work_drop_off: true, can_work_both: true };

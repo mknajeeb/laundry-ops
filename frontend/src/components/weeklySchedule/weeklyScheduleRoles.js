@@ -358,7 +358,7 @@ function normalizeFrontendRole(role) {
 
 export function parseEntryRoles(entry) {
   let roles;
-  if (Array.isArray(entry?.roles) && entry.roles.length) {
+  if (Array.isArray(entry?.roles) && (entry.roles.length || entry.role === "")) {
     roles = entry.roles.map((r) => normalizeFrontendRole(r));
   } else {
     const raw = String(entry?.role || "fold");
@@ -672,10 +672,22 @@ function blendRoleColors(colors, direction = "135deg") {
   return `linear-gradient(${direction}, ${stops})`;
 }
 
+export const NO_ROLE_LABEL = "No role";
+
+const NO_ROLE_CARD_STYLE = {
+  bg: "#f8fafc",
+  hoverBg: "#f1f5f9",
+  border: "#cbd5e1",
+  accent: "#64748b",
+  stripe: "#94a3b8",
+  multiRole: false,
+};
+
 /** Shift card fill, border, and stripe styling from one or more roles. */
 export function entryRoleCardStyle(entryOrRoles) {
   const roles = Array.isArray(entryOrRoles) ? sortRoles(entryOrRoles) : parseEntryRoles(entryOrRoles);
-  const keys = roles.length ? roles : ["fold"];
+  if (!roles.length) return { ...NO_ROLE_CARD_STYLE };
+  const keys = roles;
   const styles = keys.map((key) => roleStyle(key));
   const primary = styles[0];
 
@@ -821,9 +833,7 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
     const uid = Number(entry.user_id);
     scheduledUserIds.add(uid);
     totalDays += 1;
-    const roles = parseEntryRoles(entry);
-    const countedRoles = roles.length ? roles : ["fold"];
-    for (const role of countedRoles) {
+    for (const role of parseEntryRoles(entry)) {
       if (role in roleCounts) roleCounts[role] += 1;
     }
   }
@@ -906,9 +916,7 @@ export function computeFilteredDaySummaries(data, { userIds = null, includeExclu
     const dow = Number(entry.day_of_week || 0);
     peopleByDay[dow].add(uid);
 
-    const roles = parseEntryRoles(entry);
-    const countedRoles = roles.length ? roles : ["fold"];
-    for (const role of countedRoles) {
+    for (const role of parseEntryRoles(entry)) {
       if (role in summaries[dow]) summaries[dow][role] += 1;
     }
   }

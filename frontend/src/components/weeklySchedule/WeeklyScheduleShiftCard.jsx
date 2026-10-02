@@ -29,6 +29,7 @@ import { entityLabel } from "../../payroll/businessEntity";
 import {
   entryRoleAssignments,
   entryRoleCardStyle,
+  NO_ROLE_LABEL,
   parseEntryRoles,
   roleCompactLabel,
   roleLabels,
@@ -171,6 +172,14 @@ export default function WeeklyScheduleShiftCard({
                 <ScheduleRoleChip key={roleKey} roleKey={roleKey} />
               ))}
             </Stack>
+          ) : null}
+          {showRoleLabels && !roles.length ? (
+            <Typography
+              variant="caption"
+              sx={{ display: "block", mt: 0.35, color: "text.secondary", fontSize: "0.62rem", fontWeight: 700 }}
+            >
+              {NO_ROLE_LABEL}
+            </Typography>
           ) : null}
           {assignmentDetails.map((a) => (
             <Typography

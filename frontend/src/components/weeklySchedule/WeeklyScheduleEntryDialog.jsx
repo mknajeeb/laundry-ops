@@ -130,8 +130,7 @@ export default function WeeklyScheduleEntryDialog({
       setKind(ASSIGNMENT_KIND.SHIFT);
       setUserId(entry.user_id);
       setDayOfWeek(entry.day_of_week);
-      const existing = rowsFromEntry(entry);
-      setRows(existing.length ? existing : [makeRow({ role: "fold" })]);
+      setRows(rowsFromEntry(entry));
       setStartTime(entry.start_time || "09:00");
       setEndTime(entry.end_time || "16:00");
       setBreakMinutes(entry.break_minutes || 0);
@@ -158,13 +157,12 @@ export default function WeeklyScheduleEntryDialog({
   const canSplit = scheduleEndTimeEnabled;
 
   const updateRow = (id, patch) => setRows((prev) => prev.map((row) => (row.id === id ? { ...row, ...patch } : row)));
-  const removeRow = (id) => setRows((prev) => (prev.length > 1 ? prev.filter((row) => row.id !== id) : prev));
+  const removeRow = (id) => setRows((prev) => prev.filter((row) => row.id !== id));
 
   const canSave = useMemo(() => {
     if (!userId) return false;
     if (!isShift) return Boolean(respRole);
     if (!startTime || (scheduleEndTimeEnabled && !endTime)) return false;
-    if (!rows.length) return false;
     return rows.every((row) => row.role && (row.fullShift || !canSplit || (row.start && row.end)));
   }, [userId, isShift, respRole, startTime, endTime, rows, scheduleEndTimeEnabled, canSplit]);
 
@@ -278,6 +276,11 @@ export default function WeeklyScheduleEntryDialog({
                     : "Each role covers the whole shift."}
                 </Typography>
                 <Stack spacing={1.25}>
+                  {!rows.length ? (
+                    <Alert severity="info" sx={{ py: 0 }}>
+                      No production role. The shift keeps its times, break, and hours.
+                    </Alert>
+                  ) : null}
                   {rows.map((row) => {
                     const opt = optionByRole[row.role];
                     const showRemarks = Boolean(opt?.remarksEnabled || row.remarks);
@@ -324,7 +327,6 @@ export default function WeeklyScheduleEntryDialog({
                             size="small"
                             aria-label="Remove role"
                             onClick={() => removeRow(row.id)}
-                            disabled={rows.length <= 1}
                           >
                             <CloseIcon fontSize="small" />
                           </IconButton>

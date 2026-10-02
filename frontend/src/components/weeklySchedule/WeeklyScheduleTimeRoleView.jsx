@@ -4,7 +4,7 @@ import AddIcon from "@mui/icons-material/Add";
 import { formatTime12 } from "../datetime/scheduleTimeUi";
 import { DAY_LABELS } from "./weeklyScheduleDates";
 import { roleStyle } from "./weeklyScheduleRoles";
-import { ASSIGNMENT_KIND, dayDateLabel, timeBlockLabel } from "./weeklyScheduleTimeBlocks";
+import { ASSIGNMENT_KIND, dayDateLabel, NO_ROLE_GROUP, timeBlockLabel } from "./weeklyScheduleTimeBlocks";
 
 function PersonItem({ person, onClick, shiftLabel }) {
   const body = (
@@ -158,7 +158,7 @@ export default function WeeklyScheduleTimeRoleView({
                       key={group.role}
                       group={group}
                       onAdd={
-                        canEdit
+                        canEdit && group.role !== NO_ROLE_GROUP
                           ? () =>
                               onAdd?.({
                                 day: day.dow,

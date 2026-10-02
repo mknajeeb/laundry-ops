@@ -368,10 +368,13 @@ def migrate_timed_tasks_to_responsibilities(
     organization_id: int,
     *,
     task_roles: set[str],
+    from_week: date | None = None,
 ) -> dict[str, Any]:
     """Move ``task_roles`` off timed shifts into day tasks, keeping the old times in the instructions.
 
-    Shifts left with no role are deleted; shifts with other roles keep their times and those roles.
+    Shifts are never deleted: they keep their times, break, and hours, plus any remaining roles
+    (a shift may be left with no production role). Safe to re-run: converted shifts no longer hold
+    the task role, and an existing task's instructions are never overwritten.
     """
     from backend.planned_weekly_schedule import (
         entry_role_assignments,
@@ -390,9 +393,9 @@ def migrate_timed_tasks_to_responsibilities(
         SELECT id, organization_id, week_start, user_id, day_of_week,
                role, start_time, end_time, break_minutes, employer_affiliation, role_assignments
         FROM planned_weekly_schedule_entries
-        WHERE organization_id = %s
+        WHERE organization_id = %s AND week_start >= %s
         """,
-        (oid,),
+        (oid, from_week or date(1970, 1, 1)),
     )
     moved: list[dict[str, Any]] = []
     for row in cursor.fetchall() or []:
@@ -426,28 +429,22 @@ def migrate_timed_tasks_to_responsibilities(
                     "day_of_week": int(row["day_of_week"]),
                     "role": a["role"],
                     "remarks": remarks,
-                    "shift_deleted": not keep,
+                    "shift_kept_without_role": not keep,
                 }
             )
-        if keep:
-            cursor.execute(
-                """
-                UPDATE planned_weekly_schedule_entries
-                SET role = %s, role_assignments = %s
-                WHERE organization_id = %s AND id = %s
-                """,
-                (
-                    roles_to_storage([a["role"] for a in keep]),
-                    role_assignments_storage(keep),
-                    oid,
-                    int(row["id"]),
-                ),
-            )
-        else:
-            cursor.execute(
-                "DELETE FROM planned_weekly_schedule_entries WHERE organization_id = %s AND id = %s",
-                (oid, int(row["id"])),
-            )
+        cursor.execute(
+            """
+            UPDATE planned_weekly_schedule_entries
+            SET role = %s, role_assignments = %s
+            WHERE organization_id = %s AND id = %s
+            """,
+            (
+                roles_to_storage([a["role"] for a in keep]) if keep else "",
+                role_assignments_storage(keep) if keep else None,
+                oid,
+                int(row["id"]),
+            ),
+        )
     return {"moved": moved}
 
 

@@ -1,8 +1,17 @@
 import { parseTimeToMinutes } from "../../payroll/schedulePlanner";
 import { formatTime12, normalizeTimeHm } from "../datetime/scheduleTimeUi";
-import { entryRoleAssignments, scheduleRoleLabel, sortRoles } from "./weeklyScheduleRoles";
+import { entryRoleAssignments, NO_ROLE_LABEL, scheduleRoleLabel, sortRoles } from "./weeklyScheduleRoles";
 
 export const ASSIGNMENT_KIND = { SHIFT: "shift", RESPONSIBILITY: "responsibility" };
+
+/** Group key for shifts kept without a production role (never a catalog code). */
+export const NO_ROLE_GROUP = "__no_role__";
+
+function blockAssignments(entry) {
+  const assignments = entryRoleAssignments(entry);
+  if (assignments.length) return assignments;
+  return [{ role: NO_ROLE_GROUP, start_time: entry.start_time, end_time: entry.end_time, remarks: null, full_shift: true }];
+}
 
 /** Calendar date for a schedule day; week_start is a plain ET date, so format without zone shifts. */
 export function dayDateLabel(weekStart, dow) {
@@ -65,7 +74,7 @@ export function buildTimeRoleDays(
     const blocks = new Map();
     for (const entry of entries || []) {
       if (Number(entry.day_of_week) !== dow) continue;
-      for (const assignment of entryRoleAssignments(entry)) {
+      for (const assignment of blockAssignments(entry)) {
         if (roleFilter && !roleFilter.has(assignment.role)) continue;
         const start = normalizeTimeHm(assignment.start_time) || "";
         const end = endTimeEnabled ? normalizeTimeHm(assignment.end_time) || "" : "";
@@ -75,7 +84,7 @@ export function buildTimeRoleDays(
         if (!block.roles.has(assignment.role)) {
           block.roles.set(assignment.role, {
             role: assignment.role,
-            label: scheduleRoleLabel(assignment.role),
+            label: assignment.role === NO_ROLE_GROUP ? NO_ROLE_LABEL : scheduleRoleLabel(assignment.role),
             people: [],
           });
         }

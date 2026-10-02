@@ -2365,12 +2365,38 @@ def register_rinse_shift_analysis_routes(
             if err_gate:
                 return err_gate, code_gate
             tenant_oid = user_org_id(me)
+            from backend.planned_weekly_schedule_responsibilities import (
+                migrate_timed_tasks_to_responsibilities,
+            )
+            from backend.weekly_schedule_template import current_week_start
+
+            was_timed = next(
+                (
+                    r.get("uses_time_slots", True)
+                    for r in list_role_catalog(cursor, tenant_oid)
+                    if r["code"] == str(role_code or "").strip().lower()
+                ),
+                True,
+            )
             role, err = update_role(cursor, tenant_oid, role_code, request.get_json(silent=True) or {})
             if err:
                 status = 404 if err == "schedule role not found" else 400
                 return jsonify({"error": err}), status
+            converted = None
+            if was_timed and not role.get("uses_time_slots", True):
+                converted = migrate_timed_tasks_to_responsibilities(
+                    cursor, tenant_oid, task_roles={role["code"]}, from_week=current_week_start()
+                )
             conn.commit()
-            return jsonify(json_safe_rinse({"role": role, "roles": list_role_catalog(cursor, tenant_oid)}))
+            return jsonify(
+                json_safe_rinse(
+                    {
+                        "role": role,
+                        "roles": list_role_catalog(cursor, tenant_oid),
+                        "converted_to_tasks": len(converted["moved"]) if converted else 0,
+                    }
+                )
+            )
         except Exception as exc:
             conn.rollback()
             return jsonify({"error": str(exc)}), 500

@@ -701,7 +701,7 @@ def serialize_entry(
     organization_slug: str | None = None,
 ) -> dict[str, Any]:
     roles = parse_weekly_roles(row.get("role"))
-    role = roles_to_storage(roles)
+    role = roles_to_storage(roles) if roles or str(row.get("role") or "").strip() else ""
     hours = 0.0 if not schedule_end_time_enabled else _shift_hours_for_entry(row)
     employer_affiliation = _entry_employer_affiliation(row, organization_slug=organization_slug)
     start_time = _time_to_str(row.get("start_time"))
@@ -1079,6 +1079,8 @@ def _validate_role_assignments(
         kept = [dict(a) for a in existing_assignments if a.get("role") in roles]
         kept_roles = {a["role"] for a in kept}
         raw = kept + [{"role": r, "full_shift": True} for r in roles if r not in kept_roles]
+    if isinstance(raw, list) and not raw and "assignments" in data:
+        return [], None
     if not isinstance(raw, list) or not raw:
         return None, "at least one role is required"
 
@@ -1235,7 +1237,9 @@ def _validate_entry_payload(
         )
         if err or assignments is None:
             return None, err
-        role_storage = roles_to_storage(list(dict.fromkeys(a["role"] for a in assignments)))
+        role_storage = (
+            roles_to_storage(list(dict.fromkeys(a["role"] for a in assignments))) if assignments else ""
+        )
         if len(role_storage) > ROLE_STORAGE_MAX:
             return None, "too many roles on one shift"
         out["role"] = role_storage
@@ -1526,7 +1530,10 @@ def _bulk_insert_week_entries(
     for payload in payloads:
         start = parse_time_value(payload.get("start_time"))
         end = parse_time_value(payload.get("end_time"))
-        role = roles_to_storage(parse_weekly_roles(payload.get("role") or payload.get("roles")))
+        if payload.get("role") == "" and not payload.get("roles"):
+            role = ""
+        else:
+            role = roles_to_storage(parse_weekly_roles(payload.get("role") or payload.get("roles")))
         employer_affiliation = normalize_shift_employer_affiliation(
             payload.get("employer_affiliation"),
             organization_slug=organization_slug,
