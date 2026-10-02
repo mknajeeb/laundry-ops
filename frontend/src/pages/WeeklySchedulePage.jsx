@@ -114,6 +114,7 @@ import {
   entryRoleAssignments,
   sortRoles,
   summarizeSelectedRoleHours,
+  withDisplayedTotals,
 } from "../components/weeklySchedule/weeklyScheduleRoles";
 
 const VIEW_MODE = { EMPLOYEE: "employee", TIME_ROLE: "time_role" };
@@ -548,9 +549,9 @@ export default function WeeklySchedulePage() {
   );
 
   const visibleEmployees = useMemo(() => {
-    if (showExcluded) return viewEmployees;
-    return viewEmployees.filter((e) => !e.excluded);
-  }, [viewEmployees, showExcluded]);
+    const shown = showExcluded ? viewEmployees : viewEmployees.filter((e) => !e.excluded);
+    return withDisplayedTotals(shown, viewEntries);
+  }, [viewEmployees, showExcluded, viewEntries]);
 
   const visibleUserIds = useMemo(
     () => new Set(visibleEmployees.map((e) => Number(e.user_id))),

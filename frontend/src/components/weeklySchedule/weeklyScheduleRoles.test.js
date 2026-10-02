@@ -3,12 +3,15 @@ import {
   allocateRoleHoursByDay,
   computeFilteredDaySummaries,
   computeWeekSummary,
+  formatEmployeeWeeklySummary,
   formatRoleHoursLabel,
   parseEntryRoles,
   ROLE_ORDER,
   WEEKLY_SCHEDULE_ROLES,
+  withDisplayedTotals,
 } from "./weeklyScheduleRoles";
 import { filterEntriesByRoleView } from "./weeklyScheduleViewFilters";
+import { filterEntriesByEmployerTab } from "./weeklyScheduleEmployerTabs";
 import { buildWeeklyScheduleCsvRows, formatDayRoleTotalsText } from "./weeklyScheduleExport";
 
 function entry(partial) {
@@ -146,6 +149,58 @@ describe("day and week summaries with filters", () => {
     expect(week.ptWasherCount).toBe(0);
     expect(week.washHours).toBe(0.5);
     expect(week.sortHours).toBe(4);
+  });
+});
+
+describe("employee totals follow the shifts on screen", () => {
+  // Week of 2026-10-04: three Rinse Exclusive weekday shifts and a Saturday Rinse shift that
+  // overlaps a WashPro shift, plus a WashPro Friday shift (the Rinse tab hides WashPro shifts).
+  const shift = (day, start, end, affiliation, hours) =>
+    entry({ user_id: 64, day_of_week: day, start_time: start, end_time: end, break_minutes: 30, hours, employer_affiliation: affiliation });
+  const entries = [
+    shift(1, "08:00", "16:00", "rinse_exclusive", 7.5),
+    shift(2, "08:00", "16:00", "rinse_exclusive", 7.5),
+    shift(3, "08:00", "16:00", "rinse_exclusive", 7.5),
+    shift(5, "05:00", "13:00", "washpro", 7.5),
+    shift(6, "05:00", "13:00", "washpro", 7.5),
+    shift(6, "05:00", "13:30", "rinse_exclusive", 8),
+  ];
+  const employee = {
+    user_id: 64,
+    display_name: "Maria Rivera",
+    default_hourly_rate: 15,
+    total_hours: 38,
+    scheduled_days: 5,
+    estimated_cost: 570,
+  };
+  const rinseEntries = filterEntriesByEmployerTab(entries, "rinse_exclusive", [employee], "veewash");
+
+  it("replaces whole-week payload totals with the filtered shifts", () => {
+    expect(rinseEntries).toHaveLength(4);
+    const [row] = withDisplayedTotals([employee], rinseEntries);
+    expect(row).toMatchObject({ total_hours: 30.5, scheduled_days: 4, estimated_cost: 457.5 });
+    expect(formatEmployeeWeeklySummary(row)).toBe("30.5 hrs • 4 days");
+    const [all] = withDisplayedTotals([employee], entries);
+    expect(all).toMatchObject({ total_hours: 38, scheduled_days: 5 });
+  });
+
+  it("keeps the week summary, day totals, and export on the same shifts", () => {
+    const data = { employees: [employee], entries };
+    const week = computeWeekSummary(data, { entries: rinseEntries });
+    expect(week).toMatchObject({ totalHours: 30.5, totalDays: 4, estimatedCost: 457.5, foldCount: 4 });
+    const days = computeFilteredDaySummaries(data, { entries: rinseEntries });
+    expect(days.map((d) => d.hours)).toEqual([0, 7.5, 7.5, 7.5, 0, 0, 8]);
+    const lines = buildWeeklyScheduleCsvRows({
+      employees: withDisplayedTotals([employee], rinseEntries),
+      entries: rinseEntries,
+    });
+    expect(lines[1].endsWith(",30.5")).toBe(true);
+  });
+
+  it("counts two shifts on one day as one scheduled day", () => {
+    const week = computeWeekSummary({ employees: [employee], entries }, { entries });
+    expect(week.totalDays).toBe(5);
+    expect(week.totalHours).toBe(38);
   });
 });
 

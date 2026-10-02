@@ -857,6 +857,42 @@ export function deriveEmployeePrimaryRole(userId, entries) {
   return ranked[0]?.[0] || null;
 }
 
+function round2(value) {
+  return Math.round(Number(value || 0) * 100) / 100;
+}
+
+/**
+ * Hours, distinct days, and estimated cost per employee from the given entries, using the
+ * scheduled-hours rules (break deducted, overlapping shifts on a day counted once).
+ */
+export function employeeTotalsFromEntries(entries, employees = []) {
+  const rates = new Map(
+    (employees || []).map((e) => [Number(e.user_id), Math.max(0, Number(e.default_hourly_rate || 0))]),
+  );
+  const out = new Map();
+  for (const [key, hours] of scheduledHoursByUserDay(entries)) {
+    const uid = Number(key.split("|")[0]);
+    const row = out.get(uid) || { total_hours: 0, scheduled_days: 0, estimated_cost: 0 };
+    row.total_hours = round2(row.total_hours + hours);
+    row.scheduled_days += 1;
+    row.estimated_cost = round2(row.estimated_cost + round2(hours * (rates.get(uid) || 0)));
+    out.set(uid, row);
+  }
+  return out;
+}
+
+/**
+ * Employee rows whose hours, days, and cost match the entries on screen. The week payload's
+ * totals cover every shift category, so they disagree with a category tab, role, or day filter.
+ */
+export function withDisplayedTotals(employees, entries) {
+  const totals = employeeTotalsFromEntries(entries, employees);
+  return (employees || []).map((employee) => ({
+    ...employee,
+    ...(totals.get(Number(employee.user_id)) || { total_hours: 0, scheduled_days: 0, estimated_cost: 0 }),
+  }));
+}
+
 export function formatEmployeeWeeklySummary(employee, { daysOnly = false } = {}) {
   const hours = Number(employee?.total_hours || 0);
   const days = Number(employee?.scheduled_days || 0);
@@ -886,14 +922,17 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
     totalHours += hours;
   }
 
+  const scheduledUserDays = new Set();
   for (const entry of filteredEntries) {
     const uid = Number(entry.user_id);
     scheduledUserIds.add(uid);
-    totalDays += 1;
+    scheduledUserDays.add(`${uid}|${Number(entry.day_of_week || 0)}`);
     for (const role of parseEntryRoles(entry)) {
       if (role in roleCounts) roleCounts[role] += 1;
     }
   }
+  totalDays = scheduledUserDays.size;
+  const displayedTotals = employeeTotalsFromEntries(filteredEntries, data?.employees || []);
 
   const roleHoursByDay = allocateRoleHoursByDay(filteredEntries);
   const roleHourTotals = sumRoleHoursAcrossDays(roleHoursByDay);
@@ -906,7 +945,7 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
     if (employee.excluded && !includeExcluded) continue;
     if (scheduledUserIds.has(uid)) employeesScheduled += 1;
     if (!employee.excluded) {
-      estimatedCost += Number(employee.estimated_cost || 0);
+      estimatedCost += displayedTotals.get(uid)?.estimated_cost || 0;
     }
   }
 
