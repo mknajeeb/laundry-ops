@@ -6,8 +6,14 @@ import {
   DEFAULT_ROLE_CATALOG,
   scheduledHoursByUserDay,
   setScheduleRoleCatalog,
+  summarizeScheduleHours,
 } from "./weeklyScheduleRoles";
 import { buildDayViewTabs, filterResponsibilitiesByRoleView } from "./weeklyScheduleViewFilters";
+import {
+  defaultNewShiftEntity,
+  pickDefaultEntityTab,
+  shiftEntityChoicesForEmployee,
+} from "./weeklyScheduleEmployerTabs";
 
 const employeesById = {
   1: { user_id: 1, display_name: "Employee A" },
@@ -186,11 +192,21 @@ describe("schedule exports", () => {
       "Day,Date,Time,Role,Count,Employees,Remarks",
       'Mon,Jun 15,2:00 AM - 5:00 AM,Sort,2,"Employee A, Employee C",',
       "Mon,Jun 15,5:00 AM - 8:00 AM,Fold,1,Employee A,Employee A: Bay 2",
-      'Mon,Jun 15,Daily responsibility,Self Service,1,Employee B,"Employee B: Open, then close"',
+      'Mon,Jun 15,Task,Self Service,1,Employee B,"Employee B: Open, then close"',
     ]);
   });
 
-  it("adds role ranges, remarks, and daily responsibilities to the employee export", () => {
+  it("appends employee and role hour summaries to the time-and-role export", () => {
+    const days = buildTimeRoleDays([splitShift], { dayIndices: [1], employeesById });
+    const summary = summarizeScheduleHours([splitShift], new Map([[1, employeesById[1]]]));
+    const lines = buildTimeRoleCsvRows({ days, weekStart: "2026-06-14", hoursSummary: summary });
+    expect(lines).toContain("Employee A,6");
+    expect(lines).toContain("Total (1 employees),6");
+    expect(lines).toContain("Sort,1,3");
+    expect(lines).toContain("Total role hours,,6");
+  });
+
+  it("adds role ranges, remarks, and tasks to the employee export", () => {
     const lines = buildWeeklyScheduleCsvRows({
       employees: [employeesById[1], employeesById[2]],
       entries: [splitShift],
@@ -200,6 +216,58 @@ describe("schedule exports", () => {
       responsibilities,
     });
     expect(lines[1]).toContain("[Sort 2:00 AM - 5:00 AM | Fold 5:00 AM - 8:00 AM: Bay 2]");
-    expect(lines[2]).toContain("Self Service (daily): Open, then close");
+    expect(lines[2]).toContain("Self Service (task): Open, then close");
+  });
+});
+
+describe("hours summaries above the time-and-role view", () => {
+  const byId = new Map(Object.values(employeesById).map((e) => [e.user_id, e]));
+
+  it("totals employee hours with breaks and overlap, and splits simultaneous roles evenly", () => {
+    const multi = shift(1, 1, "08:00", "12:00", "wash", {
+      roles: ["wash", "fold"],
+      hours: 3.5,
+      break_minutes: 30,
+      assignments: [
+        { role: "wash", full_shift: true },
+        { role: "fold", full_shift: true },
+      ],
+    });
+    const overlap = shift(2, 2, "08:00", "14:00", "sort", { hours: 6 });
+    const overlap2 = shift(3, 2, "12:00", "16:00", "sort", { hours: 4 });
+    const summary = summarizeScheduleHours([multi, overlap, overlap2], byId);
+    expect(summary.employees).toEqual([
+      { user_id: 2, name: "Employee B", hours: 8 },
+      { user_id: 1, name: "Employee A", hours: 3.5 },
+    ]);
+    expect(summary.totalHours).toBe(11.5);
+    const roles = Object.fromEntries(summary.roles.map((r) => [r.role, r]));
+    expect(roles.wash).toMatchObject({ hours: 1.75, employees: 1 });
+    expect(roles.fold).toMatchObject({ hours: 1.75, employees: 1 });
+    expect(roles.sort.employees).toBe(1);
+    expect(summary.roles.map((r) => r.role)).toEqual(["wash", "sort", "fold"]);
+  });
+
+  it("reports shift time without a role and excludes tasks", () => {
+    const partial = shift(1, 1, "08:00", "12:00", "dry", {
+      hours: 4,
+      assignments: [{ role: "dry", start_time: "08:00", end_time: "10:00", full_shift: false }],
+    });
+    const legacyTask = shift(2, 3, "08:00", "10:00", "lint_cleaning", { hours: 2 });
+    const summary = summarizeScheduleHours([partial, legacyTask], byId);
+    expect(summary.roles.map((r) => r.role)).toEqual(["dry"]);
+    expect(summary.roles[0].hours).toBe(2);
+    expect(summary.unassignedHours).toBe(4);
+  });
+});
+
+describe("new shift category", () => {
+  it("defaults to Rinse Exclusive when the employee may hold it", () => {
+    const shared = { user_id: 1, can_work_rinse: true, can_work_drop_off: true, can_work_both: true };
+    const veewashOnly = { user_id: 2, business_entity: "veewash" };
+    expect(shiftEntityChoicesForEmployee(shared, "veewash")).toEqual(["rinse_exclusive", "veewash"]);
+    expect(defaultNewShiftEntity(shared, "veewash")).toBe("rinse_exclusive");
+    expect(defaultNewShiftEntity(veewashOnly, "veewash")).toBe("veewash");
+    expect(pickDefaultEntityTab({ organization_slug: "veewash" })).toBe("rinse_exclusive");
   });
 });

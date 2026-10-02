@@ -36,7 +36,9 @@ import {
   createWeeklyScheduleResponsibility,
   deleteWeeklyScheduleEntry,
   deleteWeeklyScheduleResponsibility,
+  disableWeeklyScheduleTemplate,
   duplicateWeeklyScheduleEntry,
+  enableWeeklyScheduleTemplate,
   getWeeklySchedule,
   moveWeeklyScheduleEntry,
   setWeeklyScheduleExclusion,
@@ -49,6 +51,7 @@ import WeeklyScheduleCascadeDialog from "../components/weeklySchedule/WeeklySche
 import WeeklyScheduleEntryDialog from "../components/weeklySchedule/WeeklyScheduleEntryDialog";
 import WeeklyScheduleManageRolesDialog from "../components/weeklySchedule/WeeklyScheduleManageRolesDialog";
 import WeeklyScheduleTimeRoleView from "../components/weeklySchedule/WeeklyScheduleTimeRoleView";
+import WeeklyScheduleHoursSummary from "../components/weeklySchedule/WeeklyScheduleHoursSummary";
 import WeeklyScheduleResponsibilityChip from "../components/weeklySchedule/WeeklyScheduleResponsibilityChip";
 import { ASSIGNMENT_KIND, buildTimeRoleDays } from "../components/weeklySchedule/weeklyScheduleTimeBlocks";
 import WeeklyScheduleDayHeader from "../components/weeklySchedule/WeeklyScheduleDayHeader";
@@ -60,10 +63,11 @@ import {
   ENTITY_TAB_LABELS,
   addableEmployeesForEmployerTab,
   countEmployeesForEmployerTab,
-  defaultShiftEmployerForTab,
+  defaultNewShiftEntity,
   filterEmployeesByEmployerTab,
   filterEntriesByEmployerTab,
   pickDefaultEmployerTab,
+  shiftEntityChoicesForEmployee,
   visibleEntityTabs,
   SHIFT_EMPLOYER_AFFILIATION,
 } from "../components/weeklySchedule/weeklyScheduleEmployerTabs";
@@ -98,6 +102,7 @@ import {
   scheduleCellBackground,
   scheduleRoleCatalog,
   setScheduleRoleCatalog,
+  summarizeScheduleHours,
 } from "../components/weeklySchedule/weeklyScheduleRoles";
 
 const VIEW_MODE = { EMPLOYEE: "employee", TIME_ROLE: "time_role" };
@@ -306,9 +311,8 @@ export default function WeeklySchedulePage() {
   const [duplicatingId, setDuplicatingId] = useState(null);
   const [bulkEmployerSaving, setBulkEmployerSaving] = useState(false);
   const [cascadeOpen, setCascadeOpen] = useState(false);
-  const [cascadeSaving, setCascadeSaving] = useState(false);
-  const [cascadeMessage, setCascadeMessage] = useState("");
-  const [employerTab, setEmployerTab] = useState(ENTITY_TAB.WASHPRO);
+  const [templateSaving, setTemplateSaving] = useState(false);
+  const [employerTab, setEmployerTab] = useState(ENTITY_TAB.RINSE_EXCLUSIVE);
   const [selectedRoleView, setSelectedRoleView] = useState([]);
   const [dayViewTab, setDayViewTab] = useState(SCHEDULE_VIEW_ALL);
   const printContentRef = useRef(null);
@@ -546,6 +550,21 @@ export default function WeeklySchedulePage() {
     () => Object.fromEntries((data?.employees || []).map((e) => [e.user_id, e])),
     [data?.employees],
   );
+  const hoursSummary = useMemo(
+    () =>
+      summarizeScheduleHours(
+        timeViewEntries,
+        new Map((data?.employees || []).map((e) => [Number(e.user_id), e])),
+      ),
+    // roleCatalog: role order, labels, and task/role type come from the registered catalog.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [timeViewEntries, data?.employees, roleCatalog],
+  );
+  const shiftCategoryChoices = useCallback(
+    (userId) => shiftEntityChoicesForEmployee(employeesById[userId], organizationSlug),
+    [employeesById, organizationSlug],
+  );
+  const scheduleTemplate = data?.schedule_template || null;
   const timeRoleDays = useMemo(
     () =>
       buildTimeRoleDays(timeViewEntries, {
@@ -644,8 +663,9 @@ export default function WeeklySchedulePage() {
       } else {
         res = await createWeeklyScheduleEntry({
           week_start: weekStart,
-          employer_affiliation: body.employer_affiliation || defaultShiftEmployerForTab(employerTab),
           ...body,
+          employer_affiliation:
+            body.employer_affiliation || defaultNewShiftEntity(employeesById[body.user_id], organizationSlug),
         });
       }
       setData(res.data);
@@ -659,7 +679,7 @@ export default function WeeklySchedulePage() {
 
   const handleDialogDelete = async () => {
     if (editingResponsibility?.id) {
-      if (!window.confirm("Remove this daily responsibility?")) return;
+      if (!window.confirm("Remove this task?")) return;
       setSaving(true);
       setDialogError("");
       try {
@@ -667,7 +687,7 @@ export default function WeeklySchedulePage() {
         setData(res.data);
         setDialogOpen(false);
       } catch (e) {
-        setDialogError(e?.response?.data?.error || "Failed to remove responsibility");
+        setDialogError(e?.response?.data?.error || "Failed to remove task");
       } finally {
         setSaving(false);
       }
@@ -772,6 +792,7 @@ export default function WeeklySchedulePage() {
         weekStart,
         tabLabel: `${ENTITY_TAB_LABELS[employerTab]}${viewSuffix}`,
         scheduleEndTimeEnabled,
+        hoursSummary,
       });
       return;
     }
@@ -817,29 +838,34 @@ export default function WeeklySchedulePage() {
     }
   };
 
-  const handleCascadeConfirm = async ({ targetWeekStart, replace }) => {
-    setCascadeSaving(true);
+  const handleEnableTemplate = async () => {
+    const res = await enableWeeklyScheduleTemplate(weekStart);
+    setData(res.data);
+    return res.data?.cascade;
+  };
+
+  const handleCopySelected = async (targetWeeks) => {
+    const res = await cascadeWeeklySchedule({ source_week_start: weekStart, target_weeks: targetWeeks });
+    setData(res.data);
+    return res.data?.cascade;
+  };
+
+  const handleStopTemplate = async () => {
+    const res = await disableWeeklyScheduleTemplate(weekStart);
+    setData(res.data);
+    return res.data?.cascade;
+  };
+
+  const stopTemplateFromBanner = async () => {
+    if (!window.confirm("Stop the ongoing template? Later weeks keep their current planned assignments.")) return;
+    setTemplateSaving(true);
     setError("");
-    setCascadeMessage("");
     try {
-      const res = await cascadeWeeklySchedule({
-        source_week_start: weekStart,
-        target_week_start: targetWeekStart,
-        replace,
-      });
-      const cascade = res.data?.cascade || {};
-      setCascadeOpen(false);
-      setWeekStart(targetWeekStart);
-      setData(res.data);
-      setCascadeMessage(
-        `Cascaded ${cascade.entries_copied || 0} shift${cascade.entries_copied === 1 ? "" : "s"} to ${formatWeekRange(targetWeekStart)}${
-          cascade.replaced ? " (replaced existing)" : ""
-        }.`,
-      );
+      await handleStopTemplate();
     } catch (e) {
-      setError(e?.response?.data?.error || "Failed to cascade week schedule");
+      setError(e?.response?.data?.error || "Failed to stop the template");
     } finally {
-      setCascadeSaving(false);
+      setTemplateSaving(false);
     }
   };
 
@@ -1044,7 +1070,7 @@ export default function WeeklySchedulePage() {
                   onClick={() => setRolesOpen(true)}
                   sx={{ fontWeight: 700, py: 0.35 }}
                 >
-                  Manage roles
+                  Roles &amp; tasks
                 </Button>
               ) : null}
               {canEdit ? (
@@ -1062,14 +1088,11 @@ export default function WeeklySchedulePage() {
                 <Button
                   size="small"
                   variant="outlined"
-                  disabled={cascadeSaving || !data?.entries?.length}
-                  onClick={() => {
-                    setCascadeMessage("");
-                    setCascadeOpen(true);
-                  }}
+                  disabled={!data?.entries?.length && !data?.daily_responsibilities?.length}
+                  onClick={() => setCascadeOpen(true)}
                   sx={{ fontWeight: 700, py: 0.35 }}
                 >
-                  Cascade week
+                  Copy to future weeks
                 </Button>
               ) : null}
               <Button
@@ -1209,11 +1232,53 @@ export default function WeeklySchedulePage() {
               &quot;Show excluded&quot; to review and include them.
             </Alert>
           ) : null}
+          {scheduleTemplate?.enabled ? (
+            <Alert
+              severity={scheduleTemplate.is_source ? "success" : "info"}
+              sx={{ mb: 1.25, borderRadius: 2, flexShrink: 0 }}
+              className="no-print"
+              action={
+                canEdit ? (
+                  <Stack direction="row" spacing={0.5}>
+                    {scheduleTemplate.follows_template ? (
+                      <Button
+                        color="inherit"
+                        size="small"
+                        sx={{ fontWeight: 700 }}
+                        onClick={() => {
+                          setWeekStart(scheduleTemplate.source_week_start);
+                          load(scheduleTemplate.source_week_start);
+                        }}
+                      >
+                        Open template week
+                      </Button>
+                    ) : null}
+                    <Button
+                      color="inherit"
+                      size="small"
+                      sx={{ fontWeight: 700 }}
+                      disabled={templateSaving}
+                      onClick={stopTemplateFromBanner}
+                    >
+                      {templateSaving ? "Stopping…" : "Stop"}
+                    </Button>
+                  </Stack>
+                ) : null
+              }
+            >
+              {scheduleTemplate.is_source
+                ? "Propagation on: this week is the ongoing template. Additions, edits, and deletions here are copied to every later week automatically."
+                : scheduleTemplate.follows_template
+                  ? `Propagation on: this week follows the template week of ${formatWeekRange(
+                      scheduleTemplate.source_week_start,
+                    )}. Changes to that week replace this week's planned assignments.`
+                  : `Propagation on from the template week of ${formatWeekRange(scheduleTemplate.source_week_start)} to all later weeks.`}
+            </Alert>
+          ) : null}
           {data?.carried_forward_from ? (
             <Alert severity="info" sx={{ mb: 1.25, borderRadius: 2, flexShrink: 0 }} className="no-print">
               Schedule copied from the week of{" "}
-              {formatWeekRange(normalizeWeekStart(data.carried_forward_from))}. Edit shifts here as needed — future
-              empty weeks will carry forward from the latest saved week.
+              {formatWeekRange(normalizeWeekStart(data.carried_forward_from))}. Edit shifts here as needed.
             </Alert>
           ) : null}
           {!loading && data && scheduleViewLabel ? (
@@ -1232,17 +1297,6 @@ export default function WeeklySchedulePage() {
               {error}
             </Alert>
           ) : null}
-          {cascadeMessage ? (
-            <Alert
-              severity="success"
-              sx={{ mb: 1.25, flexShrink: 0 }}
-              className="no-print"
-              onClose={() => setCascadeMessage("")}
-            >
-              {cascadeMessage}
-            </Alert>
-          ) : null}
-
           {loading ? (
             <Stack alignItems="center" py={6} className="no-print" sx={{ flex: 1 }}>
               <CircularProgress size={32} />
@@ -1270,15 +1324,18 @@ export default function WeeklySchedulePage() {
                 className="weekly-schedule-grid-scroll"
               >
                 {viewMode === VIEW_MODE.TIME_ROLE ? (
-                  <WeeklyScheduleTimeRoleView
-                    weekStart={weekStart}
-                    days={timeRoleDays}
-                    endTimeEnabled={scheduleEndTimeEnabled}
-                    canEdit={canEdit}
-                    onEditEntry={openEdit}
-                    onEditResponsibility={openEditResponsibility}
-                    onAdd={openCreateFromTimeView}
-                  />
+                  <>
+                    <WeeklyScheduleHoursSummary summary={hoursSummary} scopeLabel={scheduleViewLabel} />
+                    <WeeklyScheduleTimeRoleView
+                      weekStart={weekStart}
+                      days={timeRoleDays}
+                      endTimeEnabled={scheduleEndTimeEnabled}
+                      canEdit={canEdit}
+                      onEditEntry={openEdit}
+                      onEditResponsibility={openEditResponsibility}
+                      onAdd={openCreateFromTimeView}
+                    />
+                  </>
                 ) : isMobile ? (
                   <Stack spacing={1.5} className="weekly-schedule-mobile-stack" sx={{ pb: 2 }}>
                   {(visibleEmployees || []).map((employee) => {
@@ -1471,6 +1528,7 @@ export default function WeeklySchedulePage() {
               days={timeRoleDays}
               weekStart={weekStart}
               endTimeEnabled={scheduleEndTimeEnabled}
+              hoursSummary={hoursSummary}
             />
           ) : (
             <WeeklySchedulePrintTable
@@ -1504,6 +1562,8 @@ export default function WeeklySchedulePage() {
         defaultEndTime={dialogDefaults.endTime}
         employees={dialogDefaults.pickEmployee ? pickerEmployees : undefined}
         scheduleEndTimeEnabled={scheduleEndTimeEnabled}
+        shiftCategoryChoices={shiftCategoryChoices}
+        categoryLabel={entityLabel}
       />
       <WeeklyScheduleManageRolesDialog
         open={rolesOpen && canEdit}
@@ -1515,9 +1575,11 @@ export default function WeeklySchedulePage() {
       <WeeklyScheduleCascadeDialog
         open={cascadeOpen && canEdit}
         onClose={() => setCascadeOpen(false)}
-        onConfirm={handleCascadeConfirm}
         sourceWeekStart={weekStart}
-        saving={cascadeSaving}
+        template={scheduleTemplate}
+        onEnableTemplate={handleEnableTemplate}
+        onCopySelected={handleCopySelected}
+        onStopTemplate={handleStopTemplate}
       />
     </Box>
   );

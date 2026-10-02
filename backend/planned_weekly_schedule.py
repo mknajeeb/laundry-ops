@@ -17,6 +17,8 @@ VALID_ROLES = frozenset(
         "wash",
         "fold",
         "weigher",
+        "dry",
+        "post_weigh",
         "pt_sorter",
         "pt_washer",
         "pt_folder",
@@ -46,6 +48,11 @@ LEGACY_ROLE_MAP = {
     "hd_folder": "hd_folder",
     "hd-folder": "hd_folder",
     "attendants": "attendant",
+    "dryer": "dry",
+    "drying": "dry",
+    "post weigh": "post_weigh",
+    "post-weigh": "post_weigh",
+    "post weighing": "post_weigh",
     "non-rinse folder": "non_rinse_folder",
     "non rinse folder": "non_rinse_folder",
     "non_rinse_folder": "non_rinse_folder",
@@ -80,7 +87,9 @@ ROLE_SORT_ORDER = (
     "sort",
     "wash",
     "weigher",
+    "dry",
     "fold",
+    "post_weigh",
     "pt_sorter",
     "pt_washer",
     "pt_folder",
@@ -1240,6 +1249,30 @@ def _load_role_catalog_index(cursor, organization_id: int) -> dict[str, dict[str
     return catalog_index(list_role_catalog(cursor, organization_id))
 
 
+def default_new_shift_employer_affiliation(
+    worker: Mapping[str, Any] | None,
+    *,
+    organization_slug: str | None = None,
+) -> str:
+    """New shifts default to Rinse Exclusive whenever the org offers it and the worker may hold it."""
+    from backend.business_entity import (
+        ENTITY_RINSE_EXCLUSIVE,
+        entities_for_organization,
+        worker_allows_shift_entity,
+    )
+    from backend.payroll_employer_affiliation import (
+        default_shift_employer_affiliation,
+        employer_affiliation_from_flags,
+    )
+
+    worker_entity = employer_affiliation_from_flags(worker, organization_slug=organization_slug)
+    if ENTITY_RINSE_EXCLUSIVE in entities_for_organization(organization_slug) and worker_allows_shift_entity(
+        worker_entity, ENTITY_RINSE_EXCLUSIVE, organization_slug=organization_slug
+    ):
+        return ENTITY_RINSE_EXCLUSIVE
+    return default_shift_employer_affiliation(worker, organization_slug=organization_slug)
+
+
 def _assert_worker_in_org(conn, organization_id: int, user_id: int) -> str | None:
     from backend.payroll_schedule import worker_exists_in_schedule_grid
 
@@ -1293,10 +1326,8 @@ def create_entry(
     if schedulable_err:
         return None, schedulable_err
     if "employer_affiliation" not in payload:
-        from backend.payroll_employer_affiliation import default_shift_employer_affiliation
-
         worker = _workers_index(_load_workers(conn, organization_id)).get(int(payload["user_id"]))
-        payload["employer_affiliation"] = default_shift_employer_affiliation(
+        payload["employer_affiliation"] = default_new_shift_employer_affiliation(
             worker,
             organization_slug=org_slug,
         )
@@ -1459,6 +1490,14 @@ def duplicate_entry(
     }
     if existing.get("employer_affiliation"):
         duplicate_data["employer_affiliation"] = existing["employer_affiliation"]
+    else:
+        # Untagged rows display the worker default; the copy keeps that category.
+        from backend.payroll_employer_affiliation import _organization_slug, default_shift_employer_affiliation
+
+        worker = _workers_index(_load_workers(conn, organization_id)).get(int(existing["user_id"]))
+        duplicate_data["employer_affiliation"] = default_shift_employer_affiliation(
+            worker, organization_slug=_organization_slug(conn, organization_id)
+        )
     return create_entry(
         conn,
         cursor,
@@ -1475,7 +1514,10 @@ def _bulk_insert_week_entries(
     *,
     week_start: date,
     payloads: Sequence[Mapping[str, Any]],
+    organization_slug: str | None = None,
 ) -> None:
+    from backend.payroll_employer_affiliation import normalize_shift_employer_affiliation
+
     if not payloads:
         return
     ensure_planned_weekly_schedule_table(cursor)
@@ -1485,9 +1527,10 @@ def _bulk_insert_week_entries(
         start = parse_time_value(payload.get("start_time"))
         end = parse_time_value(payload.get("end_time"))
         role = roles_to_storage(parse_weekly_roles(payload.get("role") or payload.get("roles")))
-        from backend.payroll_employer_affiliation import normalize_shift_employer_affiliation
-
-        employer_affiliation = normalize_shift_employer_affiliation(payload.get("employer_affiliation"))
+        employer_affiliation = normalize_shift_employer_affiliation(
+            payload.get("employer_affiliation"),
+            organization_slug=organization_slug,
+        )
         params.append(
             (
                 oid,
@@ -1639,6 +1682,129 @@ def cascade_week_schedule(
     return result, None
 
 
+def _entry_copy_payload(entry: Mapping[str, Any], *, day_of_week: int) -> dict[str, Any]:
+    return {
+        "user_id": int(entry.get("user_id") or 0),
+        "day_of_week": day_of_week,
+        "role": entry.get("role"),
+        "start_time": entry["start_time"],
+        "end_time": entry["end_time"],
+        "break_minutes": entry.get("break_minutes", 0),
+        "employer_affiliation": entry.get("employer_affiliation"),
+        "role_assignments": role_assignments_storage(entry_role_assignments(entry)),
+    }
+
+
+def build_week_copy(
+    conn,
+    cursor,
+    organization_id: int,
+    *,
+    source_week_start: date,
+    seed_sunday_from_saturday: bool = True,
+) -> dict[str, Any]:
+    """Snapshot a week's shifts, tasks and exclusions for copying onto other weeks."""
+    from backend.payroll_employer_affiliation import _organization_slug
+    from backend.planned_weekly_schedule_responsibilities import (
+        list_week_responsibilities,
+        responsibility_copy_rows,
+    )
+
+    oid = int(organization_id)
+    workers = _load_workers(conn, oid)
+    # Affiliation=none workers must never be resurrected by cascade / carry-forward,
+    # even when stale planned rows still exist on the source week.
+    valid_user_ids = schedulable_worker_user_ids(conn, oid, workers)
+    source_entries = list_week_entries(cursor, oid, week_start=source_week_start, conn=conn)
+
+    payloads: list[dict[str, Any]] = []
+    skipped_entries = 0
+    for entry in source_entries:
+        if int(entry.get("user_id") or 0) not in valid_user_ids:
+            skipped_entries += 1
+            continue
+        payloads.append(_entry_copy_payload(entry, day_of_week=int(entry.get("day_of_week") or 0)))
+
+    source_has_sunday = any(int(p["day_of_week"]) == 0 for p in payloads)
+    # When cascading near week-end, the source Sunday column is often still empty
+    # (that calendar Sunday is already in the past). Seed target Sunday from source
+    # Saturday so tomorrow shows up in Team Status after a cascade.
+    seed_sunday = seed_sunday_from_saturday and not source_has_sunday
+    if seed_sunday:
+        for entry in source_entries:
+            if int(entry.get("day_of_week") or -1) == 6 and int(entry.get("user_id") or 0) in valid_user_ids:
+                payloads.append(_entry_copy_payload(entry, day_of_week=0))
+
+    responsibilities = responsibility_copy_rows(
+        list_week_responsibilities(cursor, oid, week_start=source_week_start),
+        valid_user_ids=valid_user_ids,
+        seed_sunday_from_saturday=seed_sunday,
+    )
+    exclusions = [
+        uid
+        for uid in list_excluded_user_ids(cursor, oid, week_start=source_week_start)
+        if uid in valid_user_ids
+    ]
+    return {
+        "source_week_start": source_week_start,
+        "organization_slug": _organization_slug(conn, oid),
+        "entries": payloads,
+        "entries_skipped": skipped_entries,
+        "responsibilities": responsibilities,
+        "exclusions": exclusions,
+    }
+
+
+def week_copy_has_content(copy: Mapping[str, Any]) -> bool:
+    return bool(copy.get("entries") or copy.get("responsibilities") or copy.get("exclusions"))
+
+
+def apply_week_copy(
+    cursor,
+    organization_id: int,
+    *,
+    target_week_start: date,
+    copy: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Insert a ``build_week_copy`` snapshot into ``target_week_start`` (caller clears it first)."""
+    from backend.planned_weekly_schedule_responsibilities import insert_responsibility_rows
+
+    oid = int(organization_id)
+    entries = list(copy.get("entries") or [])
+    _bulk_insert_week_entries(
+        cursor,
+        oid,
+        week_start=target_week_start,
+        payloads=entries,
+        organization_slug=copy.get("organization_slug"),
+    )
+    responsibilities_copied = insert_responsibility_rows(
+        cursor,
+        oid,
+        week_start=target_week_start,
+        rows=copy.get("responsibilities") or [],
+    )
+    exclusions = list(copy.get("exclusions") or [])
+    if exclusions:
+        ensure_planned_weekly_schedule_exclusions_table(cursor)
+        cursor.executemany(
+            """
+            INSERT IGNORE INTO planned_weekly_schedule_exclusions
+                (organization_id, week_start, user_id)
+            VALUES (%s, %s, %s)
+            """,
+            [(oid, target_week_start, int(uid)) for uid in exclusions],
+        )
+    return {
+        "source_week_start": str(copy.get("source_week_start")),
+        "target_week_start": str(target_week_start),
+        "entries_copied": len(entries),
+        "exclusions_copied": len(exclusions),
+        "entries_skipped": int(copy.get("entries_skipped") or 0),
+        "responsibilities_copied": responsibilities_copied,
+    }
+
+
 def carry_forward_week_schedule(
     conn,
     cursor,
@@ -1646,102 +1812,17 @@ def carry_forward_week_schedule(
     *,
     target_week_start: date,
     source_week_start: date,
+    seed_sunday_from_saturday: bool = True,
 ) -> dict[str, Any]:
-    """Copy entries and exclusions from source week into target week."""
-    oid = int(organization_id)
-    workers = _load_workers(conn, oid)
-    # Affiliation=none workers must never be resurrected by cascade / carry-forward,
-    # even when stale planned rows still exist on the source week.
-    valid_user_ids = schedulable_worker_user_ids(conn, oid, workers)
-
-    source_entries = list_week_entries(cursor, oid, week_start=source_week_start)
-    source_exclusions = list_excluded_user_ids(cursor, oid, week_start=source_week_start)
-
-    payloads: list[dict[str, Any]] = []
-    skipped_entries = 0
-    source_has_sunday = False
-    for entry in source_entries:
-        uid = int(entry.get("user_id") or 0)
-        if uid not in valid_user_ids:
-            skipped_entries += 1
-            continue
-        dow = int(entry.get("day_of_week") or 0)
-        if dow == 0:
-            source_has_sunday = True
-        payloads.append(
-            {
-                "user_id": uid,
-                "day_of_week": dow,
-                "role": entry.get("role"),
-                "start_time": entry["start_time"],
-                "end_time": entry["end_time"],
-                "break_minutes": entry.get("break_minutes", 0),
-                "employer_affiliation": entry.get("employer_affiliation"),
-                "role_assignments": role_assignments_storage(entry_role_assignments(entry)),
-            }
-        )
-
-    # When cascading near week-end, the source Sunday column is often still empty
-    # (that calendar Sunday is already in the past). Seed target Sunday from source
-    # Saturday so tomorrow shows up in Team Status after a cascade.
-    if not source_has_sunday:
-        for entry in source_entries:
-            if int(entry.get("day_of_week") or -1) != 6:
-                continue
-            uid = int(entry.get("user_id") or 0)
-            if uid not in valid_user_ids:
-                continue
-            payloads.append(
-                {
-                    "user_id": uid,
-                    "day_of_week": 0,
-                    "role": entry.get("role"),
-                    "start_time": entry["start_time"],
-                    "end_time": entry["end_time"],
-                    "break_minutes": entry.get("break_minutes", 0),
-                    "employer_affiliation": entry.get("employer_affiliation"),
-                    "role_assignments": role_assignments_storage(entry_role_assignments(entry)),
-                }
-            )
-
-    entries_copied = 0
-    if payloads:
-        _bulk_insert_week_entries(cursor, oid, week_start=target_week_start, payloads=payloads)
-        entries_copied = len(payloads)
-
-    from backend.planned_weekly_schedule_responsibilities import copy_week_responsibilities
-
-    responsibilities_copied = copy_week_responsibilities(
+    """Copy entries, tasks and exclusions from source week into target week."""
+    copy = build_week_copy(
+        conn,
         cursor,
-        oid,
+        organization_id,
         source_week_start=source_week_start,
-        target_week_start=target_week_start,
-        valid_user_ids=valid_user_ids,
-        seed_sunday_from_saturday=not source_has_sunday,
+        seed_sunday_from_saturday=seed_sunday_from_saturday,
     )
-
-    exclusions_copied = 0
-    for uid in source_exclusions:
-        if uid not in valid_user_ids:
-            continue
-        set_employee_exclusion(
-            conn,
-            cursor,
-            oid,
-            week_start=target_week_start,
-            user_id=uid,
-            excluded=True,
-        )
-        exclusions_copied += 1
-
-    return {
-        "source_week_start": str(source_week_start),
-        "target_week_start": str(target_week_start),
-        "entries_copied": entries_copied,
-        "exclusions_copied": exclusions_copied,
-        "entries_skipped": skipped_entries,
-        "responsibilities_copied": responsibilities_copied,
-    }
+    return apply_week_copy(cursor, organization_id, target_week_start=target_week_start, copy=copy)
 
 
 def ensure_week_schedule_carried_forward(
@@ -1751,9 +1832,21 @@ def ensure_week_schedule_carried_forward(
     *,
     week_start: date,
 ) -> dict[str, Any] | None:
-    """If target week has no schedule yet, seed it from the latest prior week."""
+    """If target week has no schedule yet, seed it from the active template or the latest prior week."""
+    from backend.weekly_schedule_template import template_source_for_week
+
     if week_has_schedule_content(cursor, organization_id, week_start=week_start):
         return None
+    template_source = template_source_for_week(cursor, organization_id, week_start)
+    if template_source:
+        return carry_forward_week_schedule(
+            conn,
+            cursor,
+            organization_id,
+            target_week_start=week_start,
+            source_week_start=template_source,
+            seed_sunday_from_saturday=False,
+        )
     source = find_latest_schedule_week_before(
         cursor,
         organization_id,
@@ -1918,6 +2011,7 @@ def build_week_payload(
         list_week_responsibilities,
     )
     from backend.weekly_schedule_roles import list_role_catalog, role_groups_payload
+    from backend.weekly_schedule_template import schedule_template_payload
 
     responsibilities = filter_responsibilities_for_view(
         list_week_responsibilities(cursor, organization_id, week_start=week_start),
@@ -1936,6 +2030,7 @@ def build_week_payload(
         "excluded_user_ids": excluded_user_ids,
         "display": view,
         "entity_scope": entity_scope_payload(organization_id, org_slug, user_roles),
+        "schedule_template": schedule_template_payload(cursor, organization_id, week_start),
     }
     if view.get("lock_employer_tab"):
         return apply_rinse_viewer_scope(

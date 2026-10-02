@@ -40,7 +40,9 @@ BUILTIN_ROLE_DEFAULTS: tuple[dict[str, Any], ...] = (
     {"code": "wash", "name": "Wash", "role_group": "RINSE_WF", "display_order": 10},
     {"code": "sort", "name": "Sort", "role_group": "RINSE_WF", "display_order": 20},
     {"code": "weigher", "name": "Weigher", "role_group": "RINSE_WF", "display_order": 30},
+    {"code": "dry", "name": "Dry", "role_group": "RINSE_WF", "display_order": 35},
     {"code": "fold", "name": "Fold", "role_group": "RINSE_WF", "display_order": 40},
+    {"code": "post_weigh", "name": "Post-Weigh", "role_group": "RINSE_WF", "display_order": 45},
     {"code": "pt_washer", "name": "PT Washer", "role_group": "RINSE_WF", "display_order": 50},
     {"code": "pt_sorter", "name": "PT Sorter", "role_group": "RINSE_WF", "display_order": 60},
     {"code": "pt_folder", "name": "PT Folder", "role_group": "RINSE_WF", "display_order": 70},
@@ -53,6 +55,7 @@ BUILTIN_ROLE_DEFAULTS: tuple[dict[str, Any], ...] = (
         "name": "Lint Cleaning",
         "role_group": "CLEANING",
         "display_order": 120,
+        "uses_time_slots": False,
         "remarks_enabled": True,
     },
     {
@@ -60,6 +63,7 @@ BUILTIN_ROLE_DEFAULTS: tuple[dict[str, Any], ...] = (
         "name": "Floor Cleaning",
         "role_group": "CLEANING",
         "display_order": 130,
+        "uses_time_slots": False,
         "remarks_enabled": True,
     },
     {
@@ -67,6 +71,7 @@ BUILTIN_ROLE_DEFAULTS: tuple[dict[str, Any], ...] = (
         "name": "Washer Cleaning",
         "role_group": "CLEANING",
         "display_order": 140,
+        "uses_time_slots": False,
         "remarks_enabled": True,
     },
     {
@@ -87,6 +92,10 @@ BUILTIN_ROLE_DEFAULTS: tuple[dict[str, Any], ...] = (
     },
 )
 BUILTIN_ROLE_CODES = frozenset(r["code"] for r in BUILTIN_ROLE_DEFAULTS)
+CLEANING_TASK_CODES = frozenset({"lint_cleaning", "floor_cleaning", "washer_cleaning"})
+DEFAULT_ROLE_GROUP = "RINSE_WF"
+KIND_ROLE = "role"
+KIND_TASK = "task"
 
 _CUSTOM_SLUG_MAX = 24
 
@@ -125,17 +134,25 @@ def _builtin_default(code: str) -> dict[str, Any] | None:
 
 def _role_record(base: Mapping[str, Any], *, builtin: bool) -> dict[str, Any]:
     code = str(base["code"])
+    timed = bool(base.get("uses_time_slots", True))
     return {
         "code": code,
         "name": str(base.get("name") or code),
+        "kind": KIND_ROLE if timed else KIND_TASK,
         "role_group": base.get("role_group") or None,
         "display_order": int(base.get("display_order") or 0),
         "active": bool(base.get("active", True)),
-        "uses_time_slots": bool(base.get("uses_time_slots", True)),
-        "remarks_enabled": bool(base.get("remarks_enabled", False)),
+        "uses_time_slots": timed,
+        # Tasks always carry instructions.
+        "remarks_enabled": bool(base.get("remarks_enabled", False)) or not timed,
         "builtin": builtin,
         "hour_tracked": code in HOUR_TRACKED_ROLES,
     }
+
+
+def is_task_role(role: str, catalog: Mapping[str, Mapping[str, Any]]) -> bool:
+    info = catalog.get(role)
+    return bool(info) and not info.get("uses_time_slots", True)
 
 
 def role_groups_payload() -> list[dict[str, str]]:
@@ -198,9 +215,9 @@ def role_assignment_error(
     if not info.get("active", True):
         return f"{info.get('name') or role} is inactive"
     if timed and not info.get("uses_time_slots", True):
-        return f"{info.get('name') or role} is a daily responsibility (no time slots)"
+        return f"{info.get('name') or role} is a task (assigned by day, without times)"
     if not timed and info.get("uses_time_slots", True):
-        return f"{info.get('name') or role} requires start and end times"
+        return f"{info.get('name') or role} is a role and requires start and end times"
     return None
 
 
@@ -220,11 +237,11 @@ def accept_remarks(
     *,
     existing: set[str] | None = None,
 ) -> str | None:
-    """Keep remarks only for roles with remarks enabled, or when unchanged from the stored value."""
+    """Keep remarks for tasks and remarks-enabled roles, or when unchanged from the stored value."""
     if not remarks:
         return None
     info = catalog.get(role) or {}
-    if info.get("remarks_enabled"):
+    if info.get("remarks_enabled") or not info.get("uses_time_slots", True):
         return remarks
     if existing and remarks in existing:
         return remarks
@@ -265,8 +282,15 @@ def _validate_role_fields(
             None,
         )
         if clash:
-            return None, f"a role named {name} already exists"
+            return None, f"a role or task named {name} already exists"
         out["name"] = name
+    if "kind" in data:
+        kind = str(data.get("kind") or "").strip().lower()
+        if kind not in {KIND_ROLE, KIND_TASK}:
+            return None, "kind must be role or task"
+        out["uses_time_slots"] = kind == KIND_ROLE
+        if kind == KIND_TASK:
+            out["remarks_enabled"] = True
     if "role_group" in data:
         raw_group = str(data.get("role_group") or "").strip().upper()
         if raw_group and raw_group not in ROLE_GROUP_CODES:
@@ -278,8 +302,10 @@ def _validate_role_fields(
         except (TypeError, ValueError):
             return None, "display_order must be an integer"
     for key in ("active", "uses_time_slots", "remarks_enabled"):
-        if key in data:
+        if key in data and not (key != "active" and "kind" in data):
             out[key] = _parse_bool(data.get(key), bool(out.get(key)))
+    if not out.get("uses_time_slots", True):
+        out["remarks_enabled"] = True
     return out, None
 
 
@@ -335,7 +361,7 @@ def create_role(
     base = {
         "code": "",
         "name": "",
-        "role_group": None,
+        "role_group": DEFAULT_ROLE_GROUP,
         "display_order": next_order,
         "active": True,
         "uses_time_slots": True,

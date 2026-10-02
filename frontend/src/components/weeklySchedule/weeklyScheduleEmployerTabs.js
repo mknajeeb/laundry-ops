@@ -132,10 +132,29 @@ export function countEmployeesForEntityTab(employees, tab, entries = null, organ
   return new Set(tabEntries.map((entry) => Number(entry.user_id))).size;
 }
 
+/** Categories a new shift for ``employee`` may use, Rinse Exclusive first when allowed. */
+export function shiftEntityChoicesForEmployee(employee, organizationSlug = null) {
+  const workerEntity = resolveEmployeeEntity(employee, organizationSlug);
+  const options = shiftEntityOptionsForOrg(organizationSlug);
+  const allowed = workerEntity === BUSINESS_ENTITY.SHARED
+    ? options
+    : options.filter((value) => value === workerEntity);
+  const ordered = [...allowed].sort(
+    (a, b) => Number(b === SHIFT_ENTITY.RINSE_EXCLUSIVE) - Number(a === SHIFT_ENTITY.RINSE_EXCLUSIVE),
+  );
+  return ordered.length ? ordered : [defaultShiftEntityForTab(workerEntity, organizationSlug)];
+}
+
+/** New shifts default to Rinse Exclusive whenever the employee may hold it. */
+export function defaultNewShiftEntity(employee, organizationSlug = null) {
+  return shiftEntityChoicesForEmployee(employee, organizationSlug)[0];
+}
+
 export function pickDefaultEntityTab(entityScope, employees = null, entries = null) {
   const orgSlug = entityScope?.organization_slug;
   const tabs = visibleEntityTabs(entityScope).filter((tab) => tab !== BUSINESS_ENTITY.COMBINED);
   if (!tabs.length) return BUSINESS_ENTITY.WASHPRO;
+  if (tabs.includes(BUSINESS_ENTITY.RINSE_EXCLUSIVE)) return BUSINESS_ENTITY.RINSE_EXCLUSIVE;
   const scored = tabs.map((tab) => ({
     tab,
     count: countEmployeesForEntityTab(employees, tab, entries, orgSlug),

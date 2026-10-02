@@ -7,6 +7,7 @@ import {
   HOUR_TRACKED_ROLES,
   parseEntryRoles,
   ROLE_COMPACT_LABELS,
+  ROLE_HOURS_EXPLANATION,
   ROLE_ORDER,
   ROLE_STYLES,
   roleLabels,
@@ -48,7 +49,7 @@ export function formatAssignmentDetails(entry, { scheduleEndTimeEnabled = true }
 }
 
 export function formatResponsibilityText(item, { forExport = false } = {}) {
-  const text = `${scheduleRoleLabel(item.role)} (daily)${item.remarks ? `: ${item.remarks}` : ""}`;
+  const text = `${scheduleRoleLabel(item.role)} (task)${item.remarks ? `: ${item.remarks}` : ""}`;
   return forExport ? exportAsciiText(text) : text;
 }
 
@@ -237,8 +238,25 @@ function peopleRemarks(people) {
     .join("; ");
 }
 
-/** By Time & Role export: one row per day / time block / role, then that day's daily responsibilities. */
-export function buildTimeRoleCsvRows({ days, weekStart, scheduleEndTimeEnabled = true }) {
+/** Employee hours and role hours/resources sections appended to the time-and-role export. */
+export function buildHoursSummaryCsvRows(summary) {
+  if (!summary) return [];
+  const hours = (value) => String(Math.round(Number(value || 0) * 100) / 100);
+  const lines = ["", csvCell("Employee hours"), ["Employee", "Hours"].map(csvCell).join(",")];
+  for (const row of summary.employees) lines.push([csvCell(row.name), hours(row.hours)].join(","));
+  lines.push([csvCell(`Total (${summary.employees.length} employees)`), hours(summary.totalHours)].join(","));
+  lines.push("", csvCell("Role hours & resources"), ["Role", "Employees", "Hours"].map(csvCell).join(","));
+  for (const row of summary.roles) lines.push([csvCell(row.label), String(row.employees), hours(row.hours)].join(","));
+  if (summary.unassignedHours > 0) {
+    lines.push([csvCell("Shift time without a role"), "", hours(summary.unassignedHours)].join(","));
+  }
+  lines.push([csvCell("Total role hours"), "", hours(summary.roleTotal)].join(","));
+  lines.push("", csvCell(ROLE_HOURS_EXPLANATION));
+  return lines;
+}
+
+/** By Time & Role export: one row per day / time block / role, then that day's tasks. */
+export function buildTimeRoleCsvRows({ days, weekStart, scheduleEndTimeEnabled = true, hoursSummary = null }) {
   const headers = ["Day", "Date", "Time", "Role", "Count", "Employees", "Remarks"];
   const lines = [headers.map(csvCell).join(",")];
   for (const day of days || []) {
@@ -262,7 +280,7 @@ export function buildTimeRoleCsvRows({ days, weekStart, scheduleEndTimeEnabled =
       lines.push(
         [
           ...dayCells,
-          csvCell("Daily responsibility"),
+          csvCell("Task"),
           csvCell(group.label),
           String(group.count),
           csvCell(group.people.map((person) => person.name).join(", ")),
@@ -271,10 +289,16 @@ export function buildTimeRoleCsvRows({ days, weekStart, scheduleEndTimeEnabled =
       );
     }
   }
-  return lines;
+  return [...lines, ...buildHoursSummaryCsvRows(hoursSummary)];
 }
 
-export function exportWeeklyScheduleTimeRoleCsv({ days, weekStart, tabLabel, scheduleEndTimeEnabled = true }) {
-  const lines = buildTimeRoleCsvRows({ days, weekStart, scheduleEndTimeEnabled });
+export function exportWeeklyScheduleTimeRoleCsv({
+  days,
+  weekStart,
+  tabLabel,
+  scheduleEndTimeEnabled = true,
+  hoursSummary = null,
+}) {
+  const lines = buildTimeRoleCsvRows({ days, weekStart, scheduleEndTimeEnabled, hoursSummary });
   downloadCsv(lines, csvFileName({ weekStart, tabLabel: `${tabLabel || "schedule"} by time and role` }));
 }

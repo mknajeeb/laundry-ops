@@ -77,11 +77,21 @@ export default function WeeklyScheduleEntryDialog({
   defaultEndTime = null,
   employees = null,
   scheduleEndTimeEnabled = true,
+  shiftCategoryChoices = null,
+  categoryLabel = (value) => value,
 }) {
   const isEdit = Boolean(entry?.id || responsibility?.id);
   const catalog = scheduleRoleCatalog();
   const [kind, setKind] = useState(ASSIGNMENT_KIND.SHIFT);
   const [userId, setUserId] = useState(defaultUserId || "");
+  const [category, setCategory] = useState("");
+  const categoryChoices = useMemo(
+    () => (shiftCategoryChoices && userId ? shiftCategoryChoices(userId) : []),
+    [shiftCategoryChoices, userId],
+  );
+  useEffect(() => {
+    setCategory(categoryChoices[0] || "");
+  }, [categoryChoices]);
   const [dayOfWeek, setDayOfWeek] = useState(defaultDay ?? 0);
   const [rows, setRows] = useState([makeRow({ role: "fold" })]);
   const [startTime, setStartTime] = useState("09:00");
@@ -174,6 +184,7 @@ export default function WeeklyScheduleEntryDialog({
       kind: ASSIGNMENT_KIND.SHIFT,
       user_id: Number(userId),
       day_of_week: Number(dayOfWeek),
+      ...(!isEdit && category ? { employer_affiliation: category } : {}),
       start_time: startTime,
       ...(scheduleEndTimeEnabled
         ? { end_time: endTime, break_minutes: breakMinutes }
@@ -194,7 +205,7 @@ export default function WeeklyScheduleEntryDialog({
   const showEmployeePicker = Array.isArray(employees) && !isEdit;
   const title = isShift
     ? (isEdit ? "Edit shift" : "Add shift")
-    : (isEdit ? "Edit daily responsibility" : "Add daily responsibility");
+    : (isEdit ? "Edit task" : "Add task");
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
@@ -209,8 +220,8 @@ export default function WeeklyScheduleEntryDialog({
               onChange={(_, next) => next && setKind(next)}
               sx={{ "& .MuiToggleButton-root": { textTransform: "none", fontWeight: 700, px: 1.5 } }}
             >
-              <ToggleButton value={ASSIGNMENT_KIND.SHIFT}>Timed shift</ToggleButton>
-              <ToggleButton value={ASSIGNMENT_KIND.RESPONSIBILITY}>Daily responsibility</ToggleButton>
+              <ToggleButton value={ASSIGNMENT_KIND.SHIFT}>Shift (timed roles)</ToggleButton>
+              <ToggleButton value={ASSIGNMENT_KIND.RESPONSIBILITY}>Task (no times)</ToggleButton>
             </ToggleButtonGroup>
           ) : null}
 
@@ -221,6 +232,24 @@ export default function WeeklyScheduleEntryDialog({
                 {employees.map((emp) => (
                   <MenuItem key={emp.user_id} value={emp.user_id}>
                     {emp.display_name || `User #${emp.user_id}`}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          ) : null}
+
+          {isShift && !isEdit && categoryChoices.length ? (
+            <FormControl size="small" fullWidth>
+              <InputLabel>Category</InputLabel>
+              <Select
+                label="Category"
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                disabled={categoryChoices.length < 2}
+              >
+                {categoryChoices.map((value) => (
+                  <MenuItem key={value} value={value}>
+                    {categoryLabel(value)}
                   </MenuItem>
                 ))}
               </Select>
@@ -343,8 +372,8 @@ export default function WeeklyScheduleEntryDialog({
           ) : (
             <>
               <FormControl size="small" fullWidth>
-                <InputLabel>Responsibility</InputLabel>
-                <Select label="Responsibility" value={respRole} onChange={(e) => setRespRole(e.target.value)}>
+                <InputLabel>Task</InputLabel>
+                <Select label="Task" value={respRole} onChange={(e) => setRespRole(e.target.value)}>
                   {untimedOptions.map((option) => (
                     <MenuItem key={option.value} value={option.value}>
                       {option.label}
@@ -352,19 +381,21 @@ export default function WeeklyScheduleEntryDialog({
                   ))}
                 </Select>
               </FormControl>
-              {optionByRole[respRole]?.remarksEnabled || respRemarks ? (
-                <TextField
-                  size="small"
-                  fullWidth
-                  label="Remarks"
-                  value={respRemarks}
-                  onChange={(e) => setRespRemarks(e.target.value)}
-                  inputProps={{ maxLength: 255 }}
-                />
-              ) : null}
+              <TextField
+                size="small"
+                fullWidth
+                multiline
+                minRows={2}
+                label="Instructions"
+                placeholder="e.g. Clean lint traps on dryers 1–12 before the break"
+                value={respRemarks}
+                onChange={(e) => setRespRemarks(e.target.value)}
+                inputProps={{ maxLength: 255 }}
+              />
               <Typography variant="caption" color="text.secondary">
-                {scheduleRoleLabel(respRole) || "This role"} is assigned for the day without start/end times. It does
-                not add scheduled hours or an attendance window and can be held alongside a timed shift.
+                {scheduleRoleLabel(respRole) || "This task"} is assigned to the employee for the whole day. Tasks have
+                no start or end time, add no scheduled hours, and create no attendance window. They can sit alongside
+                a shift.
               </Typography>
             </>
           )}

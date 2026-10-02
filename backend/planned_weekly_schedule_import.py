@@ -226,14 +226,15 @@ def _bulk_insert_entries(
                 start,
                 end,
                 max(0, int(payload.get("break_minutes") or 0)),
+                payload.get("employer_affiliation"),
             )
         )
     cursor.executemany(
         """
         INSERT INTO planned_weekly_schedule_entries (
             organization_id, week_start, user_id, day_of_week,
-            role, start_time, end_time, break_minutes
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            role, start_time, end_time, break_minutes, employer_affiliation
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         params,
     )
@@ -251,7 +252,12 @@ def import_planned_weekly_schedule(
     replace_existing: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    from backend.planned_weekly_schedule import _load_workers, ensure_planned_weekly_schedule_table
+    from backend.payroll_employer_affiliation import _organization_slug
+    from backend.planned_weekly_schedule import (
+        _load_workers,
+        default_new_shift_employer_affiliation,
+        ensure_planned_weekly_schedule_table,
+    )
 
     oid = int(organization_id)
     week = normalize_week_start(week_start)
@@ -259,6 +265,8 @@ def import_planned_weekly_schedule(
         raise ValueError("week_start must be YYYY-MM-DD")
 
     worker_list = list(workers) if workers is not None else _load_workers(conn, oid)
+    workers_by_id = {int(w.get("user_id") or 0): w for w in worker_list}
+    org_slug = _organization_slug(conn, oid) if conn is not None else None
     valid_user_ids = {int(w.get("user_id") or 0) for w in worker_list if int(w.get("user_id") or 0) > 0}
     flat = normalize_import_rows(rows)
 
@@ -303,6 +311,9 @@ def import_planned_weekly_schedule(
             "start_time": item["start_time"],
             "end_time": item["end_time"],
             "break_minutes": item.get("break_minutes") or 0,
+            "employer_affiliation": default_new_shift_employer_affiliation(
+                workers_by_id.get(uid), organization_slug=org_slug
+            ),
             "source_name": name,
         }
         if dry_run:

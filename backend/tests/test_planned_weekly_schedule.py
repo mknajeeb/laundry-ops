@@ -40,8 +40,42 @@ class _FakeCursor:
         self.roles: list[dict] = []
         self.responsibilities: list[dict] = []
         self._resp_id = 0
+        self.org_state: dict[int, dict] = {}
         self.connection = object()
         self._rowcount = 0
+
+    def _execute_org_state(self, sql_norm, params):
+        if sql_norm.startswith("insert"):
+            org_id = params[0]
+            state = self.org_state.setdefault(org_id, {"organization_id": org_id})
+            if "template_enabled" in sql_norm:
+                _, enabled, source, user_id = params
+                state.update(
+                    {"template_enabled": enabled, "template_source_week": source, "template_updated_by": user_id}
+                )
+            else:
+                state["cleaning_tasks_migrated_at"] = "migrated"
+            return
+        (org_id,) = params
+        self._last = [dict(self.org_state[org_id])] if org_id in self.org_state else []
+
+    def _execute_distinct_weeks(self, sql_norm, params):
+        org_id, after = params
+        if "planned_weekly_schedule_entries" in sql_norm:
+            source = self.rows
+        elif "planned_weekly_schedule_exclusions" in sql_norm:
+            source = self.exclusions
+        else:
+            source = self.responsibilities
+        if "count(*)" in sql_norm:
+            counts: dict = {}
+            for r in source:
+                if r["organization_id"] == org_id and r["week_start"] > after:
+                    counts[r["week_start"]] = counts.get(r["week_start"], 0) + 1
+            self._last = [{"week_start": w, "n": n} for w, n in sorted(counts.items())]
+            return
+        weeks = sorted({r["week_start"] for r in source if r["organization_id"] == org_id and r["week_start"] > after})
+        self._last = [{"week_start": w} for w in weeks]
 
     def _execute_roles(self, sql_norm, params):
         if "insert into weekly_schedule_roles" in sql_norm:
@@ -164,8 +198,22 @@ class _FakeCursor:
         if sql_norm.startswith("show columns"):
             self._last = [{"Field": "x", "Type": "varchar(64)"}]
             return
+        if "weekly_schedule_org_state" in sql_norm:
+            self._execute_org_state(sql_norm, params)
+            return
+        if sql_norm.startswith("select distinct week_start") or (
+            "count(*) as n" in sql_norm and "group by week_start" in sql_norm
+        ):
+            self._execute_distinct_weeks(sql_norm, params)
+            return
         if "weekly_schedule_roles" in sql_norm:
             self._execute_roles(sql_norm, params)
+            return
+        if "update planned_weekly_schedule_entries" in sql_norm and "set role = %s, role_assignments = %s" in sql_norm:
+            role, assignments, org_id, entry_id = params
+            for row in self.rows:
+                if row["organization_id"] == org_id and row["id"] == entry_id:
+                    row.update({"role": role, "role_assignments": assignments})
             return
         if "planned_weekly_schedule_responsibilities" in sql_norm:
             self._execute_responsibilities(sql_norm, params)
@@ -352,6 +400,9 @@ class _FakeCursor:
                     reverse=True,
                 )
                 self._last = [{"week_start": weeks[0]}] if weeks else []
+            elif len(params) == 1:
+                (org_id,) = params
+                self._last = [r for r in self.rows if r["organization_id"] == org_id]
             else:
                 org_id, week_start = params
                 self._last = [
@@ -1672,12 +1723,17 @@ def _create(cursor, data):
 def test_role_catalog_includes_new_operational_roles():
     catalog = {r["code"]: r for r in list_role_catalog(_FakeCursor(), 1)}
     for code in ("lint_cleaning", "floor_cleaning", "washer_cleaning"):
-        assert catalog[code]["uses_time_slots"] is True
+        assert catalog[code]["uses_time_slots"] is False
+        assert catalog[code]["kind"] == "task"
         assert catalog[code]["remarks_enabled"] is True
         assert catalog[code]["role_group"] == "CLEANING"
     for code in ("drop_off_customer", "self_service"):
         assert catalog[code]["uses_time_slots"] is False
+        assert catalog[code]["kind"] == "task"
         assert catalog[code]["remarks_enabled"] is True
+    for code in ("weigher", "sort", "wash", "dry", "fold", "post_weigh"):
+        assert catalog[code]["kind"] == "role"
+        assert catalog[code]["role_group"] == "RINSE_WF"
     orders = [r["display_order"] for r in catalog.values()]
     assert orders == sorted(orders)
 
@@ -1750,18 +1806,19 @@ def test_role_time_range_must_fit_shift_and_supports_overnight():
             "end_time": "06:00",
             "assignments": [
                 {"role": "fold", "full_shift": True},
-                {"role": "lint_cleaning", "start_time": "01:00", "end_time": "02:00", "remarks": "Dryers 1-6"},
+                {"role": "dry", "start_time": "01:00", "end_time": "02:00"},
             ],
         },
     )
     assert err is None
     assert entry["hours"] == 8.0
-    lint = next(a for a in entry["assignments"] if a["role"] == "lint_cleaning")
-    assert lint["remarks"] == "Dryers 1-6" and lint["full_shift"] is False
+    dry = next(a for a in entry["assignments"] if a["role"] == "dry")
+    assert (dry["start_time"], dry["end_time"], dry["full_shift"]) == ("01:00", "02:00", False)
 
 
 def test_remarks_only_kept_for_roles_with_remarks_enabled():
     cursor = _FakeCursor()
+    update_role(cursor, 1, "weigher", {"remarks_enabled": True})
     entry, err = _create(
         cursor,
         {
@@ -1771,22 +1828,23 @@ def test_remarks_only_kept_for_roles_with_remarks_enabled():
             "end_time": "17:00",
             "assignments": [
                 {"role": "fold", "remarks": "ignored"},
-                {"role": "floor_cleaning", "start_time": "16:00", "end_time": "17:00", "remarks": "Mop back room"},
+                {"role": "weigher", "start_time": "16:00", "end_time": "17:00", "remarks": "Scale 2"},
             ],
         },
     )
     assert err is None
     by_role = {a["role"]: a for a in entry["assignments"]}
     assert by_role["fold"]["remarks"] is None
-    assert by_role["floor_cleaning"]["remarks"] == "Mop back room"
+    assert by_role["weigher"]["remarks"] == "Scale 2"
 
 
-def test_untimed_role_rejected_on_timed_shift():
-    _, err = _create(
-        _FakeCursor(),
-        {"user_id": 10, "day_of_week": 0, "start_time": "09:00", "end_time": "12:00", "roles": ["self_service"]},
-    )
-    assert err and "daily responsibility" in err
+def test_task_rejected_on_timed_shift():
+    for task in ("self_service", "lint_cleaning", "washer_cleaning"):
+        _, err = _create(
+            _FakeCursor(),
+            {"user_id": 10, "day_of_week": 0, "start_time": "09:00", "end_time": "12:00", "roles": [task]},
+        )
+        assert err and "is a task" in err
 
 
 def test_deactivated_role_blocks_new_assignments_but_keeps_existing():
@@ -1861,6 +1919,7 @@ def test_deactivated_role_cannot_be_added_as_another_row_on_existing_shift():
 
 def test_update_without_roles_preserves_role_ranges_and_remarks():
     cursor = _FakeCursor()
+    update_role(cursor, 1, "post_weigh", {"remarks_enabled": True})
     entry, _ = _create(
         cursor,
         {
@@ -1870,7 +1929,7 @@ def test_update_without_roles_preserves_role_ranges_and_remarks():
             "end_time": "14:00",
             "assignments": [
                 {"role": "wash", "full_shift": True},
-                {"role": "washer_cleaning", "start_time": "13:00", "end_time": "14:00", "remarks": "Bank A"},
+                {"role": "post_weigh", "start_time": "13:00", "end_time": "14:00", "remarks": "Bank A"},
             ],
         },
     )
@@ -1878,8 +1937,8 @@ def test_update_without_roles_preserves_role_ranges_and_remarks():
     with p1, p2:
         moved, err = move_entry(MagicMock(), cursor, 1, entry["id"], user_id=20, day_of_week=5)
     assert err is None
-    cleaning = next(a for a in moved["assignments"] if a["role"] == "washer_cleaning")
-    assert (cleaning["start_time"], cleaning["end_time"], cleaning["remarks"]) == ("13:00", "14:00", "Bank A")
+    post = next(a for a in moved["assignments"] if a["role"] == "post_weigh")
+    assert (post["start_time"], post["end_time"], post["remarks"]) == ("13:00", "14:00", "Bank A")
 
 
 def test_daily_responsibility_has_no_hours_and_coexists_with_shift():
@@ -2004,3 +2063,220 @@ def test_carry_forward_copies_role_ranges_and_responsibilities():
     assert result["responsibilities_copied"] == 1
     assert {(a["role"], a["start_time"]) for a in copied[0]["assignments"]} == {("sort", "02:00"), ("fold", "05:00")}
     assert any(r["week_start"] == date(2026, 6, 21) for r in cursor.responsibilities)
+
+
+# --- Rinse default category, roles vs tasks, template propagation ----------------------------------
+
+from backend.weekly_schedule_template import (  # noqa: E402
+    copy_to_selected_weeks,
+    disable_template,
+    enable_template,
+    ensure_cleaning_tasks_migrated,
+    list_future_weeks,
+    propagate_template_if_source,
+    schedule_template_payload,
+)
+
+
+def test_new_shift_defaults_to_rinse_when_worker_allows_it():
+    workers = [
+        {"user_id": 10, "display_name": "Shared", "can_work_rinse": 1, "can_work_drop_off": 1, "can_work_both": 1},
+        {"user_id": 20, "display_name": "VeeWash only", "business_entity": "veewash"},
+    ]
+    cursor = _FakeCursor()
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=workers
+    ), patch("backend.payroll_employer_affiliation._organization_slug", return_value="veewash"):
+        shared, err = create_entry(
+            MagicMock(), cursor, 3, week_start=WEEK,
+            data={"user_id": 10, "day_of_week": 1, "role": "fold", "start_time": "09:00", "end_time": "12:00"},
+        )
+        assert err is None
+        own, err = create_entry(
+            MagicMock(), cursor, 3, week_start=WEEK,
+            data={"user_id": 20, "day_of_week": 1, "role": "fold", "start_time": "09:00", "end_time": "12:00"},
+        )
+        assert err is None
+        explicit, err = create_entry(
+            MagicMock(), cursor, 3, week_start=WEEK,
+            data={
+                "user_id": 10, "day_of_week": 2, "role": "fold", "start_time": "09:00", "end_time": "12:00",
+                "employer_affiliation": "veewash",
+            },
+        )
+    assert shared["employer_affiliation"] == "rinse_exclusive"
+    assert own["employer_affiliation"] == "veewash"
+    assert explicit["employer_affiliation"] == "veewash"
+
+
+def test_copy_keeps_org_specific_category():
+    cursor = _FakeCursor()
+    cursor.rows.append(
+        {
+            "id": 1, "organization_id": 3, "week_start": WEEK, "user_id": 10, "day_of_week": 1, "role": "fold",
+            "start_time": time(9, 0), "end_time": time(12, 0), "break_minutes": 0, "employer_affiliation": "veewash",
+        }
+    )
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()
+    ), patch("backend.payroll_employer_affiliation._organization_slug", return_value="veewash"):
+        carry_forward_week_schedule(MagicMock(), cursor, 3, target_week_start=date(2026, 6, 21), source_week_start=WEEK)
+    assert [r["employer_affiliation"] for r in cursor.rows if r["week_start"] == date(2026, 6, 21)] == ["veewash"]
+
+
+def test_new_role_defaults_to_rinse_group_and_kind_task_drops_times():
+    cursor = _FakeCursor()
+    role, err = create_role(cursor, 1, {"name": "Bagging"})
+    assert err is None
+    assert role["role_group"] == "RINSE_WF" and role["kind"] == "role" and role["uses_time_slots"] is True
+    task, err = create_role(cursor, 1, {"name": "Restock Soap", "kind": "task"})
+    assert err is None
+    assert task["kind"] == "task" and task["uses_time_slots"] is False and task["remarks_enabled"] is True
+    switched, err = update_role(cursor, 1, role["code"], {"kind": "task", "uses_time_slots": True})
+    assert err is None and switched["kind"] == "task"
+    _, err = create_role(cursor, 1, {"name": "Bad", "kind": "shift"})
+    assert err and "kind" in err
+
+
+def test_task_keeps_instructions_and_never_counts_hours():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    _create(cursor, {"user_id": 10, "day_of_week": 1, "start_time": "09:00", "end_time": "17:00", "roles": ["fold"]})
+    p1, p2 = _patched()
+    with p1, p2:
+        item, err = create_responsibility(
+            conn, cursor, 1, week_start=WEEK,
+            data={"user_id": 10, "day_of_week": 1, "role": "lint_cleaning", "remarks": "Before the break"},
+        )
+        assert err is None and item["remarks"] == "Before the break"
+        payload = build_week_payload(conn, cursor, 1, week_start=WEEK)
+    assert payload["employees"][0]["total_hours"] == 8.0
+    assert payload["schedule_template"]["enabled"] is False
+
+
+def test_cleaning_on_shifts_migrates_to_tasks_once_with_times_in_instructions():
+    cursor = _FakeCursor()
+    base = {"organization_id": 1, "week_start": WEEK, "break_minutes": 0, "employer_affiliation": None}
+    cursor.rows = [
+        {
+            **base, "id": 1, "user_id": 10, "day_of_week": 0, "role": "lint_cleaning",
+            "start_time": time(9, 0), "end_time": time(16, 0),
+            "role_assignments": '[{"role":"lint_cleaning","remarks":"Before starting the break"}]',
+        },
+        {
+            **base, "id": 2, "user_id": 20, "day_of_week": 1, "role": "fold,floor_cleaning",
+            "start_time": time(8, 0), "end_time": time(14, 0),
+            "role_assignments": '[{"role":"floor_cleaning","start_time":"13:00","end_time":"14:00"}]',
+        },
+        {**base, "id": 3, "user_id": 20, "day_of_week": 2, "role": "fold", "start_time": time(8, 0), "end_time": time(14, 0)},
+    ]
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True):
+        result = ensure_cleaning_tasks_migrated(cursor, 1)
+        assert ensure_cleaning_tasks_migrated(cursor, 1) is None
+    assert [m["entry_id"] for m in result["moved"]] == [1, 2]
+    assert [r["id"] for r in cursor.rows] == [2, 3]
+    assert cursor.rows[0]["role"] == "fold" and cursor.rows[0]["role_assignments"] is None
+    tasks = {(t["user_id"], t["day_of_week"], t["role"]): t["remarks"] for t in cursor.responsibilities}
+    assert tasks == {
+        (10, 0, "lint_cleaning"): "Before starting the break · Previously scheduled 9:00 AM – 4:00 PM",
+        (20, 1, "floor_cleaning"): "Previously scheduled 1:00 PM – 2:00 PM",
+    }
+
+
+def _template_patches(current_week=WEEK):
+    return (
+        patch("backend.planned_weekly_schedule.table_exists", return_value=True),
+        patch("backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()),
+        patch("backend.weekly_schedule_template.current_week_start", return_value=current_week),
+    )
+
+
+def _row(entry_id, week, user_id, day, role="fold", start=time(9, 0), end=time(12, 0), brk=0):
+    return {
+        "id": entry_id, "organization_id": 1, "week_start": week, "user_id": user_id, "day_of_week": day,
+        "role": role, "start_time": start, "end_time": end, "break_minutes": brk, "employer_affiliation": None,
+    }
+
+
+def test_template_replaces_existing_future_weeks_and_propagates_changes():
+    w1, w2, w3, past = WEEK, date(2026, 6, 21), date(2026, 6, 28), date(2026, 6, 7)
+    cursor = _FakeCursor()
+    cursor._id = 10
+    cursor.rows = [
+        _row(1, w1, 10, 1, brk=15),
+        _row(2, w1, 10, 6, role="sort"),
+        _row(3, w3, 20, 3, role="wash"),
+        _row(4, past, 20, 2, role="wash"),
+    ]
+    cursor.responsibilities = [
+        {"id": 1, "organization_id": 1, "week_start": w1, "user_id": 20, "day_of_week": 2, "role": "lint_cleaning", "remarks": "Dryers"}
+    ]
+    cursor._resp_id = 1
+    conn = MagicMock()
+    a, b, c = _template_patches()
+    with a, b, c:
+        result, err = enable_template(conn, cursor, 1, source_week_start=w1, user_id=7)
+        assert err is None
+        assert [(w["week_start"], w["status"]) for w in result["weeks"]] == [(str(w3), "replaced")]
+        w3_rows = sorted((r["day_of_week"], r["role"], r["break_minutes"]) for r in cursor.rows if r["week_start"] == w3)
+        # Exact weekday copy: Saturday stays Saturday, no Sunday seeding.
+        assert w3_rows == [(1, "fold", 15), (6, "sort", 0)]
+        assert [r for r in cursor.rows if r["week_start"] == past][0]["role"] == "wash"
+        assert schedule_template_payload(cursor, 1, w3)["follows_template"] is True
+        assert schedule_template_payload(cursor, 1, w1)["is_source"] is True
+
+        # A later week opened for the first time inherits the template.
+        from backend.planned_weekly_schedule import ensure_week_schedule_carried_forward
+
+        carry = ensure_week_schedule_carried_forward(conn, cursor, 1, week_start=w2)
+        assert carry["source_week_start"] == str(w1)
+
+        # Deleting a source shift propagates to every later week.
+        cursor.rows = [r for r in cursor.rows if not (r["week_start"] == w1 and r["day_of_week"] == 6)]
+        sync = propagate_template_if_source(conn, cursor, 1, w1)
+        assert {w["week_start"] for w in sync["weeks"]} == {str(w2), str(w3)}
+        for week in (w2, w3):
+            assert [(r["day_of_week"], r["role"]) for r in cursor.rows if r["week_start"] == week] == [(1, "fold")]
+            assert [(t["day_of_week"], t["remarks"]) for t in cursor.responsibilities if t["week_start"] == week] == [(2, "Dryers")]
+        # Changes to non-source weeks do not propagate.
+        assert propagate_template_if_source(conn, cursor, 1, w2) is None
+
+        disable_template(cursor, 1, user_id=7)
+        assert propagate_template_if_source(conn, cursor, 1, w1) is None
+        assert schedule_template_payload(cursor, 1, w3)["enabled"] is False
+
+
+def test_template_source_cannot_be_a_past_week():
+    cursor = _FakeCursor()
+    cursor.rows = [_row(1, WEEK, 10, 1)]
+    a, b, c = _template_patches(current_week=date(2026, 6, 21))
+    with a, b, c:
+        _, err = enable_template(MagicMock(), cursor, 1, source_week_start=WEEK, user_id=7)
+    assert err and "current week" in err
+
+
+def test_selected_weeks_copy_once_and_stop_template():
+    w1, w2, w3, w4 = WEEK, date(2026, 6, 21), date(2026, 6, 28), date(2026, 7, 5)
+    cursor = _FakeCursor()
+    cursor._id = 10
+    cursor.rows = [_row(1, w1, 10, 1), _row(2, w2, 20, 4, role="wash"), _row(3, w4, 20, 5, role="wash")]
+    conn = MagicMock()
+    a, b, c = _template_patches()
+    with a, b, c:
+        enable_template(conn, cursor, 1, source_week_start=w1, user_id=7)
+        _, err = copy_to_selected_weeks(conn, cursor, 1, source_week_start=w2, target_weeks=[str(w1)], user_id=7)
+        assert err and "not a future week" in err
+        cursor.rows.append(_row(20, w2, 20, 3, role="sort"))
+        result, err = copy_to_selected_weeks(
+            conn, cursor, 1, source_week_start=w2, target_weeks=[str(w3), str(w3)], user_id=7
+        )
+        assert err is None
+        assert result["template_stopped"] == str(w1)
+        assert [(w["week_start"], w["status"]) for w in result["weeks"]] == [(str(w3), "created")]
+        assert sorted(r["role"] for r in cursor.rows if r["week_start"] == w3) == ["fold", "sort"]
+        # w4 was not selected, so it keeps what the earlier template sync wrote.
+        assert [r["role"] for r in cursor.rows if r["week_start"] == w4] == ["fold"]
+        assert propagate_template_if_source(conn, cursor, 1, w1) is None
+        weeks = list_future_weeks(cursor, 1, source_week_start=w2)
+    assert weeks[0]["week_start"] == str(w3) and weeks[0]["shifts"] == 2
+    assert all(w["week_start"] > str(w2) for w in weeks)

@@ -194,10 +194,10 @@ export default function WeeklyScheduleTimeRoleView({
                     variant="overline"
                     sx={{ fontWeight: 800, letterSpacing: "0.08em", fontSize: "0.66rem", color: "text.secondary" }}
                   >
-                    Daily Responsibilities
+                    Tasks
                   </Typography>
                   <Typography variant="caption" color="text.disabled">
-                    no time slot · not counted in hours
+                    whole day · no times · not counted in hours
                   </Typography>
                 </Stack>
                 {day.responsibilities.map((group) => (

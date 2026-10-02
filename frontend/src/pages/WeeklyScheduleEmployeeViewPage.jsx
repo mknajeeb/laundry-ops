@@ -174,7 +174,7 @@ export default function WeeklyScheduleEmployeeViewPage() {
             ) : null}
             {responsibilityRoles.length ? (
               <Typography variant="body2" sx={{ mt: 0.5, fontWeight: 700 }}>
-                Daily responsibilities: {responsibilityRoles.map((role) => scheduleRoleLabel(role)).join(", ")}
+                Tasks: {responsibilityRoles.map((role) => scheduleRoleLabel(role)).join(", ")}
               </Typography>
             ) : null}
             <Typography variant="body2" sx={{ mt: 0.5, fontWeight: 600, opacity: 0.95 }}>
@@ -230,9 +230,19 @@ export default function WeeklyScheduleEmployeeViewPage() {
                         scheduleEndTimeEnabled={scheduleEndTimeEnabled}
                       />
                     ))}
-                    {cellResponsibilities.map((item) => (
-                      <WeeklyScheduleResponsibilityChip key={`r${item.id}`} item={item} />
-                    ))}
+                    {cellResponsibilities.length ? (
+                      <Box sx={{ mt: cellEntries.length ? 0.75 : 0 }}>
+                        <Typography
+                          variant="caption"
+                          sx={{ display: "block", fontWeight: 800, letterSpacing: "0.06em", color: "text.secondary", mb: 0.25 }}
+                        >
+                          TASKS
+                        </Typography>
+                        {cellResponsibilities.map((item) => (
+                          <WeeklyScheduleResponsibilityChip key={`r${item.id}`} item={item} />
+                        ))}
+                      </Box>
+                    ) : null}
                     {!hasWork ? (
                       <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>
                         Off

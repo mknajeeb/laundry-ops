@@ -907,6 +907,25 @@ export const bulkSetWeeklyScheduleEmployer = (body) =>
 export const cascadeWeeklySchedule = (body) =>
   axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/cascade`, body, { timeout: 60000 });
 
+export const getWeeklyScheduleFutureWeeks = (sourceWeekStart) =>
+  axios.get(`${API_BASE}/rinse/shift-analysis/weekly-schedule/future-weeks`, {
+    params: { source_week_start: sourceWeekStart },
+    timeout: 30000,
+  });
+
+export const enableWeeklyScheduleTemplate = (weekStart) =>
+  axios.post(
+    `${API_BASE}/rinse/shift-analysis/weekly-schedule/template`,
+    { week_start: weekStart },
+    { timeout: 60000 },
+  );
+
+export const disableWeeklyScheduleTemplate = (weekStart) =>
+  axios.delete(`${API_BASE}/rinse/shift-analysis/weekly-schedule/template`, {
+    data: { week_start: weekStart },
+    timeout: 30000,
+  });
+
 export const getWeeklyScheduleDisplaySettings = () =>
   axios.get(`${API_BASE}/rinse/shift-analysis/weekly-schedule/display-settings`, { timeout: 30000 });
 

@@ -48,6 +48,13 @@ def roles_from_user(me) -> set[str]:
     return {str(raw).upper()} if raw else set()
 
 
+def _sync_schedule_template(conn, cursor, organization_id: int, week_start) -> dict | None:
+    """Re-sync later weeks when ``week_start`` is the active template week (call before commit)."""
+    from backend.weekly_schedule_template import propagate_template_if_source
+
+    return propagate_template_if_source(conn, cursor, organization_id, week_start)
+
+
 def register_rinse_shift_analysis_routes(
     app,
     *,
@@ -1802,6 +1809,10 @@ def register_rinse_shift_analysis_routes(
             week_err = validate_schedule_week_access(week_start, me.get("roles"))
             if week_err:
                 return jsonify({"error": week_err}), 403
+            from backend.weekly_schedule_template import ensure_cleaning_tasks_migrated
+
+            if ensure_cleaning_tasks_migrated(cursor, tenant_oid) is not None:
+                conn.commit()
             carry = ensure_week_schedule_carried_forward(
                 conn, cursor, tenant_oid, week_start=week_start
             )
@@ -1849,9 +1860,11 @@ def register_rinse_shift_analysis_routes(
             )
             if err:
                 return jsonify({"error": err}), 400
+            sync = _sync_schedule_template(conn, cursor, tenant_oid, week_start)
             conn.commit()
             payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
             payload["entry"] = entry
+            payload["template_sync"] = sync
             return jsonify(json_safe_rinse(payload)), 201
         except Exception as exc:
             conn.rollback()
@@ -1882,10 +1895,12 @@ def register_rinse_shift_analysis_routes(
             entry, err = update_entry(conn, cursor, tenant_oid, entry_id, body)
             if err:
                 return jsonify({"error": err}), 400
-            conn.commit()
             week_start = date.fromisoformat(str(existing["week_start"]))
+            sync = _sync_schedule_template(conn, cursor, tenant_oid, week_start)
+            conn.commit()
             payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
             payload["entry"] = entry
+            payload["template_sync"] = sync
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             conn.rollback()
@@ -1914,9 +1929,11 @@ def register_rinse_shift_analysis_routes(
                 return jsonify({"error": "schedule entry not found"}), 404
             if not delete_entry(cursor, tenant_oid, entry_id):
                 return jsonify({"error": "schedule entry not found"}), 404
-            conn.commit()
             week_start = date.fromisoformat(str(existing["week_start"]))
+            sync = _sync_schedule_template(conn, cursor, tenant_oid, week_start)
+            conn.commit()
             payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
+            payload["template_sync"] = sync
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             conn.rollback()
@@ -1954,10 +1971,12 @@ def register_rinse_shift_analysis_routes(
             )
             if err:
                 return jsonify({"error": err}), 400
-            conn.commit()
             week_start = date.fromisoformat(str(existing["week_start"]))
+            sync = _sync_schedule_template(conn, cursor, tenant_oid, week_start)
+            conn.commit()
             payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
             payload["entry"] = entry
+            payload["template_sync"] = sync
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             conn.rollback()
@@ -1995,10 +2014,12 @@ def register_rinse_shift_analysis_routes(
             )
             if err:
                 return jsonify({"error": err}), 400
-            conn.commit()
             week_start = date.fromisoformat(str(existing["week_start"]))
+            sync = _sync_schedule_template(conn, cursor, tenant_oid, week_start)
+            conn.commit()
             payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
             payload["entry"] = entry
+            payload["template_sync"] = sync
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             conn.rollback()
@@ -2046,8 +2067,10 @@ def register_rinse_shift_analysis_routes(
             )
             if err:
                 return jsonify({"error": err}), 400
+            sync = _sync_schedule_template(conn, cursor, tenant_oid, week_start)
             conn.commit()
             payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
+            payload["template_sync"] = sync
             payload["excluded"] = excluded
             payload["user_id"] = int(body.get("user_id") or 0)
             return jsonify(json_safe_rinse(payload))
@@ -2060,11 +2083,9 @@ def register_rinse_shift_analysis_routes(
 
     @app.route("/rinse/shift-analysis/weekly-schedule/cascade", methods=["POST"])
     def rinse_shift_analysis_weekly_schedule_cascade():
-        from backend.planned_weekly_schedule import (
-            build_week_payload,
-            cascade_week_schedule,
-            normalize_week_start,
-        )
+        """One-time copy of the source week onto the selected future weeks (replaces them)."""
+        from backend.planned_weekly_schedule import build_week_payload, normalize_week_start
+        from backend.weekly_schedule_template import copy_to_selected_weeks
 
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
@@ -2079,27 +2100,92 @@ def register_rinse_shift_analysis_routes(
             tenant_oid = user_org_id(me)
             body = request.get_json(silent=True) or {}
             source = normalize_week_start((body.get("source_week_start") or "").strip() or None)
-            target = normalize_week_start((body.get("target_week_start") or "").strip() or None)
             if not isinstance(source, date):
                 return jsonify({"error": "source_week_start required (YYYY-MM-DD)"}), 400
-            if not isinstance(target, date):
-                return jsonify({"error": "target_week_start required (YYYY-MM-DD)"}), 400
-            replace_raw = body.get("replace")
-            replace = True if replace_raw is None else bool(replace_raw)
-            result, err = cascade_week_schedule(
+            targets = body.get("target_weeks")
+            if not isinstance(targets, list):
+                legacy = (body.get("target_week_start") or "").strip()
+                targets = [legacy] if legacy else []
+            result, err = copy_to_selected_weeks(
                 conn,
                 cursor,
                 tenant_oid,
                 source_week_start=source,
-                target_week_start=target,
-                replace=replace,
+                target_weeks=targets,
+                user_id=me.get("id"),
             )
             if err:
                 return jsonify({"error": err}), 400
             conn.commit()
-            payload = build_week_payload(
-                conn, cursor, tenant_oid, week_start=target, user_roles=me.get("roles")
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=source, user_roles=me.get("roles"))
+            payload["cascade"] = result
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/future-weeks", methods=["GET"])
+    def rinse_shift_analysis_weekly_schedule_future_weeks():
+        from backend.weekly_schedule_template import list_future_weeks
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            source = (request.args.get("source_week_start") or "").strip()
+            if not source:
+                return jsonify({"error": "source_week_start required (YYYY-MM-DD)"}), 400
+            weeks = list_future_weeks(cursor, user_org_id(me), source_week_start=source)
+            return jsonify({"source_week_start": source, "weeks": weeks})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/template", methods=["POST", "DELETE"])
+    def rinse_shift_analysis_weekly_schedule_template():
+        """POST: make the source week the ongoing template for all later weeks. DELETE: stop it."""
+        from backend.planned_weekly_schedule import build_week_payload, normalize_week_start
+        from backend.weekly_schedule_template import disable_template, enable_template
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            week_start = normalize_week_start(
+                (body.get("week_start") or body.get("source_week_start") or request.args.get("week_start") or "").strip()
+                or None
             )
+            if not isinstance(week_start, date):
+                return jsonify({"error": "week_start required (YYYY-MM-DD)"}), 400
+            if request.method == "DELETE":
+                result = disable_template(cursor, tenant_oid, user_id=me.get("id"))
+            else:
+                result, err = enable_template(
+                    conn, cursor, tenant_oid, source_week_start=week_start, user_id=me.get("id")
+                )
+                if err:
+                    return jsonify({"error": err}), 400
+            conn.commit()
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
             payload["cascade"] = result
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
@@ -2147,8 +2233,10 @@ def register_rinse_shift_analysis_routes(
             )
             if err:
                 return jsonify({"error": err}), 400
+            sync = _sync_schedule_template(conn, cursor, tenant_oid, week_start)
             conn.commit()
             payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
+            payload["template_sync"] = sync
             payload["entries_updated"] = updated
             payload["entries_skipped"] = skipped
             return jsonify(json_safe_rinse(payload))
@@ -2313,8 +2401,10 @@ def register_rinse_shift_analysis_routes(
             item, err = create_responsibility(conn, cursor, tenant_oid, week_start=week_start, data=body)
             if err:
                 return jsonify({"error": err}), 400
+            sync = _sync_schedule_template(conn, cursor, tenant_oid, week_start)
             conn.commit()
             payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
+            payload["template_sync"] = sync
             payload["responsibility"] = item
             return jsonify(json_safe_rinse(payload)), 201
         except Exception as exc:
@@ -2346,9 +2436,11 @@ def register_rinse_shift_analysis_routes(
             if err:
                 status = 404 if err == "responsibility not found" else 400
                 return jsonify({"error": err}), status
-            conn.commit()
             week_start = date.fromisoformat(str(item["week_start"])[:10])
+            sync = _sync_schedule_template(conn, cursor, tenant_oid, week_start)
+            conn.commit()
             payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
+            payload["template_sync"] = sync
             payload["responsibility"] = item
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
@@ -2380,9 +2472,11 @@ def register_rinse_shift_analysis_routes(
             existing = get_responsibility(cursor, tenant_oid, responsibility_id)
             if not existing or not delete_responsibility(cursor, tenant_oid, responsibility_id):
                 return jsonify({"error": "responsibility not found"}), 404
-            conn.commit()
             week_start = date.fromisoformat(str(existing["week_start"])[:10])
+            sync = _sync_schedule_template(conn, cursor, tenant_oid, week_start)
+            conn.commit()
             payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
+            payload["template_sync"] = sync
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             conn.rollback()

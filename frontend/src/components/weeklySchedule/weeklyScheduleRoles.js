@@ -6,7 +6,9 @@ export const ROLE_ORDER = [
   "wash",
   "sort",
   "weigher",
+  "dry",
   "fold",
+  "post_weigh",
   "pt_washer",
   "pt_sorter",
   "pt_folder",
@@ -28,7 +30,9 @@ export const WEEKLY_SCHEDULE_ROLES = [
   { value: "wash", label: "Wash" },
   { value: "sort", label: "Sort" },
   { value: "weigher", label: "Weigher" },
+  { value: "dry", label: "Dry" },
   { value: "fold", label: "Fold" },
+  { value: "post_weigh", label: "Post-Weigh" },
   { value: "pt_washer", label: "PT Washer" },
   { value: "pt_sorter", label: "PT Sorter" },
   { value: "pt_folder", label: "PT Folder" },
@@ -43,8 +47,7 @@ export const WEEKLY_SCHEDULE_ROLES = [
   { value: "self_service", label: "Self Service" },
 ];
 
-const UNTIMED_DEFAULT_ROLES = new Set(["drop_off_customer", "self_service"]);
-const REMARKS_DEFAULT_ROLES = new Set([
+const TASK_DEFAULT_ROLES = new Set([
   "lint_cleaning",
   "floor_cleaning",
   "washer_cleaning",
@@ -57,11 +60,12 @@ const DEFAULT_ROLE_NAMES = Object.fromEntries(WEEKLY_SCHEDULE_ROLES.map((r) => [
 export const DEFAULT_ROLE_CATALOG = WEEKLY_SCHEDULE_ROLES.map((role, index) => ({
   code: role.value,
   name: role.label,
+  kind: TASK_DEFAULT_ROLES.has(role.value) ? "task" : "role",
   role_group: null,
   display_order: (index + 1) * 10,
   active: true,
-  uses_time_slots: !UNTIMED_DEFAULT_ROLES.has(role.value),
-  remarks_enabled: REMARKS_DEFAULT_ROLES.has(role.value),
+  uses_time_slots: !TASK_DEFAULT_ROLES.has(role.value),
+  remarks_enabled: TASK_DEFAULT_ROLES.has(role.value),
   builtin: true,
 }));
 
@@ -101,6 +105,11 @@ export function scheduleRoleLabel(code) {
   return scheduleRoleInfo(code)?.name || ROLE_STYLES[code]?.label || code;
 }
 
+/** Tasks are assigned by day with instructions only — no times, hours, or attendance window. */
+export function isScheduleTask(code) {
+  return scheduleRoleInfo(code)?.uses_time_slots === false;
+}
+
 function roleOrderIndex(code) {
   if (activeRoleOrder) return activeRoleOrder[code] ?? 999;
   return ROLE_ORDER_INDEX[code] ?? 99;
@@ -111,7 +120,9 @@ export const ROLE_COMPACT_LABELS = {
   wash: "Wash",
   sort: "Sort",
   weigher: "Weigh",
+  dry: "Dry",
   fold: "Fold",
+  post_weigh: "Post-Wt",
   pt_washer: "PT Wash",
   pt_sorter: "PT Sort",
   pt_folder: "PT Fold",
@@ -215,6 +226,24 @@ export const ROLE_STYLES = {
     cellBg: "#faf5ff",
     border: "rgba(109, 40, 217, 0.28)",
     label: "Weigher",
+  },
+  dry: {
+    accent: "#b91c1c",
+    bg: "#fee2e2",
+    hoverBg: "#fecaca",
+    chipBg: "#fef2f2",
+    cellBg: "#fff7f7",
+    border: "rgba(185, 28, 28, 0.28)",
+    label: "Dry",
+  },
+  post_weigh: {
+    accent: "#7c3aed",
+    bg: "#ede9fe",
+    hoverBg: "#ddd6fe",
+    chipBg: "#f5f3ff",
+    cellBg: "#faf8ff",
+    border: "rgba(124, 58, 237, 0.28)",
+    label: "Post-Weigh",
   },
   hd_operator: {
     accent: "#be185d",
@@ -468,6 +497,79 @@ export function allocateRoleHoursByDay(entries) {
     return hours;
   });
 
+  for (const [key, hours] of roleHourBuckets(entries, (role) => HOUR_TRACKED_ROLE_SET.has(role))) {
+    const [, dow, role] = key.split("|");
+    byDay[Number(dow)][role] += hours;
+  }
+
+  return byDay.map((day) => {
+    const out = {};
+    for (const role of HOUR_TRACKED_ROLES) {
+      out[role] = Math.round((day[role] || 0) * 10) / 10;
+    }
+    return out;
+  });
+}
+
+export const ROLE_HOURS_EXPLANATION =
+  "Employee hours: shift time minus the break; overlapping shifts for the same person and day count once. " +
+  "Role hours: when an employee holds several roles at the same time, that time is split evenly between them, " +
+  "and the break is deducted from each role in proportion to its share of the shift. Shift time without a role " +
+  "is not attributed to any role. Tasks never count toward hours.";
+
+/**
+ * Hours per employee and per timed role for the summaries above the time-and-role view.
+ * Employee hours use the scheduled-hours rules (break deducted, overlapping shifts once).
+ * Role hours use the role allocation rules; tasks never count.
+ */
+export function summarizeScheduleHours(entries, employeesById = new Map()) {
+  const employeeHours = new Map();
+  for (const [key, hours] of scheduledHoursByUserDay(entries)) {
+    const uid = Number(key.split("|")[0]);
+    employeeHours.set(uid, (employeeHours.get(uid) || 0) + hours);
+  }
+  const employees = [...employeeHours.entries()]
+    .map(([uid, hours]) => ({
+      user_id: uid,
+      name: employeesById.get(uid)?.display_name || `User ${uid}`,
+      hours: Math.round(hours * 100) / 100,
+    }))
+    .sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
+  const totalHours = employees.reduce((sum, row) => sum + row.hours, 0);
+
+  const roleHours = new Map();
+  for (const [key, hours] of roleHourBuckets(entries, (role) => !isScheduleTask(role))) {
+    const role = key.split("|")[2];
+    roleHours.set(role, (roleHours.get(role) || 0) + hours);
+  }
+  const roleUsers = new Map();
+  for (const entry of entries || []) {
+    for (const a of entryRoleAssignments(entry)) {
+      if (isScheduleTask(a.role)) continue;
+      const set = roleUsers.get(a.role) || new Set();
+      set.add(Number(entry.user_id));
+      roleUsers.set(a.role, set);
+    }
+  }
+  const roles = sortRoles([...roleUsers.keys()]).map((role) => ({
+    role,
+    label: scheduleRoleLabel(role),
+    hours: Math.round((roleHours.get(role) || 0) * 100) / 100,
+    employees: roleUsers.get(role).size,
+  }));
+  const roleTotal = roles.reduce((sum, row) => sum + row.hours, 0);
+  return {
+    employees,
+    totalHours: Math.round(totalHours * 100) / 100,
+    roles,
+    roleTotal: Math.round(roleTotal * 100) / 100,
+    distinctEmployees: employees.length,
+    unassignedHours: Math.max(0, Math.round((totalHours - roleTotal) * 100) / 100),
+  };
+}
+
+/** Allocated hours keyed `${user_id}|${day}|${role}` for roles passing `includeRole`. */
+function roleHourBuckets(entries, includeRole) {
   /** @type {Map<string, Array<{start:number,end:number,hours:number,direct?:boolean}>>} */
   const buckets = new Map();
   const push = (key, item) => {
@@ -481,7 +583,7 @@ export function allocateRoleHoursByDay(entries) {
     const dow = Number(entry.day_of_week || 0);
     if (!Number.isInteger(dow) || dow < 0 || dow > 6) continue;
 
-    const assignments = entryRoleAssignments(entry).filter((a) => HOUR_TRACKED_ROLE_SET.has(a.role));
+    const assignments = entryRoleAssignments(entry).filter((a) => includeRole(a.role));
     if (!assignments.length) continue;
 
     const interval = entryIntervalMinutes(entry);
@@ -522,10 +624,8 @@ export function allocateRoleHoursByDay(entries) {
     }
   }
 
+  const out = new Map();
   for (const [key, list] of buckets.entries()) {
-    const parts = key.split("|");
-    const dow = Number(parts[1]);
-    const role = parts[2];
     const timed = list.filter((item) => !item.direct);
     const direct = list.filter((item) => item.direct);
     let hours = direct.reduce((sum, item) => sum + item.hours, 0);
@@ -538,16 +638,9 @@ export function allocateRoleHoursByDay(entries) {
         hours += timed.reduce((sum, item) => sum + item.hours, 0);
       }
     }
-    byDay[dow][role] += hours;
+    out.set(key, hours);
   }
-
-  return byDay.map((day) => {
-    const out = {};
-    for (const role of HOUR_TRACKED_ROLES) {
-      out[role] = Math.round((day[role] || 0) * 10) / 10;
-    }
-    return out;
-  });
+  return out;
 }
 
 export function emptyRoleHourTotals() {

@@ -1,4 +1,5 @@
 import { DAY_LABELS } from "./weeklyScheduleDates";
+import { formatRoleHoursLabel, ROLE_HOURS_EXPLANATION } from "./weeklyScheduleRoles";
 import { dayDateLabel, timeBlockLabel } from "./weeklyScheduleTimeBlocks";
 
 function PeopleCell({ people }) {
@@ -19,9 +20,70 @@ function RemarksCell({ people }) {
     ));
 }
 
-/** Plain-HTML print layout (copied into the print window, so no MUI styling). */
-export default function WeeklyScheduleTimeRolePrint({ days, weekStart, endTimeEnabled = true }) {
+function HoursSummaryPrint({ summary }) {
+  if (!summary) return null;
   return (
+    <div className="weekly-schedule-print-hours-summary">
+      <table className="weekly-schedule-print-table">
+        <thead>
+          <tr>
+            <th>Employee</th>
+            <th className="weekly-schedule-print-tr-count">Hours</th>
+          </tr>
+        </thead>
+        <tbody>
+          {summary.employees.map((row) => (
+            <tr key={row.user_id}>
+              <td>{row.name}</td>
+              <td>{formatRoleHoursLabel(row.hours)}</td>
+            </tr>
+          ))}
+          <tr className="weekly-schedule-print-tr-day">
+            <td>Total · {summary.employees.length} employees</td>
+            <td>{formatRoleHoursLabel(summary.totalHours)}</td>
+          </tr>
+        </tbody>
+      </table>
+      <table className="weekly-schedule-print-table">
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th className="weekly-schedule-print-tr-count">Employees</th>
+            <th className="weekly-schedule-print-tr-count">Hours</th>
+          </tr>
+        </thead>
+        <tbody>
+          {summary.roles.map((row) => (
+            <tr key={row.role}>
+              <td>{row.label}</td>
+              <td>{row.employees}</td>
+              <td>{formatRoleHoursLabel(row.hours)}</td>
+            </tr>
+          ))}
+          {summary.unassignedHours > 0 ? (
+            <tr>
+              <td>Shift time without a role</td>
+              <td />
+              <td>{formatRoleHoursLabel(summary.unassignedHours)}</td>
+            </tr>
+          ) : null}
+          <tr className="weekly-schedule-print-tr-day">
+            <td>Total role hours</td>
+            <td />
+            <td>{formatRoleHoursLabel(summary.roleTotal)}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div className="weekly-schedule-print-employee-meta">{ROLE_HOURS_EXPLANATION}</div>
+    </div>
+  );
+}
+
+/** Plain-HTML print layout (copied into the print window, so no MUI styling). */
+export default function WeeklyScheduleTimeRolePrint({ days, weekStart, endTimeEnabled = true, hoursSummary = null }) {
+  return (
+    <>
+    <HoursSummaryPrint summary={hoursSummary} />
     <table className="weekly-schedule-print-table weekly-schedule-print-time-role">
       <thead>
         <tr>
@@ -71,8 +133,8 @@ export default function WeeklyScheduleTimeRolePrint({ days, weekStart, endTimeEn
               <tr key={`daily-${group.role}`} className="weekly-schedule-print-tr-daily">
                 {index === 0 ? (
                   <td rowSpan={day.responsibilities.length} className="weekly-schedule-print-employee-name">
-                    Daily responsibilities
-                    <div className="weekly-schedule-print-employee-meta">No time slot</div>
+                    Tasks
+                    <div className="weekly-schedule-print-employee-meta">Whole day · no times · no hours</div>
                   </td>
                 ) : null}
                 <td>{group.label}</td>
@@ -89,5 +151,6 @@ export default function WeeklyScheduleTimeRolePrint({ days, weekStart, endTimeEn
         );
       })}
     </table>
+    </>
   );
 }

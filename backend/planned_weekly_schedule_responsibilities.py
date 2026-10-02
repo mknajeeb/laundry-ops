@@ -298,6 +298,21 @@ def copy_week_responsibilities(
 ) -> int:
     """Copy responsibilities into the target week (same Sat→Sun seeding rule as planned entries)."""
     source = list_week_responsibilities(cursor, organization_id, week_start=source_week_start)
+    rows = responsibility_copy_rows(
+        source,
+        valid_user_ids=valid_user_ids,
+        seed_sunday_from_saturday=seed_sunday_from_saturday
+        and not any(item["day_of_week"] == 0 for item in source),
+    )
+    return insert_responsibility_rows(cursor, organization_id, week_start=target_week_start, rows=rows)
+
+
+def responsibility_copy_rows(
+    source: Sequence[Mapping[str, Any]],
+    *,
+    valid_user_ids: set[int],
+    seed_sunday_from_saturday: bool,
+) -> list[tuple[int, int, str, str | None]]:
     rows: list[tuple[int, int, str, str | None]] = []
     seen: set[tuple[int, int, str]] = set()
 
@@ -311,20 +326,129 @@ def copy_week_responsibilities(
     for item in source:
         if item["user_id"] in valid_user_ids:
             _add(item["user_id"], item["day_of_week"], item["role"], item.get("remarks"))
-    if seed_sunday_from_saturday and not any(item["day_of_week"] == 0 for item in source):
+    if seed_sunday_from_saturday:
         for item in source:
             if item["day_of_week"] == 6 and item["user_id"] in valid_user_ids:
                 _add(item["user_id"], 0, item["role"], item.get("remarks"))
+    return rows
+
+
+def insert_responsibility_rows(
+    cursor,
+    organization_id: int,
+    *,
+    week_start: date,
+    rows: Sequence[tuple[int, int, str, str | None]],
+) -> int:
     if not rows:
         return 0
+    ensure_responsibilities_table(cursor)
     cursor.executemany(
         f"""
         INSERT IGNORE INTO {TABLE} (organization_id, week_start, user_id, day_of_week, role, remarks)
         VALUES (%s,%s,%s,%s,%s,%s)
         """,
-        [(int(organization_id), target_week_start, uid, dow, role, remarks) for uid, dow, role, remarks in rows],
+        [(int(organization_id), week_start, uid, dow, role, remarks) for uid, dow, role, remarks in rows],
     )
     return len(rows)
+
+
+def _clock_label(value: Any) -> str:
+    text = str(value or "")[:5]
+    try:
+        hour, minute = int(text[:2]), int(text[3:5])
+    except ValueError:
+        return text
+    suffix = "AM" if hour < 12 else "PM"
+    return f"{hour % 12 or 12}:{minute:02d} {suffix}"
+
+
+def migrate_timed_tasks_to_responsibilities(
+    cursor,
+    organization_id: int,
+    *,
+    task_roles: set[str],
+) -> dict[str, Any]:
+    """Move ``task_roles`` off timed shifts into day tasks, keeping the old times in the instructions.
+
+    Shifts left with no role are deleted; shifts with other roles keep their times and those roles.
+    """
+    from backend.planned_weekly_schedule import (
+        entry_role_assignments,
+        ensure_planned_weekly_schedule_table,
+        role_assignments_storage,
+        roles_to_storage,
+        serialize_entry,
+    )
+    from backend.weekly_schedule_roles import normalize_remarks
+
+    ensure_planned_weekly_schedule_table(cursor)
+    ensure_responsibilities_table(cursor)
+    oid = int(organization_id)
+    cursor.execute(
+        """
+        SELECT id, organization_id, week_start, user_id, day_of_week,
+               role, start_time, end_time, break_minutes, employer_affiliation, role_assignments
+        FROM planned_weekly_schedule_entries
+        WHERE organization_id = %s
+        """,
+        (oid,),
+    )
+    moved: list[dict[str, Any]] = []
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        entry = serialize_entry(row)
+        assignments = entry_role_assignments(entry)
+        tasks = [a for a in assignments if a.get("role") in task_roles]
+        if not tasks:
+            continue
+        keep = [a for a in assignments if a.get("role") not in task_roles]
+        week_start = row["week_start"]
+        for a in tasks:
+            start = a.get("start_time") or entry.get("start_time")
+            end = a.get("end_time") or entry.get("end_time")
+            note = f"Previously scheduled {_clock_label(start)} – {_clock_label(end)}"
+            remarks = normalize_remarks(" · ".join(p for p in (a.get("remarks"), note) if p))
+            cursor.execute(
+                f"""
+                INSERT INTO {TABLE} (organization_id, week_start, user_id, day_of_week, role, remarks)
+                VALUES (%s,%s,%s,%s,%s,%s)
+                ON DUPLICATE KEY UPDATE remarks = COALESCE(remarks, VALUES(remarks))
+                """,
+                (oid, week_start, int(row["user_id"]), int(row["day_of_week"]), a["role"], remarks),
+            )
+            moved.append(
+                {
+                    "entry_id": int(row["id"]),
+                    "week_start": str(week_start),
+                    "user_id": int(row["user_id"]),
+                    "day_of_week": int(row["day_of_week"]),
+                    "role": a["role"],
+                    "remarks": remarks,
+                    "shift_deleted": not keep,
+                }
+            )
+        if keep:
+            cursor.execute(
+                """
+                UPDATE planned_weekly_schedule_entries
+                SET role = %s, role_assignments = %s
+                WHERE organization_id = %s AND id = %s
+                """,
+                (
+                    roles_to_storage([a["role"] for a in keep]),
+                    role_assignments_storage(keep),
+                    oid,
+                    int(row["id"]),
+                ),
+            )
+        else:
+            cursor.execute(
+                "DELETE FROM planned_weekly_schedule_entries WHERE organization_id = %s AND id = %s",
+                (oid, int(row["id"])),
+            )
+    return {"moved": moved}
 
 
 def filter_responsibilities_for_view(

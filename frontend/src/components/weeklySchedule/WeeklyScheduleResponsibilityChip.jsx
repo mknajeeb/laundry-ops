@@ -1,7 +1,7 @@
 import { Box, Typography } from "@mui/material";
 import { roleStyle, scheduleRoleLabel } from "./weeklyScheduleRoles";
 
-/** Daily responsibility (role without time slots) — no hours, no clock-in window. */
+/** Task (assigned by day, no time slots) — no hours, no clock-in window. */
 export default function WeeklyScheduleResponsibilityChip({ item, onClick }) {
   const style = roleStyle(item.role);
   return (
@@ -32,7 +32,7 @@ export default function WeeklyScheduleResponsibilityChip({ item, onClick }) {
       <Typography variant="caption" sx={{ display: "block", fontSize: "0.66rem", fontWeight: 800, color: style.accent, lineHeight: 1.25 }}>
         {scheduleRoleLabel(item.role)}
         <Typography component="span" sx={{ ml: 0.5, fontSize: "0.6rem", fontWeight: 600, color: "text.secondary" }}>
-          daily
+          task
         </Typography>
       </Typography>
       {item.remarks ? (

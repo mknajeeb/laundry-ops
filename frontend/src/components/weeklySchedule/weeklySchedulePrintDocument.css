@@ -141,6 +141,25 @@
   print-color-adjust: exact;
 }
 
+.weekly-schedule-print-hours-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.weekly-schedule-print-hours-summary > table {
+  width: auto;
+  min-width: 42%;
+  flex: 1;
+}
+
+.weekly-schedule-print-hours-summary > .weekly-schedule-print-employee-meta {
+  flex-basis: 100%;
+}
+
 @media print {
   html,
   body {

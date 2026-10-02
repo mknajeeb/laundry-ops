@@ -20,16 +20,25 @@ import {
 import { createWeeklyScheduleRole, updateWeeklyScheduleRole } from "../../api";
 import { roleStyle } from "./weeklyScheduleRoles";
 
-const EDITABLE_FIELDS = ["name", "role_group", "display_order", "active", "uses_time_slots", "remarks_enabled"];
+const EDITABLE_FIELDS = ["name", "kind", "role_group", "display_order", "active", "remarks_enabled"];
 
 const EMPTY_NEW_ROLE = {
   name: "",
-  role_group: "",
+  kind: "role",
+  role_group: "RINSE_WF",
   display_order: "",
   active: true,
-  uses_time_slots: true,
   remarks_enabled: false,
 };
+
+const KIND_OPTIONS = [
+  { value: "role", label: "Role — timed production work" },
+  { value: "task", label: "Task — by day, instructions only" },
+];
+
+function withKind(role) {
+  return { ...role, kind: role.kind || (role.uses_time_slots === false ? "task" : "role") };
+}
 
 function changedFields(draft, original) {
   const patch = {};
@@ -52,23 +61,41 @@ function FlagSwitch({ label, checked, onChange }) {
 }
 
 function RoleFields({ draft, groups, onChange }) {
+  const isTask = draft.kind === "task";
   return (
     <Box
       sx={{
         display: "grid",
-        gridTemplateColumns: { xs: "1fr 1fr", md: "minmax(160px, 1.4fr) minmax(130px, 1fr) 80px" },
+        gridTemplateColumns: {
+          xs: "1fr 1fr",
+          md: "minmax(150px, 1.3fr) minmax(190px, 1.3fr) minmax(120px, 1fr) 80px",
+        },
         gap: 1,
         alignItems: "center",
       }}
     >
       <TextField
         size="small"
-        label="Role name"
+        label="Name"
         value={draft.name}
         onChange={(e) => onChange({ name: e.target.value })}
         inputProps={{ maxLength: 64 }}
         sx={{ gridColumn: { xs: "1 / -1", md: "auto" } }}
       />
+      <TextField
+        select
+        size="small"
+        label="Type"
+        value={draft.kind || "role"}
+        onChange={(e) => onChange({ kind: e.target.value })}
+        sx={{ gridColumn: { xs: "1 / -1", md: "auto" } }}
+      >
+        {KIND_OPTIONS.map((option) => (
+          <MenuItem key={option.value} value={option.value}>
+            {option.label}
+          </MenuItem>
+        ))}
+      </TextField>
       <TextField
         select
         size="small"
@@ -95,8 +122,13 @@ function RoleFields({ draft, groups, onChange }) {
       />
       <Stack direction="row" flexWrap="wrap" useFlexGap sx={{ gridColumn: "1 / -1" }}>
         <FlagSwitch label="Active" checked={draft.active} onChange={(v) => onChange({ active: v })} />
-        <FlagSwitch label="Uses time slots" checked={draft.uses_time_slots} onChange={(v) => onChange({ uses_time_slots: v })} />
-        <FlagSwitch label="Enable remarks" checked={draft.remarks_enabled} onChange={(v) => onChange({ remarks_enabled: v })} />
+        {isTask ? (
+          <Typography variant="caption" color="text.secondary" sx={{ alignSelf: "center" }}>
+            Assigned per day with instructions. No start/end time, hours, or attendance window.
+          </Typography>
+        ) : (
+          <FlagSwitch label="Enable remarks" checked={draft.remarks_enabled} onChange={(v) => onChange({ remarks_enabled: v })} />
+        )}
       </Stack>
     </Box>
   );
@@ -124,15 +156,18 @@ export default function WeeklyScheduleManageRolesDialog({ open, onClose, roles =
     if (!open) return;
     setDrafts((prev) => {
       const next = {};
-      for (const role of roles) {
+      for (const raw of roles) {
+        const role = withKind(raw);
         const before = originals.current[role.code];
         const unchanged = before && !Object.keys(changedFields(before, role)).length;
-        next[role.code] = prev[role.code] && unchanged ? prev[role.code] : { ...role };
+        next[role.code] = prev[role.code] && unchanged ? prev[role.code] : role;
       }
       return next;
     });
-    originals.current = Object.fromEntries(roles.map((role) => [role.code, role]));
+    originals.current = Object.fromEntries(roles.map((role) => [role.code, withKind(role)]));
   }, [open, roles]);
+
+  const rows = useMemo(() => roles.map(withKind), [roles]);
 
   const groupLabel = useMemo(() => Object.fromEntries(groups.map((g) => [g.code, g.label])), [groups]);
 
@@ -147,7 +182,7 @@ export default function WeeklyScheduleManageRolesDialog({ open, onClose, roles =
       const res = await updateWeeklyScheduleRole(role.code, patch);
       onCatalogChange?.(res.data?.roles || []);
     } catch (e) {
-      setError(e?.response?.data?.error || "Failed to save role");
+      setError(e?.response?.data?.error || "Failed to save");
     } finally {
       setSavingCode(null);
     }
@@ -165,7 +200,7 @@ export default function WeeklyScheduleManageRolesDialog({ open, onClose, roles =
       onCatalogChange?.(res.data?.roles || []);
       setNewRole(EMPTY_NEW_ROLE);
     } catch (e) {
-      setError(e?.response?.data?.error || "Failed to add role");
+      setError(e?.response?.data?.error || "Failed to add");
     } finally {
       setSavingCode(null);
     }
@@ -173,12 +208,14 @@ export default function WeeklyScheduleManageRolesDialog({ open, onClose, roles =
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth fullScreen={fullScreen}>
-      <DialogTitle>Manage roles</DialogTitle>
+      <DialogTitle>Roles &amp; tasks</DialogTitle>
       <DialogContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-          Operational job assignments for the schedule. These are separate from login permissions. Deactivating a role
-          hides it from new assignments; existing and past schedules keep showing it. Changing “Uses time slots” applies
-          to new assignments only.
+          <strong>Roles</strong> are timed production work inside a shift (weighing, sorting, washing, drying, folding,
+          post-weighing) and count toward scheduled hours. <strong>Tasks</strong> (cleaning, Self Service, Drop Off
+          customer attendance) are assigned to an employee for a day with instructions only — no times, no hours. These
+          are separate from login permissions. Deactivating hides an item from new assignments; existing schedules keep
+          showing it. Changing the type applies to new assignments only.
         </Typography>
         {error ? (
           <Alert severity="error" sx={{ mb: 1.5 }}>
@@ -186,7 +223,7 @@ export default function WeeklyScheduleManageRolesDialog({ open, onClose, roles =
           </Alert>
         ) : null}
         <Stack spacing={1}>
-          {roles.map((role) => {
+          {rows.map((role) => {
             const draft = drafts[role.code];
             if (!draft) return null;
             const dirty = Object.keys(changedFields(draft, role)).length > 0;
@@ -207,7 +244,12 @@ export default function WeeklyScheduleManageRolesDialog({ open, onClose, roles =
                     {role.name}
                   </Typography>
                   {role.role_group ? <Chip size="small" label={groupLabel[role.role_group] || role.role_group} /> : null}
-                  {role.uses_time_slots === false ? <Chip size="small" variant="outlined" label="Daily" /> : null}
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    color={role.kind === "task" ? "secondary" : "primary"}
+                    label={role.kind === "task" ? "Task" : "Role"}
+                  />
                   {role.active === false ? <Chip size="small" color="default" label="Inactive" /> : null}
                   <Button
                     size="small"
@@ -230,7 +272,7 @@ export default function WeeklyScheduleManageRolesDialog({ open, onClose, roles =
 
           <Box sx={{ border: "1.5px dashed #cbd5e1", borderRadius: 1.5, p: 1.25 }}>
             <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 1 }}>
-              Add role
+              Add role or task
             </Typography>
             <RoleFields draft={newRole} groups={groups} onChange={(patch) => setNewRole((prev) => ({ ...prev, ...patch }))} />
             <Button
@@ -240,7 +282,7 @@ export default function WeeklyScheduleManageRolesDialog({ open, onClose, roles =
               disabled={!newRole.name.trim() || savingCode === "__new__"}
               onClick={addRole}
             >
-              {savingCode === "__new__" ? "Adding…" : "Add role"}
+              {savingCode === "__new__" ? "Adding…" : newRole.kind === "task" ? "Add task" : "Add role"}
             </Button>
           </Box>
         </Stack>
