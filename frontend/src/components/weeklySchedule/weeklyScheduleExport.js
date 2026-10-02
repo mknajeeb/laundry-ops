@@ -16,7 +16,7 @@ import {
   sortRoles,
 } from "./weeklyScheduleRoles";
 import { DAY_LABELS } from "./weeklyScheduleDates";
-import { dayDateLabel, timeBlockLabel } from "./weeklyScheduleTimeBlocks";
+import { compactClock, dayDateLabel, hourLabel, HOURLY_COVERAGE_EXPLANATION } from "./weeklyScheduleTimeBlocks";
 
 /** Excel-safe text — no smart quotes, en-dashes, or middle dots. */
 export function exportAsciiText(value) {
@@ -233,14 +233,7 @@ export function exportWeeklyScheduleCsv({
   downloadCsv(lines, csvFileName({ weekStart, tabLabel, filename }));
 }
 
-function peopleRemarks(people) {
-  return people
-    .filter((person) => person.remarks)
-    .map((person) => `${person.name}: ${person.remarks}`)
-    .join("; ");
-}
-
-/** Employee hours and role hours/resources sections appended to the time-and-role export. */
+/** Employee hours and role hours/resources sections appended to the hourly coverage export. */
 export function buildHoursSummaryCsvRows(summary) {
   if (!summary) return [];
   const hours = (value) => String(Math.round(Number(value || 0) * 100) / 100);
@@ -250,33 +243,79 @@ export function buildHoursSummaryCsvRows(summary) {
   lines.push("", csvCell("Role hours & resources"), ["Role", "Employees", "Hours"].map(csvCell).join(","));
   for (const row of summary.roles) lines.push([csvCell(row.label), String(row.employees), hours(row.hours)].join(","));
   if (summary.unassignedHours > 0) {
-    lines.push([csvCell("Shift time without a role"), "", hours(summary.unassignedHours)].join(","));
+    lines.push([csvCell(summary.unassignedLabel || "Shift time without a role"), "", hours(summary.unassignedHours)].join(","));
   }
   lines.push([csvCell("Total role hours"), "", hours(summary.roleTotal)].join(","));
   lines.push("", csvCell(ROLE_HOURS_EXPLANATION));
   return lines;
 }
 
-/** By Time & Role export: one row per day / time block / role, then that day's tasks. */
-export function buildTimeRoleCsvRows({ days, weekStart, scheduleEndTimeEnabled = true, hoursSummary = null }) {
-  const headers = ["Day", "Date", "Time", "Role", "Count", "Employees", "Remarks"];
+function coverageHours(value) {
+  return String(Math.round(Number(value || 0) * 100) / 100);
+}
+
+/** "A: 2-3; B: 2:30-3 (split, 0.25h)" — names with partial-hour times. */
+export function coveragePeopleText(people) {
+  return people
+    .map((person) => {
+      const range = person.partial
+        ? ` ${person.ranges.map(([a, b]) => `${compactClock(a)}-${compactClock(b)}`).join(", ")}`
+        : "";
+      const split = person.shared ? ` (split, ${coverageHours(person.hours)}h)` : "";
+      return `${person.name}${range ? `:${range}` : ""}${split}`;
+    })
+    .join("; ");
+}
+
+/**
+ * Hourly coverage export: per day, one row per hour and selected role (people, employee-hours,
+ * cumulative hours, names with partial coverage), an all-roles row per hour, daily role totals, then tasks.
+ */
+export function buildHourlyCoverageCsvRows({ days, weekStart, columns, hoursSummary = null }) {
+  const headers = ["Day", "Date", "Hour", "Role", "People", "Role hours", "Cumulative role hours", "Employees and coverage"];
   const lines = [headers.map(csvCell).join(",")];
   for (const day of days || []) {
     const dayCells = [csvCell(DAY_LABELS[day.dow]), csvCell(dayDateLabel(weekStart, day.dow))];
-    for (const block of day.blocks) {
-      const time = timeBlockLabel(block, scheduleEndTimeEnabled, " - ");
-      for (const group of block.roles) {
+    for (const row of day.hours) {
+      const hour = csvCell(hourLabel(row.hour, "-"));
+      for (const role of columns) {
+        const cell = row.cells[role];
+        if (!cell?.count) continue;
         lines.push(
           [
             ...dayCells,
-            csvCell(time),
-            csvCell(group.label),
-            String(group.count),
-            csvCell(group.people.map((person) => person.name).join(", ")),
-            csvCell(peopleRemarks(group.people)),
+            hour,
+            csvCell(scheduleRoleLabel(role)),
+            String(cell.count),
+            coverageHours(cell.hours),
+            coverageHours(cell.cumulative),
+            csvCell(coveragePeopleText(cell.people)),
           ].join(","),
         );
       }
+      lines.push(
+        [
+          ...dayCells,
+          hour,
+          csvCell(row.gap ? (row.scheduled ? `No role coverage (${row.scheduled} scheduled)` : "No one scheduled") : "All shown roles"),
+          String(row.total.count),
+          coverageHours(row.total.hours),
+          coverageHours(row.total.cumulative),
+          "",
+        ].join(","),
+      );
+    }
+    for (const role of columns) {
+      const total = day.totals[role];
+      if (!total) continue;
+      lines.push(
+        [...dayCells, csvCell("Day total"), csvCell(scheduleRoleLabel(role)), String(total.count), coverageHours(total.hours), "", ""].join(","),
+      );
+    }
+    if (day.hours.length) {
+      lines.push(
+        [...dayCells, csvCell("Day total"), csvCell("All shown roles"), String(day.overall.count), coverageHours(day.overall.hours), "", ""].join(","),
+      );
     }
     for (const group of day.responsibilities) {
       lines.push(
@@ -285,22 +324,18 @@ export function buildTimeRoleCsvRows({ days, weekStart, scheduleEndTimeEnabled =
           csvCell("Task"),
           csvCell(group.label),
           String(group.count),
-          csvCell(group.people.map((person) => person.name).join(", ")),
-          csvCell(peopleRemarks(group.people)),
+          "",
+          "",
+          csvCell(group.people.map((person) => (person.remarks ? `${person.name}: ${person.remarks}` : person.name)).join("; ")),
         ].join(","),
       );
     }
   }
+  lines.push("", csvCell(HOURLY_COVERAGE_EXPLANATION));
   return [...lines, ...buildHoursSummaryCsvRows(hoursSummary)];
 }
 
-export function exportWeeklyScheduleTimeRoleCsv({
-  days,
-  weekStart,
-  tabLabel,
-  scheduleEndTimeEnabled = true,
-  hoursSummary = null,
-}) {
-  const lines = buildTimeRoleCsvRows({ days, weekStart, scheduleEndTimeEnabled, hoursSummary });
-  downloadCsv(lines, csvFileName({ weekStart, tabLabel: `${tabLabel || "schedule"} by time and role` }));
+export function exportWeeklyScheduleHourlyCsv({ days, weekStart, columns, tabLabel, hoursSummary = null }) {
+  const lines = buildHourlyCoverageCsvRows({ days, weekStart, columns, hoursSummary });
+  downloadCsv(lines, csvFileName({ weekStart, tabLabel: `${tabLabel || "schedule"} hourly coverage` }));
 }

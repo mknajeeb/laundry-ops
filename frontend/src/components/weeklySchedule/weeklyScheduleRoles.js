@@ -105,6 +105,42 @@ export function scheduleRoleLabel(code) {
   return scheduleRoleInfo(code)?.name || ROLE_STYLES[code]?.label || code;
 }
 
+let activeRoleGroups = [];
+
+/** Register the org's operational groups (built-in plus org-created, in display order). */
+export function setScheduleRoleGroups(groups) {
+  activeRoleGroups = Array.isArray(groups)
+    ? [...groups].sort((a, b) => Number(a.display_order || 0) - Number(b.display_order || 0))
+    : [];
+}
+
+export function scheduleRoleGroups() {
+  return activeRoleGroups;
+}
+
+export const UNGROUPED_LABEL = "Other";
+
+/**
+ * Split role codes into operational groups: groups in display order, roles in catalog order
+ * inside each, ungrouped roles last.
+ */
+export function groupRoleCodes(codes) {
+  const order = new Map(activeRoleGroups.map((group, index) => [group.code, index]));
+  const buckets = new Map();
+  for (const code of sortRoles(codes)) {
+    const groupCode = scheduleRoleInfo(code)?.role_group || "";
+    const key = order.has(groupCode) ? groupCode : "";
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(code);
+  }
+  return [...buckets.entries()]
+    .sort(([a], [b]) => (order.has(a) ? order.get(a) : 9999) - (order.has(b) ? order.get(b) : 9999))
+    .map(([code, roles]) => {
+      const group = activeRoleGroups.find((g) => g.code === code);
+      return { code, label: group?.label || UNGROUPED_LABEL, active: group?.active !== false, roles };
+    });
+}
+
 /** Tasks are assigned by day with instructions only — no times, hours, or attendance window. */
 export function isScheduleTask(code) {
   return scheduleRoleInfo(code)?.uses_time_slots === false;
@@ -565,6 +601,27 @@ export function summarizeScheduleHours(entries, employeesById = new Map()) {
     roleTotal: Math.round(roleTotal * 100) / 100,
     distinctEmployees: employees.length,
     unassignedHours: Math.max(0, Math.round((totalHours - roleTotal) * 100) / 100),
+    unassignedLabel: "Shift time without a role",
+  };
+}
+
+/**
+ * Summaries limited to selected roles (null = all): employees holding a selected role, and role rows for
+ * the selected roles only. Their other shift time is shown separately so totals still reconcile.
+ */
+export function summarizeSelectedRoleHours(entries, employeesById = new Map(), roles = null) {
+  if (!Array.isArray(roles)) return summarizeScheduleHours(entries, employeesById);
+  const selected = new Set(roles);
+  const scoped = (entries || []).filter((entry) => entryRoleAssignments(entry).some((a) => selected.has(a.role)));
+  const summary = summarizeScheduleHours(scoped, employeesById);
+  const roleRows = summary.roles.filter((row) => selected.has(row.role));
+  const roleTotal = Math.round(roleRows.reduce((sum, row) => sum + row.hours, 0) * 100) / 100;
+  return {
+    ...summary,
+    roles: roleRows,
+    roleTotal,
+    unassignedHours: Math.max(0, Math.round((summary.totalHours - roleTotal) * 100) / 100),
+    unassignedLabel: "Shift time in other roles or without a role",
   };
 }
 

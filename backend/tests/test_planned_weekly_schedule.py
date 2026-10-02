@@ -38,6 +38,7 @@ class _FakeCursor:
         self.rows: list[dict] = []
         self.exclusions: list[dict] = []
         self.roles: list[dict] = []
+        self.groups: list[dict] = []
         self.responsibilities: list[dict] = []
         self._resp_id = 0
         self.org_state: dict[int, dict] = {}
@@ -123,6 +124,12 @@ class _FakeCursor:
             )
             self._id = self._resp_id
             return
+        if sql_norm.startswith("update") and "set remarks = %s" in sql_norm:
+            remarks, org_id, rid = params
+            for r in self.responsibilities:
+                if r["organization_id"] == org_id and r["id"] == rid:
+                    r["remarks"] = remarks
+            return
         if sql_norm.startswith("update"):
             user_id, dow, role, remarks, org_id, rid = params
             for r in self.responsibilities:
@@ -205,6 +212,17 @@ class _FakeCursor:
             "count(*) as n" in sql_norm and "group by week_start" in sql_norm
         ):
             self._execute_distinct_weeks(sql_norm, params)
+            return
+        if "weekly_schedule_role_groups" in sql_norm:
+            if sql_norm.startswith("insert"):
+                org_id, code, label, order, active = params
+                self.groups = [g for g in self.groups if not (g["organization_id"] == org_id and g["code"] == code)]
+                self.groups.append(
+                    {"organization_id": org_id, "code": code, "label": label, "display_order": order, "active": active}
+                )
+            else:
+                (org_id,) = params
+                self._last = [g for g in self.groups if g["organization_id"] == org_id]
             return
         if "weekly_schedule_roles" in sql_norm:
             self._execute_roles(sql_norm, params)
@@ -2331,3 +2349,73 @@ def test_selected_weeks_copy_once_and_stop_template():
         weeks = list_future_weeks(cursor, 1, source_week_start=w2)
     assert weeks[0]["week_start"] == str(w3) and weeks[0]["shifts"] == 2
     assert all(w["week_start"] > str(w2) for w in weeks)
+
+
+# --- Operational groups and tasks saved with a shift ------------------------------------------------
+
+from backend.planned_weekly_schedule_responsibilities import sync_day_tasks  # noqa: E402
+from backend.weekly_schedule_roles import (  # noqa: E402
+    create_role_group,
+    list_role_groups,
+    reorder_role_groups,
+    update_role_group,
+)
+
+
+def test_groups_create_rename_reorder_deactivate_keep_role_assignments():
+    cursor = _FakeCursor()
+    group, err = create_role_group(cursor, 1, {"label": "Back Room"})
+    assert err is None and group["code"] == "G_BACK_ROOM" and group["active"] is True
+    _, err = create_role_group(cursor, 1, {"label": "back room"})
+    assert err and "already exists" in err
+    role, err = create_role(cursor, 1, {"name": "Bagging", "role_group": "G_BACK_ROOM"})
+    assert err is None and role["role_group"] == "G_BACK_ROOM"
+
+    renamed, err = update_role_group(cursor, 1, "G_BACK_ROOM", {"label": "Prep Area", "active": False})
+    assert err is None and renamed["label"] == "Prep Area" and renamed["active"] is False
+    catalog = {r["code"]: r for r in list_role_catalog(cursor, 1)}
+    assert catalog[role["code"]]["role_group"] == "G_BACK_ROOM"
+    kept, err = update_role(cursor, 1, role["code"], {"name": "Bagging 2", "role_group": "G_BACK_ROOM"})
+    assert err is None and kept["role_group"] == "G_BACK_ROOM"
+    _, err = create_role(cursor, 1, {"name": "Tagging", "role_group": "G_BACK_ROOM"})
+    assert err == "Prep Area is an inactive group"
+    _, err = create_role(cursor, 1, {"name": "Tagging", "role_group": "NOPE"})
+    assert err == "unknown group: NOPE"
+
+    assert reorder_role_groups(cursor, 1, ["G_BACK_ROOM", "CLEANING"]) is None
+    codes = [g["code"] for g in list_role_groups(cursor, 1)]
+    assert codes[:2] == ["G_BACK_ROOM", "CLEANING"] and "RINSE_WF" in codes
+    assert reorder_role_groups(cursor, 1, ["MISSING"]) is not None
+
+
+def test_shift_dialog_tasks_replace_day_tasks_without_touching_the_shift():
+    cursor = _FakeCursor()
+    entry, err = _create(
+        cursor,
+        {"user_id": 10, "day_of_week": 1, "start_time": "08:00", "end_time": "14:00", "break_minutes": 30, "roles": ["fold"]},
+    )
+    assert err is None
+    shift_before = dict(cursor.rows[0])
+    p1, p2 = _patched()
+    with p1, p2:
+        counts, err = sync_day_tasks(
+            cursor, 1, week_start=WEEK, user_id=10, day_of_week=1,
+            tasks=[{"role": "lint_cleaning", "remarks": "Dryers 1-6"}, {"role": "self_service"}],
+        )
+        assert err is None and counts == {"added": 2, "updated": 0, "removed": 0}
+        counts, err = sync_day_tasks(
+            cursor, 1, week_start=WEEK, user_id=10, day_of_week=1,
+            tasks=[{"role": "lint_cleaning", "remarks": "Dryers 7-12"}],
+        )
+        assert err is None and counts == {"added": 0, "updated": 1, "removed": 1}
+        _, err = sync_day_tasks(
+            cursor, 1, week_start=WEEK, user_id=10, day_of_week=1,
+            tasks=[{"role": "lint_cleaning"}, {"role": "lint_cleaning"}],
+        )
+        assert err == "Lint Cleaning is listed more than once"
+        _, err = sync_day_tasks(cursor, 1, week_start=WEEK, user_id=10, day_of_week=1, tasks=[{"role": "fold"}])
+        assert err and "is a role" in err
+        payload = build_week_payload(MagicMock(), cursor, 1, week_start=WEEK)
+    assert [(t["role"], t["remarks"]) for t in cursor.responsibilities] == [("lint_cleaning", "Dryers 7-12")]
+    assert cursor.rows[0] == shift_before
+    assert payload["employees"][0]["total_hours"] == 5.5

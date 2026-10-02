@@ -941,6 +941,19 @@ export const createWeeklyScheduleRole = (body) =>
 export const updateWeeklyScheduleRole = (roleCode, body) =>
   axios.put(`${API_BASE}/rinse/shift-analysis/weekly-schedule/roles/${encodeURIComponent(roleCode)}`, body, { timeout: 30000 });
 
+export const createWeeklyScheduleRoleGroup = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/role-groups`, body, { timeout: 30000 });
+
+export const updateWeeklyScheduleRoleGroup = (groupCode, body) =>
+  axios.put(
+    `${API_BASE}/rinse/shift-analysis/weekly-schedule/role-groups/${encodeURIComponent(groupCode)}`,
+    body,
+    { timeout: 30000 },
+  );
+
+export const reorderWeeklyScheduleRoleGroups = (codes) =>
+  axios.put(`${API_BASE}/rinse/shift-analysis/weekly-schedule/role-groups/order`, { codes }, { timeout: 30000 });
+
 export const createWeeklyScheduleResponsibility = (body) =>
   axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/responsibilities`, body, { timeout: 30000 });
 

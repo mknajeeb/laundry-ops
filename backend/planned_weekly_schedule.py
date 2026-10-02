@@ -2032,7 +2032,7 @@ def build_week_payload(
         "entries": entries,
         "daily_responsibilities": responsibilities,
         "role_catalog": list_role_catalog(cursor, organization_id),
-        "role_groups": role_groups_payload(),
+        "role_groups": role_groups_payload(cursor, organization_id),
         "totals": totals,
         "excluded_user_ids": excluded_user_ids,
         "display": view,

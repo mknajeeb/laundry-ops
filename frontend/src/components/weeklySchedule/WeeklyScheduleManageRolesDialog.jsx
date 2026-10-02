@@ -9,6 +9,7 @@ import {
   DialogContent,
   DialogTitle,
   FormControlLabel,
+  IconButton,
   MenuItem,
   Stack,
   Switch,
@@ -17,7 +18,15 @@ import {
   useMediaQuery,
   useTheme,
 } from "@mui/material";
-import { createWeeklyScheduleRole, updateWeeklyScheduleRole } from "../../api";
+import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
+import KeyboardArrowUpIcon from "@mui/icons-material/KeyboardArrowUp";
+import {
+  createWeeklyScheduleRole,
+  createWeeklyScheduleRoleGroup,
+  reorderWeeklyScheduleRoleGroups,
+  updateWeeklyScheduleRole,
+  updateWeeklyScheduleRoleGroup,
+} from "../../api";
 import { roleStyle } from "./weeklyScheduleRoles";
 
 const EDITABLE_FIELDS = ["name", "kind", "role_group", "display_order", "active", "remarks_enabled"];
@@ -60,7 +69,227 @@ function FlagSwitch({ label, checked, onChange }) {
   );
 }
 
-function RoleFields({ draft, groups, onChange }) {
+const NEW_GROUP = "__new_group__";
+
+function GroupSelect({ value, groups, onChange, onCreateGroup }) {
+  const [newName, setNewName] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState("");
+  const choices = groups.filter((group) => group.active !== false || group.code === value);
+  const create = async () => {
+    const name = String(newName || "").trim();
+    if (!name) return;
+    setCreating(true);
+    setCreateError("");
+    try {
+      const code = await onCreateGroup(name);
+      if (code) onChange(code);
+      setNewName(null);
+    } catch (e) {
+      setCreateError(e?.response?.data?.error || "Failed to create group");
+    } finally {
+      setCreating(false);
+    }
+  };
+  if (newName != null) {
+    return (
+      <Stack direction="row" spacing={0.5} alignItems="center">
+        <TextField
+          size="small"
+          autoFocus
+          label="New group"
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              create();
+            }
+          }}
+          error={Boolean(createError)}
+          helperText={createError || undefined}
+          inputProps={{ maxLength: 64 }}
+          sx={{ flex: 1, minWidth: 0 }}
+        />
+        <Button size="small" variant="contained" disabled={!newName.trim() || creating} onClick={create} sx={{ fontWeight: 700 }}>
+          {creating ? "…" : "Create"}
+        </Button>
+        <Button size="small" onClick={() => setNewName(null)} disabled={creating}>
+          Cancel
+        </Button>
+      </Stack>
+    );
+  }
+  return (
+    <TextField
+      select
+      size="small"
+      label="Group"
+      value={value || ""}
+      onChange={(e) => {
+        if (e.target.value === NEW_GROUP) setNewName("");
+        else onChange(e.target.value || null);
+      }}
+    >
+      <MenuItem value="">
+        <em>None</em>
+      </MenuItem>
+      {choices.map((group) => (
+        <MenuItem key={group.code} value={group.code}>
+          {group.active === false ? `${group.label} (inactive)` : group.label}
+        </MenuItem>
+      ))}
+      {onCreateGroup ? (
+        <MenuItem value={NEW_GROUP} sx={{ fontWeight: 700, color: "primary.main" }}>
+          + Create new group…
+        </MenuItem>
+      ) : null}
+    </TextField>
+  );
+}
+
+function GroupsPanel({ groups, roles, onGroupsChange, onCatalogChange }) {
+  const [labels, setLabels] = useState({});
+  const [newLabel, setNewLabel] = useState("");
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState("");
+  const usage = useMemo(() => {
+    const counts = {};
+    for (const role of roles) if (role.role_group) counts[role.role_group] = (counts[role.role_group] || 0) + 1;
+    return counts;
+  }, [roles]);
+
+  const apply = (res) => {
+    if (res.data?.groups) onGroupsChange?.(res.data.groups);
+    if (res.data?.roles) onCatalogChange?.(res.data.roles);
+  };
+  const run = async (key, call) => {
+    setBusy(key);
+    setError("");
+    try {
+      apply(await call());
+      return true;
+    } catch (e) {
+      setError(e?.response?.data?.error || "Failed to save group");
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  };
+  const move = (index, delta) => {
+    const codes = groups.map((group) => group.code);
+    const target = index + delta;
+    if (target < 0 || target >= codes.length) return;
+    [codes[index], codes[target]] = [codes[target], codes[index]];
+    run("__order__", () => reorderWeeklyScheduleRoleGroups(codes));
+  };
+
+  return (
+    <Box sx={{ border: "1px solid #dbe4ea", borderRadius: 1.5, p: 1.25, mb: 1.5, bgcolor: "#f8fafc" }}>
+      <Typography variant="subtitle2" fontWeight={800}>
+        Groups
+      </Typography>
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+        Operational groups organize roles and tasks in filters, the hourly view, and exports. Renaming changes only the
+        label; deactivating hides a group from new selections while existing roles keep it.
+      </Typography>
+      {error ? (
+        <Alert severity="error" sx={{ mb: 1 }}>
+          {error}
+        </Alert>
+      ) : null}
+      <Stack spacing={0.75}>
+        {groups.map((group, index) => {
+          const label = labels[group.code] ?? group.label;
+          const renamed = label.trim() && label.trim() !== group.label;
+          return (
+            <Stack
+              key={group.code}
+              direction="row"
+              spacing={0.75}
+              alignItems="center"
+              sx={{ opacity: group.active === false ? 0.65 : 1 }}
+            >
+              <Stack direction="column" spacing={0}>
+                <IconButton
+                  size="small"
+                  aria-label={`Move ${group.label} up`}
+                  disabled={index === 0 || Boolean(busy)}
+                  onClick={() => move(index, -1)}
+                  sx={{ p: 0 }}
+                >
+                  <KeyboardArrowUpIcon fontSize="small" />
+                </IconButton>
+                <IconButton
+                  size="small"
+                  aria-label={`Move ${group.label} down`}
+                  disabled={index === groups.length - 1 || Boolean(busy)}
+                  onClick={() => move(index, 1)}
+                  sx={{ p: 0 }}
+                >
+                  <KeyboardArrowDownIcon fontSize="small" />
+                </IconButton>
+              </Stack>
+              <TextField
+                size="small"
+                value={label}
+                onChange={(e) => setLabels((prev) => ({ ...prev, [group.code]: e.target.value }))}
+                inputProps={{ maxLength: 64, "aria-label": `${group.label} name` }}
+                sx={{ flex: 1, minWidth: 0, bgcolor: "#fff" }}
+              />
+              <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: "nowrap", minWidth: 52 }}>
+                {usage[group.code] || 0} item{usage[group.code] === 1 ? "" : "s"}
+              </Typography>
+              <FlagSwitch
+                label="Active"
+                checked={group.active !== false}
+                onChange={(active) =>
+                  run(group.code, () => updateWeeklyScheduleRoleGroup(group.code, { active }))
+                }
+              />
+              <Button
+                size="small"
+                variant={renamed ? "contained" : "outlined"}
+                disabled={!renamed || Boolean(busy)}
+                onClick={async () => {
+                  const ok = await run(group.code, () => updateWeeklyScheduleRoleGroup(group.code, { label: label.trim() }));
+                  if (ok) setLabels((prev) => ({ ...prev, [group.code]: undefined }));
+                }}
+                sx={{ fontWeight: 700 }}
+              >
+                {busy === group.code ? "Saving…" : "Rename"}
+              </Button>
+            </Stack>
+          );
+        })}
+      </Stack>
+      <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 1 }}>
+        <TextField
+          size="small"
+          label="New group"
+          value={newLabel}
+          onChange={(e) => setNewLabel(e.target.value)}
+          inputProps={{ maxLength: 64 }}
+          sx={{ flex: 1, minWidth: 0, bgcolor: "#fff" }}
+        />
+        <Button
+          size="small"
+          variant="contained"
+          disabled={!newLabel.trim() || Boolean(busy)}
+          onClick={async () => {
+            const ok = await run("__new__", () => createWeeklyScheduleRoleGroup({ label: newLabel.trim() }));
+            if (ok) setNewLabel("");
+          }}
+          sx={{ fontWeight: 700 }}
+        >
+          {busy === "__new__" ? "Adding…" : "Add group"}
+        </Button>
+      </Stack>
+    </Box>
+  );
+}
+
+function RoleFields({ draft, groups, onChange, onCreateGroup }) {
   const isTask = draft.kind === "task";
   return (
     <Box
@@ -96,22 +325,12 @@ function RoleFields({ draft, groups, onChange }) {
           </MenuItem>
         ))}
       </TextField>
-      <TextField
-        select
-        size="small"
-        label="Group"
-        value={draft.role_group || ""}
-        onChange={(e) => onChange({ role_group: e.target.value || null })}
-      >
-        <MenuItem value="">
-          <em>None</em>
-        </MenuItem>
-        {groups.map((group) => (
-          <MenuItem key={group.code} value={group.code}>
-            {group.label}
-          </MenuItem>
-        ))}
-      </TextField>
+      <GroupSelect
+        value={draft.role_group}
+        groups={groups}
+        onChange={(code) => onChange({ role_group: code })}
+        onCreateGroup={onCreateGroup}
+      />
       <TextField
         size="small"
         label="Order"
@@ -134,9 +353,17 @@ function RoleFields({ draft, groups, onChange }) {
   );
 }
 
-export default function WeeklyScheduleManageRolesDialog({ open, onClose, roles = [], groups = [], onCatalogChange }) {
+export default function WeeklyScheduleManageRolesDialog({
+  open,
+  onClose,
+  roles = [],
+  groups = [],
+  onCatalogChange,
+  onGroupsChange,
+}) {
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
+  const [groupsOpen, setGroupsOpen] = useState(false);
   const [drafts, setDrafts] = useState({});
   const [newRole, setNewRole] = useState(EMPTY_NEW_ROLE);
   const [savingCode, setSavingCode] = useState(null);
@@ -170,6 +397,12 @@ export default function WeeklyScheduleManageRolesDialog({ open, onClose, roles =
   const rows = useMemo(() => roles.map(withKind), [roles]);
 
   const groupLabel = useMemo(() => Object.fromEntries(groups.map((g) => [g.code, g.label])), [groups]);
+
+  const createGroup = async (label) => {
+    const res = await createWeeklyScheduleRoleGroup({ label });
+    if (res.data?.groups) onGroupsChange?.(res.data.groups);
+    return res.data?.group?.code || null;
+  };
 
   const saveRole = async (role) => {
     const draft = drafts[role.code];
@@ -215,8 +448,20 @@ export default function WeeklyScheduleManageRolesDialog({ open, onClose, roles =
           post-weighing) and count toward scheduled hours. <strong>Tasks</strong> (cleaning, Self Service, Drop Off
           customer attendance) are assigned to an employee for a day with instructions only — no times, no hours. These
           are separate from login permissions. Deactivating hides an item from new assignments; existing schedules keep
-          showing it. Changing the type applies to new assignments only.
+          showing it. Changing a role to a task converts this week&apos;s and later assignments into day tasks (with the
+          previous time range kept in the instructions); the shifts themselves, their breaks, and hours stay as they are.
         </Typography>
+        <Button
+          size="small"
+          variant={groupsOpen ? "contained" : "outlined"}
+          onClick={() => setGroupsOpen((v) => !v)}
+          sx={{ mb: 1.5, fontWeight: 700 }}
+        >
+          {groupsOpen ? "Hide groups" : "Manage groups"}
+        </Button>
+        {groupsOpen ? (
+          <GroupsPanel groups={groups} roles={roles} onGroupsChange={onGroupsChange} onCatalogChange={onCatalogChange} />
+        ) : null}
         {error ? (
           <Alert severity="error" sx={{ mb: 1.5 }}>
             {error}
@@ -264,6 +509,7 @@ export default function WeeklyScheduleManageRolesDialog({ open, onClose, roles =
                 <RoleFields
                   draft={draft}
                   groups={groups}
+                  onCreateGroup={createGroup}
                   onChange={(patch) => setDrafts((prev) => ({ ...prev, [role.code]: { ...prev[role.code], ...patch } }))}
                 />
               </Box>
@@ -274,7 +520,12 @@ export default function WeeklyScheduleManageRolesDialog({ open, onClose, roles =
             <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 1 }}>
               Add role or task
             </Typography>
-            <RoleFields draft={newRole} groups={groups} onChange={(patch) => setNewRole((prev) => ({ ...prev, ...patch }))} />
+            <RoleFields
+              draft={newRole}
+              groups={groups}
+              onCreateGroup={createGroup}
+              onChange={(patch) => setNewRole((prev) => ({ ...prev, ...patch }))}
+            />
             <Button
               variant="contained"
               size="small"

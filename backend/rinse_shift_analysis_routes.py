@@ -55,6 +55,23 @@ def _sync_schedule_template(conn, cursor, organization_id: int, week_start) -> d
     return propagate_template_if_source(conn, cursor, organization_id, week_start)
 
 
+def _sync_entry_day_tasks(cursor, organization_id: int, week_start, entry, body) -> str | None:
+    """Shift dialog ``tasks`` replace that employee's tasks for the shift's day (no-op when absent)."""
+    if not entry or "tasks" not in (body or {}):
+        return None
+    from backend.planned_weekly_schedule_responsibilities import sync_day_tasks
+
+    _, err = sync_day_tasks(
+        cursor,
+        organization_id,
+        week_start=week_start,
+        user_id=int(entry["user_id"]),
+        day_of_week=int(entry["day_of_week"]),
+        tasks=body.get("tasks"),
+    )
+    return err
+
+
 def register_rinse_shift_analysis_routes(
     app,
     *,
@@ -1860,6 +1877,10 @@ def register_rinse_shift_analysis_routes(
             )
             if err:
                 return jsonify({"error": err}), 400
+            err = _sync_entry_day_tasks(cursor, tenant_oid, week_start, entry, body)
+            if err:
+                conn.rollback()
+                return jsonify({"error": err}), 400
             sync = _sync_schedule_template(conn, cursor, tenant_oid, week_start)
             conn.commit()
             payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
@@ -1896,6 +1917,10 @@ def register_rinse_shift_analysis_routes(
             if err:
                 return jsonify({"error": err}), 400
             week_start = date.fromisoformat(str(existing["week_start"]))
+            err = _sync_entry_day_tasks(cursor, tenant_oid, week_start, entry, body)
+            if err:
+                conn.rollback()
+                return jsonify({"error": err}), 400
             sync = _sync_schedule_template(conn, cursor, tenant_oid, week_start)
             conn.commit()
             payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
@@ -2311,7 +2336,10 @@ def register_rinse_shift_analysis_routes(
             tenant_oid = user_org_id(me)
             return jsonify(
                 json_safe_rinse(
-                    {"roles": list_role_catalog(cursor, tenant_oid), "groups": role_groups_payload()}
+                    {
+                        "roles": list_role_catalog(cursor, tenant_oid),
+                        "groups": role_groups_payload(cursor, tenant_oid),
+                    }
                 )
             )
         except Exception as exc:
@@ -2403,6 +2431,58 @@ def register_rinse_shift_analysis_routes(
         finally:
             cursor.close()
             conn.close()
+
+    def _role_group_mutation(action):
+        from backend.weekly_schedule_roles import list_role_catalog, list_role_groups
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            group, err = action(cursor, tenant_oid, request.get_json(silent=True) or {})
+            if err:
+                return jsonify({"error": err}), 404 if err == "group not found" else 400
+            conn.commit()
+            return jsonify(
+                json_safe_rinse(
+                    {
+                        "group": group,
+                        "groups": list_role_groups(cursor, tenant_oid),
+                        "roles": list_role_catalog(cursor, tenant_oid),
+                    }
+                )
+            )
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/role-groups", methods=["POST"])
+    def rinse_shift_analysis_weekly_schedule_role_group_create():
+        from backend.weekly_schedule_roles import create_role_group
+
+        return _role_group_mutation(create_role_group)
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/role-groups/order", methods=["PUT"])
+    def rinse_shift_analysis_weekly_schedule_role_group_reorder():
+        from backend.weekly_schedule_roles import reorder_role_groups
+
+        return _role_group_mutation(lambda c, oid, body: (None, reorder_role_groups(c, oid, body.get("codes"))))
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/role-groups/<group_code>", methods=["PUT"])
+    def rinse_shift_analysis_weekly_schedule_role_group_update(group_code: str):
+        from backend.weekly_schedule_roles import update_role_group
+
+        return _role_group_mutation(lambda c, oid, body: update_role_group(c, oid, group_code, body))
 
     @app.route("/rinse/shift-analysis/weekly-schedule/responsibilities", methods=["POST"])
     def rinse_shift_analysis_weekly_schedule_responsibility_create():

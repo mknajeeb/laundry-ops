@@ -155,8 +155,164 @@ def is_task_role(role: str, catalog: Mapping[str, Mapping[str, Any]]) -> bool:
     return bool(info) and not info.get("uses_time_slots", True)
 
 
-def role_groups_payload() -> list[dict[str, str]]:
-    return [{"code": code, "label": label} for code, label in ROLE_GROUPS]
+GROUPS_TABLE = "weekly_schedule_role_groups"
+GROUP_LABEL_MAX = 64
+_GROUP_CODE_MAX = 32
+CUSTOM_GROUP_PREFIX = "G_"
+
+
+def ensure_role_groups_table(cursor) -> None:
+    if table_exists(cursor, GROUPS_TABLE):
+        return
+    cursor.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {GROUPS_TABLE} (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          organization_id INT NOT NULL,
+          code VARCHAR(32) NOT NULL,
+          label VARCHAR(64) NOT NULL,
+          display_order INT NOT NULL DEFAULT 0,
+          active TINYINT(1) NOT NULL DEFAULT 1,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP NULL ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_wsrg_org_code (organization_id, code)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    invalidate_schema_cache()
+
+
+def _builtin_groups() -> dict[str, dict[str, Any]]:
+    return {
+        code: {"code": code, "label": label, "display_order": (i + 1) * 10, "active": True, "builtin": True}
+        for i, (code, label) in enumerate(ROLE_GROUPS)
+    }
+
+
+def list_role_groups(cursor, organization_id: int) -> list[dict[str, Any]]:
+    """Built-in groups overlaid with org edits, plus org-created groups, in display order.
+
+    Roles store the group ``code``; renaming changes only the label, so assignments never move.
+    """
+    by_code = _builtin_groups()
+    ensure_role_groups_table(cursor)
+    cursor.execute(
+        f"SELECT code, label, display_order, active FROM {GROUPS_TABLE} WHERE organization_id = %s",
+        (int(organization_id),),
+    )
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict) or not row.get("code"):
+            continue
+        code = str(row["code"]).strip().upper()
+        by_code[code] = {
+            "code": code,
+            "label": str(row.get("label") or code),
+            "display_order": int(row.get("display_order") or 0),
+            "active": bool(row.get("active", True)),
+            "builtin": code in ROLE_GROUP_CODES,
+        }
+    return sorted(by_code.values(), key=lambda g: (g["display_order"], g["label"].casefold()))
+
+
+def role_groups_payload(cursor=None, organization_id: int | None = None) -> list[dict[str, Any]]:
+    if cursor is None or organization_id is None:
+        return sorted(_builtin_groups().values(), key=lambda g: g["display_order"])
+    return list_role_groups(cursor, organization_id)
+
+
+def _upsert_group(cursor, organization_id: int, group: Mapping[str, Any]) -> None:
+    ensure_role_groups_table(cursor)
+    cursor.execute(
+        f"""
+        INSERT INTO {GROUPS_TABLE} (organization_id, code, label, display_order, active)
+        VALUES (%s,%s,%s,%s,%s)
+        ON DUPLICATE KEY UPDATE label=VALUES(label), display_order=VALUES(display_order), active=VALUES(active)
+        """,
+        (
+            int(organization_id),
+            group["code"],
+            group["label"],
+            int(group.get("display_order") or 0),
+            1 if group.get("active", True) else 0,
+        ),
+    )
+
+
+def _validate_group_fields(
+    data: Mapping[str, Any],
+    current: Mapping[str, Any],
+    groups: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any] | None, str | None]:
+    out = dict(current)
+    if "label" in data or "name" in data:
+        label = " ".join(str(data.get("label", data.get("name")) or "").split())
+        if not label:
+            return None, "group name is required"
+        if len(label) > GROUP_LABEL_MAX:
+            return None, f"group name must be at most {GROUP_LABEL_MAX} characters"
+        if any(g["code"] != current.get("code") and g["label"].casefold() == label.casefold() for g in groups):
+            return None, f"a group named {label} already exists"
+        out["label"] = label
+    if "display_order" in data:
+        try:
+            out["display_order"] = int(data.get("display_order"))
+        except (TypeError, ValueError):
+            return None, "display_order must be an integer"
+    if "active" in data:
+        out["active"] = _parse_bool(data.get("active"), bool(out.get("active", True)))
+    return out, None
+
+
+def create_role_group(cursor, organization_id: int, data: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    groups = list_role_groups(cursor, organization_id)
+    base = {
+        "code": "",
+        "label": "",
+        "display_order": max((g["display_order"] for g in groups), default=0) + 10,
+        "active": True,
+    }
+    if not str(data.get("label", data.get("name")) or "").strip():
+        return None, "group name is required"
+    group, err = _validate_group_fields(data, base, groups)
+    if err or group is None:
+        return None, err
+    slug = re.sub(r"[^A-Z0-9]+", "_", group["label"].upper()).strip("_") or "GROUP"
+    room = _GROUP_CODE_MAX - len(CUSTOM_GROUP_PREFIX)
+    taken = {g["code"] for g in groups}
+    code, n = f"{CUSTOM_GROUP_PREFIX}{slug[:room]}", 2
+    while code in taken:
+        suffix = f"_{n}"
+        code = f"{CUSTOM_GROUP_PREFIX}{slug[: room - len(suffix)]}{suffix}"
+        n += 1
+    group["code"] = code
+    _upsert_group(cursor, organization_id, group)
+    return {**group, "builtin": False}, None
+
+
+def update_role_group(
+    cursor, organization_id: int, code: str, data: Mapping[str, Any]
+) -> tuple[dict[str, Any] | None, str | None]:
+    groups = list_role_groups(cursor, organization_id)
+    key = str(code or "").strip().upper()
+    current = next((g for g in groups if g["code"] == key), None)
+    if not current:
+        return None, "group not found"
+    group, err = _validate_group_fields(data, current, groups)
+    if err or group is None:
+        return None, err
+    _upsert_group(cursor, organization_id, group)
+    return group, None
+
+
+def reorder_role_groups(cursor, organization_id: int, codes: Sequence[str]) -> str | None:
+    groups = {g["code"]: g for g in list_role_groups(cursor, organization_id)}
+    ordered = [str(c or "").strip().upper() for c in codes or []]
+    if not ordered or any(c not in groups for c in ordered) or len(set(ordered)) != len(ordered):
+        return "codes must list existing groups once each"
+    rest = [c for c in groups if c not in ordered]
+    for i, code in enumerate(ordered + rest):
+        _upsert_group(cursor, organization_id, {**groups[code], "display_order": (i + 1) * 10})
+    return None
 
 
 def list_role_catalog(cursor, organization_id: int) -> list[dict[str, Any]]:
@@ -265,6 +421,7 @@ def _validate_role_fields(
     data: Mapping[str, Any],
     current: Mapping[str, Any],
     catalog: Sequence[Mapping[str, Any]],
+    groups: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     out = dict(current)
     if "name" in data:
@@ -293,8 +450,11 @@ def _validate_role_fields(
             out["remarks_enabled"] = True
     if "role_group" in data:
         raw_group = str(data.get("role_group") or "").strip().upper()
-        if raw_group and raw_group not in ROLE_GROUP_CODES:
-            return None, "role_group must be one of " + ", ".join(sorted(ROLE_GROUP_CODES))
+        known = {g["code"]: g for g in (groups if groups is not None else role_groups_payload())}
+        if raw_group and raw_group not in known:
+            return None, f"unknown group: {raw_group}"
+        if raw_group and raw_group != current.get("role_group") and not known[raw_group].get("active", True):
+            return None, f"{known[raw_group]['label']} is an inactive group"
         out["role_group"] = raw_group or None
     if "display_order" in data:
         try:
@@ -367,7 +527,7 @@ def create_role(
         "uses_time_slots": True,
         "remarks_enabled": False,
     }
-    role, err = _validate_role_fields(data, base, catalog)
+    role, err = _validate_role_fields(data, base, catalog, list_role_groups(cursor, organization_id))
     if err or role is None:
         return None, err
     role["code"] = _custom_code_for_name(role["name"], {r["code"] for r in catalog})
@@ -386,7 +546,7 @@ def update_role(
     current = next((r for r in catalog if r["code"] == key), None)
     if not current:
         return None, "schedule role not found"
-    role, err = _validate_role_fields(data, current, catalog)
+    role, err = _validate_role_fields(data, current, catalog, list_role_groups(cursor, organization_id))
     if err or role is None:
         return None, err
     _upsert_role(cursor, organization_id, role)

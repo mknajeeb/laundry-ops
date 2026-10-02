@@ -241,6 +241,75 @@ def update_responsibility(
     return get_responsibility(cursor, organization_id, responsibility_id), None
 
 
+def sync_day_tasks(
+    cursor,
+    organization_id: int,
+    *,
+    week_start: date,
+    user_id: int,
+    day_of_week: int,
+    tasks: Any,
+) -> tuple[dict[str, int] | None, str | None]:
+    """Make the employee's tasks for one day exactly ``tasks`` ([{role, remarks}]).
+
+    Used by the shift dialog. Only the tasks table changes, so shifts, breaks, and hours are untouched.
+    Unchanged tasks keep their row; a role listed twice is rejected instead of duplicated.
+    """
+    from backend.planned_weekly_schedule import _load_role_catalog_index
+    from backend.weekly_schedule_roles import accept_remarks, normalize_remarks, role_assignment_error
+
+    if not isinstance(tasks, list):
+        return None, "tasks must be a list"
+    ensure_responsibilities_table(cursor)
+    oid, uid, dow = int(organization_id), int(user_id), int(day_of_week)
+    catalog = _load_role_catalog_index(cursor, oid)
+    current = {
+        item["role"]: item
+        for item in list_week_responsibilities(cursor, oid, week_start=week_start)
+        if item["user_id"] == uid and item["day_of_week"] == dow
+    }
+    wanted: dict[str, str | None] = {}
+    for raw in tasks:
+        if not isinstance(raw, Mapping):
+            return None, "each task must be an object"
+        role = normalize_weekly_role(raw.get("role"))
+        if not role:
+            return None, f"unknown task: {raw.get('role')}"
+        label = (catalog.get(role) or {}).get("name") or role
+        if role in wanted:
+            return None, f"{label} is listed more than once"
+        err = role_assignment_error(role, catalog, timed=False, already_assigned=role in current)
+        if err:
+            return None, err
+        prior = current.get(role, {}).get("remarks")
+        wanted[role] = accept_remarks(
+            role, normalize_remarks(raw.get("remarks")), catalog, existing={prior} if prior else None
+        )
+    counts = {"added": 0, "updated": 0, "removed": 0}
+    for role, item in current.items():
+        if role not in wanted:
+            delete_responsibility(cursor, oid, item["id"])
+            counts["removed"] += 1
+    for role, remarks in wanted.items():
+        if role not in current:
+            cursor.execute(
+                f"""
+                INSERT INTO {TABLE} (organization_id, week_start, user_id, day_of_week, role, remarks)
+                VALUES (%s,%s,%s,%s,%s,%s)
+                ON DUPLICATE KEY UPDATE remarks = VALUES(remarks)
+                """,
+                (oid, week_start, uid, dow, role, remarks),
+            )
+            counts["added"] += 1
+        elif (current[role].get("remarks") or None) != remarks:
+            cursor.execute(
+                f"UPDATE {TABLE} SET remarks = %s WHERE organization_id = %s AND id = %s",
+                (remarks, oid, current[role]["id"]),
+            )
+            counts["updated"] += 1
+    return counts, None
+
+
 def delete_responsibility(cursor, organization_id: int, responsibility_id: int) -> bool:
     ensure_responsibilities_table(cursor)
     cursor.execute(

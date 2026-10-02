@@ -50,10 +50,17 @@ import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import WeeklyScheduleCascadeDialog from "../components/weeklySchedule/WeeklyScheduleCascadeDialog";
 import WeeklyScheduleEntryDialog from "../components/weeklySchedule/WeeklyScheduleEntryDialog";
 import WeeklyScheduleManageRolesDialog from "../components/weeklySchedule/WeeklyScheduleManageRolesDialog";
-import WeeklyScheduleTimeRoleView from "../components/weeklySchedule/WeeklyScheduleTimeRoleView";
+import WeeklyScheduleTimeRoleView, {
+  HourlyCoverageControls,
+} from "../components/weeklySchedule/WeeklyScheduleTimeRoleView";
 import WeeklyScheduleHoursSummary from "../components/weeklySchedule/WeeklyScheduleHoursSummary";
 import WeeklyScheduleResponsibilityChip from "../components/weeklySchedule/WeeklyScheduleResponsibilityChip";
-import { ASSIGNMENT_KIND, buildTimeRoleDays } from "../components/weeklySchedule/weeklyScheduleTimeBlocks";
+import {
+  ASSIGNMENT_KIND,
+  buildHourlyCoverage,
+  coverageColumns,
+  filterCoverageHours,
+} from "../components/weeklySchedule/weeklyScheduleTimeBlocks";
 import WeeklyScheduleDayHeader from "../components/weeklySchedule/WeeklyScheduleDayHeader";
 import WeeklyScheduleEmployeeCell from "../components/weeklySchedule/WeeklyScheduleEmployeeCell";
 import WeeklyScheduleShiftCard from "../components/weeklySchedule/WeeklyScheduleShiftCard";
@@ -81,7 +88,7 @@ import {
 } from "../components/weeklySchedule/weeklyScheduleDates";
 import {
   exportWeeklyScheduleCsv,
-  exportWeeklyScheduleTimeRoleCsv,
+  exportWeeklyScheduleHourlyCsv,
 } from "../components/weeklySchedule/weeklyScheduleExport";
 import WeeklySchedulePrintTable from "../components/weeklySchedule/WeeklySchedulePrintTable";
 import WeeklyScheduleTimeRolePrint from "../components/weeklySchedule/WeeklyScheduleTimeRolePrint";
@@ -100,9 +107,13 @@ import {
   computeFilteredDaySummaries,
   computeWeekSummary,
   scheduleCellBackground,
+  isScheduleTask,
   scheduleRoleCatalog,
   setScheduleRoleCatalog,
-  summarizeScheduleHours,
+  setScheduleRoleGroups,
+  entryRoleAssignments,
+  sortRoles,
+  summarizeSelectedRoleHours,
 } from "../components/weeklySchedule/weeklyScheduleRoles";
 
 const VIEW_MODE = { EMPLOYEE: "employee", TIME_ROLE: "time_role" };
@@ -315,6 +326,9 @@ export default function WeeklySchedulePage() {
   const [employerTab, setEmployerTab] = useState(ENTITY_TAB.RINSE_EXCLUSIVE);
   const [selectedRoleView, setSelectedRoleView] = useState([]);
   const [dayViewTab, setDayViewTab] = useState(SCHEDULE_VIEW_ALL);
+  const [matrixRoles, setMatrixRoles] = useState(null);
+  const [showCoverageNames, setShowCoverageNames] = useState(true);
+  const [coverageRange, setCoverageRange] = useState({ fromHour: null, toHour: null });
   const printContentRef = useRef(null);
   const stickyHeaderRef = useRef(null);
 
@@ -343,6 +357,10 @@ export default function WeeklySchedulePage() {
     setScheduleRoleCatalog(data?.role_catalog);
     return scheduleRoleCatalog();
   }, [data?.role_catalog]);
+  const roleGroups = useMemo(() => {
+    setScheduleRoleGroups(data?.role_groups);
+    return data?.role_groups || [];
+  }, [data?.role_groups]);
 
   useEffect(() => {
     if (data?.display) {
@@ -552,31 +570,59 @@ export default function WeeklySchedulePage() {
   );
   const hoursSummary = useMemo(
     () =>
-      summarizeScheduleHours(
+      summarizeSelectedRoleHours(
         timeViewEntries,
         new Map((data?.employees || []).map((e) => [Number(e.user_id), e])),
+        matrixRoles,
       ),
     // roleCatalog: role order, labels, and task/role type come from the registered catalog.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [timeViewEntries, data?.employees, roleCatalog],
+    [timeViewEntries, data?.employees, matrixRoles, roleCatalog],
   );
   const shiftCategoryChoices = useCallback(
     (userId) => shiftEntityChoicesForEmployee(employeesById[userId], organizationSlug),
     [employeesById, organizationSlug],
   );
   const scheduleTemplate = data?.schedule_template || null;
-  const timeRoleDays = useMemo(
+  const hiddenRolesSetting = display.hidden_schedule_roles;
+  const coverageRoleOptions = useMemo(() => {
+    const hidden = new Set(hiddenRolesSetting || []);
+    const codes = new Set(
+      roleCatalog
+        .filter((role) => role.active !== false && role.uses_time_slots !== false && !hidden.has(role.code))
+        .map((role) => role.code),
+    );
+    for (const entry of timeViewEntries) {
+      for (const assignment of entryRoleAssignments(entry)) {
+        if (assignment.role && !isScheduleTask(assignment.role)) codes.add(assignment.role);
+      }
+    }
+    return sortRoles([...codes]);
+  }, [roleCatalog, hiddenRolesSetting, timeViewEntries]);
+  const coverageAllHours = useMemo(
     () =>
-      buildTimeRoleDays(timeViewEntries, {
+      buildHourlyCoverage(timeViewEntries, {
         dayIndices: visibleDayColumns,
         employeesById,
         responsibilities: timeViewResponsibilities,
-        selectedRoles: resolveRoleViewRoles(selectedRoleView),
-        endTimeEnabled: scheduleEndTimeEnabled,
+        roles: matrixRoles,
       }),
-    // roleCatalog: grouping reads role order and labels from the registered catalog.
+    // roleCatalog + roleGroups: column order and labels come from the registered catalog.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [timeViewEntries, visibleDayColumns, employeesById, timeViewResponsibilities, selectedRoleView, scheduleEndTimeEnabled, roleCatalog],
+    [timeViewEntries, visibleDayColumns, employeesById, timeViewResponsibilities, matrixRoles, roleCatalog, roleGroups],
+  );
+  const coverageMatrixColumns = useMemo(
+    () => (Array.isArray(matrixRoles) ? sortRoles(matrixRoles) : coverageColumns(coverageAllHours)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [matrixRoles, coverageAllHours, roleCatalog],
+  );
+  const coverageHourBounds = useMemo(() => {
+    const hours = coverageAllHours.flatMap((day) => day.hours.map((row) => row.hour));
+    return hours.length ? { min: Math.min(...hours), max: Math.max(...hours) } : null;
+  }, [coverageAllHours]);
+  const coverageDays = useMemo(
+    () => filterCoverageHours(coverageAllHours, coverageRange),
+    [coverageAllHours, coverageRange],
   );
 
   const addableEmployees = useMemo(() => {
@@ -713,6 +759,10 @@ export default function WeeklySchedulePage() {
     setData((prev) => (prev ? { ...prev, role_catalog: roles } : prev));
   };
 
+  const handleGroupsChange = (groups) => {
+    setData((prev) => (prev ? { ...prev, role_groups: groups } : prev));
+  };
+
   const handleDelete = async (entry) => {
     if (!window.confirm("Delete this shift?")) return;
     setError("");
@@ -787,11 +837,11 @@ export default function WeeklySchedulePage() {
   const handleExport = () => {
     const viewSuffix = scheduleViewLabel ? ` - ${scheduleViewLabel}` : "";
     if (viewMode === VIEW_MODE.TIME_ROLE) {
-      exportWeeklyScheduleTimeRoleCsv({
-        days: timeRoleDays,
+      exportWeeklyScheduleHourlyCsv({
+        days: coverageDays,
         weekStart,
+        columns: coverageMatrixColumns,
         tabLabel: `${ENTITY_TAB_LABELS[employerTab]}${viewSuffix}`,
-        scheduleEndTimeEnabled,
         hoursSummary,
       });
       return;
@@ -1010,7 +1060,11 @@ export default function WeeklySchedulePage() {
                 size="small"
                 exclusive
                 value={viewMode}
-                onChange={(_, value) => value && setViewMode(value)}
+                onChange={(_, value) => {
+                  if (!value) return;
+                  if (value === VIEW_MODE.TIME_ROLE) setSelectedRoleView([]);
+                  setViewMode(value);
+                }}
                 sx={{
                   height: 30,
                   "& .MuiToggleButton-root": {
@@ -1165,6 +1219,7 @@ export default function WeeklySchedulePage() {
               hiddenRoles={hiddenScheduleRoles}
               roleCatalog={roleCatalog}
               responsibilities={tabResponsibilities}
+              hideRoles={viewMode === VIEW_MODE.TIME_ROLE}
             />
           ) : null}
 
@@ -1325,10 +1380,23 @@ export default function WeeklySchedulePage() {
               >
                 {viewMode === VIEW_MODE.TIME_ROLE ? (
                   <>
+                    <HourlyCoverageControls
+                      roleOptions={coverageRoleOptions}
+                      selectedRoles={matrixRoles}
+                      onSelectedRolesChange={setMatrixRoles}
+                      showNames={showCoverageNames}
+                      onShowNamesChange={setShowCoverageNames}
+                      fromHour={coverageRange.fromHour}
+                      toHour={coverageRange.toHour}
+                      hourBounds={coverageHourBounds}
+                      onHourRangeChange={setCoverageRange}
+                    />
                     <WeeklyScheduleHoursSummary summary={hoursSummary} scopeLabel={scheduleViewLabel} />
                     <WeeklyScheduleTimeRoleView
                       weekStart={weekStart}
-                      days={timeRoleDays}
+                      days={coverageDays}
+                      columns={coverageMatrixColumns}
+                      showNames={showCoverageNames}
                       endTimeEnabled={scheduleEndTimeEnabled}
                       canEdit={canEdit}
                       onEditEntry={openEdit}
@@ -1518,16 +1586,17 @@ export default function WeeklySchedulePage() {
           <div className="weekly-schedule-print-doc-header">
             <div className="weekly-schedule-print-doc-title">
               Weekly Schedule — {ENTITY_TAB_LABELS[employerTab]}
-              {viewMode === VIEW_MODE.TIME_ROLE ? " — By time & role" : ""}
+              {viewMode === VIEW_MODE.TIME_ROLE ? " — Hourly coverage by role" : ""}
               {scheduleViewLabel ? ` — ${scheduleViewLabel}` : ""}
             </div>
             <div className="weekly-schedule-print-doc-subtitle">{formatWeekRange(weekStart)}</div>
           </div>
           {viewMode === VIEW_MODE.TIME_ROLE ? (
             <WeeklyScheduleTimeRolePrint
-              days={timeRoleDays}
+              days={coverageDays}
               weekStart={weekStart}
-              endTimeEnabled={scheduleEndTimeEnabled}
+              columns={coverageMatrixColumns}
+              showNames={showCoverageNames}
               hoursSummary={hoursSummary}
             />
           ) : (
@@ -1564,13 +1633,15 @@ export default function WeeklySchedulePage() {
         scheduleEndTimeEnabled={scheduleEndTimeEnabled}
         shiftCategoryChoices={shiftCategoryChoices}
         categoryLabel={entityLabel}
+        dailyResponsibilities={data?.daily_responsibilities}
       />
       <WeeklyScheduleManageRolesDialog
         open={rolesOpen && canEdit}
         onClose={() => setRolesOpen(false)}
         roles={roleCatalog}
-        groups={data?.role_groups || []}
+        groups={roleGroups}
         onCatalogChange={handleCatalogChange}
+        onGroupsChange={handleGroupsChange}
       />
       <WeeklyScheduleCascadeDialog
         open={cascadeOpen && canEdit}

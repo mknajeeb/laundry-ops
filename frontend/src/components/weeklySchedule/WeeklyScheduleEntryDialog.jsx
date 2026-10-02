@@ -27,6 +27,8 @@ import PlanningTimePicker from "../datetime/PlanningTimePicker";
 import { entryRoleAssignments, scheduleRoleCatalog, scheduleRoleLabel } from "./weeklyScheduleRoles";
 import { ASSIGNMENT_KIND } from "./weeklyScheduleTimeBlocks";
 
+const NO_TASKS = [];
+
 let rowSeq = 0;
 function makeRow(partial = {}) {
   rowSeq += 1;
@@ -79,6 +81,7 @@ export default function WeeklyScheduleEntryDialog({
   scheduleEndTimeEnabled = true,
   shiftCategoryChoices = null,
   categoryLabel = (value) => value,
+  dailyResponsibilities = NO_TASKS,
 }) {
   const isEdit = Boolean(entry?.id || responsibility?.id);
   const catalog = scheduleRoleCatalog();
@@ -99,6 +102,8 @@ export default function WeeklyScheduleEntryDialog({
   const [breakMinutes, setBreakMinutes] = useState(0);
   const [respRole, setRespRole] = useState("");
   const [respRemarks, setRespRemarks] = useState("");
+  const [taskRows, setTaskRows] = useState([]);
+  const [tasksTouched, setTasksTouched] = useState(false);
 
   const timedOptions = useMemo(() => roleOptions(catalog, { timed: true }), [catalog]);
   const untimedOptions = useMemo(
@@ -153,18 +158,50 @@ export default function WeeklyScheduleEntryDialog({
     setRespRemarks("");
   }, [open, entry, responsibility, defaultUserId, defaultDay, defaultKind, defaultRole, defaultStartTime, defaultEndTime]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The day's saved tasks for the chosen employee; reloaded whenever the employee or day changes so a
+  // save never replaces another day's tasks with rows typed for this one.
+  const savedDayTasks = useMemo(
+    () =>
+      (dailyResponsibilities || []).filter(
+        (item) => Number(item.user_id) === Number(userId) && Number(item.day_of_week) === Number(dayOfWeek),
+      ),
+    [dailyResponsibilities, userId, dayOfWeek],
+  );
+  useEffect(() => {
+    if (!open) return;
+    setTaskRows(
+      savedDayTasks.map((item) => makeRow({ role: item.role, savedRole: item.role, remarks: item.remarks || "" })),
+    );
+    setTasksTouched(false);
+  }, [open, savedDayTasks]);
+
   const isShift = kind === ASSIGNMENT_KIND.SHIFT;
   const canSplit = scheduleEndTimeEnabled;
 
   const updateRow = (id, patch) => setRows((prev) => prev.map((row) => (row.id === id ? { ...row, ...patch } : row)));
   const removeRow = (id) => setRows((prev) => prev.filter((row) => row.id !== id));
 
+  const editTasks = (update) => {
+    setTasksTouched(true);
+    setTaskRows(update);
+  };
+  const taskRowOptions = (row) => {
+    const taken = new Set(taskRows.filter((other) => other.id !== row.id).map((other) => other.role));
+    return roleOptions(catalog, { timed: false, keep: [row.savedRole] }).filter((opt) => !taken.has(opt.value));
+  };
+  const nextTaskRole = () => {
+    const taken = new Set(taskRows.map((row) => row.role));
+    return roleOptions(catalog, { timed: false }).find((opt) => !taken.has(opt.value))?.value || "";
+  };
+
   const canSave = useMemo(() => {
     if (!userId) return false;
     if (!isShift) return Boolean(respRole);
     if (!startTime || (scheduleEndTimeEnabled && !endTime)) return false;
+    if (taskRows.some((row) => !row.role)) return false;
+    if (new Set(taskRows.map((row) => row.role)).size !== taskRows.length) return false;
     return rows.every((row) => row.role && (row.fullShift || !canSplit || (row.start && row.end)));
-  }, [userId, isShift, respRole, startTime, endTime, rows, scheduleEndTimeEnabled, canSplit]);
+  }, [userId, isShift, respRole, startTime, endTime, rows, taskRows, scheduleEndTimeEnabled, canSplit]);
 
   const handleSubmit = () => {
     if (!canSave) return;
@@ -197,6 +234,9 @@ export default function WeeklyScheduleEntryDialog({
           remarks: row.remarks.trim() || null,
         };
       }),
+      ...(tasksTouched
+        ? { tasks: taskRows.map((row) => ({ role: row.role, remarks: row.remarks.trim() || null })) }
+        : {}),
     });
   };
 
@@ -369,6 +409,81 @@ export default function WeeklyScheduleEntryDialog({
                 >
                   Add role
                 </Button>
+              </Box>
+              <Box sx={{ border: "1px solid #dbe4ea", borderRadius: 1.5, p: 1.25, bgcolor: "#f8fafc" }}>
+                <Typography variant="subtitle2" fontWeight={800}>
+                  Tasks / Instructions
+                </Typography>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                  Tasks for this employee on this day. No times, no hours — the shift, break, and hours above stay
+                  the same.
+                </Typography>
+                <Stack spacing={1}>
+                  {taskRows.map((row) => {
+                    const options = taskRowOptions(row);
+                    return (
+                      <Box key={row.id} sx={{ border: "1px solid #e2e8f0", borderRadius: 1.5, p: 1, bgcolor: "#fff" }}>
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <FormControl size="small" sx={{ flex: 1, minWidth: 0 }}>
+                            <InputLabel>Task</InputLabel>
+                            <Select
+                              label="Task"
+                              value={options.some((opt) => opt.value === row.role) ? row.role : ""}
+                              onChange={(e) =>
+                                editTasks((prev) =>
+                                  prev.map((r) => (r.id === row.id ? { ...r, role: e.target.value } : r)),
+                                )
+                              }
+                            >
+                              {options.map((option) => (
+                                <MenuItem key={option.value} value={option.value}>
+                                  {option.label}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                          <IconButton
+                            size="small"
+                            aria-label="Remove task"
+                            onClick={() => editTasks((prev) => prev.filter((r) => r.id !== row.id))}
+                          >
+                            <CloseIcon fontSize="small" />
+                          </IconButton>
+                        </Stack>
+                        <TextField
+                          size="small"
+                          fullWidth
+                          multiline
+                          minRows={1}
+                          label="Instructions"
+                          placeholder="e.g. Clean lint traps on dryers 1–12"
+                          value={row.remarks}
+                          onChange={(e) =>
+                            editTasks((prev) =>
+                              prev.map((r) => (r.id === row.id ? { ...r, remarks: e.target.value } : r)),
+                            )
+                          }
+                          inputProps={{ maxLength: 255 }}
+                          sx={{ mt: 1 }}
+                        />
+                      </Box>
+                    );
+                  })}
+                </Stack>
+                <Button
+                  size="small"
+                  startIcon={<AddIcon />}
+                  disabled={!userId || !nextTaskRole()}
+                  onClick={() => editTasks((prev) => [...prev, makeRow({ role: nextTaskRole() })])}
+                  sx={{ mt: 1, fontWeight: 700 }}
+                >
+                  Add task
+                </Button>
+                {!roleOptions(catalog, { timed: false }).length ? (
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    No tasks are set up yet. Add one under Roles &amp; tasks.
+                  </Typography>
+                ) : null}
               </Box>
             </>
           ) : (

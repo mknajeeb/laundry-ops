@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { Box, Chip, Stack, Typography } from "@mui/material";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
+import { groupRoleCodes } from "./weeklyScheduleRoles";
 import {
   buildDayViewTabs,
   buildRoleViewTabs,
@@ -61,6 +62,7 @@ export default function WeeklyScheduleViewTabs({
   hiddenRoles = [],
   roleCatalog = null,
   responsibilities = [],
+  hideRoles = false,
 }) {
   const roleTabs = useMemo(
     () => buildRoleViewTabs(entries, { hiddenRoles }),
@@ -78,6 +80,8 @@ export default function WeeklyScheduleViewTabs({
 
   const allRoleTab = roleTabs.find((tab) => tab.value === SCHEDULE_VIEW_ALL);
   const singleRoleTabs = roleTabs.filter((tab) => tab.value !== SCHEDULE_VIEW_ALL);
+  const tabByRole = new Map(singleRoleTabs.map((tab) => [tab.value, tab]));
+  const roleGroups = groupRoleCodes(singleRoleTabs.map((tab) => tab.value));
   const showAllRoles = !hasRoleViewFilter(selectedRoles);
 
   return (
@@ -93,25 +97,39 @@ export default function WeeklyScheduleViewTabs({
       }}
       className="no-print"
     >
-      <ChipRow title="Roles">
-        {allRoleTab ? (
-          <FilterChip
-            label={allRoleTab.label}
-            count={allRoleTab.count}
-            selected={showAllRoles}
-            onClick={() => onSelectedRolesChange([])}
-          />
-        ) : null}
-        {singleRoleTabs.map((tab) => (
-          <FilterChip
-            key={tab.value}
-            label={tab.label}
-            count={tab.count}
-            selected={selectedRoles.includes(tab.value)}
-            onClick={() => onSelectedRolesChange(toggleRoleViewSelection(selectedRoles, tab.value))}
-          />
-        ))}
-      </ChipRow>
+      {hideRoles ? null : (
+        <ChipRow title="Roles">
+          {allRoleTab ? (
+            <FilterChip
+              label={allRoleTab.label}
+              count={allRoleTab.count}
+              selected={showAllRoles}
+              onClick={() => onSelectedRolesChange([])}
+            />
+          ) : null}
+          {roleGroups.map((group) => (
+            <Stack key={group.code || "ungrouped"} direction="row" spacing={0.5} alignItems="center" useFlexGap flexWrap="wrap">
+              {roleGroups.length > 1 ? (
+                <Typography variant="caption" sx={{ fontWeight: 700, color: "text.disabled", fontSize: "0.64rem", ml: 0.5 }}>
+                  {group.label}:
+                </Typography>
+              ) : null}
+              {group.roles.map((role) => {
+                const tab = tabByRole.get(role);
+                return (
+                  <FilterChip
+                    key={role}
+                    label={tab.label}
+                    count={tab.count}
+                    selected={selectedRoles.includes(role)}
+                    onClick={() => onSelectedRolesChange(toggleRoleViewSelection(selectedRoles, role))}
+                  />
+                );
+              })}
+            </Stack>
+          ))}
+        </ChipRow>
+      )}
 
       <ChipRow title="Days">
         {dayTabs.map((tab) => (

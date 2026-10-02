@@ -83,7 +83,7 @@ export default function WeeklyScheduleHoursSummary({ summary, scopeLabel = "" })
               </Typography>
             )}
             {unassignedHours > 0 ? (
-              <Row label="Shift time without a role" value={hoursText(unassignedHours)} />
+              <Row label={summary.unassignedLabel || "Shift time without a role"} value={hoursText(unassignedHours)} />
             ) : null}
           </Box>
           <Row label="Total role hours" value={hoursText(roleTotal)} bold />
