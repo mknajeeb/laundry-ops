@@ -24,8 +24,17 @@ import AddIcon from "@mui/icons-material/Add";
 import CloseIcon from "@mui/icons-material/Close";
 import ShiftScheduleTimeFields from "../datetime/ShiftScheduleTimeFields";
 import PlanningTimePicker from "../datetime/PlanningTimePicker";
-import { entryRoleAssignments, scheduleRoleCatalog, scheduleRoleLabel } from "./weeklyScheduleRoles";
+import {
+  entryBreakBreakdown,
+  entryBreakSlots,
+  entryRoleAssignments,
+  makeBreakSlot,
+  scheduleRoleCatalog,
+  scheduleRoleLabel,
+  validateBreakSlots,
+} from "./weeklyScheduleRoles";
 import { ASSIGNMENT_KIND } from "./weeklyScheduleTimeBlocks";
+import WeeklyScheduleBreakFields from "./WeeklyScheduleBreakFields";
 
 const NO_TASKS = [];
 
@@ -99,7 +108,8 @@ export default function WeeklyScheduleEntryDialog({
   const [rows, setRows] = useState([makeRow({ role: "fold" })]);
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("16:00");
-  const [breakMinutes, setBreakMinutes] = useState(0);
+  const [breakSlots, setBreakSlots] = useState([]);
+  const [unscheduledBreak, setUnscheduledBreak] = useState(0);
   const [respRole, setRespRole] = useState("");
   const [respRemarks, setRespRemarks] = useState("");
   const [taskRows, setTaskRows] = useState([]);
@@ -138,7 +148,15 @@ export default function WeeklyScheduleEntryDialog({
       setRows(rowsFromEntry(entry));
       setStartTime(entry.start_time || "09:00");
       setEndTime(entry.end_time || "16:00");
-      setBreakMinutes(entry.break_minutes || 0);
+      const slots = entryBreakSlots(entry);
+      setBreakSlots(slots.map((slot) => makeBreakSlot(slot)));
+      setUnscheduledBreak(
+        entry.unscheduled_break_minutes != null
+          ? Number(entry.unscheduled_break_minutes)
+          : slots.length
+            ? 0
+            : Number(entry.break_minutes || 0),
+      );
       return;
     }
     const kindForRole = defaultRole
@@ -153,7 +171,8 @@ export default function WeeklyScheduleEntryDialog({
     setRows([makeRow({ role: kindForRole === ASSIGNMENT_KIND.SHIFT && defaultRole ? defaultRole : firstTimed })]);
     setStartTime(defaultStartTime || "09:00");
     setEndTime(defaultEndTime || "16:00");
-    setBreakMinutes(0);
+    setBreakSlots([]);
+    setUnscheduledBreak(0);
     setRespRole(kindForRole === ASSIGNMENT_KIND.RESPONSIBILITY && defaultRole ? defaultRole : untimedOptions[0]?.value || "");
     setRespRemarks("");
   }, [open, entry, responsibility, defaultUserId, defaultDay, defaultKind, defaultRole, defaultStartTime, defaultEndTime]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -198,10 +217,24 @@ export default function WeeklyScheduleEntryDialog({
     if (!userId) return false;
     if (!isShift) return Boolean(respRole);
     if (!startTime || (scheduleEndTimeEnabled && !endTime)) return false;
+    if (scheduleEndTimeEnabled && validateBreakSlots(startTime, endTime, breakSlots)) return false;
     if (taskRows.some((row) => !row.role)) return false;
     if (new Set(taskRows.map((row) => row.role)).size !== taskRows.length) return false;
     return rows.every((row) => row.role && (row.fullShift || !canSplit || (row.start && row.end)));
-  }, [userId, isShift, respRole, startTime, endTime, rows, taskRows, scheduleEndTimeEnabled, canSplit]);
+  }, [userId, isShift, respRole, startTime, endTime, breakSlots, rows, taskRows, scheduleEndTimeEnabled, canSplit]);
+
+  // break_minutes is the total so a server without break slots still deducts the right hours.
+  const breakPayload = () => {
+    const slots = breakSlots.map((slot) => ({ start_time: slot.start_time, end_time: slot.end_time }));
+    const parts = entryBreakBreakdown({ start_time: startTime, end_time: endTime, break_minutes: 0, break_slots: slots });
+    const unscheduled = Math.max(0, Math.round(Number(unscheduledBreak || 0)));
+    return {
+      end_time: endTime,
+      break_minutes: parts.timedBreakMinutes + unscheduled,
+      break_slots: slots,
+      unscheduled_break_minutes: unscheduled,
+    };
+  };
 
   const handleSubmit = () => {
     if (!canSave) return;
@@ -221,9 +254,7 @@ export default function WeeklyScheduleEntryDialog({
       day_of_week: Number(dayOfWeek),
       ...(!isEdit && category ? { employer_affiliation: category } : {}),
       start_time: startTime,
-      ...(scheduleEndTimeEnabled
-        ? { end_time: endTime, break_minutes: breakMinutes }
-        : { end_time: startTime, break_minutes: 0 }),
+      ...(scheduleEndTimeEnabled ? breakPayload() : { end_time: startTime, break_minutes: 0, break_slots: [] }),
       assignments: rows.map((row) => {
         const full = row.fullShift || !canSplit;
         return {
@@ -299,13 +330,21 @@ export default function WeeklyScheduleEntryDialog({
               <ShiftScheduleTimeFields
                 startTime={startTime}
                 endTime={endTime}
-                breakMinutes={breakMinutes}
                 onStartChange={setStartTime}
                 onEndChange={setEndTime}
-                onBreakChange={scheduleEndTimeEnabled ? setBreakMinutes : undefined}
                 endTimeEnabled={scheduleEndTimeEnabled}
                 overnightEnabled
               />
+              {scheduleEndTimeEnabled ? (
+                <WeeklyScheduleBreakFields
+                  startTime={startTime}
+                  endTime={endTime}
+                  slots={breakSlots}
+                  onSlotsChange={setBreakSlots}
+                  unscheduledMinutes={unscheduledBreak}
+                  onUnscheduledChange={setUnscheduledBreak}
+                />
+              ) : null}
               <Box>
                 <Typography variant="subtitle2" fontWeight={800}>
                   Roles during this shift

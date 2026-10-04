@@ -352,11 +352,27 @@ def _ensure_role_assignments_column(cursor) -> None:
         return
 
 
+def _ensure_break_slots_column(cursor) -> None:
+    try:
+        cursor.execute(
+            "SHOW COLUMNS FROM planned_weekly_schedule_entries LIKE 'break_slots'"
+        )
+        if cursor.fetchone():
+            return
+        cursor.execute(
+            "ALTER TABLE planned_weekly_schedule_entries "
+            "ADD COLUMN break_slots TEXT NULL DEFAULT NULL"
+        )
+    except Exception:
+        return
+
+
 def ensure_planned_weekly_schedule_table(cursor) -> None:
     if table_exists(cursor, "planned_weekly_schedule_entries"):
         _ensure_role_column_width(cursor)
         _ensure_employer_affiliation_column(cursor)
         _ensure_role_assignments_column(cursor)
+        _ensure_break_slots_column(cursor)
         return
     cursor.execute(
         """
@@ -372,6 +388,7 @@ def ensure_planned_weekly_schedule_table(cursor) -> None:
           break_minutes INT NOT NULL DEFAULT 0,
           employer_affiliation VARCHAR(32) NULL DEFAULT NULL,
           role_assignments TEXT NULL DEFAULT NULL,
+          break_slots TEXT NULL DEFAULT NULL,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP NULL ON UPDATE CURRENT_TIMESTAMP,
           INDEX idx_pwse_org_week (organization_id, week_start),
@@ -388,46 +405,265 @@ def _time_to_str(value: Any) -> str | None:
     return parsed.strftime("%H:%M")
 
 
-def _shift_hours_for_entry(entry: Mapping[str, Any]) -> float:
-    start = parse_time_value(entry.get("start_time"))
-    end = parse_time_value(entry.get("end_time"))
-    if not start or not end:
-        return 0.0
-    break_min = max(0, int(entry.get("break_minutes") or 0))
-    return calc_hours(start, end, break_min)
+MAX_BREAK_SLOTS = 6
 
 
-def _entry_interval_minutes(entry: Mapping[str, Any]) -> tuple[int, int, float] | None:
-    """Return (start_min, end_min, hours) with overnight support, or None."""
-    start = parse_time_value(entry.get("start_time"))
-    end = parse_time_value(entry.get("end_time"))
-    if not start or not end:
+def parse_break_slots_storage(raw: Any) -> list[dict[str, str]]:
+    """Decode ``break_slots`` JSON: [{start_time, end_time}] planned break windows inside the shift."""
+    if raw in (None, ""):
+        return []
+    data: Any = raw
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", errors="ignore")
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(data, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in data:
+        if not isinstance(item, Mapping):
+            continue
+        start = _time_to_str(item.get("start_time"))
+        end = _time_to_str(item.get("end_time"))
+        if start and end and start != end:
+            out.append({"start_time": start, "end_time": end})
+    return out
+
+
+def break_slots_storage(slots: Sequence[Mapping[str, Any]] | None) -> str | None:
+    items = parse_break_slots_storage(list(slots or []))
+    return json.dumps(items, separators=(",", ":")) if items else None
+
+
+def entry_break_slots(entry: Mapping[str, Any]) -> list[dict[str, str]]:
+    raw = entry.get("break_slots")
+    return parse_break_slots_storage(list(raw) if isinstance(raw, (list, tuple)) else raw)
+
+
+def _shift_interval(entry: Mapping[str, Any]) -> tuple[int, int] | None:
+    """Shift (start, end) in minutes on its start day's timeline; overnight ends run past 24:00."""
+    start = _hm_minutes(entry.get("start_time"))
+    end = _hm_minutes(entry.get("end_time"))
+    if start is None or end is None:
         return None
-    start_min = start.hour * 60 + start.minute
-    end_min = end.hour * 60 + end.minute
-    if end_min <= start_min:
-        end_min += 24 * 60
-    break_min = max(0, int(entry.get("break_minutes") or 0))
-    hours = max(0.0, (end_min - start_min - break_min) / 60.0)
-    return start_min, end_min, hours
+    if end <= start:
+        end += 24 * 60
+    return start, end
+
+
+def _placed_break_ranges(entry: Mapping[str, Any], shift: tuple[int, int]) -> list[tuple[int, int]]:
+    out: list[tuple[int, int]] = []
+    for slot in entry_break_slots(entry):
+        seg_start = _hm_minutes(slot["start_time"])
+        seg_end = _hm_minutes(slot["end_time"])
+        if seg_start is None or seg_end is None:
+            continue
+        start, end = _place_on_shift_timeline(seg_start, seg_end, shift[0])
+        start, end = max(start, shift[0]), min(end, shift[1])
+        if end > start:
+            out.append((start, end))
+    return out
+
+
+def _merge_ranges(ranges: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[list[int]] = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(start, end) for start, end in merged]
+
+
+def _ranges_minutes(ranges: Sequence[tuple[int, int]]) -> int:
+    return sum(max(0, end - start) for start, end in ranges)
+
+
+def entry_break_breakdown(entry: Mapping[str, Any]) -> dict[str, int]:
+    """
+    Minutes for one shift. ``break_minutes`` is the total planned deduction; timed slots are the part
+    of it with a known time and the rest is duration-only ("not scheduled"). A slot never adds to an
+    existing duration-only break: the deduction is the larger of the two.
+    """
+    shift = _shift_interval(entry)
+    if shift is None:
+        return {"gross_minutes": 0, "break_minutes": 0, "timed_break_minutes": 0, "unscheduled_break_minutes": 0}
+    gross = shift[1] - shift[0]
+    timed = _ranges_minutes(_merge_ranges(_placed_break_ranges(entry, shift)))
+    total = min(gross, max(max(0, int(entry.get("break_minutes") or 0)), timed))
+    timed = min(timed, total)
+    return {
+        "gross_minutes": gross,
+        "break_minutes": total,
+        "timed_break_minutes": timed,
+        "unscheduled_break_minutes": total - timed,
+    }
+
+
+def _shift_hours_for_entry(entry: Mapping[str, Any]) -> float:
+    parts = entry_break_breakdown(entry)
+    return round(max(0, parts["gross_minutes"] - parts["break_minutes"]) / 60.0, 4)
+
+
+def _default_task_roles() -> frozenset[str]:
+    from backend.weekly_schedule_roles import default_role_catalog
+
+    return frozenset(r["code"] for r in default_role_catalog() if not r.get("uses_time_slots", True))
+
+
+def employee_day_timeline(
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    task_roles: set[str] | frozenset[str] | None = None,
+) -> dict[str, Any]:
+    """
+    One employee's planned day (all entries share user and day).
+
+    Overlapping shifts merge into one span, so their time is counted once. A timed break from any of
+    those shifts takes the person off every role for that time. The duration-only part of a merged
+    span is its largest declared break less the timed break already placed there; it is deducted
+    from net hours but never given an hourly position. Worked pieces carry the roles active in them,
+    and simultaneous roles share a piece evenly. Tasks never count.
+    """
+    tasks = _default_task_roles() if task_roles is None else task_roles
+    direct_hours = 0.0
+    direct_roles: dict[str, float] = defaultdict(float)
+    shifts: list[tuple[int, int, Mapping[str, Any]]] = []
+    for entry in entries or []:
+        raw_hours = entry.get("hours")
+        if raw_hours is not None and float(raw_hours or 0) <= 0:
+            continue
+        shift = _shift_interval(entry)
+        if shift is None:
+            hours = max(0.0, float(raw_hours or 0))
+            if hours <= 0:
+                continue
+            direct_hours += hours
+            roles = list(
+                dict.fromkeys(
+                    str(a["role"]) for a in entry_role_assignments(entry) if a.get("role") and a["role"] not in tasks
+                )
+            )
+            for role in roles:
+                direct_roles[role] += hours / len(roles)
+            continue
+        shifts.append((shift[0], shift[1], entry))
+    shifts.sort(key=lambda item: (item[0], item[1]))
+
+    clusters: list[dict[str, Any]] = []
+    for item in shifts:
+        if clusters and item[0] < clusters[-1]["end"]:
+            clusters[-1]["end"] = max(clusters[-1]["end"], item[1])
+            clusters[-1]["items"].append(item)
+        else:
+            clusters.append({"start": item[0], "end": item[1], "items": [item]})
+
+    gross = timed = unscheduled = 0
+    break_ranges: list[tuple[int, int]] = []
+    for cluster in clusters:
+        span = cluster["end"] - cluster["start"]
+        per_entry = [_merge_ranges(_placed_break_ranges(e, (s, en))) for s, en, e in cluster["items"]]
+        ranges = _merge_ranges([r for rs in per_entry for r in rs])
+        cluster_timed = _ranges_minutes(ranges)
+        declared = max(
+            max(max(0, int(e.get("break_minutes") or 0)), _ranges_minutes(rs))
+            for (_, _, e), rs in zip(cluster["items"], per_entry)
+        )
+        deduction = min(span, max(cluster_timed, declared))
+        gross += span
+        timed += cluster_timed
+        unscheduled += deduction - cluster_timed
+        break_ranges.extend(ranges)
+
+    segments: list[tuple[str, int, int]] = []
+    for shift_start, shift_end, entry in shifts:
+        for assignment in entry_role_assignments(entry):
+            role = assignment.get("role")
+            if not role or role in tasks:
+                continue
+            seg_start = _hm_minutes(assignment.get("start_time"))
+            seg_end = _hm_minutes(assignment.get("end_time"))
+            if assignment.get("full_shift", True) or seg_start is None or seg_end is None:
+                segments.append((str(role), shift_start, shift_end))
+                continue
+            start, end = _place_on_shift_timeline(seg_start, seg_end, shift_start)
+            start, end = max(start, shift_start), min(end, shift_end)
+            if end > start:
+                segments.append((str(role), start, end))
+
+    points = sorted(
+        {p for s, e, _ in shifts for p in (s, e)}
+        | {p for _, s, e in segments for p in (s, e)}
+        | {p for s, e in break_ranges for p in (s, e)}
+    )
+    pieces: list[dict[str, Any]] = []
+    for left, right in zip(points, points[1:]):
+        if not any(s <= left and e >= right for s, e, _ in shifts):
+            continue
+        pieces.append(
+            {
+                "start": left,
+                "end": right,
+                "roles": _sort_roles(list({r for r, s, e in segments if s <= left and e >= right})),
+                "on_break": any(s <= left and e >= right for s, e in break_ranges),
+            }
+        )
+
+    break_minutes = timed + unscheduled
+    return {
+        "gross_hours": gross / 60.0 + direct_hours,
+        "break_hours": break_minutes / 60.0,
+        "timed_break_hours": timed / 60.0,
+        "unscheduled_break_hours": unscheduled / 60.0,
+        "net_hours": (gross - break_minutes) / 60.0 + direct_hours,
+        "pieces": pieces,
+        "break_ranges": break_ranges,
+        "direct_role_hours": dict(direct_roles),
+    }
+
+
+def timeline_role_hours(timeline: Mapping[str, Any]) -> dict[str, float]:
+    """Role hours from one day timeline: worked pieces off break, split evenly between simultaneous roles."""
+    out: dict[str, float] = defaultdict(float)
+    for piece in timeline.get("pieces") or []:
+        if piece["on_break"] or not piece["roles"]:
+            continue
+        share = (piece["end"] - piece["start"]) / 60.0 / len(piece["roles"])
+        for role in piece["roles"]:
+            out[role] += share
+    for role, hours in (timeline.get("direct_role_hours") or {}).items():
+        out[role] += hours
+    return dict(out)
+
+
+def _entries_by_user_day(entries: Sequence[Mapping[str, Any]]) -> dict[tuple[int, int], list[Mapping[str, Any]]]:
+    groups: dict[tuple[int, int], list[Mapping[str, Any]]] = defaultdict(list)
+    for entry in entries or []:
+        groups[(int(entry.get("user_id") or 0), int(entry.get("day_of_week") or 0))].append(entry)
+    return groups
+
+
+def scheduled_hours_breakdown_by_user_day(
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    task_roles: set[str] | frozenset[str] | None = None,
+) -> dict[tuple[int, int], dict[str, float]]:
+    """Gross, break (timed + duration-only), and net scheduled hours per (user_id, day_of_week)."""
+    out: dict[tuple[int, int], dict[str, float]] = {}
+    for key, group in _entries_by_user_day(entries).items():
+        timeline = employee_day_timeline(group, task_roles=task_roles)
+        out[key] = {
+            name: round(float(timeline[name]), 2)
+            for name in ("gross_hours", "break_hours", "timed_break_hours", "unscheduled_break_hours", "net_hours")
+        }
+    return out
 
 
 def _intervals_overlap(a: tuple[int, int], b: tuple[int, int]) -> bool:
     return a[0] < b[1] and b[0] < a[1]
-
-
-def _merge_interval_hours(intervals: Sequence[tuple[int, int]]) -> float:
-    if not intervals:
-        return 0.0
-    sorted_iv = sorted(intervals, key=lambda item: (item[0], item[1]))
-    merged = [[sorted_iv[0][0], sorted_iv[0][1]]]
-    for start, end in sorted_iv[1:]:
-        last = merged[-1]
-        if start < last[1]:
-            last[1] = max(last[1], end)
-        else:
-            merged.append([start, end])
-    return sum(max(0, end - start) / 60.0 for start, end in merged)
 
 
 def _hm_minutes(value: Any) -> int | None:
@@ -564,120 +800,40 @@ def role_assignments_storage(assignments: Sequence[Mapping[str, Any]]) -> str | 
     return json.dumps(items, separators=(",", ":")) if items else None
 
 
-def scheduled_hours_by_user_day(entries: Sequence[Mapping[str, Any]]) -> dict[tuple[int, int], float]:
+def scheduled_hours_by_user_day(
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    task_roles: set[str] | frozenset[str] | None = None,
+) -> dict[tuple[int, int], float]:
     """
-    Paid scheduled hours per (user_id, day_of_week).
-    Overlapping shifts for the same employee/day count their combined span once (largest break),
-    so stacking role entries inside one shift never double-counts hours.
+    Net scheduled hours per (user_id, day_of_week): gross span minus timed and duration-only breaks.
+    Overlapping shifts for the same employee/day count their combined span once, so stacking role
+    entries inside one shift never double-counts hours or breaks.
     """
-    out: dict[tuple[int, int], float] = defaultdict(float)
-    timed: dict[tuple[int, int], list[tuple[int, int, int, float]]] = defaultdict(list)
-    for entry in entries or []:
-        key = (int(entry.get("user_id") or 0), int(entry.get("day_of_week") or 0))
-        raw_hours = entry.get("hours")
-        hours = float(raw_hours) if raw_hours is not None else _shift_hours_for_entry(entry)
-        interval = _entry_interval_minutes(entry) if hours > 0 else None
-        if interval is None:
-            out[key] += max(0.0, hours)
-            continue
-        start, end, _ = interval
-        timed[key].append((start, end, max(0, int(entry.get("break_minutes") or 0)), hours))
-
-    for key, items in timed.items():
-        items.sort(key=lambda item: (item[0], item[1]))
-        clusters: list[list[tuple[int, int, int, float]]] = []
-        for item in items:
-            if clusters and item[0] < max(c[1] for c in clusters[-1]):
-                clusters[-1].append(item)
-            else:
-                clusters.append([item])
-        for cluster in clusters:
-            if len(cluster) == 1:
-                out[key] += cluster[0][3]
-                continue
-            span = max(c[1] for c in cluster) - cluster[0][0]
-            out[key] += max(0.0, (span - max(c[2] for c in cluster)) / 60.0)
-    return {key: round(value, 2) for key, value in out.items()}
+    return {
+        key: parts["net_hours"]
+        for key, parts in scheduled_hours_breakdown_by_user_day(entries, task_roles=task_roles).items()
+    }
 
 
-def allocate_role_hours_by_day(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, float]]:
+def allocate_role_hours_by_day(
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    task_roles: set[str] | frozenset[str] | None = None,
+) -> list[dict[str, float]]:
     """
-    Allocate scheduled hours to wash/sort/fold/PT roles.
-    Each role assignment counts over its own time range inside the shift (whole shift when no
-    range is set); concurrent hour-tracked assignments split that time evenly, and the shift
-    break is pro-rated so role hours never exceed the shift's paid hours.
-    Overlapping same employee/day/role time across entries is merged (no double-count).
+    Role hours for wash/sort/fold/PT per day from the shared day timeline: each assignment counts over
+    its own range, timed breaks are removed first, and simultaneous roles split the remaining time.
+    Duration-only breaks have no time, so they stay a separate deduction instead of being spread.
     """
     by_day: list[dict[str, float]] = [{role: 0.0 for role in HOUR_TRACKED_ROLES} for _ in range(7)]
-    buckets: dict[tuple[int, int, str], list[dict[str, Any]]] = defaultdict(list)
-
-    for entry in entries or []:
-        uid = int(entry.get("user_id") or 0)
-        dow = int(entry.get("day_of_week") or 0)
+    for (_, dow), group in _entries_by_user_day(entries).items():
         if dow < 0 or dow > 6:
             continue
-        assignments = [a for a in entry_role_assignments(entry) if a.get("role") in HOUR_TRACKED_ROLES]
-        if not assignments:
-            continue
-        interval = _entry_interval_minutes(entry)
-        if interval is None:
-            segment_hours = float(entry.get("hours") or _shift_hours_for_entry(entry) or 0.0)
-            if segment_hours <= 0:
-                continue
-            roles = list(dict.fromkeys(str(a["role"]) for a in assignments))
-            for role in roles:
-                buckets[(uid, dow, role)].append(
-                    {"start": None, "end": None, "hours": segment_hours / len(roles), "direct": True}
-                )
-            continue
-
-        shift_start, shift_end, paid_hours = interval
-        wall = shift_end - shift_start
-        if paid_hours <= 0 or wall <= 0:
-            continue
-        paid_ratio = paid_hours * 60.0 / wall
-        ranges: list[tuple[str, int, int]] = []
-        for assignment in assignments:
-            role = str(assignment["role"])
-            seg_start = _hm_minutes(assignment.get("start_time"))
-            seg_end = _hm_minutes(assignment.get("end_time"))
-            if assignment.get("full_shift", True) or seg_start is None or seg_end is None:
-                ranges.append((role, shift_start, shift_end))
-                continue
-            start, end = _place_on_shift_timeline(seg_start, seg_end, shift_start)
-            start, end = max(start, shift_start), min(end, shift_end)
-            if end > start:
-                ranges.append((role, start, end))
-        bounds = sorted({point for _, start, end in ranges for point in (start, end)})
-        for left, right in zip(bounds, bounds[1:]):
-            active = sorted({role for role, start, end in ranges if start <= left and end >= right})
-            if not active:
-                continue
-            share = (right - left) / 60.0 * paid_ratio / len(active)
-            for role in active:
-                buckets[(uid, dow, role)].append(
-                    {"start": left, "end": right, "hours": share, "direct": False}
-                )
-
-    for (uid, dow, role), items in buckets.items():
-        timed = [item for item in items if not item["direct"]]
-        direct = [item for item in items if item["direct"]]
-        hours = sum(float(item["hours"]) for item in direct)
-        if timed:
-            pairs = [(int(item["start"]), int(item["end"])) for item in timed]
-            overlaps = any(
-                _intervals_overlap(pairs[i], pairs[j])
-                for i in range(len(pairs))
-                for j in range(i + 1, len(pairs))
-            )
-            if overlaps:
-                span = sum(end - start for start, end in pairs) / 60.0
-                weight = sum(float(item["hours"]) for item in timed) / span if span > 0 else 1.0
-                hours += _merge_interval_hours(pairs) * min(1.0, weight)
-            else:
-                hours += sum(float(item["hours"]) for item in timed)
-        by_day[dow][role] = round(float(by_day[dow][role]) + hours, 1)
-
+        role_hours = timeline_role_hours(employee_day_timeline(group, task_roles=task_roles))
+        for role in HOUR_TRACKED_ROLES:
+            if role_hours.get(role):
+                by_day[dow][role] = round(float(by_day[dow][role]) + role_hours[role], 1)
     return by_day
 
 
@@ -702,7 +858,12 @@ def serialize_entry(
 ) -> dict[str, Any]:
     roles = parse_weekly_roles(row.get("role"))
     role = roles_to_storage(roles) if roles or str(row.get("role") or "").strip() else ""
-    hours = 0.0 if not schedule_end_time_enabled else _shift_hours_for_entry(row)
+    breaks = (
+        entry_break_breakdown(row)
+        if schedule_end_time_enabled
+        else {"gross_minutes": 0, "break_minutes": 0, "timed_break_minutes": 0, "unscheduled_break_minutes": 0}
+    )
+    hours = round(max(0, breaks["gross_minutes"] - breaks["break_minutes"]) / 60.0, 4)
     employer_affiliation = _entry_employer_affiliation(row, organization_slug=organization_slug)
     start_time = _time_to_str(row.get("start_time"))
     end_time = _time_to_str(row.get("end_time"))
@@ -719,6 +880,11 @@ def serialize_entry(
         "start_time": start_time,
         "end_time": end_time,
         "break_minutes": max(0, int(row.get("break_minutes") or 0)),
+        "break_slots": entry_break_slots(row),
+        "timed_break_minutes": breaks["timed_break_minutes"],
+        "unscheduled_break_minutes": breaks["unscheduled_break_minutes"],
+        "gross_hours": round(breaks["gross_minutes"] / 60.0, 4),
+        "break_hours": round(breaks["break_minutes"] / 60.0, 4),
         "hours": hours,
         "assignments": expand_role_assignments(
             roles,
@@ -762,12 +928,17 @@ def _worker_rate(worker: Mapping[str, Any] | None) -> float:
         return 0.0
 
 
+_BREAKDOWN_TOTAL_KEYS = ("gross_hours", "break_hours", "timed_break_hours", "unscheduled_break_hours")
+
+
 def compute_schedule_totals(
     entries: Sequence[Mapping[str, Any]],
     workers_by_user_id: Mapping[int, Mapping[str, Any]],
     *,
     excluded_user_ids: Sequence[int] | None = None,
+    task_roles: set[str] | frozenset[str] | None = None,
 ) -> dict[str, Any]:
+    """``total_hours`` is net (gross minus breaks); gross and break hours are reported beside it."""
     excluded = {int(uid) for uid in (excluded_user_ids or [])}
     employee_totals: dict[int, dict[str, Any]] = {}
     day_totals: dict[int, dict[str, Any]] = {
@@ -776,6 +947,7 @@ def compute_schedule_totals(
             "day_label": DAY_LABELS[dow],
             "employee_count": 0,
             "total_hours": 0.0,
+            **{name: 0.0 for name in _BREAKDOWN_TOTAL_KEYS},
             "sort_count": 0,
             "wash_count": 0,
             "weigher_count": 0,
@@ -813,6 +985,7 @@ def compute_schedule_totals(
             employee_totals[uid] = {
                 "user_id": uid,
                 "total_hours": 0.0,
+                **{name: 0.0 for name in _BREAKDOWN_TOTAL_KEYS},
                 "scheduled_days": 0,
                 "estimated_cost": 0.0,
             }
@@ -848,15 +1021,19 @@ def compute_schedule_totals(
             if role == "fold":
                 day["folder_count"] = int(day["folder_count"]) + 1
 
-    for (uid, dow), hours in scheduled_hours_by_user_day(included_entries).items():
+    for (uid, dow), parts in scheduled_hours_breakdown_by_user_day(included_entries, task_roles=task_roles).items():
+        hours = parts["net_hours"]
         rate = _worker_rate(workers_by_user_id.get(uid))
         totals = employee_totals[uid]
         totals["total_hours"] = round(totals["total_hours"] + hours, 2)
         totals["estimated_cost"] = round(totals["estimated_cost"] + calc_cost(hours, rate), 2)
         day = day_totals.get(dow) or day_totals[dow % 7]
         day["total_hours"] = round(float(day["total_hours"]) + hours, 2)
+        for target in (totals, day):
+            for name in _BREAKDOWN_TOTAL_KEYS:
+                target[name] = round(float(target.get(name) or 0.0) + parts[name], 2)
 
-    role_hours_by_day = allocate_role_hours_by_day(included_entries)
+    role_hours_by_day = allocate_role_hours_by_day(included_entries, task_roles=task_roles)
     for dow, role_hours in enumerate(role_hours_by_day):
         day = day_totals[dow]
         day["wash_hours"] = float(role_hours.get("wash") or 0.0)
@@ -926,7 +1103,7 @@ def list_week_entries(
         """
         SELECT id, organization_id, week_start, user_id, day_of_week,
                role, start_time, end_time, break_minutes, employer_affiliation,
-               role_assignments
+               role_assignments, break_slots
         FROM planned_weekly_schedule_entries
         WHERE organization_id = %s AND week_start = %s
         ORDER BY user_id ASC, day_of_week ASC, start_time ASC, id ASC
@@ -1026,7 +1203,7 @@ def get_entry(
         """
         SELECT id, organization_id, week_start, user_id, day_of_week,
                role, start_time, end_time, break_minutes, employer_affiliation,
-               role_assignments
+               role_assignments, break_slots
         FROM planned_weekly_schedule_entries
         WHERE organization_id = %s AND id = %s
         LIMIT 1
@@ -1161,6 +1338,76 @@ def _validate_role_assignments(
     return out, None
 
 
+def _clock_label(value: time) -> str:
+    return f"{value.hour % 12 or 12}:{value.minute:02d} {'AM' if value.hour < 12 else 'PM'}"
+
+
+def _validate_breaks(
+    data: Mapping[str, Any],
+    *,
+    shift_start: time | None,
+    shift_end: time | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """
+    Normalize planned breaks: ``break_slots`` ([{start_time, end_time}]) must sit inside the shift
+    (overnight shifts included) without overlapping each other. ``unscheduled_break_minutes`` is the
+    duration-only remainder; when it is absent, slots use up the existing ``break_minutes`` first
+    so giving a duration-only break a time replaces its deduction instead of adding another.
+    Stored ``break_minutes`` is always the total deduction (timed + duration-only).
+    """
+    try:
+        declared = max(0, int(data.get("break_minutes") or 0))
+    except (TypeError, ValueError):
+        return None, "break_minutes must be a non-negative integer"
+    raw = data.get("break_slots")
+    if raw is None:
+        raw = []
+    if not isinstance(raw, (list, tuple)):
+        return None, "break_slots must be a list"
+    if len(raw) > MAX_BREAK_SLOTS:
+        return None, f"at most {MAX_BREAK_SLOTS} breaks per shift"
+    shift: tuple[int, int] | None = None
+    if shift_start is not None and shift_end is not None:
+        start_min = shift_start.hour * 60 + shift_start.minute
+        end_min = shift_end.hour * 60 + shift_end.minute
+        shift = (start_min, end_min + (24 * 60 if end_min <= start_min else 0))
+
+    placed: list[tuple[str, tuple[int, int]]] = []
+    slots: list[tuple[int, dict[str, str]]] = []
+    for index, item in enumerate(raw, start=1):
+        if not isinstance(item, Mapping):
+            return None, "each break must be an object"
+        start = parse_time_value(item.get("start_time"))
+        end = parse_time_value(item.get("end_time"))
+        if start is None or end is None:
+            return None, f"Break {index}: start and end time are required"
+        if start == end:
+            return None, f"Break {index}: end time must be after the start time"
+        if shift is None:
+            return None, "timed breaks need the shift start and end times"
+        label = f"Break {_clock_label(start)}–{_clock_label(end)}"
+        window = _place_on_shift_timeline(start.hour * 60 + start.minute, end.hour * 60 + end.minute, shift[0])
+        if window[1] > shift[1]:
+            return None, f"{label} must be within the shift"
+        for other_label, other in placed:
+            if _intervals_overlap(window, other):
+                return None, f"{label} overlaps {other_label}"
+        placed.append((label, window))
+        slots.append((window[0], {"start_time": start.strftime("%H:%M"), "end_time": end.strftime("%H:%M")}))
+
+    timed = sum(end - start for _, (start, end) in placed)
+    if "unscheduled_break_minutes" in data:
+        try:
+            unscheduled = max(0, int(data.get("unscheduled_break_minutes") or 0))
+        except (TypeError, ValueError):
+            return None, "unscheduled_break_minutes must be a non-negative integer"
+        total = timed + unscheduled
+    else:
+        total = max(declared, timed)
+    ordered = [slot for _, slot in sorted(slots, key=lambda item: item[0])]
+    return {"break_minutes": total, "break_slots": break_slots_storage(ordered)}, None
+
+
 def _validate_entry_payload(
     data: Mapping[str, Any],
     *,
@@ -1195,10 +1442,15 @@ def _validate_entry_payload(
             if end is None:
                 return None, "end_time is required (HH:MM)"
             out["end_time"] = end
+        if not partial or any(k in data for k in ("break_minutes", "break_slots", "unscheduled_break_minutes")):
+            breaks, err = _validate_breaks(data, shift_start=out.get("start_time"), shift_end=out.get("end_time"))
+            if err or breaks is None:
+                return None, err
+            out.update(breaks)
         if (
             "start_time" in out
             and "end_time" in out
-            and calc_hours(out["start_time"], out["end_time"], int(data.get("break_minutes") or 0)) <= 0
+            and calc_hours(out["start_time"], out["end_time"], int(out.get("break_minutes") or 0)) <= 0
         ):
             return None, "hours must be greater than zero"
     else:
@@ -1209,11 +1461,7 @@ def _validate_entry_payload(
             out["start_time"] = start
             out["end_time"] = start
         out["break_minutes"] = 0
-    if schedule_end_time_enabled and ("break_minutes" in data or not partial):
-        try:
-            out["break_minutes"] = max(0, int(data.get("break_minutes") or 0))
-        except (TypeError, ValueError):
-            return None, "break_minutes must be a non-negative integer"
+        out["break_slots"] = None
     if "employer_affiliation" in data:
         from backend.payroll_employer_affiliation import normalize_shift_employer_affiliation
 
@@ -1340,8 +1588,8 @@ def create_entry(
         INSERT INTO planned_weekly_schedule_entries (
             organization_id, week_start, user_id, day_of_week,
             role, start_time, end_time, break_minutes, employer_affiliation,
-            role_assignments
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            role_assignments, break_slots
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             int(organization_id),
@@ -1354,6 +1602,7 @@ def create_entry(
             payload.get("break_minutes", 0),
             payload["employer_affiliation"],
             payload.get("role_assignments"),
+            payload.get("break_slots"),
         ),
     )
     entry_id = int(cursor.lastrowid or 0)
@@ -1379,6 +1628,7 @@ def update_entry(
         "start_time": existing["start_time"],
         "end_time": existing["end_time"],
         "break_minutes": existing["break_minutes"],
+        "break_slots": existing.get("break_slots") or [],
         **dict(data or {}),
     }
     if not any(key in (data or {}) for key in ("role", "roles", "assignments")):
@@ -1405,7 +1655,7 @@ def update_entry(
         """
         UPDATE planned_weekly_schedule_entries
         SET user_id=%s, day_of_week=%s, role=%s, start_time=%s, end_time=%s, break_minutes=%s,
-            employer_affiliation=%s, role_assignments=%s
+            employer_affiliation=%s, role_assignments=%s, break_slots=%s
         WHERE organization_id=%s AND id=%s
         """,
         (
@@ -1417,6 +1667,7 @@ def update_entry(
             payload.get("break_minutes", 0),
             payload.get("employer_affiliation") or existing.get("employer_affiliation"),
             payload.get("role_assignments"),
+            payload.get("break_slots"),
             int(organization_id),
             int(entry_id),
         ),
@@ -1491,6 +1742,7 @@ def duplicate_entry(
         "start_time": existing["start_time"],
         "end_time": existing["end_time"],
         "break_minutes": existing["break_minutes"],
+        "break_slots": existing.get("break_slots") or [],
     }
     if existing.get("employer_affiliation"):
         duplicate_data["employer_affiliation"] = existing["employer_affiliation"]
@@ -1550,6 +1802,7 @@ def _bulk_insert_week_entries(
                 max(0, int(payload.get("break_minutes") or 0)),
                 employer_affiliation,
                 payload.get("role_assignments"),
+                break_slots_storage(entry_break_slots(payload)),
             )
         )
     cursor.executemany(
@@ -1557,8 +1810,8 @@ def _bulk_insert_week_entries(
         INSERT INTO planned_weekly_schedule_entries (
             organization_id, week_start, user_id, day_of_week,
             role, start_time, end_time, break_minutes, employer_affiliation,
-            role_assignments
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            role_assignments, break_slots
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         params,
     )
@@ -1697,6 +1950,7 @@ def _entry_copy_payload(entry: Mapping[str, Any], *, day_of_week: int) -> dict[s
         "start_time": entry["start_time"],
         "end_time": entry["end_time"],
         "break_minutes": entry.get("break_minutes", 0),
+        "break_slots": entry_break_slots(entry),
         "employer_affiliation": entry.get("employer_affiliation"),
         "role_assignments": role_assignments_storage(entry_role_assignments(entry)),
     }
@@ -1973,10 +2227,14 @@ def build_week_payload(
         if int(uid) in schedulable_uids
     ]
     excluded_set = set(excluded_user_ids)
+    from backend.weekly_schedule_roles import list_role_catalog, role_groups_payload
+
+    role_catalog = list_role_catalog(cursor, organization_id)
     totals = compute_schedule_totals(
         entries,
         workers_by_uid,
         excluded_user_ids=excluded_user_ids,
+        task_roles=frozenset(r["code"] for r in role_catalog if not r.get("uses_time_slots", True)),
     )
 
     employee_rows = []
@@ -1992,6 +2250,7 @@ def build_week_payload(
             "scheduled_days": 0,
             "estimated_cost": 0.0,
         }
+        hour_parts = {name: float(stats.get(name) or 0.0) for name in _BREAKDOWN_TOTAL_KEYS}
         employee_rows.append(
             {
                 "user_id": uid,
@@ -2004,6 +2263,7 @@ def build_week_payload(
                 "employer_affiliation": aff,
                 "business_entity": aff,
                 "total_hours": stats["total_hours"],
+                **hour_parts,
                 "scheduled_days": stats["scheduled_days"],
                 "estimated_cost": stats["estimated_cost"],
                 "excluded": is_excluded,
@@ -2017,7 +2277,6 @@ def build_week_payload(
         filter_responsibilities_for_view,
         list_week_responsibilities,
     )
-    from backend.weekly_schedule_roles import list_role_catalog, role_groups_payload
     from backend.weekly_schedule_template import schedule_template_payload
 
     responsibilities = filter_responsibilities_for_view(
@@ -2031,7 +2290,7 @@ def build_week_payload(
         "employees": employee_rows,
         "entries": entries,
         "daily_responsibilities": responsibilities,
-        "role_catalog": list_role_catalog(cursor, organization_id),
+        "role_catalog": role_catalog,
         "role_groups": role_groups_payload(cursor, organization_id),
         "totals": totals,
         "excluded_user_ids": excluded_user_ids,

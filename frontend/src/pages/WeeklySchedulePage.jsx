@@ -54,6 +54,7 @@ import WeeklyScheduleTimeRoleView, {
   HourlyCoverageControls,
 } from "../components/weeklySchedule/WeeklyScheduleTimeRoleView";
 import WeeklyScheduleHoursSummary from "../components/weeklySchedule/WeeklyScheduleHoursSummary";
+import WeeklyScheduleBreaksTasksView from "../components/weeklySchedule/WeeklyScheduleBreaksTasksView";
 import WeeklyScheduleResponsibilityChip from "../components/weeklySchedule/WeeklyScheduleResponsibilityChip";
 import {
   ASSIGNMENT_KIND,
@@ -117,13 +118,16 @@ import {
   withDisplayedTotals,
 } from "../components/weeklySchedule/weeklyScheduleRoles";
 
-const VIEW_MODE = { EMPLOYEE: "employee", TIME_ROLE: "time_role" };
+const VIEW_MODE = { EMPLOYEE: "employee", TIME_ROLE: "time_role", BREAKS_TASKS: "breaks_tasks" };
 
 
 function daySummary(day) {
   return {
     people: Number(day?.people ?? day?.employee_count ?? 0),
     hours: Number(day?.hours ?? day?.total_hours ?? 0),
+    gross_hours: Number(day?.gross_hours ?? 0),
+    break_hours: Number(day?.break_hours ?? 0),
+    unscheduled_break_hours: Number(day?.unscheduled_break_hours ?? 0),
     sort: Number(day?.sort ?? day?.sort_count ?? 0),
     wash: Number(day?.wash ?? day?.wash_count ?? 0),
     weigher: Number(day?.weigher ?? day?.weigher_count ?? 0),
@@ -837,7 +841,7 @@ export default function WeeklySchedulePage() {
 
   const handleExport = () => {
     const viewSuffix = scheduleViewLabel ? ` - ${scheduleViewLabel}` : "";
-    if (viewMode === VIEW_MODE.TIME_ROLE) {
+    if (viewMode !== VIEW_MODE.EMPLOYEE) {
       exportWeeklyScheduleHourlyCsv({
         days: coverageDays,
         weekStart,
@@ -854,6 +858,7 @@ export default function WeeklySchedulePage() {
       tabLabel: `${ENTITY_TAB_LABELS[employerTab]}${viewSuffix}`,
       showRoleLabels,
       scheduleEndTimeEnabled,
+      showBreaks: showBreakMinutes,
       dayLabels: visibleDayLabels.length === 7 ? undefined : visibleDayLabels,
       dayIndices: visibleDayColumns.length === 7 ? undefined : visibleDayColumns,
       daySummaries: filteredDaySummaries,
@@ -1063,7 +1068,7 @@ export default function WeeklySchedulePage() {
                 value={viewMode}
                 onChange={(_, value) => {
                   if (!value) return;
-                  if (value === VIEW_MODE.TIME_ROLE) setSelectedRoleView([]);
+                  if (value !== VIEW_MODE.EMPLOYEE) setSelectedRoleView([]);
                   setViewMode(value);
                 }}
                 sx={{
@@ -1079,6 +1084,7 @@ export default function WeeklySchedulePage() {
               >
                 <ToggleButton value={VIEW_MODE.EMPLOYEE}>By employee</ToggleButton>
                 <ToggleButton value={VIEW_MODE.TIME_ROLE}>By time &amp; role</ToggleButton>
+                <ToggleButton value={VIEW_MODE.BREAKS_TASKS}>Breaks &amp; tasks</ToggleButton>
               </ToggleButtonGroup>
               {canEdit && addableEmployees.length ? (
                 <Select
@@ -1220,7 +1226,7 @@ export default function WeeklySchedulePage() {
               hiddenRoles={hiddenScheduleRoles}
               roleCatalog={roleCatalog}
               responsibilities={tabResponsibilities}
-              hideRoles={viewMode === VIEW_MODE.TIME_ROLE}
+              hideRoles={viewMode !== VIEW_MODE.EMPLOYEE}
             />
           ) : null}
 
@@ -1363,6 +1369,7 @@ export default function WeeklySchedulePage() {
                 <WeeklyScheduleSummaryBar
                   summary={weekSummary}
                   showCost={showCost && costAllowed}
+                  showBreaks={showBreakMinutes}
                   compact
                   hideRoleBreakdown={hasRoleViewFilter(selectedRoleView) || dayViewTab !== SCHEDULE_VIEW_ALL}
                 />
@@ -1379,7 +1386,7 @@ export default function WeeklySchedulePage() {
                 }}
                 className="weekly-schedule-grid-scroll"
               >
-                {viewMode === VIEW_MODE.TIME_ROLE ? (
+                {viewMode === VIEW_MODE.BREAKS_TASKS ? (
                   <>
                     <HourlyCoverageControls
                       roleOptions={coverageRoleOptions}
@@ -1392,7 +1399,39 @@ export default function WeeklySchedulePage() {
                       hourBounds={coverageHourBounds}
                       onHourRangeChange={setCoverageRange}
                     />
-                    <WeeklyScheduleHoursSummary summary={hoursSummary} scopeLabel={scheduleViewLabel} />
+                    <WeeklyScheduleBreaksTasksView
+                      weekStart={weekStart}
+                      days={coverageDays}
+                      columns={coverageMatrixColumns}
+                      responsibilities={timeViewResponsibilities}
+                      employeesById={employeesById}
+                      showNames={showCoverageNames}
+                      canEdit={canEdit}
+                      showBreaks={showBreakMinutes}
+                      endTimeEnabled={scheduleEndTimeEnabled}
+                      onEditEntry={openEdit}
+                      onEditResponsibility={openEditResponsibility}
+                      onAdd={openCreateFromTimeView}
+                    />
+                  </>
+                ) : viewMode === VIEW_MODE.TIME_ROLE ? (
+                  <>
+                    <HourlyCoverageControls
+                      roleOptions={coverageRoleOptions}
+                      selectedRoles={matrixRoles}
+                      onSelectedRolesChange={setMatrixRoles}
+                      showNames={showCoverageNames}
+                      onShowNamesChange={setShowCoverageNames}
+                      fromHour={coverageRange.fromHour}
+                      toHour={coverageRange.toHour}
+                      hourBounds={coverageHourBounds}
+                      onHourRangeChange={setCoverageRange}
+                    />
+                    <WeeklyScheduleHoursSummary
+                      summary={hoursSummary}
+                      scopeLabel={scheduleViewLabel}
+                      showBreaks={showBreakMinutes && scheduleEndTimeEnabled}
+                    />
                     <WeeklyScheduleTimeRoleView
                       weekStart={weekStart}
                       days={coverageDays}
@@ -1400,6 +1439,7 @@ export default function WeeklySchedulePage() {
                       showNames={showCoverageNames}
                       endTimeEnabled={scheduleEndTimeEnabled}
                       canEdit={canEdit}
+                      showBreaks={showBreakMinutes}
                       onEditEntry={openEdit}
                       onEditResponsibility={openEditResponsibility}
                       onAdd={openCreateFromTimeView}
@@ -1431,6 +1471,7 @@ export default function WeeklySchedulePage() {
                           showRates={showEmployeeRates}
                           costAllowed={costAllowed}
                           daysOnly={daysOnly}
+                          showBreaks={showBreakMinutes}
                           onViewSchedule={openEmployeeView}
                         />
                         <Box sx={{ px: 1.25, pb: 1.25, display: "grid", gap: 0.75 }}>
@@ -1521,6 +1562,7 @@ export default function WeeklySchedulePage() {
                           dayLabel={label}
                           summary={daySummary(filteredDaySummaries[dow] || dayTotals[dow])}
                           daysOnly={daysOnly}
+                          showBreaks={showBreakMinutes}
                           compact
                         />
                       </Box>
@@ -1540,6 +1582,8 @@ export default function WeeklySchedulePage() {
                             showCost={showCost}
                             showRates={showEmployeeRates}
                             costAllowed={costAllowed}
+                            daysOnly={daysOnly}
+                            showBreaks={showBreakMinutes}
                             onViewSchedule={openEmployeeView}
                           />
                           {visibleDayColumns.map((dow) => {
@@ -1588,17 +1632,19 @@ export default function WeeklySchedulePage() {
             <div className="weekly-schedule-print-doc-title">
               Weekly Schedule — {ENTITY_TAB_LABELS[employerTab]}
               {viewMode === VIEW_MODE.TIME_ROLE ? " — Hourly coverage by role" : ""}
+              {viewMode === VIEW_MODE.BREAKS_TASKS ? " — Hourly coverage with breaks" : ""}
               {scheduleViewLabel ? ` — ${scheduleViewLabel}` : ""}
             </div>
             <div className="weekly-schedule-print-doc-subtitle">{formatWeekRange(weekStart)}</div>
           </div>
-          {viewMode === VIEW_MODE.TIME_ROLE ? (
+          {viewMode !== VIEW_MODE.EMPLOYEE ? (
             <WeeklyScheduleTimeRolePrint
               days={coverageDays}
               weekStart={weekStart}
               columns={coverageMatrixColumns}
               showNames={showCoverageNames}
               hoursSummary={hoursSummary}
+              showBreaks={showBreakMinutes}
             />
           ) : (
             <WeeklySchedulePrintTable
@@ -1609,6 +1655,7 @@ export default function WeeklySchedulePage() {
               daySummaries={filteredDaySummaries}
               showRoleLabels={showRoleLabels}
               daysOnly={daysOnly}
+              showBreaks={showBreakMinutes}
               responsibilities={timeViewResponsibilities}
             />
           )}

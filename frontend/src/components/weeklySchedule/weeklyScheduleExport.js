@@ -2,7 +2,9 @@ import { formatTime12 } from "../datetime/scheduleTimeUi";
 import {
   computeFilteredDaySummaries,
   employeeScheduleRoles,
+  entryBreakLines,
   entryRoleAssignments,
+  formatHoursBreakdown,
   formatRoleHoursLabel,
   HOUR_TRACKED_ROLES,
   NO_ROLE_LABEL,
@@ -22,7 +24,7 @@ import { compactClock, dayDateLabel, hourLabel, HOURLY_COVERAGE_EXPLANATION } fr
 export function exportAsciiText(value) {
   return String(value ?? "")
     .replace(/\u2013|\u2014/g, " - ")
-    .replace(/\u00b7/g, " / ")
+    .replace(/ *\u00b7 */g, " / ")
     .replace(/\u2212/g, "-")
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201c\u201d]/g, '"')
@@ -54,9 +56,15 @@ export function formatResponsibilityText(item, { forExport = false } = {}) {
   return forExport ? exportAsciiText(text) : text;
 }
 
-export function formatShiftEntryText(entry, { showRoleLabels = true, forExport = false, scheduleEndTimeEnabled = true } = {}) {
+export function formatShiftEntryText(
+  entry,
+  { showRoleLabels = true, forExport = false, scheduleEndTimeEnabled = true, showBreaks = false } = {},
+) {
   const hours = Number(entry.hours || 0);
-  const hoursLabel = Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`;
+  const breakLines = showBreaks && scheduleEndTimeEnabled ? entryBreakLines(entry) : [];
+  const hoursLabel = `${Number.isInteger(hours) ? hours : hours.toFixed(1)}h${breakLines.length ? " net" : ""}${
+    breakLines.length ? `, ${breakLines.join(", ")}` : ""
+  }`;
   const details = showRoleLabels ? formatAssignmentDetails(entry, { scheduleEndTimeEnabled }) : "";
   const roles = parseEntryRoles(entry);
   const roleText = showRoleLabels
@@ -113,6 +121,7 @@ export function buildWeeklyScheduleCsvRows({
   entries,
   scheduleEndTimeEnabled = true,
   showRoleLabels = true,
+  showBreaks = false,
   dayLabels = null,
   dayIndices = null,
   daySummaries = null,
@@ -120,11 +129,12 @@ export function buildWeeklyScheduleCsvRows({
 }) {
   const columnDays = dayIndices || [0, 1, 2, 3, 4, 5, 6];
   const columnLabels = dayLabels || columnDays.map((dow) => DAY_LABELS[dow]);
+  const breakColumns = scheduleEndTimeEnabled && showBreaks;
   const headers = [
     "Employee",
     "Roles",
     ...columnLabels,
-    scheduleEndTimeEnabled ? "Total Hours" : "Total Days",
+    ...(breakColumns ? ["Gross Hours", "Break Hours", "Net Hours"] : [scheduleEndTimeEnabled ? "Total Hours" : "Total Days"]),
   ];
   const lines = [headers.map(csvCell).join(",")];
 
@@ -148,14 +158,18 @@ export function buildWeeklyScheduleCsvRows({
         csvCell(
           formatDayShiftsText(
             cellEntries,
-            { showRoleLabels, forExport: true, scheduleEndTimeEnabled },
+            { showRoleLabels, forExport: true, scheduleEndTimeEnabled, showBreaks },
             cellResponsibilities,
           ),
         ),
       );
     }
 
-    if (scheduleEndTimeEnabled) {
+    if (breakColumns) {
+      for (const key of ["gross_hours", "break_hours", "total_hours"]) {
+        row.push(String(Math.round(Number(employee[key] || 0) * 100) / 100));
+      }
+    } else if (scheduleEndTimeEnabled) {
       const totalHours = Number(employee.total_hours || 0);
       row.push(Number.isInteger(totalHours) ? String(totalHours) : totalHours.toFixed(1));
     } else {
@@ -181,9 +195,29 @@ export function buildWeeklyScheduleCsvRows({
         }),
       ),
     ),
-    csvCell(""),
+    ...(breakColumns ? [csvCell(""), csvCell(""), csvCell("")] : [csvCell("")]),
   ];
   lines.push(totalsRow.join(","));
+  if (breakColumns) {
+    lines.push(
+      [
+        csvCell("Day Hours"),
+        csvCell(""),
+        ...columnDays.map((dow) =>
+          csvCell(
+            formatHoursBreakdown({
+              gross: summaries[dow]?.gross_hours,
+              breakHours: summaries[dow]?.break_hours,
+              net: summaries[dow]?.hours,
+            }),
+          ),
+        ),
+        csvCell(""),
+        csvCell(""),
+        csvCell(""),
+      ].join(","),
+    );
+  }
 
   return lines;
 }
@@ -215,6 +249,7 @@ export function exportWeeklyScheduleCsv({
   filename,
   showRoleLabels = true,
   scheduleEndTimeEnabled = true,
+  showBreaks = false,
   dayLabels = null,
   dayIndices = null,
   daySummaries = null,
@@ -225,6 +260,7 @@ export function exportWeeklyScheduleCsv({
     entries,
     scheduleEndTimeEnabled,
     showRoleLabels,
+    showBreaks,
     dayLabels,
     dayIndices,
     daySummaries,
@@ -237,13 +273,28 @@ export function exportWeeklyScheduleCsv({
 export function buildHoursSummaryCsvRows(summary) {
   if (!summary) return [];
   const hours = (value) => String(Math.round(Number(value || 0) * 100) / 100);
-  const lines = ["", csvCell("Employee hours"), ["Employee", "Hours"].map(csvCell).join(",")];
-  for (const row of summary.employees) lines.push([csvCell(row.name), hours(row.hours)].join(","));
-  lines.push([csvCell(`Total (${summary.employees.length} employees)`), hours(summary.totalHours)].join(","));
+  const lines = ["", csvCell("Employee hours"), ["Employee", "Net hours", "Gross hours", "Break hours"].map(csvCell).join(",")];
+  for (const row of summary.employees) {
+    lines.push([csvCell(row.name), hours(row.hours), hours(row.grossHours), hours(row.breakHours)].join(","));
+  }
+  lines.push(
+    [
+      csvCell(`Total (${summary.employees.length} employees)`),
+      hours(summary.totalHours),
+      hours(summary.grossHours),
+      hours(summary.breakHours),
+    ].join(","),
+  );
+  if (summary.unscheduledBreakHours > 0) {
+    lines.push([csvCell("Breaks without a time (included in break hours)"), "", "", hours(summary.unscheduledBreakHours)].join(","));
+  }
   lines.push("", csvCell("Role hours & resources"), ["Role", "Employees", "Hours"].map(csvCell).join(","));
   for (const row of summary.roles) lines.push([csvCell(row.label), String(row.employees), hours(row.hours)].join(","));
   if (summary.unassignedHours > 0) {
     lines.push([csvCell(summary.unassignedLabel || "Shift time without a role"), "", hours(summary.unassignedHours)].join(","));
+  }
+  if (summary.unscheduledBreakHours > 0) {
+    lines.push([csvCell("Breaks without a time (not in any hour or role)"), "", `-${hours(summary.unscheduledBreakHours)}`].join(","));
   }
   lines.push([csvCell("Total role hours"), "", hours(summary.roleTotal)].join(","));
   lines.push("", csvCell(ROLE_HOURS_EXPLANATION));
@@ -304,6 +355,19 @@ export function buildHourlyCoverageCsvRows({ days, weekStart, columns, hoursSumm
           "",
         ].join(","),
       );
+      if (row.breaks?.count) {
+        lines.push(
+          [
+            ...dayCells,
+            hour,
+            csvCell("On break"),
+            String(row.breaks.count),
+            coverageHours(row.breaks.hours),
+            coverageHours(row.breaks.cumulative),
+            csvCell(coveragePeopleText(row.breaks.people)),
+          ].join(","),
+        );
+      }
     }
     for (const role of columns) {
       const total = day.totals[role];
@@ -315,6 +379,24 @@ export function buildHourlyCoverageCsvRows({ days, weekStart, columns, hoursSumm
     if (day.hours.length) {
       lines.push(
         [...dayCells, csvCell("Day total"), csvCell("All shown roles"), String(day.overall.count), coverageHours(day.overall.hours), "", ""].join(","),
+      );
+    }
+    if (day.breakTotal?.count) {
+      lines.push(
+        [...dayCells, csvCell("Day total"), csvCell("On break"), String(day.breakTotal.count), coverageHours(day.breakTotal.hours), "", ""].join(","),
+      );
+    }
+    for (const item of day.unscheduledBreaks || []) {
+      lines.push(
+        [
+          ...dayCells,
+          csvCell("Break without a time"),
+          csvCell("Not scheduled"),
+          "1",
+          coverageHours(item.hours),
+          "",
+          csvCell(`${item.name}: not placed in any hour`),
+        ].join(","),
       );
     }
     for (const group of day.responsibilities) {

@@ -27,8 +27,11 @@ import {
 } from "./weeklyScheduleEmployerTabs";
 import { entityLabel } from "../../payroll/businessEntity";
 import {
+  entryBreakBreakdown,
+  entryBreakLines,
   entryRoleAssignments,
   entryRoleCardStyle,
+  formatHours,
   NO_ROLE_LABEL,
   parseEntryRoles,
   roleCompactLabel,
@@ -61,9 +64,13 @@ export default function WeeklyScheduleShiftCard({
   const roles = parseEntryRoles(entry);
   const cardStyle = entryRoleCardStyle(roles);
   const hours = Number(entry.hours || 0);
-  const breakMin = Number(entry.break_minutes || 0);
-  const breakSuffix = scheduleEndTimeEnabled && showBreakMinutes && breakMin > 0 ? ` · −${breakMin}m break` : "";
-  const hoursLabel = Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`;
+  const showBreaks = scheduleEndTimeEnabled && showBreakMinutes;
+  const breakParts = entryBreakBreakdown(entry);
+  const breakLines = showBreaks ? entryBreakLines(entry) : [];
+  const formatH = (value) => `${formatHours(value)}h`;
+  const hoursLabel = showBreaks && breakParts.breakMinutes > 0
+    ? `${formatH(hours)} net · ${formatH(breakParts.grossMinutes / 60)} gross`
+    : formatH(hours);
   const roleTooltip = showRoleLabels ? roleLabels(roles) : "";
   const assignmentDetails = showRoleLabels
     ? entryRoleAssignments(entry).filter((a) => a.remarks || (!a.full_shift && scheduleEndTimeEnabled))
@@ -163,9 +170,26 @@ export default function WeeklyScheduleShiftCard({
               }}
             >
               {hoursLabel}
-              {breakSuffix}
             </Typography>
           ) : null}
+          {breakLines.map((line) => (
+            <Typography
+              key={line}
+              variant="caption"
+              data-break-line
+              sx={{
+                display: "block",
+                mt: 0.15,
+                color: line.endsWith("Not scheduled") ? "text.secondary" : "#9a3412",
+                fontSize: "0.62rem",
+                fontWeight: 700,
+                lineHeight: 1.25,
+                whiteSpace: "normal",
+              }}
+            >
+              {line}
+            </Typography>
+          ))}
           {showRoleLabels && roles.length ? (
             <Stack direction="row" spacing={0.35} useFlexGap flexWrap="wrap" sx={{ mt: 0.35, maxWidth: "100%" }}>
               {roles.map((roleKey) => (

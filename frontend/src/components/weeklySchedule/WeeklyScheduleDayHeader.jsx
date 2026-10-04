@@ -1,5 +1,5 @@
 import { Box, Stack, Typography } from "@mui/material";
-import { HOUR_TRACKED_ROLES, ROLE_ORDER, sortRoles } from "./weeklyScheduleRoles";
+import { formatHours, formatHoursBreakdown, HOUR_TRACKED_ROLES, ROLE_ORDER, sortRoles } from "./weeklyScheduleRoles";
 import ScheduleRoleChip from "./ScheduleRoleChip";
 
 const HOUR_TRACKED = new Set(HOUR_TRACKED_ROLES);
@@ -12,15 +12,28 @@ function roleCountLines(summary) {
   })).filter((line) => line.count > 0);
 }
 
-export default function WeeklyScheduleDayHeader({ dayLabel, summary, daysOnly = false, compact = false }) {
+export default function WeeklyScheduleDayHeader({ dayLabel, summary, daysOnly = false, compact = false, showBreaks = true }) {
   const people = Number(summary?.people || 0);
   const hours = Number(summary?.hours || 0);
-  const hoursLabel = Number.isInteger(hours) ? `${hours}` : hours.toFixed(1);
+  const hoursLabel = formatHours(hours);
+  const breakHours = Number(summary?.break_hours || 0);
+  const breakdown = !daysOnly && showBreaks && breakHours > 0
+    ? formatHoursBreakdown({ gross: summary?.gross_hours, breakHours, net: hours })
+    : "";
   const roleLines = roleCountLines(summary);
+  const breakdownLine = breakdown ? (
+    <Typography
+      variant="caption"
+      data-day-hours-breakdown
+      sx={{ display: "block", color: "#9a3412", fontWeight: 700, fontSize: "0.62rem", lineHeight: 1.25 }}
+    >
+      {breakdown}
+    </Typography>
+  ) : null;
 
   if (compact) {
     const statParts = [`${people} emp`];
-    if (!daysOnly) statParts.push(`${hoursLabel} hrs`);
+    if (!daysOnly) statParts.push(`${hoursLabel} ${breakdown ? "net " : ""}hrs`);
 
     return (
       <Box sx={{ px: 0.85, py: 0.65, minWidth: 0 }}>
@@ -50,6 +63,7 @@ export default function WeeklyScheduleDayHeader({ dayLabel, summary, daysOnly = 
         >
           {statParts.join(" · ")}
         </Typography>
+        {breakdownLine}
         {roleLines.length ? (
           <Stack direction="row" spacing={0.35} useFlexGap flexWrap="wrap" sx={{ mt: 0.45 }}>
             {roleLines.map(({ key, count, hours: roleHours }) => (
@@ -92,9 +106,10 @@ export default function WeeklyScheduleDayHeader({ dayLabel, summary, daysOnly = 
           variant="body2"
           sx={{ fontWeight: 600, color: "text.secondary", fontSize: "0.8125rem", lineHeight: 1.3 }}
         >
-          {hoursLabel} Hour{hours === 1 ? "" : "s"}
+          {hoursLabel} {breakdown ? "Net " : ""}Hour{hours === 1 ? "" : "s"}
         </Typography>
       ) : null}
+      {breakdownLine}
       {roleLines.length ? (
         <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: 0.5 }}>
           {roleLines.map(({ key, count, hours: roleHours }) => (

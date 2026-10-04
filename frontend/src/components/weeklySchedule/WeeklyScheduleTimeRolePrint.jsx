@@ -6,7 +6,7 @@ function peopleCount(count) {
   return `${count} ${count === 1 ? "person" : "people"}`;
 }
 
-function HoursSummaryPrint({ summary }) {
+function HoursSummaryPrint({ summary, showBreaks }) {
   if (!summary) return null;
   return (
     <div className="weekly-schedule-print-hours-summary">
@@ -14,18 +14,31 @@ function HoursSummaryPrint({ summary }) {
         <thead>
           <tr>
             <th>Employee</th>
-            <th className="weekly-schedule-print-tr-count">Hours</th>
+            {showBreaks ? <th className="weekly-schedule-print-tr-count">Gross</th> : null}
+            {showBreaks ? <th className="weekly-schedule-print-tr-count">Break</th> : null}
+            <th className="weekly-schedule-print-tr-count">{showBreaks ? "Net" : "Hours"}</th>
           </tr>
         </thead>
         <tbody>
           {summary.employees.map((row) => (
             <tr key={row.user_id}>
               <td>{row.name}</td>
+              {showBreaks ? <td>{formatRoleHoursLabel(row.grossHours)}</td> : null}
+              {showBreaks ? <td>{formatRoleHoursLabel(row.breakHours)}</td> : null}
               <td>{formatRoleHoursLabel(row.hours)}</td>
             </tr>
           ))}
           <tr className="weekly-schedule-print-tr-day">
             <td>Total · {summary.employees.length} employees</td>
+            {showBreaks ? <td>{formatRoleHoursLabel(summary.grossHours)}</td> : null}
+            {showBreaks ? (
+              <td>
+                {formatRoleHoursLabel(summary.breakHours)}
+                {summary.unscheduledBreakHours > 0
+                  ? ` (${formatRoleHoursLabel(summary.unscheduledBreakHours)} not scheduled)`
+                  : ""}
+              </td>
+            ) : null}
             <td>{formatRoleHoursLabel(summary.totalHours)}</td>
           </tr>
         </tbody>
@@ -51,6 +64,13 @@ function HoursSummaryPrint({ summary }) {
               <td>{summary.unassignedLabel || "Shift time without a role"}</td>
               <td />
               <td>{formatRoleHoursLabel(summary.unassignedHours)}</td>
+            </tr>
+          ) : null}
+          {showBreaks && summary.unscheduledBreakHours > 0 ? (
+            <tr>
+              <td>Breaks without a time (not in any hour or role)</td>
+              <td />
+              <td>−{formatRoleHoursLabel(summary.unscheduledBreakHours)}</td>
             </tr>
           ) : null}
           <tr className="weekly-schedule-print-tr-day">
@@ -129,10 +149,17 @@ function DayTasksPrint({ day }) {
 }
 
 /** Plain-HTML print layout (copied into the print window, so no MUI styling). */
-export default function WeeklyScheduleTimeRolePrint({ days, weekStart, columns, showNames = false, hoursSummary = null }) {
+export default function WeeklyScheduleTimeRolePrint({
+  days,
+  weekStart,
+  columns,
+  showNames = false,
+  hoursSummary = null,
+  showBreaks = true,
+}) {
   return (
     <>
-      <HoursSummaryPrint summary={hoursSummary} />
+      <HoursSummaryPrint summary={hoursSummary} showBreaks={showBreaks} />
       {(days || []).map((day) => (
         <div key={day.dow} className="weekly-schedule-print-hourly-day">
           <div className="weekly-schedule-print-hourly-day-title">
@@ -147,6 +174,7 @@ export default function WeeklyScheduleTimeRolePrint({ days, weekStart, columns, 
                     <th key={role}>{scheduleRoleLabel(role)}</th>
                   ))}
                   <th>All shown roles</th>
+                  {showBreaks ? <th>On break</th> : null}
                 </tr>
               </thead>
               <tbody>
@@ -170,6 +198,11 @@ export default function WeeklyScheduleTimeRolePrint({ days, weekStart, columns, 
                         Total through {row.endLabel}: {formatCoverageHours(row.total.cumulative)}
                       </div>
                     </td>
+                    {showBreaks ? (
+                      <td>
+                        <PrintCell cell={row.breaks} endLabel={row.endLabel} showNames={showNames} />
+                      </td>
+                    ) : null}
                   </tr>
                 ))}
                 <tr className="weekly-schedule-print-tr-day">
@@ -181,11 +214,24 @@ export default function WeeklyScheduleTimeRolePrint({ days, weekStart, columns, 
                   <td>
                     {peopleCount(day.overall.count)} · {formatCoverageHours(day.overall.hours)}
                   </td>
+                  {showBreaks ? (
+                    <td>
+                      {day.breakTotal?.count
+                        ? `${peopleCount(day.breakTotal.count)} · ${formatCoverageHours(day.breakTotal.hours)}`
+                        : "—"}
+                    </td>
+                  ) : null}
                 </tr>
               </tbody>
             </table>
           ) : !day.responsibilities.length ? (
             <div className="weekly-schedule-print-employee-meta">No assignments</div>
+          ) : null}
+          {showBreaks && day.unscheduledBreaks?.length ? (
+            <div className="weekly-schedule-print-employee-meta">
+              Breaks without a time ({formatCoverageHours(day.unscheduledBreakTotal.hours)}, not placed in any hour):{" "}
+              {day.unscheduledBreaks.map((item) => `${item.name} ${Math.round(item.hours * 60)} min`).join("; ")}
+            </div>
           ) : null}
           <DayTasksPrint day={day} />
         </div>

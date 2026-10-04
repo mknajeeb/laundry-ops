@@ -5,6 +5,7 @@ import VisibilityOffOutlinedIcon from "@mui/icons-material/VisibilityOffOutlined
 import {
   employeeWeeklyRoleCounts,
   formatEmployeeWeeklySummary,
+  formatHoursBreakdown,
 } from "./weeklyScheduleRoles";
 
 export default function WeeklyScheduleEmployeeCell({
@@ -18,13 +19,18 @@ export default function WeeklyScheduleEmployeeCell({
   showRates,
   costAllowed,
   daysOnly = false,
+  showBreaks = true,
   onViewSchedule,
 }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
 
   const roleCounts = employeeWeeklyRoleCounts(employee.user_id, entries);
-  const weeklySummary = formatEmployeeWeeklySummary(employee, { daysOnly });
+  const weeklySummary = formatEmployeeWeeklySummary(employee, { daysOnly, showBreaks });
+  const breakHours = Number(employee?.break_hours || 0);
+  const breakdown = !daysOnly && showBreaks && breakHours > 0
+    ? formatHoursBreakdown({ gross: employee.gross_hours, breakHours, net: employee.total_hours })
+    : "";
 
   const rateParts = [];
   if (showRates && employee?.default_hourly_rate) {
@@ -112,6 +118,15 @@ export default function WeeklyScheduleEmployeeCell({
             >
               {weeklySummary}
               {rateParts.length ? ` · ${rateParts.join(" · ")}` : ""}
+            </Typography>
+          ) : null}
+          {!excluded && breakdown ? (
+            <Typography
+              variant="caption"
+              data-employee-hours-breakdown
+              sx={{ display: "block", color: "#9a3412", fontWeight: 700, fontSize: "0.68rem", lineHeight: 1.3 }}
+            >
+              {breakdown}
             </Typography>
           ) : null}
 

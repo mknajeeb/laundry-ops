@@ -308,6 +308,7 @@ class _FakeCursor:
                 "break_minutes": params[7],
                 "employer_affiliation": params[8] if len(params) > 8 else None,
                 "role_assignments": params[9] if len(params) > 9 else None,
+                "break_slots": params[10] if len(params) > 10 else None,
             }
             self.rows.append(row)
             return
@@ -352,6 +353,7 @@ class _FakeCursor:
                             "break_minutes": params[5],
                             "employer_affiliation": params[6] if len(params) > 8 else row.get("employer_affiliation"),
                             "role_assignments": params[7] if len(params) > 9 else row.get("role_assignments"),
+                            "break_slots": params[8] if len(params) > 10 else row.get("break_slots"),
                         }
                     )
             return
@@ -2419,3 +2421,179 @@ def test_shift_dialog_tasks_replace_day_tasks_without_touching_the_shift():
     assert [(t["role"], t["remarks"]) for t in cursor.responsibilities] == [("lint_cleaning", "Dryers 7-12")]
     assert cursor.rows[0] == shift_before
     assert payload["employees"][0]["total_hours"] == 5.5
+
+
+# --- Planned break slots -------------------------------------------------------------------------
+
+from backend.planned_weekly_schedule import (  # noqa: E402
+    _entry_copy_payload,
+    _validate_breaks,
+    apply_week_copy,
+    entry_break_breakdown,
+    scheduled_hours_breakdown_by_user_day,
+)
+
+
+def _break_row(entry_id, user_id, start, end, roles="fold", *, break_minutes=0, slots=None, day=1, assignments=None):
+    import json
+
+    row = {
+        "id": entry_id,
+        "organization_id": 1,
+        "week_start": date(2026, 6, 14),
+        "user_id": user_id,
+        "day_of_week": day,
+        "role": roles,
+        "start_time": start,
+        "end_time": end,
+        "break_minutes": break_minutes,
+        "break_slots": json.dumps(slots) if slots is not None else None,
+    }
+    if assignments is not None:
+        row["role_assignments"] = json.dumps(assignments)
+    return serialize_entry(row)
+
+
+def _slots(*pairs):
+    return [{"start_time": a, "end_time": b} for a, b in pairs]
+
+
+def test_break_validation_inside_shift_overnight_and_overlap():
+    ok, err = _validate_breaks(
+        {"break_slots": _slots(("12:00", "12:30"), ("15:00", "15:15"))}, shift_start=time(9, 0), shift_end=time(17, 0)
+    )
+    assert err is None and ok["break_minutes"] == 45
+    ok, err = _validate_breaks(
+        {"break_slots": _slots(("01:00", "01:30"), ("23:30", "23:45"))}, shift_start=time(22, 0), shift_end=time(6, 0)
+    )
+    assert err is None
+    assert [s["start_time"] for s in __import__("json").loads(ok["break_slots"])] == ["23:30", "01:00"]
+
+    for slots, shift in (
+        (_slots(("16:45", "17:15")), (time(9, 0), time(17, 0))),
+        (_slots(("08:00", "08:30")), (time(9, 0), time(17, 0))),
+        (_slots(("05:45", "06:15")), (time(22, 0), time(6, 0))),
+        (_slots(("21:00", "21:30")), (time(22, 0), time(6, 0))),
+    ):
+        _, err = _validate_breaks({"break_slots": slots}, shift_start=shift[0], shift_end=shift[1])
+        assert err and "within the shift" in err
+
+    _, err = _validate_breaks(
+        {"break_slots": _slots(("12:00", "12:30"), ("12:15", "12:45"))}, shift_start=time(9, 0), shift_end=time(17, 0)
+    )
+    assert err and "overlaps" in err
+    _, err = _validate_breaks({"break_slots": _slots(("12:00", "12:00"))}, shift_start=time(9, 0), shift_end=time(17, 0))
+    assert err
+
+
+def test_timed_break_replaces_duration_only_deduction():
+    # A legacy 30-minute break given a time keeps one 30-minute deduction.
+    ok, _ = _validate_breaks(
+        {"break_minutes": 30, "break_slots": _slots(("12:00", "12:30"))}, shift_start=time(9, 0), shift_end=time(17, 0)
+    )
+    assert ok["break_minutes"] == 30
+    # The dialog sends the untimed remainder explicitly.
+    ok, _ = _validate_breaks(
+        {"break_minutes": 45, "unscheduled_break_minutes": 15, "break_slots": _slots(("12:00", "12:30"))},
+        shift_start=time(9, 0),
+        shift_end=time(17, 0),
+    )
+    assert ok["break_minutes"] == 45
+    legacy = _break_row(1, 10, time(9, 0), time(17, 0), break_minutes=30)
+    assert entry_break_breakdown(legacy) == {
+        "gross_minutes": 480,
+        "break_minutes": 30,
+        "timed_break_minutes": 0,
+        "unscheduled_break_minutes": 30,
+    }
+    assert legacy["hours"] == 7.5 and legacy["break_slots"] == []
+    timed = _break_row(2, 10, time(9, 0), time(17, 0), break_minutes=30, slots=_slots(("12:00", "12:30")))
+    assert timed["hours"] == 7.5 and timed["unscheduled_break_minutes"] == 0 and timed["timed_break_minutes"] == 30
+
+
+def test_breaks_multiple_partial_overnight_and_overlapping_shifts_count_once():
+    multi = _break_row(1, 10, time(9, 0), time(17, 0), break_minutes=45, slots=_slots(("11:50", "12:20"), ("15:00", "15:15")))
+    assert multi["hours"] == 7.25 and multi["gross_hours"] == 8.0
+    overnight = _break_row(2, 11, time(22, 0), time(6, 0), "sort", break_minutes=30, slots=_slots(("01:00", "01:30")))
+    assert overnight["hours"] == 7.5
+    a = _break_row(3, 12, time(8, 0), time(14, 0), "wash", break_minutes=30, slots=_slots(("12:00", "12:30")))
+    b = _break_row(4, 12, time(12, 0), time(16, 0), "fold", break_minutes=30, slots=_slots(("12:00", "12:30")))
+    parts = scheduled_hours_breakdown_by_user_day([multi, overnight, a, b])
+    assert parts[(12, 1)] == {
+        "gross_hours": 8.0,
+        "break_hours": 0.5,
+        "timed_break_hours": 0.5,
+        "unscheduled_break_hours": 0.0,
+        "net_hours": 7.5,
+    }
+    totals = compute_schedule_totals([multi, overnight, a, b], {})
+    assert totals["day_totals"][1]["total_hours"] == 22.25
+    assert totals["day_totals"][1]["gross_hours"] == 24.0
+    assert totals["day_totals"][1]["break_hours"] == 1.75
+    assert totals["employee_totals"][12]["total_hours"] == 7.5
+
+
+def test_role_hours_remove_timed_breaks_before_splitting_and_keep_untimed_separate():
+    both = _break_row(
+        1,
+        10,
+        time(8, 0),
+        time(12, 0),
+        "wash,fold",
+        break_minutes=30,
+        slots=_slots(("10:00", "10:30")),
+    )
+    hours = allocate_role_hours_by_day([both])[1]
+    assert hours["wash"] == 1.8 and hours["fold"] == 1.8  # 1.75 each, day values keep one decimal
+    legacy = _break_row(2, 11, time(9, 0), time(17, 0), "sort", break_minutes=30)
+    assert allocate_role_hours_by_day([legacy])[1]["sort"] == 8.0
+    totals = compute_schedule_totals([both, legacy], {})
+    assert totals["day_totals"][1]["total_hours"] == 11.0
+    assert totals["day_totals"][1]["unscheduled_break_hours"] == 0.5
+
+
+def test_create_update_and_copy_keep_break_slots_and_deletions():
+    import json
+
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    week = date(2026, 6, 14)
+    with patch("backend.planned_weekly_schedule._schedule_end_time_enabled", return_value=True), patch(
+        "backend.payroll_employer_affiliation._organization_slug", return_value="veewash"
+    ), patch("backend.planned_weekly_schedule._load_workers", return_value=[]):
+        entry, err = create_entry(
+            conn,
+            cursor,
+            1,
+            week_start=week,
+            data={
+                "user_id": 10,
+                "day_of_week": 1,
+                "start_time": "22:00",
+                "end_time": "06:00",
+                "role": "fold",
+                "break_minutes": 45,
+                "unscheduled_break_minutes": 15,
+                "break_slots": _slots(("01:00", "01:30")),
+            },
+        )
+        assert err is None, err
+        assert entry["break_slots"] == _slots(("01:00", "01:30"))
+        assert entry["break_minutes"] == 45 and entry["unscheduled_break_minutes"] == 15 and entry["hours"] == 7.25
+
+        _, err = update_entry(conn, cursor, 1, entry["id"], {"break_slots": _slots(("07:00", "07:30"))})
+        assert err and "within the shift" in err
+
+        next_week = week + timedelta(days=7)
+        copy = {"entries": [_entry_copy_payload(entry, day_of_week=1)], "organization_slug": "veewash"}
+        apply_week_copy(cursor, 1, target_week_start=next_week, copy=copy)
+        copied = list_week_entries(cursor, 1, week_start=next_week)
+        assert copied[0]["break_slots"] == _slots(("01:00", "01:30"))
+        assert copied[0]["break_minutes"] == 45 and copied[0]["hours"] == 7.25
+
+        updated, err = update_entry(
+            conn, cursor, 1, entry["id"], {"break_slots": [], "unscheduled_break_minutes": 0, "break_minutes": 0}
+        )
+        assert err is None, err
+        assert updated["break_slots"] == [] and updated["break_minutes"] == 0 and updated["hours"] == 8.0
+        assert json.loads(cursor.rows[0]["break_slots"] or "[]") == []

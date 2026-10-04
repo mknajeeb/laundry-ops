@@ -1,22 +1,18 @@
-import { parseTimeToMinutes } from "../../payroll/schedulePlanner";
-import { normalizeTimeHm } from "../datetime/scheduleTimeUi";
 import {
-  entryRoleAssignments,
-  isScheduleTask,
-  placeOnShiftTimeline,
+  scheduleDayTimelines,
   scheduleRoleLabel,
   sortRoles,
 } from "./weeklyScheduleRoles";
 
 export const ASSIGNMENT_KIND = { SHIFT: "shift", RESPONSIBILITY: "responsibility" };
 
-const DAY_MINUTES = 24 * 60;
-
 export const HOURLY_COVERAGE_EXPLANATION =
-  "Hourly cells are gross scheduled coverage: each role assignment is intersected with each hour, and "
-  + "simultaneous roles split the employee's time evenly. Breaks are stored as a duration without a time, so "
-  + "they are not taken out of any specific hour; the employee and role totals above are net of breaks. "
-  + "Overnight shifts stay on the day they start (hours after midnight are marked +1).";
+  "Hourly cells are role coverage after timed breaks: an employee on a timed break is taken off every role "
+  + "for that time, then the remaining time is intersected with each hour and simultaneous roles split it "
+  + "evenly. The Break column counts employees on a timed break in each hour and their break hours. Breaks "
+  + "without a time (\u201cNot scheduled\u201d) are not placed in any hour; they are listed under the day "
+  + "totals as a separate deduction, so role hours \u2212 that deduction match net hours. Overnight shifts stay "
+  + "on the day they start (hours after midnight are marked +1).";
 
 /** Calendar date for a schedule day; week_start is a plain ET date, so format without zone shifts. */
 export function dayDateLabel(weekStart, dow) {
@@ -70,50 +66,6 @@ export function formatCoverageHours(hours) {
   return `${value}h`;
 }
 
-function shiftInterval(entry) {
-  const start = parseTimeToMinutes(normalizeTimeHm(entry?.start_time));
-  let end = parseTimeToMinutes(normalizeTimeHm(entry?.end_time));
-  if (start == null || end == null) return null;
-  if (end <= start) end += DAY_MINUTES;
-  return { start, end };
-}
-
-/** Timed role ranges of one shift on its start day's timeline (minutes, may run past midnight). */
-function roleSegments(entry, shift) {
-  const out = [];
-  for (const assignment of entryRoleAssignments(entry)) {
-    if (!assignment?.role || isScheduleTask(assignment.role)) continue;
-    let { start, end } = shift;
-    const segStart = parseTimeToMinutes(normalizeTimeHm(assignment.start_time));
-    const segEnd = parseTimeToMinutes(normalizeTimeHm(assignment.end_time));
-    if (assignment.full_shift === false && segStart != null && segEnd != null) {
-      const placed = placeOnShiftTimeline(segStart, segEnd, shift.start);
-      start = Math.max(placed.start, shift.start);
-      end = Math.min(placed.end, shift.end);
-    }
-    if (end > start) out.push({ role: assignment.role, start, end, entry });
-  }
-  return out;
-}
-
-/**
- * Split one employee's day into pieces with the set of roles active in each. Overlapping shifts merge
- * (a role is never counted twice) and simultaneous roles share the piece evenly.
- */
-function employeePieces(segments) {
-  const points = [...new Set(segments.flatMap((s) => [s.start, s.end]))].sort((a, b) => a - b);
-  const pieces = [];
-  for (let i = 0; i < points.length - 1; i += 1) {
-    const start = points[i];
-    const end = points[i + 1];
-    const covering = segments.filter((s) => s.start <= start && s.end >= end);
-    const roles = [...new Set(covering.map((s) => s.role))];
-    if (!roles.length) continue;
-    pieces.push({ start, end, roles, entryByRole: Object.fromEntries(covering.map((s) => [s.role, s.entry])) });
-  }
-  return pieces;
-}
-
 function mergeRanges(ranges) {
   const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
   const out = [];
@@ -154,36 +106,53 @@ function dayTaskGroups(responsibilities, dow, employeesById) {
   });
 }
 
+function finishPeople(peopleMap) {
+  return [...peopleMap.values()]
+    .map((person) => {
+      const ranges = mergeRanges(person.ranges);
+      const minutes = ranges.reduce((sum, [a, b]) => sum + (b - a), 0);
+      return {
+        ...person,
+        ranges,
+        partial: minutes < 60,
+        rangeLabel: ranges.map(([a, b]) => `${compactClock(a)}–${compactClock(b)}`).join(", "),
+      };
+    })
+    .sort(byName);
+}
+
+function clockRangeLabel(start, end) {
+  return `${clockWithSuffix(start)}–${clockWithSuffix(end)}${end > 24 * 60 ? " (+1)" : ""}`;
+}
+
 /**
  * Hourly coverage per day: one row per clock hour from the day's first to last scheduled minute.
  *
- * Each role assignment is intersected with each hour. A cell holds the distinct employees on that role
- * in the hour, the employee-hours they contribute, and the role's cumulative employee-hours through the
- * end of the hour (counted from the first hour of the day, so hidden rows still count). Breaks have no
- * stored time, so cells are gross scheduled coverage. ``roles`` limits columns and totals (null = all);
- * the time split between simultaneous roles is always computed over all of the employee's roles.
+ * Built from the shared day timeline (`scheduleDayTimelines`), so it matches the role and net-hour
+ * totals. Timed breaks take the employee off every role; the remaining role time is intersected with
+ * each hour. A role cell holds the distinct employees on that role in the hour, the employee-hours they
+ * contribute, and the cumulative employee-hours through the end of the hour (counted from the first hour
+ * of the day, so hidden rows still count). `breaks` holds the employees on a timed break in the hour.
+ * Breaks without a time are listed per day in `unscheduledBreaks` and never placed in an hour.
+ * `roles` limits columns and totals (null = all); breaks count when they interrupt a selected role (or the
+ * employee holds one that day, for breaks without a time). The split between simultaneous roles is always
+ * computed over all of the employee's roles.
  */
 export function buildHourlyCoverage(
   entries,
   { dayIndices = [0, 1, 2, 3, 4, 5, 6], employeesById = {}, responsibilities = [], roles = null } = {},
 ) {
   const roleFilter = Array.isArray(roles) ? new Set(roles) : null;
+  const timelines = [...scheduleDayTimelines(entries).values()];
   return dayIndices.map((dow) => {
+    const dayTimelines = timelines.filter((t) => t.dow === dow && t.shifts.length);
     let first = null;
     let last = null;
-    const segmentsByUser = new Map();
-    const shiftsByUser = new Map();
-    for (const entry of entries || []) {
-      if (Number(entry.day_of_week) !== dow) continue;
-      const shift = shiftInterval(entry);
-      if (!shift) continue;
-      const uid = Number(entry.user_id);
-      first = first == null ? shift.start : Math.min(first, shift.start);
-      last = last == null ? shift.end : Math.max(last, shift.end);
-      if (!shiftsByUser.has(uid)) shiftsByUser.set(uid, []);
-      shiftsByUser.get(uid).push(shift);
-      if (!segmentsByUser.has(uid)) segmentsByUser.set(uid, []);
-      segmentsByUser.get(uid).push(...roleSegments(entry, shift));
+    for (const t of dayTimelines) {
+      for (const shift of t.shifts) {
+        first = first == null ? shift.start : Math.min(first, shift.start);
+        last = last == null ? shift.end : Math.max(last, shift.end);
+      }
     }
 
     const cells = new Map();
@@ -192,9 +161,15 @@ export function buildHourlyCoverage(
       if (!cells.has(key)) cells.set(key, { hours: 0, people: new Map() });
       return cells.get(key);
     };
+    const breakCells = new Map();
+    const breakRanges = [];
+    const unscheduledBreaks = [];
     const dayRoles = new Set();
-    for (const [uid, segments] of segmentsByUser) {
-      for (const piece of employeePieces(segments)) {
+    for (const t of dayTimelines) {
+      const uid = t.userId;
+      const name = employeeName(employeesById, uid);
+      for (const piece of t.pieces) {
+        if (piece.onBreak || !piece.roles.length) continue;
         const share = 1 / piece.roles.length;
         for (let hour = Math.floor(piece.start / 60); hour * 60 < piece.end; hour += 1) {
           const from = Math.max(piece.start, hour * 60);
@@ -207,14 +182,7 @@ export function buildHourlyCoverage(
             const contributed = ((to - from) / 60) * share;
             cell.hours += contributed;
             if (!cell.people.has(uid)) {
-              cell.people.set(uid, {
-                userId: uid,
-                name: employeeName(employeesById, uid),
-                entry: piece.entryByRole[role],
-                ranges: [],
-                hours: 0,
-                shared: false,
-              });
+              cell.people.set(uid, { userId: uid, name, entry: piece.entryByRole[role], ranges: [], hours: 0, shared: false });
             }
             const person = cell.people.get(uid);
             person.ranges.push([from, to]);
@@ -223,14 +191,59 @@ export function buildHourlyCoverage(
           }
         }
       }
+      for (const range of t.breakRanges) {
+        if (roleFilter && !range.roles.some((role) => roleFilter.has(role))) continue;
+        breakRanges.push({
+          userId: uid,
+          name,
+          entry: range.entry,
+          start: range.start,
+          end: range.end,
+          hours: (range.end - range.start) / 60,
+          roles: range.roles,
+          label: clockRangeLabel(range.start, range.end),
+        });
+        for (let hour = Math.floor(range.start / 60); hour * 60 < range.end; hour += 1) {
+          const from = Math.max(range.start, hour * 60);
+          const to = Math.min(range.end, (hour + 1) * 60);
+          if (to <= from) continue;
+          if (!breakCells.has(hour)) breakCells.set(hour, { hours: 0, people: new Map() });
+          const cell = breakCells.get(hour);
+          cell.hours += (to - from) / 60;
+          if (!cell.people.has(uid)) {
+            cell.people.set(uid, { userId: uid, name, entry: range.entry, roles: [], ranges: [], hours: 0 });
+          }
+          const person = cell.people.get(uid);
+          person.ranges.push([from, to]);
+          person.hours += (to - from) / 60;
+          person.roles = sortRoles([...new Set([...person.roles, ...range.roles])]);
+        }
+      }
+      if (t.unscheduledBreakHours > 0) {
+        const dayRolesForUser = new Set(t.pieces.flatMap((piece) => piece.roles));
+        if (!roleFilter || [...dayRolesForUser].some((role) => roleFilter.has(role))) {
+          for (const item of t.unscheduledEntries) {
+            unscheduledBreaks.push({ userId: uid, name, entry: item.entry, hours: item.minutes / 60 });
+          }
+        }
+      }
     }
+    breakRanges.sort((a, b) => a.start - b.start || byName(a, b));
+    for (const range of breakRanges) {
+      range.overlapsWith = breakRanges
+        .filter((other) => other !== range && other.start < range.end && range.start < other.end)
+        .map((other) => other.name);
+    }
+    unscheduledBreaks.sort(byName);
 
     const columns = sortRoles([...dayRoles]);
     const hours = [];
     const cumulative = Object.fromEntries(columns.map((role) => [role, 0]));
     let cumulativeTotal = 0;
+    let cumulativeBreak = 0;
     const dayPeople = Object.fromEntries(columns.map((role) => [role, new Set()]));
     const dayAllPeople = new Set();
+    const dayBreakPeople = new Set();
     if (first != null) {
       for (let hour = Math.floor(first / 60); hour * 60 < last; hour += 1) {
         const rowCells = {};
@@ -238,20 +251,7 @@ export function buildHourlyCoverage(
         let hourTotal = 0;
         for (const role of columns) {
           const cell = cells.get(`${hour}|${role}`);
-          const people = cell
-            ? [...cell.people.values()]
-                .map((person) => {
-                  const ranges = mergeRanges(person.ranges);
-                  const minutes = ranges.reduce((sum, [a, b]) => sum + (b - a), 0);
-                  return {
-                    ...person,
-                    ranges,
-                    partial: minutes < 60,
-                    rangeLabel: ranges.map(([a, b]) => `${compactClock(a)}–${compactClock(b)}`).join(", "),
-                  };
-                })
-                .sort(byName)
-            : [];
+          const people = cell ? finishPeople(cell.people) : [];
           const roleHours = cell ? cell.hours : 0;
           cumulative[role] += roleHours;
           hourTotal += roleHours;
@@ -263,15 +263,21 @@ export function buildHourlyCoverage(
           rowCells[role] = { people, count: people.length, hours: roleHours, cumulative: cumulative[role] };
         }
         cumulativeTotal += hourTotal;
+        const breakCell = breakCells.get(hour);
+        const breakPeople = breakCell ? finishPeople(breakCell.people) : [];
+        const breakHours = breakCell ? breakCell.hours : 0;
+        cumulativeBreak += breakHours;
+        for (const person of breakPeople) dayBreakPeople.add(person.userId);
         let scheduled = 0;
-        for (const shifts of shiftsByUser.values()) {
-          if (shifts.some((s) => s.start < (hour + 1) * 60 && s.end > hour * 60)) scheduled += 1;
+        for (const t of dayTimelines) {
+          if (t.shifts.some((s) => s.start < (hour + 1) * 60 && s.end > hour * 60)) scheduled += 1;
         }
         hours.push({
           hour,
           label: hourLabel(hour),
           endLabel: hourEndLabel(hour),
           cells: rowCells,
+          breaks: { people: breakPeople, count: breakPeople.length, hours: breakHours, cumulative: cumulativeBreak },
           total: { count: hourPeople.size, hours: hourTotal, cumulative: cumulativeTotal },
           scheduled,
           gap: hourTotal <= 0,
@@ -281,12 +287,17 @@ export function buildHourlyCoverage(
     const totals = Object.fromEntries(
       columns.map((role) => [role, { count: dayPeople[role].size, hours: cumulative[role] }]),
     );
+    const unscheduledHours = unscheduledBreaks.reduce((sum, item) => sum + item.hours, 0);
     return {
       dow,
       columns,
       hours,
       totals,
       overall: { count: dayAllPeople.size, hours: cumulativeTotal },
+      breakTotal: { count: dayBreakPeople.size, hours: cumulativeBreak },
+      breakRanges,
+      unscheduledBreaks,
+      unscheduledBreakTotal: { count: new Set(unscheduledBreaks.map((b) => b.userId)).size, hours: unscheduledHours },
       responsibilities: dayTaskGroups(responsibilities, dow, employeesById),
     };
   });

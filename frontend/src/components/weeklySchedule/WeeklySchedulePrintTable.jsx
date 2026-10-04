@@ -1,6 +1,7 @@
 import {
   employeeScheduleRoles,
   formatEmployeeWeeklySummary,
+  formatHoursBreakdown,
   formatRoleHoursLabel,
   HOUR_TRACKED_ROLES,
   ROLE_COMPACT_LABELS,
@@ -11,7 +12,7 @@ import {
 } from "./weeklyScheduleRoles";
 import { formatDayShiftsText } from "./weeklyScheduleExport";
 
-function DayHeaderTotals({ summary, daysOnly = false }) {
+function DayHeaderTotals({ summary, daysOnly = false, showBreaks = false }) {
   if (!summary) return null;
   const people = Number(summary.people || 0);
   const hours = Number(summary.hours || 0);
@@ -36,6 +37,11 @@ function DayHeaderTotals({ summary, daysOnly = false }) {
       <div>
         {people} emp{daysOnly ? "" : ` · ${hoursLabel} hrs`}
       </div>
+      {!daysOnly && showBreaks && Number(summary.break_hours || 0) > 0 ? (
+        <div className="weekly-schedule-print-day-roles">
+          {formatHoursBreakdown({ gross: summary.gross_hours, breakHours: summary.break_hours, net: hours })}
+        </div>
+      ) : null}
       {roleParts.length ? <div className="weekly-schedule-print-day-roles">{roleParts.join(" · ")}</div> : null}
     </div>
   );
@@ -49,6 +55,7 @@ export default function WeeklySchedulePrintTable({
   daySummaries = null,
   showRoleLabels = true,
   daysOnly = false,
+  showBreaks = false,
   responsibilities = [],
 }) {
   const labels = dayLabels || [];
@@ -64,7 +71,7 @@ export default function WeeklySchedulePrintTable({
             return (
               <th key={label} className="weekly-schedule-print-th-day">
                 <div>{label}</div>
-                <DayHeaderTotals summary={daySummaries?.[dow]} daysOnly={daysOnly} />
+                <DayHeaderTotals summary={daySummaries?.[dow]} daysOnly={daysOnly} showBreaks={showBreaks} />
               </th>
             );
           })}
@@ -81,8 +88,17 @@ export default function WeeklySchedulePrintTable({
                   <div className="weekly-schedule-print-employee-meta">{roleLabels(roles)}</div>
                 ) : null}
                 <div className="weekly-schedule-print-employee-meta">
-                  {formatEmployeeWeeklySummary(employee, { daysOnly })}
+                  {formatEmployeeWeeklySummary(employee, { daysOnly, showBreaks })}
                 </div>
+                {!daysOnly && showBreaks && Number(employee.break_hours || 0) > 0 ? (
+                  <div className="weekly-schedule-print-employee-meta">
+                    {formatHoursBreakdown({
+                      gross: employee.gross_hours,
+                      breakHours: employee.break_hours,
+                      net: employee.total_hours,
+                    })}
+                  </div>
+                ) : null}
               </td>
               {labels.map((label, index) => {
                 const dow = indices[index] ?? index;
@@ -97,7 +113,7 @@ export default function WeeklySchedulePrintTable({
                 );
                 const text = formatDayShiftsText(
                   cellEntries,
-                  { showRoleLabels, forExport: true, scheduleEndTimeEnabled: !daysOnly },
+                  { showRoleLabels, forExport: true, scheduleEndTimeEnabled: !daysOnly, showBreaks },
                   cellResponsibilities,
                 );
                 return (

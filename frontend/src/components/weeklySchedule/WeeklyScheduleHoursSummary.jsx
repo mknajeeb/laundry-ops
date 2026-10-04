@@ -43,24 +43,42 @@ function Row({ label, value, sub, accent, bold = false }) {
   );
 }
 
-export default function WeeklyScheduleHoursSummary({ summary, scopeLabel = "" }) {
+export default function WeeklyScheduleHoursSummary({ summary, scopeLabel = "", showBreaks = true }) {
   if (!summary) return null;
   const { employees, totalHours, roles, roleTotal, unassignedHours } = summary;
+  const unscheduledBreak = Number(summary.unscheduledBreakHours || 0);
   return (
     <Box className="no-print" sx={{ mb: 1.25 }}>
       <Stack direction={{ xs: "column", md: "row" }} spacing={1.25}>
         <SummaryCard title={`Employee hours${scopeLabel ? ` · ${scopeLabel}` : ""}`}>
           <Box sx={{ maxHeight: 220, overflow: "auto" }}>
             {employees.length ? (
-              employees.map((row) => <Row key={row.user_id} label={row.name} value={hoursText(row.hours)} />)
+              employees.map((row) => (
+                <Row
+                  key={row.user_id}
+                  label={row.name}
+                  sub={showBreaks && row.breakHours > 0 ? `${hoursText(row.grossHours)} − ${hoursText(row.breakHours)} break` : ""}
+                  value={hoursText(row.hours)}
+                />
+              ))
             ) : (
               <Typography variant="body2" color="text.secondary">
                 No scheduled hours.
               </Typography>
             )}
           </Box>
+          {showBreaks ? (
+            <>
+              <Row label="Gross scheduled hours" value={hoursText(summary.grossHours)} />
+              <Row
+                label="Break hours"
+                sub={unscheduledBreak > 0 ? `${hoursText(unscheduledBreak)} not scheduled` : ""}
+                value={`−${hoursText(summary.breakHours)}`}
+              />
+            </>
+          ) : null}
           <Row
-            label={`Total · ${employees.length} employee${employees.length === 1 ? "" : "s"}`}
+            label={`${showBreaks ? "Net" : "Total"} · ${employees.length} employee${employees.length === 1 ? "" : "s"}`}
             value={hoursText(totalHours)}
             bold
           />
@@ -85,8 +103,14 @@ export default function WeeklyScheduleHoursSummary({ summary, scopeLabel = "" })
             {unassignedHours > 0 ? (
               <Row label={summary.unassignedLabel || "Shift time without a role"} value={hoursText(unassignedHours)} />
             ) : null}
+            {showBreaks && unscheduledBreak > 0 ? (
+              <Row
+                label="Breaks without a time (not in any hour or role)"
+                value={`−${hoursText(unscheduledBreak)}`}
+              />
+            ) : null}
           </Box>
-          <Row label="Total role hours" value={hoursText(roleTotal)} bold />
+          <Row label="Total role hours (timed breaks removed)" value={hoursText(roleTotal)} bold />
         </SummaryCard>
       </Stack>
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75, px: 0.25 }}>

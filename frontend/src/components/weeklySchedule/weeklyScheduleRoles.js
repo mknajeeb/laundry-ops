@@ -414,46 +414,6 @@ export function formatRoleHoursLabel(hours) {
   return Number.isInteger(rounded) ? `${rounded}h` : `${rounded.toFixed(1)}h`;
 }
 
-function entryIntervalMinutes(entry) {
-  const start = parseTimeToMinutes(normalizeTimeHm(entry?.start_time));
-  let end = parseTimeToMinutes(normalizeTimeHm(entry?.end_time));
-  if (start == null || end == null) return null;
-  if (end <= start) end += 24 * 60;
-  const breakMin = Math.max(0, Number(entry?.break_minutes || 0));
-  const hours = Math.max(0, end - start - breakMin) / 60;
-  return { start, end, breakMin, hours };
-}
-
-function intervalsOverlap(a, b) {
-  return a.start < b.end && b.start < a.end;
-}
-
-function hasOverlappingIntervals(intervals) {
-  for (let i = 0; i < intervals.length; i += 1) {
-    for (let j = i + 1; j < intervals.length; j += 1) {
-      if (intervalsOverlap(intervals[i], intervals[j])) return true;
-    }
-  }
-  return false;
-}
-
-function mergeIntervalHours(intervals) {
-  if (!intervals.length) return 0;
-  const sorted = [...intervals].sort((a, b) => a.start - b.start || a.end - b.end);
-  const merged = [{ start: sorted[0].start, end: sorted[0].end }];
-  for (let i = 1; i < sorted.length; i += 1) {
-    const cur = sorted[i];
-    const last = merged[merged.length - 1];
-    if (cur.start < last.end) {
-      last.end = Math.max(last.end, cur.end);
-    } else {
-      merged.push({ start: cur.start, end: cur.end });
-    }
-  }
-  // Overlap path uses merged wall-clock minutes (breaks already ambiguous across overlaps).
-  return merged.reduce((sum, iv) => sum + Math.max(0, iv.end - iv.start) / 60, 0);
-}
-
 /**
  * Role assignments inside a shift. Each has its own time range; `full_shift` ones span the shift.
  * Older payloads without `assignments` treat every role as covering the whole shift.
@@ -479,105 +439,401 @@ export function placeOnShiftTimeline(segStart, segEnd, shiftStart) {
   return { start, end };
 }
 
-/**
- * Paid scheduled hours per `${user_id}|${day_of_week}`.
- * Overlapping shifts for the same employee/day count their combined span once (largest break).
- */
-export function scheduledHoursByUserDay(entries) {
-  const out = new Map();
-  const timed = new Map();
-  for (const entry of entries || []) {
-    const key = `${Number(entry.user_id)}|${Number(entry.day_of_week || 0)}`;
-    const hours = Math.max(0, Number(entry.hours || 0));
-    const interval = hours > 0 ? entryIntervalMinutes(entry) : null;
-    if (!interval) {
-      out.set(key, (out.get(key) || 0) + hours);
-      continue;
+const DAY_MINUTES = 24 * 60;
+
+/** Planned break windows on a shift: [{start_time, end_time}] (HH:MM); invalid or zero-length slots are dropped. */
+export function parseBreakSlots(raw) {
+  let list = raw;
+  if (typeof raw === "string") {
+    try {
+      list = JSON.parse(raw);
+    } catch {
+      return [];
     }
-    const list = timed.get(key) || [];
-    list.push({ start: interval.start, end: interval.end, breakMin: interval.breakMin, hours });
-    timed.set(key, list);
   }
-  for (const [key, items] of timed.entries()) {
-    items.sort((a, b) => a.start - b.start || a.end - b.end);
-    const clusters = [];
-    for (const item of items) {
-      const last = clusters[clusters.length - 1];
-      if (last && item.start < Math.max(...last.map((c) => c.end))) last.push(item);
-      else clusters.push([item]);
-    }
-    let total = out.get(key) || 0;
-    for (const cluster of clusters) {
-      if (cluster.length === 1) {
-        total += cluster[0].hours;
-        continue;
-      }
-      const span = Math.max(...cluster.map((c) => c.end)) - cluster[0].start;
-      total += Math.max(0, span - Math.max(...cluster.map((c) => c.breakMin))) / 60;
-    }
-    out.set(key, total);
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const item of list) {
+    const start = normalizeTimeHm(item?.start_time);
+    const end = normalizeTimeHm(item?.end_time);
+    if (start && end && start !== end) out.push({ start_time: start, end_time: end });
   }
   return out;
 }
 
+export function entryBreakSlots(entry) {
+  return parseBreakSlots(entry?.break_slots);
+}
+
+/** Shift start/end in minutes on its start day's timeline; overnight ends run past midnight. */
+export function entryShiftInterval(entry) {
+  const start = parseTimeToMinutes(normalizeTimeHm(entry?.start_time));
+  let end = parseTimeToMinutes(normalizeTimeHm(entry?.end_time));
+  if (start == null || end == null) return null;
+  if (end <= start) end += DAY_MINUTES;
+  return { start, end };
+}
+
+/** Break slots placed on the shift timeline and clipped to the shift. */
+export function placedBreakRanges(entry, shift = entryShiftInterval(entry)) {
+  if (!shift) return [];
+  const out = [];
+  for (const slot of entryBreakSlots(entry)) {
+    const segStart = parseTimeToMinutes(slot.start_time);
+    const segEnd = parseTimeToMinutes(slot.end_time);
+    if (segStart == null || segEnd == null) continue;
+    const placed = placeOnShiftTimeline(segStart, segEnd, shift.start);
+    const start = Math.max(placed.start, shift.start);
+    const end = Math.min(placed.end, shift.end);
+    if (end > start) out.push({ start, end });
+  }
+  return out;
+}
+
+export const MAX_BREAK_SLOTS = 6;
+
+function clockLabel(minutes) {
+  const h = Math.floor(minutes / 60) % 24;
+  const m = minutes % 60;
+  return `${h % 12 || 12}${m ? `:${String(m).padStart(2, "0")}` : ""} ${h < 12 ? "AM" : "PM"}`;
+}
+
+/** Same rules as the server: each break inside the shift (overnight included) and no overlaps. */
+export function validateBreakSlots(startTime, endTime, slots) {
+  const list = slots || [];
+  if (list.length > MAX_BREAK_SLOTS) return `At most ${MAX_BREAK_SLOTS} breaks per shift`;
+  const shift = entryShiftInterval({ start_time: startTime, end_time: endTime });
+  const placed = [];
+  for (let i = 0; i < list.length; i += 1) {
+    const start = parseTimeToMinutes(normalizeTimeHm(list[i]?.start_time));
+    const end = parseTimeToMinutes(normalizeTimeHm(list[i]?.end_time));
+    if (start == null || end == null) return `Break ${i + 1}: start and end time are required`;
+    if (start === end) return `Break ${i + 1}: end time must be after the start time`;
+    if (!shift) return "Timed breaks need the shift start and end times";
+    const label = `Break ${clockLabel(start)}–${clockLabel(end)}`;
+    const window = placeOnShiftTimeline(start, end, shift.start);
+    if (window.end > shift.end) return `${label} must be within the shift`;
+    const clash = placed.find((other) => window.start < other.end && other.start < window.end);
+    if (clash) return `${label} overlaps ${clash.label}`;
+    placed.push({ ...window, label });
+  }
+  return null;
+}
+
+let breakSlotSeq = 0;
+/** Editable break row with a stable key for the shift dialog. */
+export function makeBreakSlot(partial = {}) {
+  breakSlotSeq += 1;
+  return { id: `b${breakSlotSeq}`, start_time: "", end_time: "", ...partial };
+}
+
+/** "12:00 PM–12:30 PM" for a stored break slot. */
+export function formatBreakSlot(slot) {
+  const start = parseTimeToMinutes(normalizeTimeHm(slot?.start_time));
+  const end = parseTimeToMinutes(normalizeTimeHm(slot?.end_time));
+  if (start == null || end == null) return "";
+  return `${clockLabel(start)}–${clockLabel(end)}`;
+}
+
+/** Per-break display lines: "Break 12 PM–12:30 PM" for timed breaks, "Break 30 min · Not scheduled" otherwise. */
+export function entryBreakLines(entry) {
+  const lines = entryBreakSlots(entry).map((slot) => `Break ${formatBreakSlot(slot)}`);
+  const unscheduled = entryBreakBreakdown(entry).unscheduledBreakMinutes;
+  if (unscheduled > 0) lines.push(`Break ${unscheduled} min \u00b7 Not scheduled`);
+  return lines;
+}
+
+function mergeRanges(ranges) {
+  const merged = [];
+  for (const range of [...ranges].sort((a, b) => a.start - b.start || a.end - b.end)) {
+    const last = merged[merged.length - 1];
+    if (last && range.start <= last.end) last.end = Math.max(last.end, range.end);
+    else merged.push({ start: range.start, end: range.end });
+  }
+  return merged;
+}
+
+function rangesMinutes(ranges) {
+  return ranges.reduce((sum, r) => sum + Math.max(0, r.end - r.start), 0);
+}
+
 /**
- * Allocate scheduled hours to hour-tracked roles.
- * Each role assignment counts over its own range inside the shift; concurrent hour-tracked
- * assignments split that time evenly and the shift break is pro-rated.
- * Overlapping time for the same employee/day/role across entries is merged (no double-count).
+ * Minutes for one shift. `break_minutes` is the total planned deduction; timed slots are the part of
+ * it with a known time and the rest is duration-only ("Not scheduled"). A slot never adds to an
+ * existing duration-only break: the deduction is the larger of the two.
  */
+export function entryBreakBreakdown(entry) {
+  const shift = entryShiftInterval(entry);
+  if (!shift) return { grossMinutes: 0, breakMinutes: 0, timedBreakMinutes: 0, unscheduledBreakMinutes: 0 };
+  const gross = shift.end - shift.start;
+  const timed = rangesMinutes(mergeRanges(placedBreakRanges(entry, shift)));
+  const total = Math.min(gross, Math.max(Math.max(0, Number(entry?.break_minutes || 0)), timed));
+  const timedPart = Math.min(timed, total);
+  return { grossMinutes: gross, breakMinutes: total, timedBreakMinutes: timedPart, unscheduledBreakMinutes: total - timedPart };
+}
+
+function notTask(role) {
+  return !isScheduleTask(role);
+}
+
+/**
+ * One employee's planned day (all entries share user and day) — the single calculation behind
+ * net hours, role hours, the hourly matrix, and the breaks view.
+ *
+ * Overlapping shifts merge into one span, so their time is counted once. A timed break from any of
+ * those shifts takes the person off every role for that time. The duration-only part of a merged span
+ * is its largest declared break less the timed break already placed there; it is deducted from net
+ * hours but never given an hourly position. Worked pieces carry the roles active in them, and
+ * simultaneous roles share a piece evenly. Tasks never count.
+ */
+export function employeeDayTimeline(entries, { includeRole = notTask } = {}) {
+  let directHours = 0;
+  const directRoleHours = {};
+  const shifts = [];
+  for (const entry of entries || []) {
+    if (entry?.hours != null && Number(entry.hours || 0) <= 0) continue;
+    const shift = entryShiftInterval(entry);
+    if (!shift) {
+      const hours = Math.max(0, Number(entry?.hours || 0));
+      if (hours <= 0) continue;
+      directHours += hours;
+      const roles = [...new Set(entryRoleAssignments(entry).map((a) => a.role).filter((r) => r && includeRole(r)))];
+      for (const role of roles) directRoleHours[role] = (directRoleHours[role] || 0) + hours / roles.length;
+      continue;
+    }
+    shifts.push({ ...shift, entry });
+  }
+  shifts.sort((a, b) => a.start - b.start || a.end - b.end);
+
+  const clusters = [];
+  for (const shift of shifts) {
+    const last = clusters[clusters.length - 1];
+    if (last && shift.start < last.end) {
+      last.end = Math.max(last.end, shift.end);
+      last.shifts.push(shift);
+    } else {
+      clusters.push({ start: shift.start, end: shift.end, shifts: [shift] });
+    }
+  }
+
+  const segments = [];
+  for (const shift of shifts) {
+    for (const assignment of entryRoleAssignments(shift.entry)) {
+      if (!assignment?.role || !includeRole(assignment.role)) continue;
+      let { start, end } = shift;
+      const segStart = parseTimeToMinutes(normalizeTimeHm(assignment.start_time));
+      const segEnd = parseTimeToMinutes(normalizeTimeHm(assignment.end_time));
+      if (assignment.full_shift === false && segStart != null && segEnd != null) {
+        const placed = placeOnShiftTimeline(segStart, segEnd, shift.start);
+        start = Math.max(placed.start, shift.start);
+        end = Math.min(placed.end, shift.end);
+      }
+      if (end > start) segments.push({ role: assignment.role, start, end, entry: shift.entry });
+    }
+  }
+
+  let gross = 0;
+  let timed = 0;
+  let unscheduled = 0;
+  const breakRanges = [];
+  const unscheduledEntries = [];
+  for (const cluster of clusters) {
+    const span = cluster.end - cluster.start;
+    const perShift = cluster.shifts.map((shift) => ({ shift, ranges: mergeRanges(placedBreakRanges(shift.entry, shift)) }));
+    const ranges = mergeRanges(perShift.flatMap((item) => item.ranges));
+    const clusterTimed = rangesMinutes(ranges);
+    let declared = 0;
+    let declaredEntry = null;
+    for (const { shift, ranges: own } of perShift) {
+      const value = Math.max(Math.max(0, Number(shift.entry?.break_minutes || 0)), rangesMinutes(own));
+      if (value > declared) {
+        declared = value;
+        declaredEntry = shift.entry;
+      }
+    }
+    const deduction = Math.min(span, Math.max(clusterTimed, declared));
+    gross += span;
+    timed += clusterTimed;
+    unscheduled += deduction - clusterTimed;
+    if (deduction > clusterTimed) {
+      unscheduledEntries.push({ entry: declaredEntry, minutes: deduction - clusterTimed });
+    }
+    for (const range of ranges) {
+      const owner = perShift.find((item) => item.ranges.some((r) => r.start < range.end && range.start < r.end));
+      const roles = sortRoles([
+        ...new Set(segments.filter((s) => s.start < range.end && range.start < s.end).map((s) => s.role)),
+      ]);
+      breakRanges.push({ ...range, entry: owner?.shift.entry || cluster.shifts[0].entry, roles });
+    }
+  }
+
+  const points = [
+    ...new Set([
+      ...shifts.flatMap((s) => [s.start, s.end]),
+      ...segments.flatMap((s) => [s.start, s.end]),
+      ...breakRanges.flatMap((r) => [r.start, r.end]),
+    ]),
+  ].sort((a, b) => a - b);
+  const pieces = [];
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const start = points[i];
+    const end = points[i + 1];
+    const shift = shifts.find((s) => s.start <= start && s.end >= end);
+    if (!shift) continue;
+    const covering = segments.filter((s) => s.start <= start && s.end >= end);
+    pieces.push({
+      start,
+      end,
+      roles: sortRoles([...new Set(covering.map((s) => s.role))]),
+      onBreak: breakRanges.some((r) => r.start <= start && r.end >= end),
+      entryByRole: Object.fromEntries(covering.map((s) => [s.role, s.entry])),
+      entry: shift.entry,
+    });
+  }
+
+  const breakMinutes = timed + unscheduled;
+  return {
+    grossHours: gross / 60 + directHours,
+    breakHours: breakMinutes / 60,
+    timedBreakHours: timed / 60,
+    unscheduledBreakHours: unscheduled / 60,
+    netHours: (gross - breakMinutes) / 60 + directHours,
+    shifts,
+    pieces,
+    breakRanges,
+    unscheduledEntries,
+    directHours,
+    directRoleHours,
+  };
+}
+
+/** Day timelines keyed `${user_id}|${day_of_week}` (every user-day with an entry has a key). */
+export function scheduleDayTimelines(entries, options) {
+  const groups = new Map();
+  for (const entry of entries || []) {
+    const key = `${Number(entry.user_id)}|${Number(entry.day_of_week || 0)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(entry);
+  }
+  const out = new Map();
+  for (const [key, group] of groups) {
+    const [uid, dow] = key.split("|").map(Number);
+    out.set(key, { userId: uid, dow, ...employeeDayTimeline(group, options) });
+  }
+  return out;
+}
+
+/** Role hours from one day timeline: worked pieces off break, split evenly between simultaneous roles. */
+export function timelineRoleHours(timeline) {
+  const out = new Map();
+  for (const piece of timeline.pieces) {
+    if (piece.onBreak || !piece.roles.length) continue;
+    const share = (piece.end - piece.start) / 60 / piece.roles.length;
+    for (const role of piece.roles) out.set(role, (out.get(role) || 0) + share);
+  }
+  for (const [role, hours] of Object.entries(timeline.directRoleHours || {})) {
+    out.set(role, (out.get(role) || 0) + hours);
+  }
+  return out;
+}
+
+/** Shift time that is neither on a timed break nor in any role. */
+function timelineNoRoleHours(timeline) {
+  const pieces = timeline.pieces
+    .filter((piece) => !piece.onBreak && !piece.roles.length)
+    .reduce((sum, piece) => sum + (piece.end - piece.start) / 60, 0);
+  const directRoles = Object.values(timeline.directRoleHours || {}).reduce((sum, h) => sum + h, 0);
+  return pieces + Math.max(0, (timeline.directHours || 0) - directRoles);
+}
+
+/** Gross, break (timed + duration-only), and net hours keyed `${user_id}|${day_of_week}`. */
+export function scheduledHoursBreakdownByUserDay(entries) {
+  const out = new Map();
+  for (const [key, t] of scheduleDayTimelines(entries)) {
+    out.set(key, {
+      gross: t.grossHours,
+      break: t.breakHours,
+      timedBreak: t.timedBreakHours,
+      unscheduledBreak: t.unscheduledBreakHours,
+      net: t.netHours,
+    });
+  }
+  return out;
+}
+
+/** Net scheduled hours per `${user_id}|${day_of_week}` (gross minus timed and duration-only breaks). */
+export function scheduledHoursByUserDay(entries) {
+  const out = new Map();
+  for (const [key, parts] of scheduledHoursBreakdownByUserDay(entries)) out.set(key, parts.net);
+  return out;
+}
+
+/** Hour-tracked role hours per day from the shared day timeline. */
 export function allocateRoleHoursByDay(entries) {
   const byDay = Array.from({ length: 7 }, () => {
     const hours = {};
     for (const role of HOUR_TRACKED_ROLES) hours[role] = 0;
     return hours;
   });
-
-  for (const [key, hours] of roleHourBuckets(entries, (role) => HOUR_TRACKED_ROLE_SET.has(role))) {
-    const [, dow, role] = key.split("|");
-    byDay[Number(dow)][role] += hours;
+  for (const timeline of scheduleDayTimelines(entries).values()) {
+    if (timeline.dow < 0 || timeline.dow > 6) continue;
+    for (const [role, hours] of timelineRoleHours(timeline)) {
+      if (HOUR_TRACKED_ROLE_SET.has(role)) byDay[timeline.dow][role] += hours;
+    }
   }
-
   return byDay.map((day) => {
     const out = {};
-    for (const role of HOUR_TRACKED_ROLES) {
-      out[role] = Math.round((day[role] || 0) * 10) / 10;
-    }
+    for (const role of HOUR_TRACKED_ROLES) out[role] = Math.round((day[role] || 0) * 10) / 10;
     return out;
   });
 }
 
 export const ROLE_HOURS_EXPLANATION =
-  "Employee hours: shift time minus the break; overlapping shifts for the same person and day count once. " +
-  "Role hours: when an employee holds several roles at the same time, that time is split evenly between them, " +
-  "and the break is deducted from each role in proportion to its share of the shift. Shift time without a role " +
-  "is not attributed to any role. Tasks never count toward hours.";
+  "Gross hours: shift time; overlapping shifts for the same person and day count once. Break hours: timed " +
+  "breaks plus breaks without a time (\u201cNot scheduled\u201d). Net hours = gross \u2212 breaks. Role hours: timed " +
+  "breaks are removed first, then time an employee spends on several roles at once is split evenly between " +
+  "them. Breaks without a time are not placed in any hour or role, so they appear as a separate deduction. " +
+  "Tasks never count toward hours.";
+
+function round2(value) {
+  return Math.round(Number(value || 0) * 100) / 100;
+}
 
 /**
- * Hours per employee and per timed role for the summaries above the time-and-role view.
- * Employee hours use the scheduled-hours rules (break deducted, overlapping shifts once).
- * Role hours use the role allocation rules; tasks never count.
+ * Hours per employee (gross, break, net) and per timed role for the summaries, all from the shared
+ * day timeline: role hours + shift time without a role − breaks without a time = net hours.
  */
 export function summarizeScheduleHours(entries, employeesById = new Map()) {
-  const employeeHours = new Map();
-  for (const [key, hours] of scheduledHoursByUserDay(entries)) {
-    const uid = Number(key.split("|")[0]);
-    employeeHours.set(uid, (employeeHours.get(uid) || 0) + hours);
+  const perEmployee = new Map();
+  const roleHours = new Map();
+  let grossHours = 0;
+  let timedBreakHours = 0;
+  let unscheduledBreakHours = 0;
+  let netHours = 0;
+  let noRoleHours = 0;
+  for (const timeline of scheduleDayTimelines(entries).values()) {
+    const row = perEmployee.get(timeline.userId) || { gross: 0, break: 0, net: 0 };
+    row.gross += timeline.grossHours;
+    row.break += timeline.breakHours;
+    row.net += timeline.netHours;
+    perEmployee.set(timeline.userId, row);
+    grossHours += timeline.grossHours;
+    timedBreakHours += timeline.timedBreakHours;
+    unscheduledBreakHours += timeline.unscheduledBreakHours;
+    netHours += timeline.netHours;
+    noRoleHours += timelineNoRoleHours(timeline);
+    for (const [role, hours] of timelineRoleHours(timeline)) roleHours.set(role, (roleHours.get(role) || 0) + hours);
   }
-  const employees = [...employeeHours.entries()]
-    .map(([uid, hours]) => ({
+  const employees = [...perEmployee.entries()]
+    .map(([uid, row]) => ({
       user_id: uid,
       name: employeesById.get(uid)?.display_name || `User ${uid}`,
-      hours: Math.round(hours * 100) / 100,
+      hours: round2(row.net),
+      grossHours: round2(row.gross),
+      breakHours: round2(row.break),
     }))
     .sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
-  const totalHours = employees.reduce((sum, row) => sum + row.hours, 0);
 
-  const roleHours = new Map();
-  for (const [key, hours] of roleHourBuckets(entries, (role) => !isScheduleTask(role))) {
-    const role = key.split("|")[2];
-    roleHours.set(role, (roleHours.get(role) || 0) + hours);
-  }
   const roleUsers = new Map();
   for (const entry of entries || []) {
     for (const a of entryRoleAssignments(entry)) {
@@ -590,24 +846,28 @@ export function summarizeScheduleHours(entries, employeesById = new Map()) {
   const roles = sortRoles([...roleUsers.keys()]).map((role) => ({
     role,
     label: scheduleRoleLabel(role),
-    hours: Math.round((roleHours.get(role) || 0) * 100) / 100,
+    hours: round2(roleHours.get(role) || 0),
     employees: roleUsers.get(role).size,
   }));
-  const roleTotal = roles.reduce((sum, row) => sum + row.hours, 0);
+  const roleTotal = round2(roles.reduce((sum, row) => sum + row.hours, 0));
   return {
     employees,
-    totalHours: Math.round(totalHours * 100) / 100,
+    totalHours: round2(netHours),
+    grossHours: round2(grossHours),
+    breakHours: round2(timedBreakHours + unscheduledBreakHours),
+    timedBreakHours: round2(timedBreakHours),
+    unscheduledBreakHours: round2(unscheduledBreakHours),
     roles,
-    roleTotal: Math.round(roleTotal * 100) / 100,
+    roleTotal,
     distinctEmployees: employees.length,
-    unassignedHours: Math.max(0, Math.round((totalHours - roleTotal) * 100) / 100),
+    unassignedHours: round2(noRoleHours),
     unassignedLabel: "Shift time without a role",
   };
 }
 
 /**
  * Summaries limited to selected roles (null = all): employees holding a selected role, and role rows for
- * the selected roles only. Their other shift time is shown separately so totals still reconcile.
+ * the selected roles only. Their other worked time is shown separately so totals still reconcile.
  */
 export function summarizeSelectedRoleHours(entries, employeesById = new Map(), roles = null) {
   if (!Array.isArray(roles)) return summarizeScheduleHours(entries, employeesById);
@@ -615,89 +875,14 @@ export function summarizeSelectedRoleHours(entries, employeesById = new Map(), r
   const scoped = (entries || []).filter((entry) => entryRoleAssignments(entry).some((a) => selected.has(a.role)));
   const summary = summarizeScheduleHours(scoped, employeesById);
   const roleRows = summary.roles.filter((row) => selected.has(row.role));
-  const roleTotal = Math.round(roleRows.reduce((sum, row) => sum + row.hours, 0) * 100) / 100;
+  const roleTotal = round2(roleRows.reduce((sum, row) => sum + row.hours, 0));
   return {
     ...summary,
     roles: roleRows,
     roleTotal,
-    unassignedHours: Math.max(0, Math.round((summary.totalHours - roleTotal) * 100) / 100),
+    unassignedHours: Math.max(0, round2(summary.grossHours - summary.timedBreakHours - roleTotal)),
     unassignedLabel: "Shift time in other roles or without a role",
   };
-}
-
-/** Allocated hours keyed `${user_id}|${day}|${role}` for roles passing `includeRole`. */
-function roleHourBuckets(entries, includeRole) {
-  /** @type {Map<string, Array<{start:number,end:number,hours:number,direct?:boolean}>>} */
-  const buckets = new Map();
-  const push = (key, item) => {
-    const list = buckets.get(key) || [];
-    list.push(item);
-    buckets.set(key, list);
-  };
-
-  for (const entry of entries || []) {
-    const uid = Number(entry.user_id);
-    const dow = Number(entry.day_of_week || 0);
-    if (!Number.isInteger(dow) || dow < 0 || dow > 6) continue;
-
-    const assignments = entryRoleAssignments(entry).filter((a) => includeRole(a.role));
-    if (!assignments.length) continue;
-
-    const interval = entryIntervalMinutes(entry);
-    if (!interval) {
-      const segmentHours = Math.max(0, Number(entry.hours || 0));
-      if (segmentHours <= 0) continue;
-      const roles = [...new Set(assignments.map((a) => a.role))];
-      for (const role of roles) {
-        push(`${uid}|${dow}|${role}`, { start: 0, end: 0, hours: segmentHours / roles.length, direct: true });
-      }
-      continue;
-    }
-
-    const wall = interval.end - interval.start;
-    if (interval.hours <= 0 || wall <= 0) continue;
-    const paidRatio = (interval.hours * 60) / wall;
-    const ranges = [];
-    for (const a of assignments) {
-      const segStart = parseTimeToMinutes(normalizeTimeHm(a.start_time));
-      const segEnd = parseTimeToMinutes(normalizeTimeHm(a.end_time));
-      if (a.full_shift !== false || segStart == null || segEnd == null) {
-        ranges.push({ role: a.role, start: interval.start, end: interval.end });
-        continue;
-      }
-      const placed = placeOnShiftTimeline(segStart, segEnd, interval.start);
-      const start = Math.max(placed.start, interval.start);
-      const end = Math.min(placed.end, interval.end);
-      if (end > start) ranges.push({ role: a.role, start, end });
-    }
-    const bounds = [...new Set(ranges.flatMap((r) => [r.start, r.end]))].sort((x, y) => x - y);
-    for (let i = 0; i < bounds.length - 1; i += 1) {
-      const left = bounds[i];
-      const right = bounds[i + 1];
-      const active = [...new Set(ranges.filter((r) => r.start <= left && r.end >= right).map((r) => r.role))];
-      if (!active.length) continue;
-      const share = (((right - left) / 60) * paidRatio) / active.length;
-      for (const role of active) push(`${uid}|${dow}|${role}`, { start: left, end: right, hours: share });
-    }
-  }
-
-  const out = new Map();
-  for (const [key, list] of buckets.entries()) {
-    const timed = list.filter((item) => !item.direct);
-    const direct = list.filter((item) => item.direct);
-    let hours = direct.reduce((sum, item) => sum + item.hours, 0);
-    if (timed.length) {
-      if (hasOverlappingIntervals(timed)) {
-        const span = timed.reduce((sum, item) => sum + (item.end - item.start) / 60, 0);
-        const weight = span > 0 ? timed.reduce((sum, item) => sum + item.hours, 0) / span : 1;
-        hours += mergeIntervalHours(timed) * Math.min(1, weight || 1);
-      } else {
-        hours += timed.reduce((sum, item) => sum + item.hours, 0);
-      }
-    }
-    out.set(key, hours);
-  }
-  return out;
 }
 
 export function emptyRoleHourTotals() {
@@ -857,28 +1042,47 @@ export function deriveEmployeePrimaryRole(userId, entries) {
   return ranked[0]?.[0] || null;
 }
 
-function round2(value) {
-  return Math.round(Number(value || 0) * 100) / 100;
-}
+const EMPTY_EMPLOYEE_TOTALS = Object.freeze({
+  total_hours: 0,
+  gross_hours: 0,
+  break_hours: 0,
+  timed_break_hours: 0,
+  unscheduled_break_hours: 0,
+  scheduled_days: 0,
+  estimated_cost: 0,
+});
 
 /**
- * Hours, distinct days, and estimated cost per employee from the given entries, using the
- * scheduled-hours rules (break deducted, overlapping shifts on a day counted once).
+ * Net hours (`total_hours`), gross and break hours, distinct days, and estimated cost per employee
+ * from the given entries, using the shared day timeline (overlapping shifts on a day counted once).
  */
 export function employeeTotalsFromEntries(entries, employees = []) {
   const rates = new Map(
     (employees || []).map((e) => [Number(e.user_id), Math.max(0, Number(e.default_hourly_rate || 0))]),
   );
   const out = new Map();
-  for (const [key, hours] of scheduledHoursByUserDay(entries)) {
+  for (const [key, parts] of scheduledHoursBreakdownByUserDay(entries)) {
     const uid = Number(key.split("|")[0]);
-    const row = out.get(uid) || { total_hours: 0, scheduled_days: 0, estimated_cost: 0 };
-    row.total_hours = round2(row.total_hours + hours);
+    const row = out.get(uid) || { ...EMPTY_EMPLOYEE_TOTALS };
+    row.total_hours = round2(row.total_hours + parts.net);
+    row.gross_hours = round2(row.gross_hours + parts.gross);
+    row.break_hours = round2(row.break_hours + parts.break);
+    row.timed_break_hours = round2(row.timed_break_hours + parts.timedBreak);
+    row.unscheduled_break_hours = round2(row.unscheduled_break_hours + parts.unscheduledBreak);
     row.scheduled_days += 1;
-    row.estimated_cost = round2(row.estimated_cost + round2(hours * (rates.get(uid) || 0)));
+    row.estimated_cost = round2(row.estimated_cost + round2(parts.net * (rates.get(uid) || 0)));
     out.set(uid, row);
   }
   return out;
+}
+
+export function formatHours(hours) {
+  return `${round2(hours)}`;
+}
+
+/** "Gross 8 · Break 0.5 · Net 7.5" */
+export function formatHoursBreakdown({ gross = 0, breakHours = 0, net = 0 } = {}) {
+  return `Gross ${formatHours(gross)} \u00b7 Break ${formatHours(breakHours)} \u00b7 Net ${formatHours(net)}`;
 }
 
 /**
@@ -889,17 +1093,18 @@ export function withDisplayedTotals(employees, entries) {
   const totals = employeeTotalsFromEntries(entries, employees);
   return (employees || []).map((employee) => ({
     ...employee,
-    ...(totals.get(Number(employee.user_id)) || { total_hours: 0, scheduled_days: 0, estimated_cost: 0 }),
+    ...(totals.get(Number(employee.user_id)) || EMPTY_EMPLOYEE_TOTALS),
   }));
 }
 
-export function formatEmployeeWeeklySummary(employee, { daysOnly = false } = {}) {
+export function formatEmployeeWeeklySummary(employee, { daysOnly = false, showBreaks = false } = {}) {
   const hours = Number(employee?.total_hours || 0);
   const days = Number(employee?.scheduled_days || 0);
   const dayLabel = days === 1 ? "1 day" : `${days} days`;
   if (daysOnly) return dayLabel;
   const hrsLabel = Number.isInteger(hours) ? `${hours}` : hours.toFixed(1);
-  return `${hrsLabel} hrs • ${dayLabel}`;
+  const net = showBreaks && Number(employee?.break_hours || 0) > 0 ? " net" : "";
+  return `${hrsLabel}${net} hrs • ${dayLabel}`;
 }
 
 export function computeWeekSummary(data, { includeExcluded = false, userIds = null, entries = null, daysOnly = false } = {}) {
@@ -914,12 +1119,20 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
   });
 
   let totalHours = 0;
+  let grossHours = 0;
+  let breakHours = 0;
+  let timedBreakHours = 0;
+  let unscheduledBreakHours = 0;
   let totalDays = 0;
   const roleCounts = Object.fromEntries(ROLE_ORDER.map((role) => [role, 0]));
   const scheduledUserIds = new Set();
 
-  for (const hours of scheduledHoursByUserDay(filteredEntries).values()) {
-    totalHours += hours;
+  for (const parts of scheduledHoursBreakdownByUserDay(filteredEntries).values()) {
+    totalHours += parts.net;
+    grossHours += parts.gross;
+    breakHours += parts.break;
+    timedBreakHours += parts.timedBreak;
+    unscheduledBreakHours += parts.unscheduledBreak;
   }
 
   const scheduledUserDays = new Set();
@@ -952,6 +1165,10 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
   return {
     employeesScheduled,
     totalHours,
+    grossHours,
+    breakHours,
+    timedBreakHours,
+    unscheduledBreakHours,
     totalDays,
     daysOnly,
     sortCount: roleCounts.sort,
@@ -981,6 +1198,10 @@ export function computeFilteredDaySummaries(data, { userIds = null, includeExclu
   const summaries = Array.from({ length: 7 }, () => ({
     people: 0,
     hours: 0,
+    gross_hours: 0,
+    break_hours: 0,
+    timed_break_hours: 0,
+    unscheduled_break_hours: 0,
     sort: 0,
     wash: 0,
     weigher: 0,
@@ -1017,9 +1238,14 @@ export function computeFilteredDaySummaries(data, { userIds = null, includeExclu
     }
   }
 
-  for (const [key, hours] of scheduledHoursByUserDay(filteredEntries).entries()) {
-    const dow = Number(key.split("|")[1]);
-    if (summaries[dow]) summaries[dow].hours += hours;
+  for (const [key, parts] of scheduledHoursBreakdownByUserDay(filteredEntries).entries()) {
+    const summary = summaries[Number(key.split("|")[1])];
+    if (!summary) continue;
+    summary.hours += parts.net;
+    summary.gross_hours += parts.gross;
+    summary.break_hours += parts.break;
+    summary.timed_break_hours += parts.timedBreak;
+    summary.unscheduled_break_hours += parts.unscheduledBreak;
   }
 
   const roleHoursByDay = allocateRoleHoursByDay(filteredEntries);

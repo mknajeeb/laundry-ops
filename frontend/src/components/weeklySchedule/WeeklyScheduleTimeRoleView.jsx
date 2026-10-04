@@ -151,7 +151,7 @@ export function HourlyCoverageControls({
   );
 }
 
-function PersonLine({ person, onClick }) {
+export function PersonLine({ person, onClick }) {
   const detail = [person.partial ? person.rangeLabel : "", person.shared ? `split ${formatCoverageHours(person.hours)}` : ""]
     .filter(Boolean)
     .join(" · ");
@@ -229,8 +229,10 @@ function CoverageCell({ cell, endLabel, showNames, onEditEntry, canEdit }) {
 }
 
 const stickyCol = { position: "sticky", left: 0, zIndex: 1, bgcolor: "inherit" };
+const BREAK_ACCENT = "#9a3412";
 
-function DayMatrix({ day, columns, showNames, canEdit, onEditEntry }) {
+/** Employees on a timed break in each hour, kept out of the role cells. */
+export function DayMatrix({ day, columns, showNames, canEdit, onEditEntry, showBreaks = true }) {
   return (
     <TableContainer sx={{ maxWidth: "100%" }}>
       <Table size="small" sx={{ "& td, & th": { verticalAlign: "top", borderColor: "#eef2f6", px: 1, py: 0.6 } }}>
@@ -243,6 +245,9 @@ function DayMatrix({ day, columns, showNames, canEdit, onEditEntry }) {
               </TableCell>
             ))}
             <TableCell sx={{ fontWeight: 800, minWidth: 150, bgcolor: "#f8fafc" }}>All shown roles</TableCell>
+            {showBreaks ? (
+              <TableCell sx={{ fontWeight: 800, minWidth: 140, color: BREAK_ACCENT, bgcolor: "#fff7ed" }}>On break</TableCell>
+            ) : null}
           </TableRow>
         </TableHead>
         <TableBody>
@@ -276,6 +281,17 @@ function DayMatrix({ day, columns, showNames, canEdit, onEditEntry }) {
                   Total through {row.endLabel}: {formatCoverageHours(row.total.cumulative)}
                 </Typography>
               </TableCell>
+              {showBreaks ? (
+                <TableCell sx={{ bgcolor: "#fff7ed" }} data-break-cell>
+                  <CoverageCell
+                    cell={row.breaks}
+                    endLabel={row.endLabel}
+                    showNames={showNames}
+                    canEdit={canEdit}
+                    onEditEntry={onEditEntry}
+                  />
+                </TableCell>
+              ) : null}
             </TableRow>
           ))}
           <TableRow sx={{ bgcolor: "#f1f5f9", "& td": { borderTop: "2px solid #cbd5e1" } }}>
@@ -295,10 +311,46 @@ function DayMatrix({ day, columns, showNames, canEdit, onEditEntry }) {
                 {peopleCountLabel(day.overall.count)} · {formatCoverageHours(day.overall.hours)}
               </Typography>
             </TableCell>
+            {showBreaks ? (
+              <TableCell>
+                <Typography variant="body2" sx={{ fontWeight: 800, fontSize: "0.8rem", whiteSpace: "nowrap", color: BREAK_ACCENT }}>
+                  {day.breakTotal?.count
+                    ? `${peopleCountLabel(day.breakTotal.count)} · ${formatCoverageHours(day.breakTotal.hours)}`
+                    : "—"}
+                </Typography>
+              </TableCell>
+            ) : null}
           </TableRow>
         </TableBody>
       </Table>
     </TableContainer>
+  );
+}
+
+/** Breaks without a time: deducted from net hours, never placed in an hour. */
+export function UnscheduledBreaksNote({ day, canEdit, onEditEntry }) {
+  const items = day.unscheduledBreaks || [];
+  if (!items.length) return null;
+  return (
+    <Box sx={{ px: 1.5, py: 0.75, bgcolor: "#fffaf5", borderTop: "1px solid #eef2f6" }} data-unscheduled-breaks>
+      <Typography variant="caption" sx={{ display: "block", fontWeight: 800, color: BREAK_ACCENT }}>
+        Breaks without a time · {formatCoverageHours(day.unscheduledBreakTotal.hours)} · not placed in any hour
+      </Typography>
+      <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: 0.25 }}>
+        {items.map((item, index) => (
+          <Chip
+            key={`${item.userId}-${index}`}
+            size="small"
+            label={`${item.name} · ${Math.round(item.hours * 60)} min · Not scheduled`}
+            onClick={canEdit && item.entry ? () => onEditEntry?.(item.entry) : undefined}
+            sx={{ height: 22, fontSize: "0.7rem", fontWeight: 700, bgcolor: "#fff", border: "1px dashed #fdba74" }}
+          />
+        ))}
+      </Stack>
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.25 }}>
+        Deducted from net hours, but not from any hourly cell or role total above. Set a break time to place it.
+      </Typography>
+    </Box>
   );
 }
 
@@ -381,6 +433,7 @@ export default function WeeklyScheduleTimeRoleView({
   showNames = false,
   endTimeEnabled = true,
   canEdit = false,
+  showBreaks = true,
   onEditEntry,
   onEditResponsibility,
   onAdd,
@@ -423,8 +476,16 @@ export default function WeeklyScheduleTimeRoleView({
             ) : null}
           </Stack>
           {day.hours.length && columns.length ? (
-            <DayMatrix day={day} columns={columns} showNames={showNames} canEdit={canEdit} onEditEntry={onEditEntry} />
+            <DayMatrix
+              day={day}
+              columns={columns}
+              showNames={showNames}
+              canEdit={canEdit}
+              onEditEntry={onEditEntry}
+              showBreaks={showBreaks}
+            />
           ) : null}
+          {showBreaks ? <UnscheduledBreaksNote day={day} canEdit={canEdit} onEditEntry={onEditEntry} /> : null}
           {!day.hours.length && !day.responsibilities.length ? (
             <Typography variant="body2" color="text.secondary" sx={{ px: 1.5, py: 1.25 }}>
               No assignments.

@@ -17,8 +17,7 @@ const ROLE_ACCENT = {
 };
 
 function formatHours(value) {
-  const n = Number(value || 0);
-  return Number.isInteger(n) ? `${n}` : n.toFixed(1);
+  return `${Math.round(Number(value || 0) * 100) / 100}`;
 }
 
 function formatCurrency(value) {
@@ -61,7 +60,13 @@ function SummaryMetric({ label, value, accent, compact = false }) {
   );
 }
 
-export default function WeeklyScheduleSummaryBar({ summary, showCost, compact = false, hideRoleBreakdown = false }) {
+export default function WeeklyScheduleSummaryBar({
+  summary,
+  showCost,
+  compact = false,
+  hideRoleBreakdown = false,
+  showBreaks = true,
+}) {
   if (!summary) return null;
 
   const daysOnly = summary.daysOnly === true;
@@ -77,12 +82,32 @@ export default function WeeklyScheduleSummaryBar({ summary, showCost, compact = 
           value: summary.totalDays,
           accent: VEEWASH_DASHBOARD.tealDark,
         }
-      : {
-          label: compact ? "Hours" : "Total Hours",
-          value: formatHours(summary.totalHours),
-          accent: VEEWASH_DASHBOARD.tealDark,
-        },
+      : showBreaks
+        ? {
+            label: compact ? "Net hrs" : "Net Hours",
+            value: formatHours(summary.totalHours),
+            accent: VEEWASH_DASHBOARD.tealDark,
+          }
+        : {
+            label: compact ? "Hours" : "Total Hours",
+            value: formatHours(summary.totalHours),
+            accent: VEEWASH_DASHBOARD.tealDark,
+          },
   ];
+  if (!daysOnly && showBreaks) {
+    metrics.splice(
+      1,
+      0,
+      { label: compact ? "Gross hrs" : "Gross Hours", value: formatHours(summary.grossHours) },
+      {
+        label: compact ? "Break hrs" : "Break Hours",
+        value: Number(summary.unscheduledBreakHours || 0) > 0
+          ? `${formatHours(summary.breakHours)} (${formatHours(summary.unscheduledBreakHours)} not scheduled)`
+          : formatHours(summary.breakHours),
+        accent: "#9a3412",
+      },
+    );
+  }
 
   if (!hideRoleBreakdown) {
     metrics.push(

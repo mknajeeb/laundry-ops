@@ -23,7 +23,9 @@ import {
 import {
   employeeScheduleRoles,
   formatEmployeeWeeklySummary,
+  formatHoursBreakdown,
   roleLabels,
+  scheduledHoursBreakdownByUserDay,
   scheduleRoleLabel,
   setScheduleRoleCatalog,
   sortRoles,
@@ -98,6 +100,16 @@ export default function WeeklyScheduleEmployeeViewPage() {
   const showBreakMinutes = display.show_break_minutes !== false;
   const scheduleEndTimeEnabled = display.schedule_end_time_enabled !== false;
   const daysOnly = !scheduleEndTimeEnabled;
+  const showBreaks = showBreakMinutes && !daysOnly;
+  const dayHours = useMemo(
+    () => scheduledHoursBreakdownByUserDay(Object.values(entriesByCell).flat()),
+    [entriesByCell],
+  );
+  const dayBreakdown = (dow) => {
+    const parts = dayHours.get(`${Number(userId)}|${dow}`);
+    if (!showBreaks || !parts || parts.break <= 0) return "";
+    return formatHoursBreakdown({ gross: parts.gross, breakHours: parts.break, net: parts.net });
+  };
 
   const handlePrint = () => {
     window.print();
@@ -178,8 +190,18 @@ export default function WeeklyScheduleEmployeeViewPage() {
               </Typography>
             ) : null}
             <Typography variant="body2" sx={{ mt: 0.5, fontWeight: 600, opacity: 0.95 }}>
-              {formatEmployeeWeeklySummary(employee, { daysOnly })}
+              {formatEmployeeWeeklySummary(employee, { daysOnly, showBreaks })}
             </Typography>
+            {showBreaks && Number(employee.break_hours || 0) > 0 ? (
+              <Typography variant="body2" sx={{ mt: 0.25, fontWeight: 600, opacity: 0.95 }}>
+                {formatHoursBreakdown({
+                  gross: employee.gross_hours,
+                  breakHours: employee.break_hours,
+                  net: employee.total_hours,
+                })}{" "}
+                hours this week
+              </Typography>
+            ) : null}
           </Box>
 
           <Box sx={{ p: { xs: 1.5, md: 2.5 }, bgcolor: "#fff" }}>
@@ -220,6 +242,11 @@ export default function WeeklyScheduleEmployeeViewPage() {
                     >
                       {dayLabel}
                     </Typography>
+                    {dayBreakdown(dow) ? (
+                      <Typography variant="caption" sx={{ display: "block", mb: 0.35, fontWeight: 700, color: "#9a3412" }}>
+                        {dayBreakdown(dow)}
+                      </Typography>
+                    ) : null}
                     {cellEntries.map((entry) => (
                       <WeeklyScheduleShiftCard
                         key={entry.id}

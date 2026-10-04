@@ -302,8 +302,8 @@ describe("schedule exports", () => {
     const summary = summarizeScheduleHours([splitShift], new Map([[1, employeesById[1]]]));
     const lines = buildHourlyCoverageCsvRows({ days, weekStart: "2026-06-14", columns: coverageColumns(days), hoursSummary: summary });
     expect(lines).toContain("Mon,Jun 15,5-6 AM,Fold,1,1,1,Employee A");
-    expect(lines).toContain("Employee A,6");
-    expect(lines).toContain("Total (1 employees),6");
+    expect(lines).toContain("Employee A,6,6,0");
+    expect(lines).toContain("Total (1 employees),6,6,0");
     expect(lines).toContain("Sort,1,3");
     expect(lines).toContain("Total role hours,,6");
   });
@@ -339,13 +339,17 @@ describe("hours summaries above the time-and-role view", () => {
     const overlap2 = shift(3, 2, "12:00", "16:00", "sort", { hours: 4 });
     const summary = summarizeScheduleHours([multi, overlap, overlap2], byId);
     expect(summary.employees).toEqual([
-      { user_id: 2, name: "Employee B", hours: 8 },
-      { user_id: 1, name: "Employee A", hours: 3.5 },
+      { user_id: 2, name: "Employee B", hours: 8, grossHours: 8, breakHours: 0 },
+      { user_id: 1, name: "Employee A", hours: 3.5, grossHours: 4, breakHours: 0.5 },
     ]);
     expect(summary.totalHours).toBe(11.5);
+    expect(summary.grossHours).toBe(12);
+    expect(summary.unscheduledBreakHours).toBe(0.5);
     const roles = Object.fromEntries(summary.roles.map((r) => [r.role, r]));
-    expect(roles.wash).toMatchObject({ hours: 1.75, employees: 1 });
-    expect(roles.fold).toMatchObject({ hours: 1.75, employees: 1 });
+    // The 30-minute break has no time, so it is a separate deduction rather than a share of each role.
+    expect(roles.wash).toMatchObject({ hours: 2, employees: 1 });
+    expect(roles.fold).toMatchObject({ hours: 2, employees: 1 });
+    expect(summary.roleTotal + summary.unassignedHours - summary.unscheduledBreakHours).toBe(summary.totalHours);
     expect(roles.sort.employees).toBe(1);
     expect(summary.roles.map((r) => r.role)).toEqual(["wash", "sort", "fold"]);
   });
@@ -370,7 +374,8 @@ describe("shifts kept without a production role", () => {
     const summary = summarizeScheduleHours([noRole], new Map([[1, employeesById[1]]]));
     expect(summary.totalHours).toBe(6.5);
     expect(summary.roles).toEqual([]);
-    expect(summary.unassignedHours).toBe(6.5);
+    expect(summary.unassignedHours).toBe(7);
+    expect(summary.unscheduledBreakHours).toBe(0.5);
     const day = coverageDay([noRole]);
     expect(day.columns).toEqual([]);
     expect(day.hours).toHaveLength(7);
