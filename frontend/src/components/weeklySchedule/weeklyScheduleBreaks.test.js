@@ -137,10 +137,9 @@ describe("hourly matrix with breaks", () => {
     expect(row(coverage, 10).cells.fold.hours).toBe(0.25);
     expect(row(coverage, 10).breaks.hours).toBe(0.5);
     expect(coverage.totals.wash.hours).toBe(1.75);
-    // Day role hours keep their one-decimal rounding.
     const hours = allocateRoleHoursByDay([entry])[1];
-    expect(hours.wash).toBe(1.8);
-    expect(hours.fold).toBe(1.8);
+    expect(hours.wash).toBe(1.75);
+    expect(hours.fold).toBe(1.75);
   });
 
   it("lists duration-only breaks separately without placing them in an hour", () => {
@@ -183,7 +182,8 @@ describe("totals reconcile across views", () => {
     expect(summary.breakHours).toBe(1.5);
     expect(summary.unscheduledBreakHours).toBe(0.5);
     expect(summary.totalHours).toBe(18.5);
-    expect(summary.roleTotal + summary.unassignedHours - summary.unscheduledBreakHours).toBeCloseTo(summary.totalHours, 6);
+    // Role hours are net (breaks without a time are shared into them), so role + no-role time = net hours.
+    expect(summary.roleTotal + summary.unassignedHours).toBeCloseTo(summary.totalHours, 6);
 
     const totals = employeeTotalsFromEntries(entries, employees);
     expect(totals.get(1)).toMatchObject({ total_hours: 7.5, gross_hours: 8, break_hours: 0.5 });
@@ -198,8 +198,12 @@ describe("totals reconcile across views", () => {
 
     const coverage = buildHourlyCoverage(entries, { dayIndices: [1], employeesById })[0];
     const roleHours = allocateRoleHoursByDay(entries)[1];
-    for (const role of ["wash", "sort", "fold"]) expect(coverage.totals[role].hours).toBeCloseTo(roleHours[role], 1);
-    expect(coverage.overall.hours - coverage.unscheduledBreakTotal.hours).toBeCloseTo(days[1].hours, 6);
+    for (const role of ["wash", "sort", "fold"]) expect(coverage.totals[role].net).toBeCloseTo(roleHours[role], 2);
+    expect(coverage.overall.hours - coverage.overall.untimedBreak).toBeCloseTo(coverage.overall.net, 6);
+    expect(coverage.overall.untimedBreak).toBeCloseTo(coverage.unscheduledBreakTotal.hours, 6);
+    expect(coverage.overall.net).toBeCloseTo(days[1].hours, 6);
+    const dayRoles = Object.fromEntries(days[1].roles.map((row) => [row.role, row]));
+    for (const role of ["wash", "sort", "fold"]) expect(dayRoles[role].hours).toBeCloseTo(coverage.totals[role].net, 6);
   });
 
   it("puts break details in the exports", () => {

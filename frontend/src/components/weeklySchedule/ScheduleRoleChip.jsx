@@ -1,24 +1,24 @@
 import { Chip } from "@mui/material";
-import { formatRoleHoursLabel, HOUR_TRACKED_ROLES, roleCompactLabel, roleStyle } from "./weeklyScheduleRoles";
+import { formatHours, roleCompactLabel, roleStyle } from "./weeklyScheduleRoles";
 
-const HOUR_TRACKED = new Set(HOUR_TRACKED_ROLES);
-
+/** Role chip; with `count` it reads "Fold: 3 people · 21.5 hrs" (distinct employees and net hours). */
 export default function ScheduleRoleChip({ roleKey, count = null, hours = null, sx = {} }) {
   const style = roleStyle(roleKey);
   const label = roleCompactLabel(roleKey);
   let text = label;
-  if (count != null && HOUR_TRACKED.has(roleKey) && hours != null && Number(hours) > 0) {
-    text = `${label} ${count} · ${formatRoleHoursLabel(hours)}`;
-  } else if (count != null) {
-    text = `${label} ${count}`;
+  if (count != null) {
+    const people = `${count} ${Number(count) === 1 ? "person" : "people"}`;
+    text = hours != null ? `${label}: ${people} · ${formatHours(hours)} hrs` : `${label}: ${people}`;
   }
 
   return (
     <Chip
       size="small"
       label={text}
+      data-role-chip={roleKey}
       sx={{
-        height: 19,
+        height: count != null ? "auto" : 19,
+        minHeight: 19,
         maxWidth: "100%",
         fontSize: "0.625rem",
         fontWeight: 700,

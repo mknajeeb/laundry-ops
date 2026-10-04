@@ -11,10 +11,13 @@ import WeeklyScheduleDayHeader from "./WeeklyScheduleDayHeader";
 import WeeklyScheduleTimeRolePrint from "./WeeklyScheduleTimeRolePrint";
 import WeeklySchedulePrintTable from "./WeeklySchedulePrintTable";
 import { buildHourlyCoverage, coverageColumns } from "./weeklyScheduleTimeBlocks";
+import WeeklyScheduleEmployeeCell from "./WeeklyScheduleEmployeeCell";
 import {
   computeFilteredDaySummaries,
   computeWeekSummary,
   makeBreakSlot,
+  scheduleEntryKey,
+  summarizeRoleSelection,
   summarizeScheduleHours,
   withDisplayedTotals,
 } from "./weeklyScheduleRoles";
@@ -69,5 +72,25 @@ describe("break and task views", () => {
     ]) {
       expect(html, text).toContain(text.replace(/&/g, "&amp;"));
     }
+  });
+
+  it("renders role-scoped summaries, chips, and cards for a role selection", () => {
+    const roles = ["fold"];
+    const { entryScopes } = summarizeRoleSelection(entries, { roles });
+    const [ana] = withDisplayedTotals(employees, entries, { roles });
+    const html = [
+      renderToString(<WeeklyScheduleSummaryBar summary={computeWeekSummary({ entries, employees }, { entries, roles })} compact />),
+      renderToString(
+        <WeeklyScheduleDayHeader dayLabel="Mon" summary={computeFilteredDaySummaries({ entries, employees }, { entries, roles })[1]} compact />,
+      ),
+      renderToString(<WeeklyScheduleEmployeeCell employee={ana} />),
+      renderToString(
+        <WeeklyScheduleShiftCard entry={entries[0]} employee={employees[0]} roleFilter={roles} roleScope={entryScopes.get(scheduleEntryKey(entries[0]))} />,
+      ),
+    ].join("\n");
+    for (const text of ["Selected roles", "1 person", "Fold", "1 person · 7.5 hours", "Fold: 1 person · 7.5 hrs", "Fold · 7.5 hrs", "7.5h net Fold"]) {
+      expect(html, text).toContain(text);
+    }
+    expect(html).not.toContain("Wash");
   });
 });

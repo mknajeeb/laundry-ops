@@ -103,8 +103,11 @@ describe("hourly coverage", () => {
     expect(cellAt(day, 3, "sort")).toMatchObject({ count: 0, hours: 0, cumulative: 1.5 });
     expect(day.hours[1].total).toEqual({ count: 1, hours: 1, cumulative: 3.5 });
     expect(day.hours[2].total.cumulative).toBe(4.5);
-    expect(day.totals).toEqual({ wash: { count: 1, hours: 3 }, sort: { count: 2, hours: 1.5 } });
-    expect(day.overall).toEqual({ count: 3, hours: 4.5 });
+    expect(day.totals).toEqual({
+      wash: { count: 1, hours: 3, untimedBreak: 0, net: 3 },
+      sort: { count: 2, hours: 1.5, untimedBreak: 0, net: 1.5 },
+    });
+    expect(day.overall).toEqual({ count: 3, hours: 4.5, untimedBreak: 0, net: 4.5 });
   });
 
   it("splits simultaneous roles evenly but counts the employee once per hour", () => {
@@ -120,13 +123,13 @@ describe("hourly coverage", () => {
     expect(cellAt(day, 8, "fold")).toMatchObject({ count: 1, hours: 0.5 });
     expect(cellAt(day, 8, "wash").people[0].shared).toBe(true);
     expect(day.hours[0].total).toMatchObject({ count: 1, hours: 1 });
-    expect(day.overall).toEqual({ count: 1, hours: 2 });
+    expect(day.overall).toMatchObject({ count: 1, hours: 2, net: 2 });
   });
 
   it("counts overlapping shifts for the same employee once", () => {
     const day = coverageDay([shift(1, 1, "08:00", "12:00", "sort"), shift(2, 1, "10:00", "14:00", "sort")]);
     expect(cellAt(day, 10, "sort")).toMatchObject({ count: 1, hours: 1 });
-    expect(day.totals.sort).toEqual({ count: 1, hours: 6 });
+    expect(day.totals.sort).toMatchObject({ count: 1, hours: 6, net: 6 });
   });
 
   it("keeps overnight coverage on the start day, marked +1, without double counting", () => {
@@ -218,8 +221,10 @@ describe("summaries for selected roles", () => {
     expect(summary.employees.map((row) => row.user_id)).toEqual([1]);
     expect(summary.roles.map((row) => [row.role, row.hours])).toEqual([["sort", 3]]);
     expect(summary.roleTotal).toBe(3);
-    expect(summary.unassignedHours).toBe(3);
-    expect(summary.unassignedLabel).toBe("Shift time in other roles or without a role");
+    // Only the selected role's hours count; the fold half of the shift is not shown or moved to sort.
+    expect(summary.totalHours).toBe(3);
+    expect(summary.employees).toEqual([{ user_id: 1, name: "Employee A", hours: 3, grossHours: 3, breakHours: 0 }]);
+    expect(summary.unassignedHours).toBe(0);
     expect(summarizeSelectedRoleHours([split, other], byId, null).totalHours).toBe(8);
   });
 });
@@ -305,7 +310,7 @@ describe("schedule exports", () => {
     expect(lines).toContain("Employee A,6,6,0");
     expect(lines).toContain("Total (1 employees),6,6,0");
     expect(lines).toContain("Sort,1,3");
-    expect(lines).toContain("Total role hours,,6");
+    expect(lines).toContain("Total net hours,1,6");
   });
 
   it("adds role ranges, remarks, and tasks to the employee export", () => {
@@ -346,10 +351,10 @@ describe("hours summaries above the time-and-role view", () => {
     expect(summary.grossHours).toBe(12);
     expect(summary.unscheduledBreakHours).toBe(0.5);
     const roles = Object.fromEntries(summary.roles.map((r) => [r.role, r]));
-    // The 30-minute break has no time, so it is a separate deduction rather than a share of each role.
-    expect(roles.wash).toMatchObject({ hours: 2, employees: 1 });
-    expect(roles.fold).toMatchObject({ hours: 2, employees: 1 });
-    expect(summary.roleTotal + summary.unassignedHours - summary.unscheduledBreakHours).toBe(summary.totalHours);
+    // The 30-minute break has no time, so wash and fold each carry half of it (in proportion to their time).
+    expect(roles.wash).toMatchObject({ hours: 1.75, employees: 1 });
+    expect(roles.fold).toMatchObject({ hours: 1.75, employees: 1 });
+    expect(summary.roleTotal + summary.unassignedHours).toBe(summary.totalHours);
     expect(roles.sort.employees).toBe(1);
     expect(summary.roles.map((r) => r.role)).toEqual(["wash", "sort", "fold"]);
   });
@@ -374,7 +379,7 @@ describe("shifts kept without a production role", () => {
     const summary = summarizeScheduleHours([noRole], new Map([[1, employeesById[1]]]));
     expect(summary.totalHours).toBe(6.5);
     expect(summary.roles).toEqual([]);
-    expect(summary.unassignedHours).toBe(7);
+    expect(summary.unassignedHours).toBe(6.5);
     expect(summary.unscheduledBreakHours).toBe(0.5);
     const day = coverageDay([noRole]);
     expect(day.columns).toEqual([]);

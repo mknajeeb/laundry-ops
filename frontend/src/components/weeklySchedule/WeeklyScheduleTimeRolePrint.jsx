@@ -1,9 +1,18 @@
 import { DAY_LABELS } from "./weeklyScheduleDates";
-import { formatRoleHoursLabel, ROLE_HOURS_EXPLANATION, scheduleRoleLabel } from "./weeklyScheduleRoles";
+import { formatHours, ROLE_HOURS_EXPLANATION, scheduleRoleLabel } from "./weeklyScheduleRoles";
 import { dayDateLabel, formatCoverageHours, HOURLY_COVERAGE_EXPLANATION } from "./weeklyScheduleTimeBlocks";
 
 function peopleCount(count) {
   return `${count} ${count === 1 ? "person" : "people"}`;
+}
+
+function formatRoleHoursLabel(hours) {
+  return `${formatHours(hours)}h`;
+}
+
+function netNote(total) {
+  if (!total || !(Number(total.untimedBreak) > 0.0001)) return "";
+  return ` (net ${formatCoverageHours(total.net)} after ${formatCoverageHours(total.untimedBreak)} break without a time)`;
 }
 
 function HoursSummaryPrint({ summary, showBreaks }) {
@@ -47,8 +56,8 @@ function HoursSummaryPrint({ summary, showBreaks }) {
         <thead>
           <tr>
             <th>Role</th>
-            <th className="weekly-schedule-print-tr-count">Employees</th>
-            <th className="weekly-schedule-print-tr-count">Hours</th>
+            <th className="weekly-schedule-print-tr-count">People</th>
+            <th className="weekly-schedule-print-tr-count">Net hours</th>
           </tr>
         </thead>
         <tbody>
@@ -66,17 +75,10 @@ function HoursSummaryPrint({ summary, showBreaks }) {
               <td>{formatRoleHoursLabel(summary.unassignedHours)}</td>
             </tr>
           ) : null}
-          {showBreaks && summary.unscheduledBreakHours > 0 ? (
-            <tr>
-              <td>Breaks without a time (not in any hour or role)</td>
-              <td />
-              <td>−{formatRoleHoursLabel(summary.unscheduledBreakHours)}</td>
-            </tr>
-          ) : null}
           <tr className="weekly-schedule-print-tr-day">
-            <td>Total role hours</td>
-            <td />
-            <td>{formatRoleHoursLabel(summary.roleTotal)}</td>
+            <td>{summary.roleFilter ? "Total (selected roles)" : "Total net hours"}</td>
+            <td>{summary.distinctEmployees ?? summary.employees.length}</td>
+            <td>{formatRoleHoursLabel(summary.roleTotal + (summary.unassignedHours || 0))}</td>
           </tr>
         </tbody>
       </table>
@@ -209,10 +211,15 @@ export default function WeeklyScheduleTimeRolePrint({
                   <td>Day total</td>
                   {columns.map((role) => {
                     const total = day.totals[role];
-                    return <td key={role}>{total ? `${peopleCount(total.count)} · ${formatCoverageHours(total.hours)}` : "—"}</td>;
+                    return (
+                      <td key={role}>
+                        {total ? `${peopleCount(total.count)} · ${formatCoverageHours(total.hours)}${netNote(total)}` : "—"}
+                      </td>
+                    );
                   })}
                   <td>
                     {peopleCount(day.overall.count)} · {formatCoverageHours(day.overall.hours)}
+                    {netNote(day.overall)}
                   </td>
                   {showBreaks ? (
                     <td>

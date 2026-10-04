@@ -1,15 +1,12 @@
 import { Box, Stack, Typography } from "@mui/material";
-import { formatHours, formatHoursBreakdown, HOUR_TRACKED_ROLES, ROLE_ORDER, sortRoles } from "./weeklyScheduleRoles";
+import { formatHours, formatHoursBreakdown } from "./weeklyScheduleRoles";
 import ScheduleRoleChip from "./ScheduleRoleChip";
 
-const HOUR_TRACKED = new Set(HOUR_TRACKED_ROLES);
-
+/** Per role: distinct employees assigned that day and their net hours (from `computeFilteredDaySummaries`). */
 function roleCountLines(summary) {
-  return sortRoles(ROLE_ORDER).map((key) => ({
-    key,
-    count: Number(summary?.[key] || 0),
-    hours: HOUR_TRACKED.has(key) ? Number(summary?.[`${key}_hours`] || 0) : null,
-  })).filter((line) => line.count > 0);
+  return (summary?.roles || [])
+    .filter((row) => Number(row.employees || 0) > 0)
+    .map((row) => ({ key: row.role, count: Number(row.employees), hours: Number(row.hours || 0) }));
 }
 
 export default function WeeklyScheduleDayHeader({ dayLabel, summary, daysOnly = false, compact = false, showBreaks = true }) {

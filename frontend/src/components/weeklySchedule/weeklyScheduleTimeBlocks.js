@@ -2,6 +2,7 @@ import {
   scheduleDayTimelines,
   scheduleRoleLabel,
   sortRoles,
+  timelineRoleBreakdown,
 } from "./weeklyScheduleRoles";
 
 export const ASSIGNMENT_KIND = { SHIFT: "shift", RESPONSIBILITY: "responsibility" };
@@ -10,9 +11,11 @@ export const HOURLY_COVERAGE_EXPLANATION =
   "Hourly cells are role coverage after timed breaks: an employee on a timed break is taken off every role "
   + "for that time, then the remaining time is intersected with each hour and simultaneous roles split it "
   + "evenly. The Break column counts employees on a timed break in each hour and their break hours. Breaks "
-  + "without a time (\u201cNot scheduled\u201d) are not placed in any hour; they are listed under the day "
-  + "totals as a separate deduction, so role hours \u2212 that deduction match net hours. Overnight shifts stay "
-  + "on the day they start (hours after midnight are marked +1).";
+  + "without a time (\u201cNot scheduled\u201d) are not placed in any hour; each role carries a share of them in "
+  + "proportion to that person\u2019s time in it, so the day total shows hourly coverage and then net role hours "
+  + "after that share. With roles selected, only employees assigned one of them that day appear, and only "
+  + "their selected-role time counts; cumulative totals still start from the day\u2019s first hour. Overnight "
+  + "shifts stay on the day they start (hours after midnight are marked +1).";
 
 /** Calendar date for a schedule day; week_start is a plain ET date, so format without zone shifts. */
 export function dayDateLabel(weekStart, dow) {
@@ -134,9 +137,12 @@ function clockRangeLabel(start, end) {
  * contribute, and the cumulative employee-hours through the end of the hour (counted from the first hour
  * of the day, so hidden rows still count). `breaks` holds the employees on a timed break in the hour.
  * Breaks without a time are listed per day in `unscheduledBreaks` and never placed in an hour.
- * `roles` limits columns and totals (null = all); breaks count when they interrupt a selected role (or the
- * employee holds one that day, for breaks without a time). The split between simultaneous roles is always
- * computed over all of the employee's roles.
+ * `roles` limits columns and totals (null = all): only employee-days assigned a selected role count, and
+ * breaks count when they interrupt a selected role (or the employee holds one that day, for breaks
+ * without a time). The split between simultaneous roles is always computed over all of the employee's
+ * roles. Day `totals` per role carry the hourly coverage (`hours`), the share of breaks without a time
+ * (`untimedBreak`), and the net role hours (`net`) used by every other summary; `count` is distinct
+ * employees assigned the role that day.
  */
 export function buildHourlyCoverage(
   entries,
@@ -145,7 +151,9 @@ export function buildHourlyCoverage(
   const roleFilter = Array.isArray(roles) ? new Set(roles) : null;
   const timelines = [...scheduleDayTimelines(entries).values()];
   return dayIndices.map((dow) => {
-    const dayTimelines = timelines.filter((t) => t.dow === dow && t.shifts.length);
+    const dayTimelines = timelines.filter(
+      (t) => t.dow === dow && t.shifts.length && (!roleFilter || t.assignedRoles.some((role) => roleFilter.has(role))),
+    );
     let first = null;
     let last = null;
     for (const t of dayTimelines) {
@@ -165,9 +173,22 @@ export function buildHourlyCoverage(
     const breakRanges = [];
     const unscheduledBreaks = [];
     const dayRoles = new Set();
+    const roleNet = new Map();
     for (const t of dayTimelines) {
       const uid = t.userId;
       const name = employeeName(employeesById, uid);
+      for (const [role, parts] of timelineRoleBreakdown(t).roles) {
+        if (!role || (roleFilter && !roleFilter.has(role))) continue;
+        if (!roleNet.has(role)) roleNet.set(role, { net: 0, untimedBreak: 0, people: new Set() });
+        const row = roleNet.get(role);
+        row.net += parts.net;
+        row.untimedBreak += parts.untimedBreak;
+      }
+      for (const role of t.assignedRoles) {
+        if (roleFilter && !roleFilter.has(role)) continue;
+        if (!roleNet.has(role)) roleNet.set(role, { net: 0, untimedBreak: 0, people: new Set() });
+        roleNet.get(role).people.add(uid);
+      }
       for (const piece of t.pieces) {
         if (piece.onBreak || !piece.roles.length) continue;
         const share = 1 / piece.roles.length;
@@ -241,8 +262,6 @@ export function buildHourlyCoverage(
     const cumulative = Object.fromEntries(columns.map((role) => [role, 0]));
     let cumulativeTotal = 0;
     let cumulativeBreak = 0;
-    const dayPeople = Object.fromEntries(columns.map((role) => [role, new Set()]));
-    const dayAllPeople = new Set();
     const dayBreakPeople = new Set();
     if (first != null) {
       for (let hour = Math.floor(first / 60); hour * 60 < last; hour += 1) {
@@ -255,11 +274,7 @@ export function buildHourlyCoverage(
           const roleHours = cell ? cell.hours : 0;
           cumulative[role] += roleHours;
           hourTotal += roleHours;
-          for (const person of people) {
-            hourPeople.add(person.userId);
-            dayPeople[role].add(person.userId);
-            dayAllPeople.add(person.userId);
-          }
+          for (const person of people) hourPeople.add(person.userId);
           rowCells[role] = { people, count: people.length, hours: roleHours, cumulative: cumulative[role] };
         }
         cumulativeTotal += hourTotal;
@@ -285,15 +300,32 @@ export function buildHourlyCoverage(
       }
     }
     const totals = Object.fromEntries(
-      columns.map((role) => [role, { count: dayPeople[role].size, hours: cumulative[role] }]),
+      columns.map((role) => {
+        const row = roleNet.get(role);
+        return [
+          role,
+          {
+            count: row ? row.people.size : 0,
+            hours: cumulative[role],
+            untimedBreak: row ? row.untimedBreak : 0,
+            net: row ? row.net : cumulative[role],
+          },
+        ];
+      }),
     );
+    const overallPeople = new Set(columns.flatMap((role) => [...(roleNet.get(role)?.people || [])]));
     const unscheduledHours = unscheduledBreaks.reduce((sum, item) => sum + item.hours, 0);
     return {
       dow,
       columns,
       hours,
       totals,
-      overall: { count: dayAllPeople.size, hours: cumulativeTotal },
+      overall: {
+        count: overallPeople.size,
+        hours: cumulativeTotal,
+        untimedBreak: columns.reduce((sum, role) => sum + totals[role].untimedBreak, 0),
+        net: columns.reduce((sum, role) => sum + totals[role].net, 0),
+      },
       breakTotal: { count: dayBreakPeople.size, hours: cumulativeBreak },
       breakRanges,
       unscheduledBreaks,

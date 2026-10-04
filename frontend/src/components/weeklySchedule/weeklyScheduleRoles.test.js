@@ -10,7 +10,6 @@ import {
   WEEKLY_SCHEDULE_ROLES,
   withDisplayedTotals,
 } from "./weeklyScheduleRoles";
-import { filterEntriesByRoleView } from "./weeklyScheduleViewFilters";
 import { filterEntriesByEmployerTab } from "./weeklyScheduleEmployerTabs";
 import { buildWeeklyScheduleCsvRows, formatDayRoleTotalsText } from "./weeklyScheduleExport";
 
@@ -108,47 +107,34 @@ describe("day and week summaries with filters", () => {
     ],
   };
 
-  it("computes day role counts and hours including PT roles", () => {
+  const roleRows = (summary) => Object.fromEntries(summary.roles.map((row) => [row.role, [row.employees, row.hours]]));
+
+  it("computes day role people and hours including PT roles", () => {
     const days = computeFilteredDaySummaries(data);
-    expect(days[0].wash).toBe(1);
-    expect(days[0].wash_hours).toBe(0.5);
-    expect(days[0].fold).toBe(1);
-    expect(days[0].fold_hours).toBe(7);
-    expect(days[0].pt_sorter).toBe(1);
-    expect(days[0].pt_sorter_hours).toBe(4);
-    expect(days[0].sort).toBe(0);
+    expect(roleRows(days[0])).toEqual({ wash: [1, 0.5], fold: [1, 7], pt_sorter: [1, 4] });
+    expect(days[0].people).toBe(2);
   });
 
-  it("updates totals when role filter is applied", () => {
-    const filtered = filterEntriesByRoleView(data.entries, ["pt_sorter"]);
-    const days = computeFilteredDaySummaries(data, { entries: filtered });
-    expect(days[0].pt_sorter).toBe(1);
-    expect(days[0].pt_sorter_hours).toBe(4);
-    expect(days[0].wash).toBe(0);
-    expect(days[0].wash_hours).toBe(0);
-    expect(days[0].fold_hours).toBe(0);
+  it("limits the day totals to the selected roles", () => {
+    const days = computeFilteredDaySummaries(data, { roles: ["pt_sorter"] });
+    expect(roleRows(days[0])).toEqual({ pt_sorter: [1, 4] });
+    expect(days[0]).toMatchObject({ people: 1, hours: 4 });
+    expect(days[1]).toMatchObject({ people: 0, hours: 0, roles: [] });
   });
 
   it("keeps mapped-user views from double-counting via userIds", () => {
     const days = computeFilteredDaySummaries(data, { userIds: [1] });
     expect(days[0].people).toBe(1);
-    expect(days[0].wash_hours).toBe(0.5);
-    expect(days[0].pt_sorter).toBe(0);
+    expect(roleRows(days[0])).toEqual({ wash: [1, 0.5], fold: [1, 7] });
 
     const week = computeWeekSummary(data, { userIds: [1] });
-    expect(week.washCount).toBe(1);
-    expect(week.washHours).toBe(0.5);
-    expect(week.ptSorterCount).toBe(0);
-    expect(week.foldHours).toBe(7);
+    expect(roleRows(week)).toEqual({ wash: [1, 0.5], fold: [1, 7] });
   });
 
-  it("includes PT counts and hours in week summary", () => {
+  it("includes PT people and hours in week summary", () => {
     const week = computeWeekSummary(data);
-    expect(week.ptSorterCount).toBe(1);
-    expect(week.ptSorterHours).toBe(4);
-    expect(week.ptWasherCount).toBe(0);
-    expect(week.washHours).toBe(0.5);
-    expect(week.sortHours).toBe(4);
+    expect(roleRows(week)).toEqual({ wash: [1, 0.5], sort: [1, 4], fold: [1, 7], pt_sorter: [1, 4] });
+    expect(week.employeesScheduled).toBe(2);
   });
 });
 
@@ -187,7 +173,9 @@ describe("employee totals follow the shifts on screen", () => {
   it("keeps the week summary, day totals, and export on the same shifts", () => {
     const data = { employees: [employee], entries };
     const week = computeWeekSummary(data, { entries: rinseEntries });
-    expect(week).toMatchObject({ totalHours: 30.5, totalDays: 4, estimatedCost: 457.5, foldCount: 4 });
+    expect(week).toMatchObject({ totalHours: 30.5, totalDays: 4, estimatedCost: 457.5 });
+    // Four fold shifts by one person: one person, not four.
+    expect(week.roles.map((row) => [row.role, row.employees, row.hours])).toEqual([["fold", 1, 30.5]]);
     const days = computeFilteredDaySummaries(data, { entries: rinseEntries });
     expect(days.map((d) => d.hours)).toEqual([0, 7.5, 7.5, 7.5, 0, 0, 8]);
     const lines = buildWeeklyScheduleCsvRows({
@@ -218,9 +206,11 @@ describe("excel export role hours and PT roles", () => {
     expect(body).toContain("PT Sorter");
     expect(body).toContain("PT Folder");
     expect(body).toContain("Day Role Totals");
-    expect(body).toContain("PT Wash 1 / 6h");
-    expect(body).toContain("PT Sort 1 / 4h");
-    expect(body).toContain("PT Fold 1 / 12h");
-    expect(formatDayRoleTotalsText(computeFilteredDaySummaries({ entries, employees })[0])).toContain("PT Wash 1 / 6h");
+    expect(body).toContain("PT Wash: 1 person / 6 hours");
+    expect(body).toContain("PT Sort: 1 person / 4 hours");
+    expect(body).toContain("PT Fold: 1 person / 12 hours");
+    expect(formatDayRoleTotalsText(computeFilteredDaySummaries({ entries, employees })[0])).toContain(
+      "PT Wash: 1 person \u00b7 6 hours",
+    );
   });
 });

@@ -31,6 +31,7 @@ import {
   entryBreakLines,
   entryRoleAssignments,
   entryRoleCardStyle,
+  entryRoleScopeView,
   formatHours,
   NO_ROLE_LABEL,
   parseEntryRoles,
@@ -39,9 +40,15 @@ import {
 } from "./weeklyScheduleRoles";
 import ScheduleRoleChip from "./ScheduleRoleChip";
 
+/**
+ * One shift in the employee grid. With a role selection (`roleFilter`), the card shows only the selected
+ * roles' segments and net hours (`roleScope` from `summarizeRoleSelection`); it still edits the whole shift.
+ */
 export default function WeeklyScheduleShiftCard({
   entry,
   employee,
+  roleFilter = null,
+  roleScope = null,
   onEdit,
   onDelete,
   onDuplicate,
@@ -61,19 +68,39 @@ export default function WeeklyScheduleShiftCard({
   const [menuAnchor, setMenuAnchor] = useState(null);
   const menuOpen = Boolean(menuAnchor);
 
-  const roles = parseEntryRoles(entry);
+  const scoped = Array.isArray(roleFilter);
+  const scopeView = scoped ? entryRoleScopeView(entry, roleFilter, roleScope) : null;
+  const roles = scoped ? scopeView.roles : parseEntryRoles(entry);
   const cardStyle = entryRoleCardStyle(roles);
-  const hours = Number(entry.hours || 0);
+  const hours = scoped ? scopeView.hours : Number(entry.hours || 0);
   const showBreaks = scheduleEndTimeEnabled && showBreakMinutes;
   const breakParts = entryBreakBreakdown(entry);
-  const breakLines = showBreaks ? entryBreakLines(entry) : [];
+  const breakLines = showBreaks ? (scoped ? scopeView.breaks : entryBreakLines(entry)) : [];
   const formatH = (value) => `${formatHours(value)}h`;
-  const hoursLabel = showBreaks && breakParts.breakMinutes > 0
+  const shiftRange = `${formatTime12(entry.start_time)} – ${formatTime12(entry.end_time)}`;
+  let hoursLabel = showBreaks && breakParts.breakMinutes > 0
     ? `${formatH(hours)} net · ${formatH(breakParts.grossMinutes / 60)} gross`
     : formatH(hours);
-  const roleTooltip = showRoleLabels ? roleLabels(roles) : "";
+  if (scoped) {
+    hoursLabel = `${formatH(hours)}${showBreaks && breakParts.breakMinutes > 0 ? " net" : ""} ${roles
+      .map((role) => roleCompactLabel(role))
+      .join(" + ")}`;
+  }
+  const timeLines = scheduleEndTimeEnabled
+    ? scoped && scopeView.segments.length
+      ? scopeView.segments.map((segment) => (roles.length > 1 ? `${segment.label} ${roleCompactLabel(segment.role)}` : segment.label))
+      : [shiftRange]
+    : [formatTime12(entry.start_time)];
+  const roleTooltip = [
+    showRoleLabels ? roleLabels(roles) : "",
+    scoped && scheduleEndTimeEnabled ? `Shift ${shiftRange}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const assignmentDetails = showRoleLabels
-    ? entryRoleAssignments(entry).filter((a) => a.remarks || (!a.full_shift && scheduleEndTimeEnabled))
+    ? entryRoleAssignments(entry).filter(
+      (a) => (!scoped || roles.includes(a.role)) && (a.remarks || (!scoped && !a.full_shift && scheduleEndTimeEnabled)),
+    )
     : [];
   const hasActions = Boolean((onEdit || onDuplicate || onDelete || onSetEmployer) && !muted);
   const shiftEmployer = resolveEntryEmployerAffiliation(entry, employee, organizationSlug);
@@ -87,6 +114,7 @@ export default function WeeklyScheduleShiftCard({
     <Paper
       elevation={0}
       data-shift-card
+      data-role-scoped={scoped ? "true" : undefined}
       draggable={!muted}
       onDragStart={(e) => {
         if (muted) return;
@@ -140,26 +168,29 @@ export default function WeeklyScheduleShiftCard({
     >
       <Box sx={{ display: "flex", alignItems: "flex-start", gap: 0.25, minWidth: 0 }}>
         <Box sx={{ flex: 1, minWidth: 0, pr: hasActions ? 0 : 0.25 }}>
-          <Typography
-            variant="caption"
-            fontWeight={700}
-            sx={{
-              color: "text.primary",
-              fontSize: "0.72rem",
-              lineHeight: 1.3,
-              whiteSpace: "nowrap",
-              display: "block",
-              overflow: "visible",
-              textOverflow: "clip",
-            }}
-          >
-            {scheduleEndTimeEnabled
-              ? `${formatTime12(entry.start_time)} – ${formatTime12(entry.end_time)}`
-              : formatTime12(entry.start_time)}
-          </Typography>
+          {timeLines.map((line) => (
+            <Typography
+              key={line}
+              variant="caption"
+              fontWeight={700}
+              data-shift-time
+              sx={{
+                color: "text.primary",
+                fontSize: "0.72rem",
+                lineHeight: 1.3,
+                whiteSpace: "nowrap",
+                display: "block",
+                overflow: "visible",
+                textOverflow: "clip",
+              }}
+            >
+              {line}
+            </Typography>
+          ))}
           {scheduleEndTimeEnabled ? (
             <Typography
               variant="caption"
+              data-shift-hours
               sx={{
                 display: "block",
                 mt: 0.15,

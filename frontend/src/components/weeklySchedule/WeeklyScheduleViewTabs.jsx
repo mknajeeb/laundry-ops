@@ -5,9 +5,7 @@ import { groupRoleCodes } from "./weeklyScheduleRoles";
 import {
   buildDayViewTabs,
   buildRoleViewTabs,
-  filterEntriesByRoleView,
-  filterResponsibilitiesByRoleView,
-  hasRoleViewFilter,
+  filterEntriesByRoles,
   SCHEDULE_VIEW_ALL,
   toggleRoleViewSelection,
 } from "./weeklyScheduleViewFilters";
@@ -17,6 +15,7 @@ function FilterChip({ label, count, selected, onClick }) {
     <Chip
       size="small"
       label={`${label} (${count})`}
+      title={`${count} ${count === 1 ? "employee" : "employees"}`}
       onClick={onClick}
       variant={selected ? "filled" : "outlined"}
       color={selected ? "primary" : "default"}
@@ -53,9 +52,10 @@ function ChipRow({ title, children }) {
   );
 }
 
+/** `selectedRoles`: null = all roles, otherwise the selected role codes (shared with the hourly views). */
 export default function WeeklyScheduleViewTabs({
   entries,
-  selectedRoles = [],
+  selectedRoles = null,
   onSelectedRolesChange,
   dayTab = SCHEDULE_VIEW_ALL,
   onDayTabChange,
@@ -71,18 +71,19 @@ export default function WeeklyScheduleViewTabs({
   );
   const dayTabs = useMemo(
     () =>
-      buildDayViewTabs(filterEntriesByRoleView(entries, selectedRoles), {
+      buildDayViewTabs(filterEntriesByRoles(entries, selectedRoles), {
         compact: true,
-        responsibilities: filterResponsibilitiesByRoleView(responsibilities, selectedRoles),
+        responsibilities: Array.isArray(selectedRoles) ? [] : responsibilities,
       }),
     [entries, selectedRoles, responsibilities],
   );
+  const selectedList = selectedRoles || [];
 
   const allRoleTab = roleTabs.find((tab) => tab.value === SCHEDULE_VIEW_ALL);
   const singleRoleTabs = roleTabs.filter((tab) => tab.value !== SCHEDULE_VIEW_ALL);
   const tabByRole = new Map(singleRoleTabs.map((tab) => [tab.value, tab]));
   const roleGroups = groupRoleCodes(singleRoleTabs.map((tab) => tab.value));
-  const showAllRoles = !hasRoleViewFilter(selectedRoles);
+  const showAllRoles = !Array.isArray(selectedRoles);
 
   return (
     <Box
@@ -104,7 +105,7 @@ export default function WeeklyScheduleViewTabs({
               label={allRoleTab.label}
               count={allRoleTab.count}
               selected={showAllRoles}
-              onClick={() => onSelectedRolesChange([])}
+              onClick={() => onSelectedRolesChange(null)}
             />
           ) : null}
           {roleGroups.map((group) => (
@@ -121,8 +122,11 @@ export default function WeeklyScheduleViewTabs({
                     key={role}
                     label={tab.label}
                     count={tab.count}
-                    selected={selectedRoles.includes(role)}
-                    onClick={() => onSelectedRolesChange(toggleRoleViewSelection(selectedRoles, role))}
+                    selected={selectedList.includes(role)}
+                    onClick={() => {
+                      const next = toggleRoleViewSelection(selectedList, role);
+                      onSelectedRolesChange(next.length ? next : null);
+                    }}
                   />
                 );
               })}

@@ -3,14 +3,15 @@ import PersonOffOutlinedIcon from "@mui/icons-material/PersonOffOutlined";
 import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
 import VisibilityOffOutlinedIcon from "@mui/icons-material/VisibilityOffOutlined";
 import {
-  employeeWeeklyRoleCounts,
   formatEmployeeWeeklySummary,
+  formatHours,
   formatHoursBreakdown,
+  roleStyle,
 } from "./weeklyScheduleRoles";
 
+/** `employee` carries totals from `withDisplayedTotals`, so its hours and role chips follow the role selection. */
 export default function WeeklyScheduleEmployeeCell({
   employee,
-  entries,
   excluded,
   canManageExclusions,
   excludeSaving,
@@ -25,7 +26,7 @@ export default function WeeklyScheduleEmployeeCell({
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
 
-  const roleCounts = employeeWeeklyRoleCounts(employee.user_id, entries);
+  const roleRows = employee?.role_hours || [];
   const weeklySummary = formatEmployeeWeeklySummary(employee, { daysOnly, showBreaks });
   const breakHours = Number(employee?.break_hours || 0);
   const breakdown = !daysOnly && showBreaks && breakHours > 0
@@ -83,13 +84,16 @@ export default function WeeklyScheduleEmployeeCell({
             </Typography>
           </Tooltip>
 
-          {roleCounts.length && !excluded ? (
+          {roleRows.length && !excluded ? (
             <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: 0.45 }}>
-              {roleCounts.map(({ key, label, count, style }) => (
+              {roleRows.map(({ role, label, hours, days }) => {
+                const style = roleStyle(role);
+                return (
                 <Chip
-                  key={key}
+                  key={role}
                   size="small"
-                  label={`${label} ${count}`}
+                  data-employee-role={role}
+                  label={daysOnly ? `${label} · ${days} ${days === 1 ? "day" : "days"}` : `${label} · ${formatHours(hours)} hrs`}
                   sx={{
                     height: 20,
                     fontSize: "0.68rem",
@@ -100,7 +104,8 @@ export default function WeeklyScheduleEmployeeCell({
                     "& .MuiChip-label": { px: 0.75 },
                   }}
                 />
-              ))}
+                );
+              })}
             </Stack>
           ) : null}
 

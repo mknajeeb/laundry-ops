@@ -532,7 +532,14 @@ def employee_day_timeline(
     direct_hours = 0.0
     direct_roles: dict[str, float] = defaultdict(float)
     shifts: list[tuple[int, int, Mapping[str, Any]]] = []
+    assigned: set[str] = set()
     for entry in entries or []:
+        roles = list(
+            dict.fromkeys(
+                str(a["role"]) for a in entry_role_assignments(entry) if a.get("role") and a["role"] not in tasks
+            )
+        )
+        assigned.update(roles)
         raw_hours = entry.get("hours")
         if raw_hours is not None and float(raw_hours or 0) <= 0:
             continue
@@ -542,11 +549,6 @@ def employee_day_timeline(
             if hours <= 0:
                 continue
             direct_hours += hours
-            roles = list(
-                dict.fromkeys(
-                    str(a["role"]) for a in entry_role_assignments(entry) if a.get("role") and a["role"] not in tasks
-                )
-            )
             for role in roles:
                 direct_roles[role] += hours / len(roles)
             continue
@@ -621,22 +623,57 @@ def employee_day_timeline(
         "net_hours": (gross - break_minutes) / 60.0 + direct_hours,
         "pieces": pieces,
         "break_ranges": break_ranges,
+        "direct_hours": direct_hours,
         "direct_role_hours": dict(direct_roles),
+        "assigned_roles": _sort_roles(list(assigned)),
     }
 
 
-def timeline_role_hours(timeline: Mapping[str, Any]) -> dict[str, float]:
-    """Role hours from one day timeline: worked pieces off break, split evenly between simultaneous roles."""
-    out: dict[str, float] = defaultdict(float)
+def timeline_role_breakdown(timeline: Mapping[str, Any]) -> dict[str, dict[str, float]]:
+    """
+    Per-role hours for one day timeline (key ``""`` = shift time without a role).
+
+    Worked time off timed breaks is split evenly between simultaneous roles, and a timed break is split
+    the same way between the roles it pauses. A duration-only break has no position, so each role carries
+    a share of it in proportion to its worked time that day. Shares always use every role the employee
+    holds, so leaving a role out of a report never moves its hours to another role.
+    """
+    out: dict[str, dict[str, float]] = {}
+
+    def parts(role: str) -> dict[str, float]:
+        return out.setdefault(role, {"gross": 0.0, "worked": 0.0, "timed_break": 0.0, "untimed_break": 0.0, "net": 0.0})
+
+    worked = 0.0
     for piece in timeline.get("pieces") or []:
-        if piece["on_break"] or not piece["roles"]:
+        keys = list(piece["roles"]) or [""]
+        share = (piece["end"] - piece["start"]) / 60.0 / len(keys)
+        for role in keys:
+            row = parts(role)
+            row["gross"] += share
+            if piece["on_break"]:
+                row["timed_break"] += share
+            else:
+                row["worked"] += share
+                worked += share
+    factor = min(1.0, float(timeline.get("unscheduled_break_hours") or 0.0) / worked) if worked > 0 else 0.0
+    for row in out.values():
+        row["untimed_break"] = row["worked"] * factor
+        row["net"] = row["worked"] - row["untimed_break"]
+    direct_roles = timeline.get("direct_role_hours") or {}
+    direct_no_role = max(0.0, float(timeline.get("direct_hours") or 0.0) - sum(direct_roles.values()))
+    for role, hours in [*direct_roles.items(), ("", direct_no_role)]:
+        if hours <= 0:
             continue
-        share = (piece["end"] - piece["start"]) / 60.0 / len(piece["roles"])
-        for role in piece["roles"]:
-            out[role] += share
-    for role, hours in (timeline.get("direct_role_hours") or {}).items():
-        out[role] += hours
-    return dict(out)
+        row = parts(role)
+        row["gross"] += hours
+        row["worked"] += hours
+        row["net"] += hours
+    return out
+
+
+def timeline_role_hours(timeline: Mapping[str, Any]) -> dict[str, float]:
+    """Net role hours from one day timeline (see ``timeline_role_breakdown``)."""
+    return {role: row["net"] for role, row in timeline_role_breakdown(timeline).items() if role}
 
 
 def _entries_by_user_day(entries: Sequence[Mapping[str, Any]]) -> dict[tuple[int, int], list[Mapping[str, Any]]]:
@@ -822,18 +859,33 @@ def allocate_role_hours_by_day(
     task_roles: set[str] | frozenset[str] | None = None,
 ) -> list[dict[str, float]]:
     """
-    Role hours for wash/sort/fold/PT per day from the shared day timeline: each assignment counts over
-    its own range, timed breaks are removed first, and simultaneous roles split the remaining time.
-    Duration-only breaks have no time, so they stay a separate deduction instead of being spread.
+    Net role hours for wash/sort/fold/PT per day from the shared day timeline: each assignment counts
+    over its own range, timed breaks come off the roles they pause, simultaneous roles split the time,
+    and duration-only breaks are shared across the employee's roles (see ``timeline_role_breakdown``).
     """
-    by_day: list[dict[str, float]] = [{role: 0.0 for role in HOUR_TRACKED_ROLES} for _ in range(7)]
-    for (_, dow), group in _entries_by_user_day(entries).items():
+    totals = day_role_totals(entries, task_roles=task_roles)
+    return [
+        {role: round(float(day.get(role, {}).get("hours") or 0.0), 2) for role in HOUR_TRACKED_ROLES}
+        for day in totals
+    ]
+
+
+def day_role_totals(
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    task_roles: set[str] | frozenset[str] | None = None,
+) -> list[dict[str, dict[str, Any]]]:
+    """Per day and role: distinct employees assigned the role and their net role hours (unrounded)."""
+    by_day: list[dict[str, dict[str, Any]]] = [{} for _ in range(7)]
+    for (uid, dow), group in _entries_by_user_day(entries).items():
         if dow < 0 or dow > 6:
             continue
-        role_hours = timeline_role_hours(employee_day_timeline(group, task_roles=task_roles))
-        for role in HOUR_TRACKED_ROLES:
-            if role_hours.get(role):
-                by_day[dow][role] = round(float(by_day[dow][role]) + role_hours[role], 1)
+        timeline = employee_day_timeline(group, task_roles=task_roles)
+        net = timeline_role_hours(timeline)
+        for role in timeline["assigned_roles"]:
+            row = by_day[dow].setdefault(role, {"user_ids": set(), "hours": 0.0})
+            row["user_ids"].add(uid)
+            row["hours"] += net.get(role, 0.0)
     return by_day
 
 
@@ -967,11 +1019,13 @@ def compute_schedule_totals(
             "pt_washer_hours": 0.0,
             "pt_sorter_hours": 0.0,
             "pt_folder_hours": 0.0,
+            "roles": [],
         }
         for dow in range(7)
     }
     employee_days: dict[int, set[int]] = defaultdict(set)
     included_entries: list[Mapping[str, Any]] = []
+    role_people: dict[tuple[int, str], set[int]] = defaultdict(set)
 
     for entry in entries or []:
         uid = int(entry.get("user_id") or 0)
@@ -991,35 +1045,8 @@ def compute_schedule_totals(
             }
         employee_days[uid].add(dow)
 
-        day = day_totals.get(dow) or day_totals[dow]
-        counted_roles = roles or ["fold"]
-        for role in counted_roles:
-            if role == "sort":
-                day["sort_count"] = int(day["sort_count"]) + 1
-            elif role == "wash":
-                day["wash_count"] = int(day["wash_count"]) + 1
-            elif role == "weigher":
-                day["weigher_count"] = int(day["weigher_count"]) + 1
-            elif role == "fold":
-                day["fold_count"] = int(day["fold_count"]) + 1
-            elif role == "pt_sorter":
-                day["pt_sorter_count"] = int(day["pt_sorter_count"]) + 1
-            elif role == "pt_washer":
-                day["pt_washer_count"] = int(day["pt_washer_count"]) + 1
-            elif role == "pt_folder":
-                day["pt_folder_count"] = int(day["pt_folder_count"]) + 1
-            elif role == "hd_operator":
-                day["hd_operator_count"] = int(day["hd_operator_count"]) + 1
-            elif role == "hd_folder":
-                day["hd_folder_count"] = int(day["hd_folder_count"]) + 1
-            elif role == "attendant":
-                day["attendant_count"] = int(day["attendant_count"]) + 1
-            elif role == "non_rinse_folder":
-                day["non_rinse_folder_count"] = int(day["non_rinse_folder_count"]) + 1
-            if role == "wash":
-                day["operator_count"] = int(day["operator_count"]) + 1
-            if role == "fold":
-                day["folder_count"] = int(day["folder_count"]) + 1
+        for role in roles or ["fold"]:
+            role_people[(dow, role)].add(uid)
 
     for (uid, dow), parts in scheduled_hours_breakdown_by_user_day(included_entries, task_roles=task_roles).items():
         hours = parts["net_hours"]
@@ -1033,15 +1060,22 @@ def compute_schedule_totals(
             for name in _BREAKDOWN_TOTAL_KEYS:
                 target[name] = round(float(target.get(name) or 0.0) + parts[name], 2)
 
-    role_hours_by_day = allocate_role_hours_by_day(included_entries, task_roles=task_roles)
-    for dow, role_hours in enumerate(role_hours_by_day):
+    for (dow, role), people in role_people.items():
+        day = day_totals.get(dow)
+        if day is not None and f"{role}_count" in day:
+            day[f"{role}_count"] = len(people)
+    for day in day_totals.values():
+        day["operator_count"] = day["wash_count"]
+        day["folder_count"] = day["fold_count"]
+
+    for dow, role_rows in enumerate(day_role_totals(included_entries, task_roles=task_roles)):
         day = day_totals[dow]
-        day["wash_hours"] = float(role_hours.get("wash") or 0.0)
-        day["sort_hours"] = float(role_hours.get("sort") or 0.0)
-        day["fold_hours"] = float(role_hours.get("fold") or 0.0)
-        day["pt_washer_hours"] = float(role_hours.get("pt_washer") or 0.0)
-        day["pt_sorter_hours"] = float(role_hours.get("pt_sorter") or 0.0)
-        day["pt_folder_hours"] = float(role_hours.get("pt_folder") or 0.0)
+        for role in HOUR_TRACKED_ROLES:
+            day[f"{role}_hours"] = round(float(role_rows.get(role, {}).get("hours") or 0.0), 2)
+        day["roles"] = [
+            {"role": role, "employees": len(role_rows[role]["user_ids"]), "hours": round(role_rows[role]["hours"], 2)}
+            for role in _sort_roles(list(role_rows))
+        ]
 
     for uid, days in employee_days.items():
         if uid in employee_totals:

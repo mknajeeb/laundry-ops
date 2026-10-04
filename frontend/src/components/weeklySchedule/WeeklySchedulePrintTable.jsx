@@ -1,36 +1,19 @@
 import {
-  employeeScheduleRoles,
   formatEmployeeWeeklySummary,
   formatHoursBreakdown,
-  formatRoleHoursLabel,
-  HOUR_TRACKED_ROLES,
-  ROLE_COMPACT_LABELS,
-  ROLE_ORDER,
-  ROLE_STYLES,
+  formatRoleResourcesLabel,
   roleLabels,
-  sortRoles,
 } from "./weeklyScheduleRoles";
-import { formatDayShiftsText } from "./weeklyScheduleExport";
+import { employeeRowRoles, formatDayShiftsText } from "./weeklyScheduleExport";
 
 function DayHeaderTotals({ summary, daysOnly = false, showBreaks = false }) {
   if (!summary) return null;
   const people = Number(summary.people || 0);
   const hours = Number(summary.hours || 0);
   const hoursLabel = Number.isInteger(hours) ? `${hours}` : hours.toFixed(1);
-  const roleParts = [];
-  for (const role of sortRoles(ROLE_ORDER)) {
-    const count = Number(summary[role] || 0);
-    if (count <= 0) continue;
-    const label = ROLE_COMPACT_LABELS[role] || ROLE_STYLES[role]?.label || role;
-    if (!daysOnly && HOUR_TRACKED_ROLES.includes(role)) {
-      const roleHours = Number(summary[`${role}_hours`] || 0);
-      if (roleHours > 0) {
-        roleParts.push(`${label} ${count} · ${formatRoleHoursLabel(roleHours)}`);
-        continue;
-      }
-    }
-    roleParts.push(`${label} ${count}`);
-  }
+  const roleParts = (summary.roles || [])
+    .filter((row) => Number(row.employees || 0) > 0)
+    .map((row) => formatRoleResourcesLabel(row, { daysOnly, short: true }));
 
   return (
     <div className="weekly-schedule-print-day-totals">
@@ -42,7 +25,11 @@ function DayHeaderTotals({ summary, daysOnly = false, showBreaks = false }) {
           {formatHoursBreakdown({ gross: summary.gross_hours, breakHours: summary.break_hours, net: hours })}
         </div>
       ) : null}
-      {roleParts.length ? <div className="weekly-schedule-print-day-roles">{roleParts.join(" · ")}</div> : null}
+      {roleParts.map((part) => (
+        <div key={part} className="weekly-schedule-print-day-roles">
+          {part}
+        </div>
+      ))}
     </div>
   );
 }
@@ -57,6 +44,8 @@ export default function WeeklySchedulePrintTable({
   daysOnly = false,
   showBreaks = false,
   responsibilities = [],
+  roleFilter = null,
+  entryScopes = null,
 }) {
   const labels = dayLabels || [];
   const indices = dayIndices || labels.map((_, index) => index);
@@ -79,7 +68,7 @@ export default function WeeklySchedulePrintTable({
       </thead>
       <tbody>
         {(employees || []).map((employee) => {
-          const roles = employeeScheduleRoles(employee.user_id, entries);
+          const roles = employeeRowRoles(employee, entries);
           return (
             <tr key={employee.user_id}>
               <td className="weekly-schedule-print-td-employee">
@@ -113,7 +102,14 @@ export default function WeeklySchedulePrintTable({
                 );
                 const text = formatDayShiftsText(
                   cellEntries,
-                  { showRoleLabels, forExport: true, scheduleEndTimeEnabled: !daysOnly, showBreaks },
+                  {
+                    showRoleLabels,
+                    forExport: true,
+                    scheduleEndTimeEnabled: !daysOnly,
+                    showBreaks,
+                    roleFilter,
+                    entryScopes,
+                  },
                   cellResponsibilities,
                 );
                 return (

@@ -2533,7 +2533,7 @@ def test_breaks_multiple_partial_overnight_and_overlapping_shifts_count_once():
     assert totals["employee_totals"][12]["total_hours"] == 7.5
 
 
-def test_role_hours_remove_timed_breaks_before_splitting_and_keep_untimed_separate():
+def test_role_hours_remove_timed_breaks_before_splitting_and_share_untimed_breaks():
     both = _break_row(
         1,
         10,
@@ -2544,12 +2544,72 @@ def test_role_hours_remove_timed_breaks_before_splitting_and_keep_untimed_separa
         slots=_slots(("10:00", "10:30")),
     )
     hours = allocate_role_hours_by_day([both])[1]
-    assert hours["wash"] == 1.8 and hours["fold"] == 1.8  # 1.75 each, day values keep one decimal
+    assert hours["wash"] == 1.75 and hours["fold"] == 1.75
     legacy = _break_row(2, 11, time(9, 0), time(17, 0), "sort", break_minutes=30)
-    assert allocate_role_hours_by_day([legacy])[1]["sort"] == 8.0
+    # A break without a time comes off the role hours as a share, so role hours are net.
+    assert allocate_role_hours_by_day([legacy])[1]["sort"] == 7.5
     totals = compute_schedule_totals([both, legacy], {})
     assert totals["day_totals"][1]["total_hours"] == 11.0
     assert totals["day_totals"][1]["unscheduled_break_hours"] == 0.5
+    day_roles = sum(row["hours"] for row in totals["day_totals"][1]["roles"])
+    assert day_roles == totals["day_totals"][1]["total_hours"]
+
+
+def _role_selection_fixture():
+    a = _break_row(11, 1, time(8, 0), time(16, 0), "fold", break_minutes=30, slots=_slots(("12:00", "12:30")))
+    b = _break_row(21, 2, time(8, 0), time(12, 0), "wash,fold")
+    c1 = _break_row(31, 3, time(6, 0), time(14, 0), "wash")
+    c2 = _break_row(32, 3, time(12, 0), time(16, 0), "fold")
+    d = _break_row(41, 4, time(22, 0), time(6, 0), "sort", break_minutes=30)
+    e = _break_row(
+        51,
+        5,
+        time(9, 0),
+        time(13, 0),
+        "fold,sort",
+        break_minutes=30,
+        assignments=[
+            {"role": "fold", "start_time": "09:00", "end_time": "11:00"},
+            {"role": "sort", "start_time": "11:00", "end_time": "13:00"},
+        ],
+    )
+    return [a, b, c1, c2, d, e]
+
+
+def test_day_role_totals_count_distinct_people_and_net_hours_like_the_frontend():
+    entries = _role_selection_fixture()
+    totals = compute_schedule_totals(entries, {})
+    mon = totals["day_totals"][1]
+    roles = {row["role"]: (row["employees"], row["hours"]) for row in mon["roles"]}
+    # Same fixture as weeklyScheduleRoleSelection.test.js.
+    assert roles == {"wash": (2, 9.0), "sort": (2, 9.25), "fold": (4, 14.25)}
+    assert mon["fold_count"] == 4 and mon["wash_count"] == 2 and mon["folder_count"] == 4
+    assert mon["fold_hours"] == 14.25 and mon["sort_hours"] == 9.25
+    assert round(sum(hours for _, hours in roles.values()), 2) == mon["total_hours"]
+
+
+def test_day_role_counts_are_people_not_assignments():
+    shifts = [
+        _break_row(1, 1, time(8, 0), time(10, 0), "fold"),
+        _break_row(2, 1, time(11, 0), time(13, 0), "fold"),
+        _break_row(3, 1, time(14, 0), time(16, 0), "fold"),
+        _break_row(4, 2, time(8, 0), time(12, 0), "fold"),
+    ]
+    mon = compute_schedule_totals(shifts, {})["day_totals"][1]
+    assert mon["fold_count"] == 2
+    assert mon["roles"] == [{"role": "fold", "employees": 2, "hours": 10.0}]
+
+
+def test_hidden_simultaneous_role_keeps_its_share():
+    from backend.planned_weekly_schedule import employee_day_timeline, timeline_role_breakdown
+
+    c1 = _break_row(31, 3, time(6, 0), time(14, 0), "wash")
+    c2 = _break_row(32, 3, time(12, 0), time(16, 0), "fold")
+    breakdown = timeline_role_breakdown(employee_day_timeline([c1, c2]))
+    assert breakdown["fold"]["net"] == 3.0 and breakdown["wash"]["net"] == 7.0
+    overnight = _break_row(41, 4, time(22, 0), time(6, 0), "sort", break_minutes=30)
+    parts = timeline_role_breakdown(employee_day_timeline([overnight]))["sort"]
+    assert parts == {"gross": 8.0, "worked": 8.0, "timed_break": 0.0, "untimed_break": 0.5, "net": 7.5}
 
 
 def test_create_update_and_copy_keep_break_slots_and_deletions():

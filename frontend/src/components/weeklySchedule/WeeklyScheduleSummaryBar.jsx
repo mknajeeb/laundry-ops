@@ -1,34 +1,22 @@
 import { Box, Typography } from "@mui/material";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
-import { formatRoleHoursLabel } from "./weeklyScheduleRoles";
-
-const ROLE_ACCENT = {
-  fold: VEEWASH_DASHBOARD.tealDark,
-  sort: VEEWASH_DASHBOARD.primaryBlueDark,
-  wash: VEEWASH_DASHBOARD.rushCopper,
-  pt_washer: "#c2410c",
-  pt_sorter: "#0369a1",
-  pt_folder: "#047857",
-  weigher: "#6d28d9",
-  hd_operator: "#be185d",
-  hd_folder: "#0f766e",
-  non_rinse_folder: "#4338ca",
-  attendant: "#b45309",
-};
-
-function formatHours(value) {
-  return `${Math.round(Number(value || 0) * 100) / 100}`;
-}
+import { formatHours, roleStyle } from "./weeklyScheduleRoles";
 
 function formatCurrency(value) {
   const n = Number(value || 0);
   return n.toLocaleString(undefined, { style: "currency", currency: "USD" });
 }
 
-function roleMetricValue(count, hours, daysOnly) {
-  const c = Number(count || 0);
-  if (daysOnly || hours == null || Number(hours) <= 0) return String(c);
-  return `${c} · ${formatRoleHoursLabel(hours)}`;
+function peopleText(count) {
+  const n = Number(count || 0);
+  return `${n} ${n === 1 ? "person" : "people"}`;
+}
+
+/** "8 people · 42.5 hours" — distinct employees and net hours for one role. */
+function roleMetricValue(row, daysOnly) {
+  if (daysOnly) return peopleText(row.employees);
+  const hours = Math.round(Number(row.hours || 0) * 100) / 100;
+  return `${peopleText(row.employees)} · ${hours} ${hours === 1 ? "hour" : "hours"}`;
 }
 
 function SummaryMetric({ label, value, accent, compact = false }) {
@@ -60,20 +48,19 @@ function SummaryMetric({ label, value, accent, compact = false }) {
   );
 }
 
-export default function WeeklyScheduleSummaryBar({
-  summary,
-  showCost,
-  compact = false,
-  hideRoleBreakdown = false,
-  showBreaks = true,
-}) {
+/**
+ * Week totals for what is on screen. With roles selected, every number covers only those roles:
+ * employees assigned one of them (each counted once) and their net hours in the selected roles.
+ */
+export default function WeeklyScheduleSummaryBar({ summary, showCost, compact = false, showBreaks = true }) {
   if (!summary) return null;
 
   const daysOnly = summary.daysOnly === true;
+  const filtered = Array.isArray(summary.roleFilter);
   const metrics = [
     {
-      label: compact ? "Employees" : "Employees Scheduled",
-      value: summary.employeesScheduled,
+      label: filtered ? "Selected roles" : compact ? "Employees" : "Employees Scheduled",
+      value: filtered ? peopleText(summary.employeesScheduled) : summary.employeesScheduled,
       accent: VEEWASH_DASHBOARD.primaryBlueDark,
     },
     daysOnly
@@ -109,44 +96,13 @@ export default function WeeklyScheduleSummaryBar({
     );
   }
 
-  if (!hideRoleBreakdown) {
-    metrics.push(
-      {
-        label: "Wash",
-        value: roleMetricValue(summary.washCount, summary.washHours, daysOnly),
-        accent: ROLE_ACCENT.wash,
-      },
-      {
-        label: "Sort",
-        value: roleMetricValue(summary.sortCount, summary.sortHours, daysOnly),
-        accent: ROLE_ACCENT.sort,
-      },
-      { label: "Weigher", value: summary.weigherCount, accent: ROLE_ACCENT.weigher },
-      {
-        label: "Fold",
-        value: roleMetricValue(summary.foldCount, summary.foldHours, daysOnly),
-        accent: ROLE_ACCENT.fold,
-      },
-      {
-        label: "PT Washer",
-        value: roleMetricValue(summary.ptWasherCount, summary.ptWasherHours, daysOnly),
-        accent: ROLE_ACCENT.pt_washer,
-      },
-      {
-        label: "PT Sorter",
-        value: roleMetricValue(summary.ptSorterCount, summary.ptSorterHours, daysOnly),
-        accent: ROLE_ACCENT.pt_sorter,
-      },
-      {
-        label: "PT Folder",
-        value: roleMetricValue(summary.ptFolderCount, summary.ptFolderHours, daysOnly),
-        accent: ROLE_ACCENT.pt_folder,
-      },
-      { label: "HD Op", value: summary.hdOperatorCount, accent: ROLE_ACCENT.hd_operator },
-      { label: "HD Fold", value: summary.hdFolderCount, accent: ROLE_ACCENT.hd_folder },
-      { label: "NR Fold", value: summary.nonRinseFolderCount, accent: ROLE_ACCENT.non_rinse_folder },
-      { label: "Attend", value: summary.attendantCount, accent: ROLE_ACCENT.attendant },
-    );
+  for (const row of summary.roles || []) {
+    metrics.push({
+      label: row.label,
+      value: roleMetricValue(row, daysOnly),
+      accent: roleStyle(row.role).accent,
+      role: row.role,
+    });
   }
 
   if (showCost) {
@@ -195,7 +151,12 @@ export default function WeeklyScheduleSummaryBar({
         }}
       >
         {metrics.map((metric, index) => (
-          <Box key={metric.label} component="span" sx={{ display: "inline-flex", alignItems: "center" }}>
+          <Box
+            key={metric.role || metric.label}
+            component="span"
+            data-summary-role={metric.role || undefined}
+            sx={{ display: "inline-flex", alignItems: "center" }}
+          >
             {index > 0 ? (
               <Typography
                 component="span"
@@ -205,7 +166,7 @@ export default function WeeklyScheduleSummaryBar({
                 |
               </Typography>
             ) : null}
-            <SummaryMetric {...metric} compact={compact} />
+            <SummaryMetric label={metric.label} value={metric.value} accent={metric.accent} compact={compact} />
           </Box>
         ))}
       </Box>

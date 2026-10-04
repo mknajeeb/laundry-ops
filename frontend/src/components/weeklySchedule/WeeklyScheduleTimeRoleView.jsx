@@ -34,7 +34,7 @@ function peopleCountLabel(count) {
   return `${count} ${count === 1 ? "person" : "people"}`;
 }
 
-/** Role checkboxes (grouped), Select all / Clear all, names toggle, and the hour range. */
+/** Role checkboxes (grouped), Select all / Clear all, names toggle, and the hour range. The role selection is shared with the employee view. */
 export function HourlyCoverageControls({
   roleOptions,
   selectedRoles,
@@ -231,6 +231,16 @@ function CoverageCell({ cell, endLabel, showNames, onEditEntry, canEdit }) {
 const stickyCol = { position: "sticky", left: 0, zIndex: 1, bgcolor: "inherit" };
 const BREAK_ACCENT = "#9a3412";
 
+/** Net role hours after the share of breaks without a time (shown only when there is such a share). */
+function NetAfterUntimed({ total }) {
+  if (!total || !(Number(total.untimedBreak) > 0.0001)) return null;
+  return (
+    <Typography variant="caption" data-day-net-hours sx={{ display: "block", lineHeight: 1.2, color: BREAK_ACCENT, whiteSpace: "nowrap" }}>
+      Net {formatCoverageHours(total.net)} after {formatCoverageHours(total.untimedBreak)} break without a time
+    </Typography>
+  );
+}
+
 /** Employees on a timed break in each hour, kept out of the role cells. */
 export function DayMatrix({ day, columns, showNames, canEdit, onEditEntry, showBreaks = true }) {
   return (
@@ -303,6 +313,7 @@ export function DayMatrix({ day, columns, showNames, canEdit, onEditEntry, showB
                   <Typography variant="body2" sx={{ fontWeight: 800, fontSize: "0.8rem", whiteSpace: "nowrap" }}>
                     {total ? `${peopleCountLabel(total.count)} · ${formatCoverageHours(total.hours)}` : "—"}
                   </Typography>
+                  <NetAfterUntimed total={total} />
                 </TableCell>
               );
             })}
@@ -310,6 +321,7 @@ export function DayMatrix({ day, columns, showNames, canEdit, onEditEntry, showB
               <Typography variant="body2" sx={{ fontWeight: 800, fontSize: "0.8rem", whiteSpace: "nowrap" }}>
                 {peopleCountLabel(day.overall.count)} · {formatCoverageHours(day.overall.hours)}
               </Typography>
+              <NetAfterUntimed total={day.overall} />
             </TableCell>
             {showBreaks ? (
               <TableCell>
@@ -348,7 +360,7 @@ export function UnscheduledBreaksNote({ day, canEdit, onEditEntry }) {
         ))}
       </Stack>
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.25 }}>
-        Deducted from net hours, but not from any hourly cell or role total above. Set a break time to place it.
+        Not placed in any hourly cell. Each role&apos;s day total shows its share as net hours. Set a break time to place it.
       </Typography>
     </Box>
   );

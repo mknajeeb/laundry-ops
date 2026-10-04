@@ -1,8 +1,8 @@
 import { Box, Paper, Stack, Typography } from "@mui/material";
-import { formatRoleHoursLabel, ROLE_HOURS_EXPLANATION, roleStyle } from "./weeklyScheduleRoles";
+import { formatHours, ROLE_HOURS_EXPLANATION, roleStyle } from "./weeklyScheduleRoles";
 
 function hoursText(hours) {
-  return formatRoleHoursLabel(hours);
+  return `${formatHours(hours)}h`;
 }
 
 function SummaryCard({ title, children }) {
@@ -78,7 +78,7 @@ export default function WeeklyScheduleHoursSummary({ summary, scopeLabel = "", s
             </>
           ) : null}
           <Row
-            label={`${showBreaks ? "Net" : "Total"} · ${employees.length} employee${employees.length === 1 ? "" : "s"}`}
+            label={`${showBreaks ? "Net" : "Total"} · ${employees.length} ${employees.length === 1 ? "person" : "people"}`}
             value={hoursText(totalHours)}
             bold
           />
@@ -90,7 +90,7 @@ export default function WeeklyScheduleHoursSummary({ summary, scopeLabel = "", s
                 <Row
                   key={row.role}
                   label={row.label}
-                  sub={`${row.employees} employee${row.employees === 1 ? "" : "s"}`}
+                  sub={`${row.employees} ${row.employees === 1 ? "person" : "people"}`}
                   value={hoursText(row.hours)}
                   accent={roleStyle(row.role).accent}
                 />
@@ -103,14 +103,18 @@ export default function WeeklyScheduleHoursSummary({ summary, scopeLabel = "", s
             {unassignedHours > 0 ? (
               <Row label={summary.unassignedLabel || "Shift time without a role"} value={hoursText(unassignedHours)} />
             ) : null}
-            {showBreaks && unscheduledBreak > 0 ? (
-              <Row
-                label="Breaks without a time (not in any hour or role)"
-                value={`−${hoursText(unscheduledBreak)}`}
-              />
-            ) : null}
           </Box>
-          <Row label="Total role hours (timed breaks removed)" value={hoursText(roleTotal)} bold />
+          <Row
+            label={summary.roleFilter ? "Total · selected roles (net)" : "Total net hours"}
+            sub={`${summary.distinctEmployees ?? employees.length} ${(summary.distinctEmployees ?? employees.length) === 1 ? "person" : "people"}`}
+            value={hoursText(roleTotal + (unassignedHours || 0))}
+            bold
+          />
+          {showBreaks && unscheduledBreak > 0 ? (
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.25 }}>
+              Includes {hoursText(unscheduledBreak)} of breaks without a time, shared across each person&apos;s roles.
+            </Typography>
+          ) : null}
         </SummaryCard>
       </Stack>
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75, px: 0.25 }}>

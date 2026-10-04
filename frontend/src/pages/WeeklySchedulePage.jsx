@@ -95,9 +95,8 @@ import WeeklySchedulePrintTable from "../components/weeklySchedule/WeeklySchedul
 import WeeklyScheduleTimeRolePrint from "../components/weeklySchedule/WeeklyScheduleTimeRolePrint";
 import WeeklyScheduleViewTabs from "../components/weeklySchedule/WeeklyScheduleViewTabs";
 import {
-  filterEntriesByScheduleView,
-  hasRoleViewFilter,
-  resolveRoleViewRoles,
+  filterEntriesByDayView,
+  filterEntriesByRoles,
   SCHEDULE_VIEW_ALL,
   scheduleViewSummaryLabel,
   visibleDayIndices,
@@ -108,12 +107,14 @@ import {
   computeFilteredDaySummaries,
   computeWeekSummary,
   scheduleCellBackground,
+  scheduleEntryKey,
   isScheduleTask,
   scheduleRoleCatalog,
   setScheduleRoleCatalog,
   setScheduleRoleGroups,
   entryRoleAssignments,
   sortRoles,
+  summarizeRoleSelection,
   summarizeSelectedRoleHours,
   withDisplayedTotals,
 } from "../components/weeklySchedule/weeklyScheduleRoles";
@@ -121,6 +122,7 @@ import {
 const VIEW_MODE = { EMPLOYEE: "employee", TIME_ROLE: "time_role", BREAKS_TASKS: "breaks_tasks" };
 
 
+/** Day header totals: client summaries (selection-aware) or the week payload's day totals as a fallback. */
 function daySummary(day) {
   return {
     people: Number(day?.people ?? day?.employee_count ?? 0),
@@ -128,23 +130,7 @@ function daySummary(day) {
     gross_hours: Number(day?.gross_hours ?? 0),
     break_hours: Number(day?.break_hours ?? 0),
     unscheduled_break_hours: Number(day?.unscheduled_break_hours ?? 0),
-    sort: Number(day?.sort ?? day?.sort_count ?? 0),
-    wash: Number(day?.wash ?? day?.wash_count ?? 0),
-    weigher: Number(day?.weigher ?? day?.weigher_count ?? 0),
-    fold: Number(day?.fold ?? day?.fold_count ?? 0),
-    pt_washer: Number(day?.pt_washer ?? day?.pt_washer_count ?? 0),
-    pt_sorter: Number(day?.pt_sorter ?? day?.pt_sorter_count ?? 0),
-    pt_folder: Number(day?.pt_folder ?? day?.pt_folder_count ?? 0),
-    hd_operator: Number(day?.hd_operator ?? day?.hd_operator_count ?? 0),
-    hd_folder: Number(day?.hd_folder ?? day?.hd_folder_count ?? 0),
-    attendant: Number(day?.attendant ?? day?.attendant_count ?? 0),
-    non_rinse_folder: Number(day?.non_rinse_folder ?? day?.non_rinse_folder_count ?? 0),
-    wash_hours: Number(day?.wash_hours ?? 0),
-    sort_hours: Number(day?.sort_hours ?? 0),
-    fold_hours: Number(day?.fold_hours ?? 0),
-    pt_washer_hours: Number(day?.pt_washer_hours ?? 0),
-    pt_sorter_hours: Number(day?.pt_sorter_hours ?? 0),
-    pt_folder_hours: Number(day?.pt_folder_hours ?? 0),
+    roles: Array.isArray(day?.roles) ? day.roles : [],
   };
 }
 
@@ -153,7 +139,8 @@ function ScheduleDayCell({
   dow,
   dayLabel,
   cellEntries,
-  entriesByCell,
+  roleFilter = null,
+  entryScopes = null,
   dropTarget,
   setDropTarget,
   excluded,
@@ -237,6 +224,8 @@ function ScheduleDayCell({
           key={entry.id}
           entry={entry}
           employee={employee}
+          roleFilter={roleFilter}
+          roleScope={entryScopes?.get(scheduleEntryKey(entry)) || null}
           dragging={draggingId === entry.id}
           muted={excluded}
           showRoleLabels={showRoleLabels}
@@ -329,9 +318,10 @@ export default function WeeklySchedulePage() {
   const [cascadeOpen, setCascadeOpen] = useState(false);
   const [templateSaving, setTemplateSaving] = useState(false);
   const [employerTab, setEmployerTab] = useState(ENTITY_TAB.RINSE_EXCLUSIVE);
-  const [selectedRoleView, setSelectedRoleView] = useState([]);
+  // One role selection for every view (null = all roles, [] = none): employee grid, hourly matrix,
+  // breaks & tasks, summaries, print, and export.
+  const [roleSelection, setRoleSelection] = useState(null);
   const [dayViewTab, setDayViewTab] = useState(SCHEDULE_VIEW_ALL);
-  const [matrixRoles, setMatrixRoles] = useState(null);
   const [showCoverageNames, setShowCoverageNames] = useState(true);
   const [coverageRange, setCoverageRange] = useState({ fromHour: null, toHour: null });
   const printContentRef = useRef(null);
@@ -426,9 +416,10 @@ export default function WeeklySchedulePage() {
   }, [entityTabs, employerTab, lockEmployerTab, entityScope, data?.employees, data?.entries]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    setSelectedRoleView([]);
+    setRoleSelection(null);
     setDayViewTab(SCHEDULE_VIEW_ALL);
   }, [data?.week_start, employerTab]);
+  const roleFilter = Array.isArray(roleSelection) ? roleSelection : null;
 
   const tabEntries = useMemo(
     () => filterEntriesByEmployerTab(data?.entries || [], employerTab, data?.employees || [], organizationSlug),
@@ -468,29 +459,29 @@ export default function WeeklySchedulePage() {
     );
   }, [shiftTabEmployees, addableForTab, tabResponsibilities]);
 
-  const viewEntries = useMemo(
-    () => filterEntriesByScheduleView(tabEntries, selectedRoleView, dayViewTab),
-    [tabEntries, selectedRoleView, dayViewTab],
+  /** Every shift on the shown days; hours always come from these so hidden roles keep their share. */
+  const dayEntries = useMemo(() => filterEntriesByDayView(tabEntries, dayViewTab), [tabEntries, dayViewTab]);
+  /** Shifts holding a selected role — the cards shown in the employee grid. */
+  const viewEntries = useMemo(() => filterEntriesByRoles(dayEntries, roleFilter), [dayEntries, roleFilter]);
+
+  const viewResponsibilities = useMemo(
+    () =>
+      tabResponsibilities.filter(
+        (item) => dayViewTab === SCHEDULE_VIEW_ALL || Number(item.day_of_week) === Number(dayViewTab),
+      ),
+    [tabResponsibilities, dayViewTab],
   );
 
-  const viewResponsibilities = useMemo(() => {
-    const roles = resolveRoleViewRoles(selectedRoleView);
-    return tabResponsibilities.filter((item) => {
-      if (roles && !roles.includes(item.role)) return false;
-      if (dayViewTab !== SCHEDULE_VIEW_ALL && Number(item.day_of_week) !== Number(dayViewTab)) return false;
-      return true;
-    });
-  }, [tabResponsibilities, selectedRoleView, dayViewTab]);
-
+  /** With a role selection, only employees assigned a selected role (tasks never bring someone in). */
   const viewEmployees = useMemo(() => {
-    if (!hasRoleViewFilter(selectedRoleView) && dayViewTab === SCHEDULE_VIEW_ALL) {
+    if (!roleFilter && dayViewTab === SCHEDULE_VIEW_ALL) {
       return tabEmployees;
     }
     const userIds = new Set(
-      [...viewEntries, ...viewResponsibilities].map((item) => Number(item.user_id)),
+      [...viewEntries, ...(roleFilter ? [] : viewResponsibilities)].map((item) => Number(item.user_id)),
     );
     return tabEmployees.filter((employee) => userIds.has(Number(employee.user_id)));
-  }, [tabEmployees, viewEntries, viewResponsibilities, selectedRoleView, dayViewTab]);
+  }, [tabEmployees, viewEntries, viewResponsibilities, roleFilter, dayViewTab]);
 
   const responsibilitiesByCell = useMemo(() => {
     const map = {};
@@ -508,8 +499,10 @@ export default function WeeklySchedulePage() {
     [visibleDayColumns],
   );
   const scheduleViewLabel = useMemo(
-    () => scheduleViewSummaryLabel(selectedRoleView, dayViewTab),
-    [selectedRoleView, dayViewTab],
+    () => scheduleViewSummaryLabel(roleFilter || [], dayViewTab),
+    // roleCatalog: role labels come from the registered catalog.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [roleFilter, dayViewTab, roleCatalog],
   );
 
   const entriesByCell = useMemo(() => {
@@ -533,11 +526,14 @@ export default function WeeklySchedulePage() {
         ? computeWeekSummary(data, {
             includeExcluded: showExcluded,
             userIds: tabUserIds,
-            entries: viewEntries,
+            entries: dayEntries,
             daysOnly,
+            roles: roleFilter,
           })
         : null,
-    [data, showExcluded, tabUserIds, viewEntries, daysOnly],
+    // roleCatalog: role order and labels come from the registered catalog.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [data, showExcluded, tabUserIds, dayEntries, daysOnly, roleFilter, roleCatalog],
   );
 
   const filteredDaySummaries = useMemo(
@@ -546,24 +542,33 @@ export default function WeeklySchedulePage() {
         ? computeFilteredDaySummaries(data, {
             userIds: tabUserIds,
             includeExcluded: showExcluded,
-            entries: viewEntries,
+            entries: dayEntries,
+            roles: roleFilter,
           })
         : [],
-    [data, tabUserIds, showExcluded, viewEntries],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [data, tabUserIds, showExcluded, dayEntries, roleFilter, roleCatalog],
   );
 
   const visibleEmployees = useMemo(() => {
     const shown = showExcluded ? viewEmployees : viewEmployees.filter((e) => !e.excluded);
-    return withDisplayedTotals(shown, viewEntries);
-  }, [viewEmployees, showExcluded, viewEntries]);
+    return withDisplayedTotals(shown, dayEntries, { roles: roleFilter });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewEmployees, showExcluded, dayEntries, roleFilter, roleCatalog]);
 
   const visibleUserIds = useMemo(
     () => new Set(visibleEmployees.map((e) => Number(e.user_id))),
     [visibleEmployees],
   );
+  /** All shifts of the shown employees on the shown days (input to every role-scoped calculation). */
   const timeViewEntries = useMemo(
-    () => viewEntries.filter((entry) => visibleUserIds.has(Number(entry.user_id))),
-    [viewEntries, visibleUserIds],
+    () => dayEntries.filter((entry) => visibleUserIds.has(Number(entry.user_id))),
+    [dayEntries, visibleUserIds],
+  );
+  const entryScopes = useMemo(
+    () => (roleFilter ? summarizeRoleSelection(timeViewEntries, { roles: roleFilter }).entryScopes : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [timeViewEntries, roleFilter, roleCatalog],
   );
   const timeViewResponsibilities = useMemo(
     () => viewResponsibilities.filter((item) => visibleUserIds.has(Number(item.user_id))),
@@ -578,11 +583,11 @@ export default function WeeklySchedulePage() {
       summarizeSelectedRoleHours(
         timeViewEntries,
         new Map((data?.employees || []).map((e) => [Number(e.user_id), e])),
-        matrixRoles,
+        roleFilter,
       ),
     // roleCatalog: role order, labels, and task/role type come from the registered catalog.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [timeViewEntries, data?.employees, matrixRoles, roleCatalog],
+    [timeViewEntries, data?.employees, roleFilter, roleCatalog],
   );
   const shiftCategoryChoices = useCallback(
     (userId) => shiftEntityChoicesForEmployee(employeesById[userId], organizationSlug),
@@ -597,29 +602,29 @@ export default function WeeklySchedulePage() {
         .filter((role) => role.active !== false && role.uses_time_slots !== false && !hidden.has(role.code))
         .map((role) => role.code),
     );
-    for (const entry of timeViewEntries) {
+    for (const entry of tabEntries) {
       for (const assignment of entryRoleAssignments(entry)) {
         if (assignment.role && !isScheduleTask(assignment.role)) codes.add(assignment.role);
       }
     }
     return sortRoles([...codes]);
-  }, [roleCatalog, hiddenRolesSetting, timeViewEntries]);
+  }, [roleCatalog, hiddenRolesSetting, tabEntries]);
   const coverageAllHours = useMemo(
     () =>
       buildHourlyCoverage(timeViewEntries, {
         dayIndices: visibleDayColumns,
         employeesById,
         responsibilities: timeViewResponsibilities,
-        roles: matrixRoles,
+        roles: roleFilter,
       }),
     // roleCatalog + roleGroups: column order and labels come from the registered catalog.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [timeViewEntries, visibleDayColumns, employeesById, timeViewResponsibilities, matrixRoles, roleCatalog, roleGroups],
+    [timeViewEntries, visibleDayColumns, employeesById, timeViewResponsibilities, roleFilter, roleCatalog, roleGroups],
   );
   const coverageMatrixColumns = useMemo(
-    () => (Array.isArray(matrixRoles) ? sortRoles(matrixRoles) : coverageColumns(coverageAllHours)),
+    () => (roleFilter ? sortRoles(roleFilter) : coverageColumns(coverageAllHours)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [matrixRoles, coverageAllHours, roleCatalog],
+    [roleFilter, coverageAllHours, roleCatalog],
   );
   const coverageHourBounds = useMemo(() => {
     const hours = coverageAllHours.flatMap((day) => day.hours.map((row) => row.hour));
@@ -863,6 +868,8 @@ export default function WeeklySchedulePage() {
       dayIndices: visibleDayColumns.length === 7 ? undefined : visibleDayColumns,
       daySummaries: filteredDaySummaries,
       responsibilities: timeViewResponsibilities,
+      roleFilter,
+      entryScopes,
     });
   };
 
@@ -929,7 +936,8 @@ export default function WeeklySchedulePage() {
     (excludedCount > 0 && canManageExclusions) || costAllowed;
 
   const cellProps = {
-    entriesByCell,
+    roleFilter,
+    entryScopes,
     dropTarget,
     setDropTarget,
     canEdit,
@@ -1068,7 +1076,6 @@ export default function WeeklySchedulePage() {
                 value={viewMode}
                 onChange={(_, value) => {
                   if (!value) return;
-                  if (value !== VIEW_MODE.EMPLOYEE) setSelectedRoleView([]);
                   setViewMode(value);
                 }}
                 sx={{
@@ -1219,8 +1226,8 @@ export default function WeeklySchedulePage() {
           {!loading && data ? (
             <WeeklyScheduleViewTabs
               entries={tabEntries}
-              selectedRoles={selectedRoleView}
-              onSelectedRolesChange={setSelectedRoleView}
+              selectedRoles={roleSelection}
+              onSelectedRolesChange={setRoleSelection}
               dayTab={dayViewTab}
               onDayTabChange={setDayViewTab}
               hiddenRoles={hiddenScheduleRoles}
@@ -1371,7 +1378,6 @@ export default function WeeklySchedulePage() {
                   showCost={showCost && costAllowed}
                   showBreaks={showBreakMinutes}
                   compact
-                  hideRoleBreakdown={hasRoleViewFilter(selectedRoleView) || dayViewTab !== SCHEDULE_VIEW_ALL}
                 />
               </Box>
 
@@ -1390,8 +1396,8 @@ export default function WeeklySchedulePage() {
                   <>
                     <HourlyCoverageControls
                       roleOptions={coverageRoleOptions}
-                      selectedRoles={matrixRoles}
-                      onSelectedRolesChange={setMatrixRoles}
+                      selectedRoles={roleSelection}
+                      onSelectedRolesChange={setRoleSelection}
                       showNames={showCoverageNames}
                       onShowNamesChange={setShowCoverageNames}
                       fromHour={coverageRange.fromHour}
@@ -1418,8 +1424,8 @@ export default function WeeklySchedulePage() {
                   <>
                     <HourlyCoverageControls
                       roleOptions={coverageRoleOptions}
-                      selectedRoles={matrixRoles}
-                      onSelectedRolesChange={setMatrixRoles}
+                      selectedRoles={roleSelection}
+                      onSelectedRolesChange={setRoleSelection}
                       showNames={showCoverageNames}
                       onShowNamesChange={setShowCoverageNames}
                       fromHour={coverageRange.fromHour}
@@ -1445,6 +1451,10 @@ export default function WeeklySchedulePage() {
                       onAdd={openCreateFromTimeView}
                     />
                   </>
+                ) : Array.isArray(roleSelection) && !roleSelection.length ? (
+                  <Alert severity="info" className="no-print">
+                    No roles selected. Choose roles above to see employees and hours.
+                  </Alert>
                 ) : isMobile ? (
                   <Stack spacing={1.5} className="weekly-schedule-mobile-stack" sx={{ pb: 2 }}>
                   {(visibleEmployees || []).map((employee) => {
@@ -1462,7 +1472,6 @@ export default function WeeklySchedulePage() {
                       >
                         <WeeklyScheduleEmployeeCell
                           employee={employee}
-                          entries={viewEntries}
                           excluded={excluded}
                           canManageExclusions={canManageExclusions}
                           excludeSaving={excludeSavingUserId === employee.user_id}
@@ -1574,7 +1583,6 @@ export default function WeeklySchedulePage() {
                         <Box key={employee.user_id} sx={{ display: "contents" }}>
                           <WeeklyScheduleEmployeeCell
                             employee={employee}
-                            entries={viewEntries}
                             excluded={excluded}
                             canManageExclusions={canManageExclusions}
                             excludeSaving={excludeSavingUserId === employee.user_id}
@@ -1657,6 +1665,8 @@ export default function WeeklySchedulePage() {
               daysOnly={daysOnly}
               showBreaks={showBreakMinutes}
               responsibilities={timeViewResponsibilities}
+              roleFilter={roleFilter}
+              entryScopes={entryScopes}
             />
           )}
         </Box>
