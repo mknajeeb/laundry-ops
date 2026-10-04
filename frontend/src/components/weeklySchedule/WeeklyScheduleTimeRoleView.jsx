@@ -30,6 +30,7 @@ import {
   HOURLY_COVERAGE_EXPLANATION,
   unscheduledBreakChipLabel,
 } from "./weeklyScheduleTimeBlocks";
+import { isCodeSelected, selectedCountIn, toggleSelectionCode } from "./weeklyScheduleViewFilters";
 
 function peopleCountLabel(count) {
   return `${count} ${count === 1 ? "person" : "people"}`;
@@ -46,15 +47,10 @@ export function HourlyCoverageControls({
   toHour,
   hourBounds,
   onHourRangeChange,
+  roleUniverse = null,
+  showViewOptions = true,
 }) {
-  const selected = new Set(selectedRoles ?? roleOptions);
-  const toggle = (role) => {
-    const next = new Set(selected);
-    if (next.has(role)) next.delete(role);
-    else next.add(role);
-    const list = roleOptions.filter((code) => next.has(code));
-    onSelectedRolesChange(list.length === roleOptions.length ? null : list);
-  };
+  const toggle = (role) => onSelectedRolesChange(toggleSelectionCode(selectedRoles, role, roleUniverse || roleOptions));
   const hourChoices = [];
   if (hourBounds) {
     for (let hour = hourBounds.min; hour <= hourBounds.max; hour += 1) hourChoices.push(hour);
@@ -70,7 +66,7 @@ export function HourlyCoverageControls({
           Roles shown
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          {selected.size} of {roleOptions.length}
+          {selectedCountIn(selectedRoles, roleOptions)} of {roleOptions.length}
         </Typography>
         <Button size="small" onClick={() => onSelectedRolesChange(null)} sx={{ fontWeight: 700, py: 0 }}>
           Select all
@@ -96,7 +92,7 @@ export function HourlyCoverageControls({
                 control={
                   <Checkbox
                     size="small"
-                    checked={selected.has(role)}
+                    checked={isCodeSelected(selectedRoles, role)}
                     onChange={() => toggle(role)}
                     sx={{ p: 0.5, color: roleStyle(role).accent, "&.Mui-checked": { color: roleStyle(role).accent } }}
                   />
@@ -107,6 +103,7 @@ export function HourlyCoverageControls({
           </Stack>
         ))}
       </Stack>
+      {showViewOptions ? (
       <Stack direction="row" alignItems="center" spacing={1.5} useFlexGap flexWrap="wrap" sx={{ mt: 0.75 }}>
         <FormControlLabel
           sx={{ "& .MuiFormControlLabel-label": { fontSize: "0.85rem", fontWeight: 700 } }}
@@ -148,6 +145,7 @@ export function HourlyCoverageControls({
           </>
         ) : null}
       </Stack>
+      ) : null}
     </Paper>
   );
 }

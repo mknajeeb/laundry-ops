@@ -18,6 +18,25 @@
   margin-top: 4px;
 }
 
+.weekly-schedule-print-summary-lines {
+  margin-top: 6px;
+  font-size: 8.5pt;
+  color: #0f172a;
+  line-height: 1.35;
+}
+
+.weekly-schedule-print-summary-total {
+  font-weight: 800;
+}
+
+.weekly-schedule-print-summary-role {
+  color: #334155;
+}
+
+.weekly-schedule-print-breaks-grid td {
+  vertical-align: top;
+}
+
 .weekly-schedule-print-table {
   width: 100%;
   border-collapse: collapse;

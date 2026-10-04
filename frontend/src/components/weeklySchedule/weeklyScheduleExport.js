@@ -27,6 +27,7 @@ import {
   HOURLY_COVERAGE_EXPLANATION,
   untimedBreakTotalNote,
 } from "./weeklyScheduleTimeBlocks";
+import { gridDayBreakText, gridDayTaskText } from "./weeklyScheduleBreaksGrid";
 
 /** Excel-safe text — no smart quotes, en-dashes, or middle dots. */
 export function exportAsciiText(value) {
@@ -516,4 +517,52 @@ export function buildHourlyCoverageCsvRows({ days, weekStart, columns, hoursSumm
 export function exportWeeklyScheduleHourlyCsv({ days, weekStart, columns, tabLabel, hoursSummary = null }) {
   const lines = buildHourlyCoverageCsvRows({ days, weekStart, columns, hoursSummary });
   downloadCsv(lines, csvFileName({ weekStart, tabLabel: `${tabLabel || "schedule"} hourly coverage` }));
+}
+
+function gridCellText(cell, showBreaks) {
+  if (!cell) return "";
+  const parts = [
+    ...cell.timed.map((range) => `Break ${range.label}`),
+    ...cell.untimed.map(
+      (item) => `Not scheduled ${Math.round(item.hours * 60)} min${item.unallocated ? " (not allocated to a role)" : ""}`,
+    ),
+    ...cell.tasks.map((task) => `${task.label}: ${task.remarks || "no instructions"}`),
+  ];
+  if (!parts.length && cell.hasShift && showBreaks) return "No break planned";
+  return parts.join("; ");
+}
+
+/**
+ * Breaks & tasks grid export: summary lines, then one column per shown day and one row per employee
+ * (breaks, breaks without a time, tasks with instructions), day totals, and unassigned tasks.
+ */
+export function buildBreaksTasksCsvRows({ grid, weekStart, summaryLines = [], showBreaks = true }) {
+  const columns = grid?.columns || [];
+  const lines = summaryLines.map((line) => csvCell(line));
+  if (lines.length) lines.push("");
+  lines.push([csvCell("Employee"), ...columns.map((c) => csvCell(`${DAY_LABELS[c.dow]} ${dayDateLabel(weekStart, c.dow)}`))].join(","));
+  lines.push(
+    [
+      csvCell("Day totals"),
+      ...columns.map((c) => {
+        const breaks = showBreaks ? gridDayBreakText(c, (h) => `${coverageHours(h)}h`) || "No breaks" : "";
+        return csvCell([breaks, gridDayTaskText(c)].filter(Boolean).join("; "));
+      }),
+    ].join(","),
+  );
+  for (const row of grid?.rows || []) {
+    lines.push([csvCell(row.name), ...columns.map((c) => csvCell(gridCellText(row.cells[c.dow], showBreaks)))].join(","));
+  }
+  if (columns.some((c) => c.unassignedTasks.length)) {
+    lines.push(
+      [csvCell("Unassigned tasks"), ...columns.map((c) => csvCell(c.unassignedTasks.map(scheduleRoleLabel).join(" / ")))].join(","),
+    );
+  }
+  lines.push("", csvCell("Tasks are whole-day assignments with instructions; they have no times and add no hours."));
+  return lines;
+}
+
+export function exportWeeklyScheduleBreaksTasksCsv({ grid, weekStart, tabLabel, summaryLines = [], showBreaks = true }) {
+  const lines = buildBreaksTasksCsvRows({ grid, weekStart, summaryLines, showBreaks });
+  downloadCsv(lines, csvFileName({ weekStart, tabLabel: `${tabLabel || "schedule"} breaks and tasks` }));
 }

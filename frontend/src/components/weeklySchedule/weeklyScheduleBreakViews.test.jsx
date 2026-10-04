@@ -11,6 +11,7 @@ import WeeklyScheduleDayHeader from "./WeeklyScheduleDayHeader";
 import WeeklyScheduleTimeRolePrint from "./WeeklyScheduleTimeRolePrint";
 import WeeklySchedulePrintTable from "./WeeklySchedulePrintTable";
 import { buildHourlyCoverage, coverageColumns } from "./weeklyScheduleTimeBlocks";
+import { buildBreaksTasksGrid } from "./weeklyScheduleBreaksGrid";
 import WeeklyScheduleEmployeeCell from "./WeeklyScheduleEmployeeCell";
 import {
   computeFilteredDaySummaries,
@@ -47,8 +48,11 @@ describe("break and task views", () => {
     const summary = summarizeScheduleHours(entries, new Map(employees.map((e) => [e.user_id, e])));
     const html = [
       renderToString(
-        <WeeklyScheduleBreaksTasksView weekStart="2026-10-04" days={days} columns={columns} responsibilities={responsibilities}
-          employeesById={byId} canEdit />,
+        <WeeklyScheduleBreaksTasksView
+          weekStart="2026-10-04"
+          grid={buildBreaksTasksGrid({ days, dayIndices: [1], shiftEntries: entries, responsibilities, employeesById: byId })}
+          canEdit
+        />,
       ),
       renderToString(<WeeklyScheduleTimeRoleView weekStart="2026-10-04" days={days} columns={columns} showNames canEdit />),
       renderToString(<WeeklyScheduleShiftCard entry={entries[0]} employee={employees[0]} />),
@@ -67,7 +71,7 @@ describe("break and task views", () => {
       ),
     ].join("\n");
     for (const text of [
-      "On break", "Breaks without a time", "Not scheduled", "Set time", "Tasks per employee", "Unassigned",
+      "On break", "Breaks without a time", "Not scheduled", "Set time", "Unassigned tasks",
       "Break 12 PM", "7.5h net", "Gross 16", "Net hrs", "Dryers 1-12", "Gross 8 · Break 0.5 · Net 7.5",
     ]) {
       expect(html, text).toContain(text.replace(/&/g, "&amp;"));

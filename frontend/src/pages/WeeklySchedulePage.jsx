@@ -88,19 +88,32 @@ import {
   shiftWeek,
 } from "../components/weeklySchedule/weeklyScheduleDates";
 import {
+  exportWeeklyScheduleBreaksTasksCsv,
   exportWeeklyScheduleCsv,
   exportWeeklyScheduleHourlyCsv,
 } from "../components/weeklySchedule/weeklyScheduleExport";
 import WeeklySchedulePrintTable from "../components/weeklySchedule/WeeklySchedulePrintTable";
 import WeeklyScheduleTimeRolePrint from "../components/weeklySchedule/WeeklyScheduleTimeRolePrint";
+import WeeklyScheduleBreaksTasksPrint from "../components/weeklySchedule/WeeklyScheduleBreaksTasksPrint";
+import WeeklyScheduleSummaryPrint from "../components/weeklySchedule/WeeklyScheduleSummaryPrint";
 import WeeklyScheduleViewTabs from "../components/weeklySchedule/WeeklyScheduleViewTabs";
 import {
   filterEntriesByDayView,
   filterEntriesByRoles,
+  noneSelectedIn,
+  readStoredSelection,
   SCHEDULE_VIEW_ALL,
   scheduleViewSummaryLabel,
+  SELECTION_STORAGE,
   visibleDayIndices,
+  writeStoredSelection,
 } from "../components/weeklySchedule/weeklyScheduleViewFilters";
+import {
+  buildBreaksTasksGrid,
+  filterResponsibilitiesByTaskSelection,
+  taskRoleOptions,
+} from "../components/weeklySchedule/weeklyScheduleBreaksGrid";
+import { noRolesSelectedText, summaryTextLines } from "../components/weeklySchedule/weeklyScheduleSummaryLines";
 import { openWeeklySchedulePrintWindow } from "../components/weeklySchedule/weeklySchedulePrint";
 import "../components/weeklySchedule/weeklySchedulePrint.css";
 import {
@@ -120,6 +133,23 @@ import {
 } from "../components/weeklySchedule/weeklyScheduleRoles";
 
 const VIEW_MODE = { EMPLOYEE: "employee", TIME_ROLE: "time_role", BREAKS_TASKS: "breaks_tasks" };
+
+function NoRolesNotice({ text, onSelectAll }) {
+  return (
+    <Alert
+      severity="info"
+      className="no-print"
+      data-no-roles-selected
+      action={
+        <Button color="inherit" size="small" onClick={onSelectAll} sx={{ fontWeight: 800 }}>
+          Select all
+        </Button>
+      }
+    >
+      {`${text}—Select all to show employees and hours.`}
+    </Alert>
+  );
+}
 
 
 /** Day header totals: client summaries (selection-aware) or the week payload's day totals as a fallback. */
@@ -319,8 +349,11 @@ export default function WeeklySchedulePage() {
   const [templateSaving, setTemplateSaving] = useState(false);
   const [employerTab, setEmployerTab] = useState(ENTITY_TAB.RINSE_EXCLUSIVE);
   // One role selection for every view (null = all roles, [] = none): employee grid, hourly matrix,
-  // breaks & tasks, summaries, print, and export.
+  // breaks & tasks, summaries, print, and export. Saved per organization so a deliberate choice
+  // survives week and tab changes; nothing saved means all roles.
   const [roleSelection, setRoleSelection] = useState(null);
+  // Task types shown in Breaks & tasks (null = all); independent of the role selection.
+  const [taskSelection, setTaskSelection] = useState(null);
   const [dayViewTab, setDayViewTab] = useState(SCHEDULE_VIEW_ALL);
   const [showCoverageNames, setShowCoverageNames] = useState(true);
   const [coverageRange, setCoverageRange] = useState({ fromHour: null, toHour: null });
@@ -416,9 +449,30 @@ export default function WeeklySchedulePage() {
   }, [entityTabs, employerTab, lockEmployerTab, entityScope, data?.employees, data?.entries]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    setRoleSelection(null);
     setDayViewTab(SCHEDULE_VIEW_ALL);
   }, [data?.week_start, employerTab]);
+
+  const selectionScope = organizationSlug || "default";
+  useEffect(() => {
+    if (!data) return;
+    setRoleSelection(readStoredSelection(SELECTION_STORAGE.ROLES, selectionScope));
+    setTaskSelection(readStoredSelection(SELECTION_STORAGE.TASKS, selectionScope));
+  }, [selectionScope, Boolean(data)]); // eslint-disable-line react-hooks/exhaustive-deps
+  const updateRoleSelection = useCallback(
+    (next) => {
+      setRoleSelection(next);
+      writeStoredSelection(SELECTION_STORAGE.ROLES, selectionScope, next);
+    },
+    [selectionScope],
+  );
+  const selectAllRoles = useCallback(() => updateRoleSelection(null), [updateRoleSelection]);
+  const updateTaskSelection = useCallback(
+    (next) => {
+      setTaskSelection(next);
+      writeStoredSelection(SELECTION_STORAGE.TASKS, selectionScope, next);
+    },
+    [selectionScope],
+  );
   const roleFilter = Array.isArray(roleSelection) ? roleSelection : null;
 
   const tabEntries = useMemo(
@@ -635,6 +689,70 @@ export default function WeeklySchedulePage() {
     [coverageAllHours, coverageRange],
   );
 
+  /** Every role code a selection can hold (all employer tabs), so toggles keep other tabs' choices. */
+  const roleUniverse = useMemo(() => {
+    const codes = new Set(roleCatalog.filter((role) => role.uses_time_slots !== false).map((role) => role.code));
+    for (const entry of data?.entries || []) {
+      for (const assignment of entryRoleAssignments(entry)) {
+        if (assignment.role) codes.add(assignment.role);
+      }
+    }
+    return sortRoles([...codes]);
+  }, [roleCatalog, data?.entries]);
+  /** Roles that can be picked in the current tab (the role chips and checkboxes). */
+  const viewRoleCodes = useMemo(() => {
+    const codes = new Set(coverageRoleOptions);
+    for (const entry of tabEntries) {
+      for (const assignment of entryRoleAssignments(entry)) {
+        if (assignment.role) codes.add(assignment.role);
+      }
+    }
+    return [...codes];
+  }, [coverageRoleOptions, tabEntries]);
+  const noRolesSelected = noneSelectedIn(roleSelection, viewRoleCodes);
+  const noRolesText = noRolesSelected ? noRolesSelectedText(roleSelection) : "";
+
+  /** Tasks for Breaks & tasks: every employee in the tab on the shown days, filtered by task type only. */
+  const gridResponsibilities = useMemo(() => {
+    const hidden = new Set(
+      showExcluded ? [] : tabEmployees.filter((employee) => employee.excluded).map((employee) => Number(employee.user_id)),
+    );
+    return filterResponsibilitiesByTaskSelection(
+      viewResponsibilities.filter((item) => !hidden.has(Number(item.user_id))),
+      taskSelection,
+    );
+  }, [viewResponsibilities, tabEmployees, showExcluded, taskSelection]);
+  const gridTaskOptions = useMemo(
+    () => taskRoleOptions(viewResponsibilities),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [viewResponsibilities, roleCatalog],
+  );
+  const breaksTasksGrid = useMemo(() => {
+    const includeBreaks = showBreakMinutes && scheduleEndTimeEnabled && !noRolesSelected;
+    return buildBreaksTasksGrid({
+      days: includeBreaks ? coverageAllHours : [],
+      dayIndices: visibleDayColumns,
+      shiftEntries: includeBreaks ? viewEntries.filter((entry) => visibleUserIds.has(Number(entry.user_id))) : [],
+      responsibilities: gridResponsibilities,
+      employeesById,
+      includeBreaks,
+      taskTypes: taskSelection,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    coverageAllHours,
+    visibleDayColumns,
+    viewEntries,
+    visibleUserIds,
+    gridResponsibilities,
+    employeesById,
+    showBreakMinutes,
+    scheduleEndTimeEnabled,
+    noRolesSelected,
+    taskSelection,
+    roleCatalog,
+  ]);
+
   const addableEmployees = useMemo(() => {
     const ids = new Set(tabEmployees.map((e) => Number(e.user_id)));
     return addableForTab.filter((e) => !ids.has(Number(e.user_id)));
@@ -846,6 +964,16 @@ export default function WeeklySchedulePage() {
 
   const handleExport = () => {
     const viewSuffix = scheduleViewLabel ? ` - ${scheduleViewLabel}` : "";
+    if (viewMode === VIEW_MODE.BREAKS_TASKS) {
+      exportWeeklyScheduleBreaksTasksCsv({
+        grid: breaksTasksGrid,
+        weekStart,
+        tabLabel: `${ENTITY_TAB_LABELS[employerTab]}${viewSuffix}`,
+        summaryLines: noRolesSelected ? [noRolesText] : summaryTextLines(weekSummary, { showBreaks: showBreakMinutes }),
+        showBreaks: showBreakMinutes && scheduleEndTimeEnabled && !noRolesSelected,
+      });
+      return;
+    }
     if (viewMode !== VIEW_MODE.EMPLOYEE) {
       exportWeeklyScheduleHourlyCsv({
         days: coverageDays,
@@ -1227,13 +1355,14 @@ export default function WeeklySchedulePage() {
             <WeeklyScheduleViewTabs
               entries={tabEntries}
               selectedRoles={roleSelection}
-              onSelectedRolesChange={setRoleSelection}
+              onSelectedRolesChange={updateRoleSelection}
               dayTab={dayViewTab}
               onDayTabChange={setDayViewTab}
               hiddenRoles={hiddenScheduleRoles}
               roleCatalog={roleCatalog}
               responsibilities={tabResponsibilities}
               hideRoles={viewMode !== VIEW_MODE.EMPLOYEE}
+              roleUniverse={roleUniverse}
             />
           ) : null}
 
@@ -1378,6 +1507,9 @@ export default function WeeklySchedulePage() {
                   showCost={showCost && costAllowed}
                   showBreaks={showBreakMinutes}
                   compact
+                  noRolesSelected={noRolesSelected}
+                  noRolesText={noRolesText}
+                  onSelectAllRoles={selectAllRoles}
                 />
               </Box>
 
@@ -1397,27 +1529,26 @@ export default function WeeklySchedulePage() {
                     <HourlyCoverageControls
                       roleOptions={coverageRoleOptions}
                       selectedRoles={roleSelection}
-                      onSelectedRolesChange={setRoleSelection}
-                      showNames={showCoverageNames}
-                      onShowNamesChange={setShowCoverageNames}
-                      fromHour={coverageRange.fromHour}
-                      toHour={coverageRange.toHour}
-                      hourBounds={coverageHourBounds}
-                      onHourRangeChange={setCoverageRange}
+                      onSelectedRolesChange={updateRoleSelection}
+                      roleUniverse={roleUniverse}
+                      showViewOptions={false}
                     />
                     <WeeklyScheduleBreaksTasksView
                       weekStart={weekStart}
-                      days={coverageDays}
-                      columns={coverageMatrixColumns}
-                      responsibilities={timeViewResponsibilities}
-                      employeesById={employeesById}
-                      showNames={showCoverageNames}
+                      grid={breaksTasksGrid}
                       canEdit={canEdit}
                       showBreaks={showBreakMinutes}
                       endTimeEnabled={scheduleEndTimeEnabled}
+                      noRolesSelected={noRolesSelected}
+                      noRolesText={noRolesText}
+                      onSelectAllRoles={selectAllRoles}
+                      taskOptions={gridTaskOptions}
+                      taskSelection={taskSelection}
+                      onTaskSelectionChange={updateTaskSelection}
                       onEditEntry={openEdit}
                       onEditResponsibility={openEditResponsibility}
                       onAdd={openCreateFromTimeView}
+                      onAddTask={({ userId, day }) => openCreate(userId, day, { kind: ASSIGNMENT_KIND.RESPONSIBILITY })}
                     />
                   </>
                 ) : viewMode === VIEW_MODE.TIME_ROLE ? (
@@ -1425,7 +1556,8 @@ export default function WeeklySchedulePage() {
                     <HourlyCoverageControls
                       roleOptions={coverageRoleOptions}
                       selectedRoles={roleSelection}
-                      onSelectedRolesChange={setRoleSelection}
+                      onSelectedRolesChange={updateRoleSelection}
+                      roleUniverse={roleUniverse}
                       showNames={showCoverageNames}
                       onShowNamesChange={setShowCoverageNames}
                       fromHour={coverageRange.fromHour}
@@ -1433,28 +1565,32 @@ export default function WeeklySchedulePage() {
                       hourBounds={coverageHourBounds}
                       onHourRangeChange={setCoverageRange}
                     />
-                    <WeeklyScheduleHoursSummary
-                      summary={hoursSummary}
-                      scopeLabel={scheduleViewLabel}
-                      showBreaks={showBreakMinutes && scheduleEndTimeEnabled}
-                    />
-                    <WeeklyScheduleTimeRoleView
-                      weekStart={weekStart}
-                      days={coverageDays}
-                      columns={coverageMatrixColumns}
-                      showNames={showCoverageNames}
-                      endTimeEnabled={scheduleEndTimeEnabled}
-                      canEdit={canEdit}
-                      showBreaks={showBreakMinutes}
-                      onEditEntry={openEdit}
-                      onEditResponsibility={openEditResponsibility}
-                      onAdd={openCreateFromTimeView}
-                    />
+                    {noRolesSelected ? (
+                      <NoRolesNotice text={noRolesText} onSelectAll={selectAllRoles} />
+                    ) : (
+                      <>
+                        <WeeklyScheduleHoursSummary
+                          summary={hoursSummary}
+                          scopeLabel={scheduleViewLabel}
+                          showBreaks={showBreakMinutes && scheduleEndTimeEnabled}
+                        />
+                        <WeeklyScheduleTimeRoleView
+                          weekStart={weekStart}
+                          days={coverageDays}
+                          columns={coverageMatrixColumns}
+                          showNames={showCoverageNames}
+                          endTimeEnabled={scheduleEndTimeEnabled}
+                          canEdit={canEdit}
+                          showBreaks={showBreakMinutes}
+                          onEditEntry={openEdit}
+                          onEditResponsibility={openEditResponsibility}
+                          onAdd={openCreateFromTimeView}
+                        />
+                      </>
+                    )}
                   </>
-                ) : Array.isArray(roleSelection) && !roleSelection.length ? (
-                  <Alert severity="info" className="no-print">
-                    No roles selected. Choose roles above to see employees and hours.
-                  </Alert>
+                ) : noRolesSelected ? (
+                  <NoRolesNotice text={noRolesText} onSelectAll={selectAllRoles} />
                 ) : isMobile ? (
                   <Stack spacing={1.5} className="weekly-schedule-mobile-stack" sx={{ pb: 2 }}>
                   {(visibleEmployees || []).map((employee) => {
@@ -1640,12 +1776,20 @@ export default function WeeklySchedulePage() {
             <div className="weekly-schedule-print-doc-title">
               Weekly Schedule — {ENTITY_TAB_LABELS[employerTab]}
               {viewMode === VIEW_MODE.TIME_ROLE ? " — Hourly coverage by role" : ""}
-              {viewMode === VIEW_MODE.BREAKS_TASKS ? " — Hourly coverage with breaks" : ""}
+              {viewMode === VIEW_MODE.BREAKS_TASKS ? " — Breaks & tasks" : ""}
               {scheduleViewLabel ? ` — ${scheduleViewLabel}` : ""}
             </div>
             <div className="weekly-schedule-print-doc-subtitle">{formatWeekRange(weekStart)}</div>
+            <WeeklyScheduleSummaryPrint summary={weekSummary} showBreaks={showBreakMinutes} noRolesText={noRolesText} />
           </div>
-          {viewMode !== VIEW_MODE.EMPLOYEE ? (
+          {viewMode === VIEW_MODE.BREAKS_TASKS ? (
+            <WeeklyScheduleBreaksTasksPrint
+              grid={breaksTasksGrid}
+              weekStart={weekStart}
+              showBreaks={showBreakMinutes && scheduleEndTimeEnabled && !noRolesSelected}
+              noRolesText={showBreakMinutes && scheduleEndTimeEnabled ? noRolesText : ""}
+            />
+          ) : viewMode !== VIEW_MODE.EMPLOYEE ? (
             <WeeklyScheduleTimeRolePrint
               days={coverageDays}
               weekStart={weekStart}

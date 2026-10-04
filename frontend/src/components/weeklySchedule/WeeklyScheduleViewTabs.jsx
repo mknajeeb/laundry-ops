@@ -6,8 +6,9 @@ import {
   buildDayViewTabs,
   buildRoleViewTabs,
   filterEntriesByRoles,
+  isCodeSelected,
   SCHEDULE_VIEW_ALL,
-  toggleRoleViewSelection,
+  toggleSelectionCode,
 } from "./weeklyScheduleViewFilters";
 
 function FilterChip({ label, count, selected, onClick }) {
@@ -52,7 +53,11 @@ function ChipRow({ title, children }) {
   );
 }
 
-/** `selectedRoles`: null = all roles, otherwise the selected role codes (shared with the hourly views). */
+/**
+ * `selectedRoles`: null = all roles (every chip on), otherwise the selected role codes, shared with the
+ * hourly views. `roleUniverse` is every role code the selection can hold, so roles chosen on another
+ * employer tab stay chosen when a chip here is toggled.
+ */
 export default function WeeklyScheduleViewTabs({
   entries,
   selectedRoles = null,
@@ -63,6 +68,7 @@ export default function WeeklyScheduleViewTabs({
   roleCatalog = null,
   responsibilities = [],
   hideRoles = false,
+  roleUniverse = null,
 }) {
   const roleTabs = useMemo(
     () => buildRoleViewTabs(entries, { hiddenRoles }),
@@ -77,13 +83,12 @@ export default function WeeklyScheduleViewTabs({
       }),
     [entries, selectedRoles, responsibilities],
   );
-  const selectedList = selectedRoles || [];
-
   const allRoleTab = roleTabs.find((tab) => tab.value === SCHEDULE_VIEW_ALL);
   const singleRoleTabs = roleTabs.filter((tab) => tab.value !== SCHEDULE_VIEW_ALL);
   const tabByRole = new Map(singleRoleTabs.map((tab) => [tab.value, tab]));
   const roleGroups = groupRoleCodes(singleRoleTabs.map((tab) => tab.value));
   const showAllRoles = !Array.isArray(selectedRoles);
+  const universe = roleUniverse || singleRoleTabs.map((tab) => tab.value);
 
   return (
     <Box
@@ -108,6 +113,13 @@ export default function WeeklyScheduleViewTabs({
               onClick={() => onSelectedRolesChange(null)}
             />
           ) : null}
+          <Chip
+            size="small"
+            label="Clear"
+            variant="outlined"
+            onClick={() => onSelectedRolesChange([])}
+            sx={{ height: 22, fontWeight: 700, fontSize: "0.72rem", borderStyle: "dashed" }}
+          />
           {roleGroups.map((group) => (
             <Stack key={group.code || "ungrouped"} direction="row" spacing={0.5} alignItems="center" useFlexGap flexWrap="wrap">
               {roleGroups.length > 1 ? (
@@ -122,11 +134,8 @@ export default function WeeklyScheduleViewTabs({
                     key={role}
                     label={tab.label}
                     count={tab.count}
-                    selected={selectedList.includes(role)}
-                    onClick={() => {
-                      const next = toggleRoleViewSelection(selectedList, role);
-                      onSelectedRolesChange(next.length ? next : null);
-                    }}
+                    selected={isCodeSelected(selectedRoles, role)}
+                    onClick={() => onSelectedRolesChange(toggleSelectionCode(selectedRoles, role, universe))}
                   />
                 );
               })}

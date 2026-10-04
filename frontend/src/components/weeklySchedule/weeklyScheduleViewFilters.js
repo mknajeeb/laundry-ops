@@ -10,6 +10,69 @@ import {
 
 export const SCHEDULE_VIEW_ALL = "all";
 
+export const SELECTION_STORAGE = {
+  ROLES: "weeklySchedule.roleSelection.v1",
+  TASKS: "weeklySchedule.taskSelection.v1",
+};
+
+function selectionStorage() {
+  try {
+    return typeof window !== "undefined" ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Saved selection for this organization: null until someone chooses (= everything selected). */
+export function readStoredSelection(kind, scope) {
+  const storage = selectionStorage();
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(`${kind}:${scope || "default"}`);
+    if (raw == null) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((code) => typeof code === "string") : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeStoredSelection(kind, scope, selection) {
+  const storage = selectionStorage();
+  if (!storage) return;
+  try {
+    const key = `${kind}:${scope || "default"}`;
+    if (Array.isArray(selection)) storage.setItem(key, JSON.stringify(selection));
+    else storage.removeItem(key);
+  } catch {
+    // Storage full or blocked: the selection still applies for this page.
+  }
+}
+
+export function isCodeSelected(selection, code) {
+  return !Array.isArray(selection) || selection.includes(code);
+}
+
+export function selectedCountIn(selection, options) {
+  return (options || []).filter((code) => isCodeSelected(selection, code)).length;
+}
+
+/** True when a selection exists but none of `options` is in it ([] or only codes from other tabs). */
+export function noneSelectedIn(selection, options) {
+  return Array.isArray(selection) && !(options || []).some((code) => selection.includes(code));
+}
+
+/**
+ * Toggle one code. `universe` is every code the selection can hold (all tabs), so codes chosen on
+ * another tab stay chosen; a selection holding the whole universe collapses back to null (= all).
+ */
+export function toggleSelectionCode(selection, code, universe) {
+  const all = [...new Set(universe || [])];
+  const current = Array.isArray(selection) ? selection : all;
+  const next = current.includes(code) ? current.filter((c) => c !== code) : [...current, code];
+  return all.length && all.every((c) => next.includes(c)) ? null : next;
+}
+
 export function normalizeRoleViewSelection(selectedRoles) {
   if (!Array.isArray(selectedRoles)) return [];
   const valid = new Set(scheduleRoleCatalog().map((role) => role.code));
