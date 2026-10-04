@@ -574,6 +574,8 @@ function notTask(role) {
   return !isScheduleTask(role);
 }
 
+const NO_ROLE = "";
+
 /**
  * One employee's planned day (all entries share user and day) — the single calculation behind
  * net hours, role hours, the hourly matrix, and the breaks view.
@@ -658,7 +660,12 @@ export function employeeDayTimeline(entries, { includeRole = notTask } = {}) {
     timed += clusterTimed;
     unscheduled += deduction - clusterTimed;
     if (deduction > clusterTimed) {
-      unscheduledEntries.push({ entry: declaredEntry, minutes: deduction - clusterTimed });
+      unscheduledEntries.push({
+        entry: declaredEntry,
+        minutes: deduction - clusterTimed,
+        start: cluster.start,
+        end: cluster.end,
+      });
     }
     for (const range of ranges) {
       const owner = perShift.find((item) => item.ranges.some((r) => r.start < range.end && range.start < r.end));
@@ -691,6 +698,18 @@ export function employeeDayTimeline(entries, { includeRole = notTask } = {}) {
       entryByRole: Object.fromEntries(covering.map((s) => [s.role, s.entry])),
       entry: shift.entry,
     });
+  }
+
+  for (const item of unscheduledEntries) {
+    const keys = new Set();
+    for (const piece of pieces) {
+      if (piece.onBreak || piece.start < item.start || piece.end > item.end) continue;
+      if (piece.roles.length) piece.roles.forEach((role) => keys.add(role));
+      else keys.add(NO_ROLE);
+    }
+    item.roleKeys = [...keys];
+    item.roles = sortRoles(item.roleKeys.filter((role) => role !== NO_ROLE));
+    item.resolvedRole = keys.size <= 1 ? (item.roleKeys[0] ?? NO_ROLE) : null;
   }
 
   const breakMinutes = timed + unscheduled;
@@ -728,10 +747,8 @@ export function scheduleDayTimelines(entries, options) {
   return out;
 }
 
-const NO_ROLE = "";
-
 function emptyRoleParts() {
-  return { gross: 0, worked: 0, timedBreak: 0, untimedBreak: 0, net: 0 };
+  return { gross: 0, worked: 0, timedBreak: 0, untimedBreak: 0, unallocatedBreak: 0, net: 0 };
 }
 
 /** Stable key for a shift in per-entry maps (the id when present, otherwise the entry object). */
@@ -743,11 +760,14 @@ export function scheduleEntryKey(entry) {
  * Per-role hours for one day timeline — the single allocation behind every role total.
  *
  * Worked time (off timed breaks) is split evenly between simultaneous roles, and a timed break is split
- * the same way between the roles it pauses. A break without a time has no position, so each role (and
- * time without a role) carries a share of it in proportion to its worked time that day. Shares are
- * always computed over all of the employee's roles, so hiding a role never moves its hours elsewhere.
- * Per role: gross = worked + timed break; break = timed break + untimed share; net = gross − break.
- * `roles` uses the key "" for shift time without a role. `entries` holds net hours per shift and role.
+ * the same way between the roles it pauses. A break without a time has no position: when the shift it
+ * belongs to holds a single role (or only time without a role), it comes off that role (`untimedBreak`);
+ * otherwise it is not allocated to any role. Those breaks are listed in `unallocated` (with the roles
+ * they could fall in) and each of those roles reports the amount as `unallocatedBreak`, so its `net`
+ * stays gross of that break until the break is scheduled. Splits are always computed over all of the
+ * employee's roles, so hiding a role never moves its hours elsewhere.
+ * Per role: gross = worked + timed break; net = worked − untimed break allocated to the role.
+ * `roles` uses the key "" for shift time without a role. `entries` holds those net hours per shift and role.
  */
 export function timelineRoleBreakdown(timeline) {
   const roles = new Map();
@@ -762,7 +782,7 @@ export function timelineRoleBreakdown(timeline) {
     const byRole = entries.get(key);
     byRole.set(role, (byRole.get(role) || 0) + hours);
   };
-  let worked = 0;
+  const worked = [];
   for (const piece of timeline.pieces || []) {
     const keys = piece.roles.length ? piece.roles : [NO_ROLE];
     const share = (piece.end - piece.start) / 60 / keys.length;
@@ -773,19 +793,26 @@ export function timelineRoleBreakdown(timeline) {
         parts.timedBreak += share;
       } else {
         parts.worked += share;
-        worked += share;
-        addEntryHours(role === NO_ROLE ? piece.entry : piece.entryByRole[role] || piece.entry, role, share);
+        const entry = role === NO_ROLE ? piece.entry : piece.entryByRole[role] || piece.entry;
+        worked.push({ start: piece.start, end: piece.end, role, entry, hours: share });
+        addEntryHours(entry, role, share);
       }
     }
   }
-  const factor = worked > 0 ? Math.min(1, (timeline.unscheduledBreakHours || 0) / worked) : 0;
-  for (const parts of roles.values()) {
-    parts.untimedBreak = parts.worked * factor;
-    parts.net = parts.worked - parts.untimedBreak;
+  const unallocated = [];
+  for (const item of timeline.unscheduledEntries || []) {
+    const hours = item.minutes / 60;
+    if (item.resolvedRole == null) {
+      unallocated.push({ ...item, hours });
+      for (const role of item.roleKeys) partsFor(role).unallocatedBreak += hours;
+      continue;
+    }
+    partsFor(item.resolvedRole).untimedBreak += hours;
+    const inShift = worked.filter((w) => w.role === item.resolvedRole && w.start >= item.start && w.end <= item.end);
+    const total = inShift.reduce((sum, w) => sum + w.hours, 0);
+    for (const w of inShift) addEntryHours(w.entry, w.role, total > 0 ? -hours * (w.hours / total) : 0);
   }
-  for (const byRole of entries.values()) {
-    for (const [role, hours] of byRole) byRole.set(role, hours * (1 - factor));
-  }
+  for (const parts of roles.values()) parts.net = parts.worked - parts.untimedBreak;
   for (const item of timeline.directEntries || []) {
     const keys = item.roles.length ? item.roles : [NO_ROLE];
     const share = item.hours / keys.length;
@@ -797,10 +824,10 @@ export function timelineRoleBreakdown(timeline) {
       addEntryHours(item.entry, role, share);
     }
   }
-  return { roles, entries, untimedFactor: factor };
+  return { roles, entries, unallocated };
 }
 
-/** Net role hours from one day timeline (breaks removed; see `timelineRoleBreakdown`). */
+/** Role hours from one day timeline after timed breaks and allocated untimed breaks (see `timelineRoleBreakdown`). */
 export function timelineRoleHours(timeline) {
   const out = new Map();
   for (const [role, parts] of timelineRoleBreakdown(timeline).roles) {
@@ -833,11 +860,25 @@ export function scheduledHoursByUserDay(entries) {
 
 export const ROLE_HOURS_EXPLANATION =
   "Gross hours: shift time; overlapping shifts for the same person and day count once. Break hours: timed " +
-  "breaks plus breaks without a time (\u201cNot scheduled\u201d). Net hours = gross \u2212 breaks. Role hours are " +
-  "net: a timed break comes off the roles it interrupts, time spent on several roles at once is split evenly " +
-  "between them, and a break without a time is shared across that person\u2019s roles in proportion to their " +
-  "time in each that day (it is never placed in an hour). Hiding a role never moves its hours to another " +
-  "role. People count each employee once. Tasks never count toward hours.";
+  "breaks plus breaks without a time (\u201cNot scheduled\u201d). Net hours = gross \u2212 breaks, and always include " +
+  "breaks without a time. Role hours: a timed break comes off the roles it interrupts and time spent on several " +
+  "roles at once is split evenly between them. A break without a time comes off the role when its shift has a " +
+  "single role; on a shift with several roles it is shown separately as an unallocated break and those role " +
+  "hours are gross of it \u2014 net hours by role stay unresolved until the break is scheduled. Hiding a role " +
+  "never moves its hours to another role. People count each employee once. Tasks never count toward hours.";
+
+/** Note shown wherever role hours are still gross of a break without a time on a multi-role shift. */
+export const UNALLOCATED_BREAK_NOTE = "Net hours by role unresolved until the break is scheduled";
+
+/** "0.5h break without a time, not allocated to a role" */
+export function formatUnallocatedBreak(hours) {
+  return `${formatHours(hours)}h break without a time, not allocated to a role`;
+}
+
+/** Role hours label: "7.5" or, when a break without a time is still unallocated, "8 gross". */
+export function formatRoleHoursValue(hours, unallocatedBreakHours = 0) {
+  return Number(unallocatedBreakHours || 0) > 0.0001 ? `${formatHours(hours)} gross` : formatHours(hours);
+}
 
 function round2(value) {
   return Math.round(Number(value || 0) * 100) / 100;
@@ -851,6 +892,9 @@ function emptyScope() {
     gross: 0,
     timedBreak: 0,
     untimedBreak: 0,
+    unallocatedBreak: 0,
+    roleUnallocated: 0,
+    noRole: 0,
     cost: 0,
     roles: new Map(),
   };
@@ -863,6 +907,9 @@ function addToScope(scope, { uid, dayKey, parts, cost }) {
   scope.gross += parts.gross;
   scope.timedBreak += parts.timedBreak;
   scope.untimedBreak += parts.untimedBreak;
+  scope.unallocatedBreak += parts.unallocatedBreak;
+  scope.roleUnallocated += parts.roleUnallocated || 0;
+  scope.noRole += parts.noRole || 0;
   scope.cost += cost;
 }
 
@@ -875,6 +922,7 @@ function addRoleToScope(scope, role, { uid, dayKey, parts }) {
   row.gross += parts.gross;
   row.timedBreak += parts.timedBreak;
   row.untimedBreak += parts.untimedBreak;
+  row.unallocatedBreak += parts.unallocatedBreak;
   row.net += parts.net;
 }
 
@@ -889,6 +937,7 @@ function finishScope(scope) {
       hours: row.net,
       grossHours: row.gross,
       breakHours: row.timedBreak + row.untimedBreak,
+      unallocatedBreakHours: row.unallocatedBreak,
     };
   });
   return {
@@ -900,6 +949,9 @@ function finishScope(scope) {
     breakHours: scope.timedBreak + scope.untimedBreak,
     timedBreakHours: scope.timedBreak,
     unscheduledBreakHours: scope.untimedBreak,
+    unallocatedBreakHours: scope.unallocatedBreak,
+    roleUnallocatedBreakHours: scope.roleUnallocated,
+    noRoleHours: scope.noRole,
     estimatedCost: scope.cost,
     roles,
     roleHours: roles.reduce((sum, row) => sum + row.hours, 0),
@@ -911,11 +963,13 @@ function finishScope(scope) {
  * the shared day timeline and `timelineRoleBreakdown`.
  *
  * With a selection, an employee-day counts only when the employee is assigned a selected role that day,
- * and only the selected roles' hours count (net of their break shares). People are distinct employees,
- * so someone holding two selected roles counts once overall and once per role. Without a selection,
- * every scheduled employee-day counts in full, including shift time without a role. `entryScopes` maps
- * `scheduleEntryKey(entry)` to the selected-role hours and segments of that shift. `rates` maps user_id
- * to an hourly rate for the estimated cost.
+ * and only the selected roles' hours count. A break without a time on a multi-role shift comes off the
+ * selection's hours only when every role it could fall in is selected; otherwise it is reported as
+ * `unallocatedBreakHours` and the hours stay gross of it. People are distinct employees, so someone
+ * holding two selected roles counts once overall and once per role. Without a selection, every scheduled
+ * employee-day counts in full (net hours include every break), including shift time without a role.
+ * `entryScopes` maps `scheduleEntryKey(entry)` to the selected-role hours, unallocated break, and
+ * segments of that shift. `rates` maps user_id to an hourly rate for the estimated cost.
  */
 export function summarizeRoleSelection(entries, { roles = null, rates = null } = {}) {
   const filter = Array.isArray(roles) ? new Set(roles) : null;
@@ -932,6 +986,7 @@ export function summarizeRoleSelection(entries, { roles = null, rates = null } =
     const dayKey = `${uid}|${timeline.dow}`;
     const breakdown = timelineRoleBreakdown(timeline);
     const counted = filter ? shownAssigned : [...new Set([...breakdown.roles.keys(), ...shownAssigned])];
+    const countedSet = new Set(counted);
     const parts = emptyRoleParts();
     for (const role of counted) {
       const roleParts = breakdown.roles.get(role);
@@ -941,11 +996,24 @@ export function summarizeRoleSelection(entries, { roles = null, rates = null } =
       parts.untimedBreak += roleParts.untimedBreak;
       parts.net += roleParts.net;
     }
+    for (const item of breakdown.unallocated) {
+      const inSelection = item.roleKeys.filter((role) => countedSet.has(role));
+      if (!inSelection.length) continue;
+      parts.roleUnallocated = (parts.roleUnallocated || 0) + item.hours;
+      if (inSelection.length === item.roleKeys.length) {
+        parts.untimedBreak += item.hours;
+        parts.net -= item.hours;
+      } else {
+        parts.unallocatedBreak += item.hours;
+      }
+    }
     if (!filter) {
       parts.gross = timeline.grossHours;
       parts.timedBreak = timeline.timedBreakHours;
       parts.untimedBreak = timeline.unscheduledBreakHours;
+      parts.unallocatedBreak = 0;
       parts.net = timeline.netHours;
+      parts.noRole = breakdown.roles.get(NO_ROLE)?.net || 0;
     }
     const cost = round2(parts.net * Math.max(0, Number(rates?.get(uid) || 0)));
     if (!employees.has(uid)) employees.set(uid, emptyScope());
@@ -956,21 +1024,33 @@ export function summarizeRoleSelection(entries, { roles = null, rates = null } =
         addRoleToScope(scope, role, { uid, dayKey, parts: breakdown.roles.get(role) || null });
       }
     }
-    const shownSet = new Set(counted);
+    const scopeFor = (key) => {
+      if (!entryScopes.has(key)) {
+        entryScopes.set(key, { hours: 0, roles: new Map(), segments: [], unallocatedBreakHours: 0 });
+      }
+      return entryScopes.get(key);
+    };
     for (const [key, byRole] of breakdown.entries) {
       for (const [role, hours] of byRole) {
-        if (!shownSet.has(role) || role === NO_ROLE) continue;
-        if (!entryScopes.has(key)) entryScopes.set(key, { hours: 0, roles: new Map(), segments: [] });
-        const scope = entryScopes.get(key);
+        if (!countedSet.has(role) || role === NO_ROLE) continue;
+        const scope = scopeFor(key);
         scope.hours += hours;
         scope.roles.set(role, (scope.roles.get(role) || 0) + hours);
       }
     }
+    for (const item of breakdown.unallocated) {
+      if (!item.roleKeys.some((role) => role !== NO_ROLE && countedSet.has(role))) continue;
+      const scope = scopeFor(scheduleEntryKey(item.entry));
+      if (item.roleKeys.every((role) => role !== NO_ROLE && countedSet.has(role))) scope.hours -= item.hours;
+      else scope.unallocatedBreakHours += item.hours;
+    }
     for (const segment of timeline.segments || []) {
-      if (!shownSet.has(segment.role)) continue;
-      const key = scheduleEntryKey(segment.entry);
-      if (!entryScopes.has(key)) entryScopes.set(key, { hours: 0, roles: new Map(), segments: [] });
-      entryScopes.get(key).segments.push({ role: segment.role, start: segment.start, end: segment.end });
+      if (!countedSet.has(segment.role)) continue;
+      scopeFor(scheduleEntryKey(segment.entry)).segments.push({
+        role: segment.role,
+        start: segment.start,
+        end: segment.end,
+      });
     }
   }
   for (const scope of entryScopes.values()) {
@@ -999,8 +1079,10 @@ export function allocateRoleHoursByDay(entries) {
 
 /**
  * Hours per employee (gross, break, net) and per role for the summaries, limited to `roles`
- * (null = all). Role hours + shift time without a role = net hours; with a selection only the selected
- * roles count, so their total is the net hours shown.
+ * (null = all). Role hours + shift time without a role − breaks without a time not allocated to a role
+ * (`roleUnallocatedBreakHours`) = `totalHours`. With a selection, `unallocatedBreakHours` is the part
+ * of those breaks that may fall outside the selected roles: `totalHours` stays gross of it and net hours
+ * by role are unresolved until the break is scheduled.
  */
 export function summarizeSelectedRoleHours(entries, employeesById = new Map(), roles = null) {
   const selection = summarizeRoleSelection(entries, { roles });
@@ -1012,6 +1094,7 @@ export function summarizeSelectedRoleHours(entries, employeesById = new Map(), r
       hours: round2(row.hours),
       grossHours: round2(row.grossHours),
       breakHours: round2(row.breakHours),
+      unallocatedBreakHours: round2(row.unallocatedBreakHours),
     }))
     .sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
   const roleRows = week.roles.map((row) => ({
@@ -1019,6 +1102,7 @@ export function summarizeSelectedRoleHours(entries, employeesById = new Map(), r
     label: row.label,
     hours: round2(row.hours),
     employees: row.employees,
+    unallocatedBreakHours: round2(row.unallocatedBreakHours),
   }));
   const roleTotal = round2(week.roleHours);
   return {
@@ -1028,10 +1112,12 @@ export function summarizeSelectedRoleHours(entries, employeesById = new Map(), r
     breakHours: round2(week.breakHours),
     timedBreakHours: round2(week.timedBreakHours),
     unscheduledBreakHours: round2(week.unscheduledBreakHours),
+    unallocatedBreakHours: round2(week.unallocatedBreakHours),
+    roleUnallocatedBreakHours: round2(week.roleUnallocatedBreakHours),
     roles: roleRows,
     roleTotal,
     distinctEmployees: week.people,
-    unassignedHours: selection.roleFilter ? 0 : Math.max(0, round2(week.hours - week.roleHours)),
+    unassignedHours: selection.roleFilter ? 0 : Math.max(0, round2(week.noRoleHours)),
     unassignedLabel: "Shift time without a role",
     roleFilter: selection.roleFilter,
   };
@@ -1062,17 +1148,27 @@ export function entryRoleScopeView(entry, roleFilter, scope, { separator = " \u2
   const breaks = placedBreakRanges(entry)
     .filter((range) => segments.some((segment) => segment.start < range.end && range.start < segment.end))
     .map((range) => `Break ${minutesToTime12(range.start)}${separator}${minutesToTime12(range.end)}`);
-  return { roles, segments, hours: Number(scope?.hours || 0), breaks };
+  return {
+    roles,
+    segments,
+    hours: Number(scope?.hours || 0),
+    unallocatedBreakHours: Number(scope?.unallocatedBreakHours || 0),
+    breaks,
+  };
 }
 
-/** "Fold: 8 people · 42.5 hours" (or "Fold: 8 people" when only days are scheduled). */
+/**
+ * "Fold: 8 people · 42.5 hours" (or "Fold: 8 people" when only days are scheduled). When a break without
+ * a time on a multi-role shift is not allocated yet, the hours read "… 42.5 hours gross".
+ */
 export function formatRoleResourcesLabel(row, { daysOnly = false, short = false } = {}) {
   const people = Number(row?.employees || 0);
   const label = short ? roleCompactLabel(row?.role) : row?.label || scheduleRoleLabel(row?.role);
   const peopleText = `${people} ${people === 1 ? "person" : "people"}`;
   if (daysOnly) return `${label}: ${peopleText}`;
   const hours = round2(row?.hours);
-  return `${label}: ${peopleText} \u00b7 ${hours} ${hours === 1 ? "hour" : "hours"}`;
+  const gross = Number(row?.unallocatedBreakHours || 0) > 0.0001 ? " gross" : "";
+  return `${label}: ${peopleText} \u00b7 ${hours} ${hours === 1 ? "hour" : "hours"}${gross}`;
 }
 
 export function primaryRoleStyle(entry) {
@@ -1205,6 +1301,8 @@ const EMPTY_EMPLOYEE_TOTALS = Object.freeze({
   break_hours: 0,
   timed_break_hours: 0,
   unscheduled_break_hours: 0,
+  unallocated_break_hours: 0,
+  role_unallocated_break_hours: 0,
   scheduled_days: 0,
   estimated_cost: 0,
   role_hours: Object.freeze([]),
@@ -1233,9 +1331,17 @@ export function employeeTotalsFromEntries(entries, employees = [], { roles = nul
       break_hours: round2(row.breakHours),
       timed_break_hours: round2(row.timedBreakHours),
       unscheduled_break_hours: round2(row.unscheduledBreakHours),
+      unallocated_break_hours: round2(row.unallocatedBreakHours),
+      role_unallocated_break_hours: round2(row.roleUnallocatedBreakHours),
       scheduled_days: row.scheduledDays,
       estimated_cost: round2(row.estimatedCost),
-      role_hours: row.roles.map((r) => ({ role: r.role, label: r.label, hours: round2(r.hours), days: r.days })),
+      role_hours: row.roles.map((r) => ({
+        role: r.role,
+        label: r.label,
+        hours: round2(r.hours),
+        days: r.days,
+        unallocated_break_hours: round2(r.unallocatedBreakHours),
+      })),
     });
   }
   return out;
@@ -1268,6 +1374,7 @@ export function formatEmployeeWeeklySummary(employee, { daysOnly = false, showBr
   const dayLabel = days === 1 ? "1 day" : `${days} days`;
   if (daysOnly) return dayLabel;
   const hrsLabel = Number.isInteger(hours) ? `${hours}` : hours.toFixed(1);
+  if (Number(employee?.unallocated_break_hours || 0) > 0.0001) return `${hrsLabel} gross hrs • ${dayLabel}`;
   const net = showBreaks && Number(employee?.break_hours || 0) > 0 ? " net" : "";
   return `${hrsLabel}${net} hrs • ${dayLabel}`;
 }
@@ -1300,6 +1407,8 @@ export function computeWeekSummary(
     breakHours: week.breakHours,
     timedBreakHours: week.timedBreakHours,
     unscheduledBreakHours: week.unscheduledBreakHours,
+    unallocatedBreakHours: week.unallocatedBreakHours,
+    roleUnallocatedBreakHours: week.roleUnallocatedBreakHours,
     totalDays: week.scheduledDays,
     daysOnly,
     roles: week.roles,
@@ -1322,6 +1431,8 @@ export function computeFilteredDaySummaries(
     break_hours: day.breakHours,
     timed_break_hours: day.timedBreakHours,
     unscheduled_break_hours: day.unscheduledBreakHours,
+    unallocated_break_hours: day.unallocatedBreakHours,
+    role_unallocated_break_hours: day.roleUnallocatedBreakHours,
     roles: day.roles,
   }));
 }

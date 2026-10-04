@@ -17,7 +17,7 @@ import {
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import { formatTime12 } from "../datetime/scheduleTimeUi";
 import { DAY_LABELS } from "./weeklyScheduleDates";
-import { roleStyle, scheduleRoleCatalog, scheduleRoleLabel } from "./weeklyScheduleRoles";
+import { roleStyle, scheduleRoleCatalog, scheduleRoleLabel, UNALLOCATED_BREAK_NOTE } from "./weeklyScheduleRoles";
 import { ASSIGNMENT_KIND, dayDateLabel, formatCoverageHours } from "./weeklyScheduleTimeBlocks";
 import { PersonLine } from "./WeeklyScheduleTimeRoleView";
 
@@ -89,9 +89,18 @@ function BreakList({ day, canEdit, onEditEntry }) {
                     </Typography>
                   )
                 ) : (
-                  <Typography variant="caption" color="text.secondary">
-                    Not placed in any hour
-                  </Typography>
+                  <>
+                    {row.roles?.length ? <Box component="span">{row.roles.map(scheduleRoleLabel).join(", ")}</Box> : null}
+                    <Typography
+                      variant="caption"
+                      data-untimed-break-allocation={row.unallocated ? "unallocated" : "allocated"}
+                      sx={{ display: "block", color: row.unallocated ? BREAK_ACCENT : "text.secondary", fontWeight: row.unallocated ? 700 : 400 }}
+                    >
+                      {row.unallocated
+                        ? `Not placed in any hour · not allocated to a role · ${UNALLOCATED_BREAK_NOTE}`
+                        : `Not placed in any hour · deducted from ${row.allocatedRole ? scheduleRoleLabel(row.allocatedRole) : "shift time without a role"}`}
+                    </Typography>
+                  </>
                 )}
               </TableCell>
               <TableCell>

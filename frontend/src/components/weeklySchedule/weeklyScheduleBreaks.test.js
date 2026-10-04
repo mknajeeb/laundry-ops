@@ -147,7 +147,20 @@ describe("hourly matrix with breaks", () => {
     const coverage = day([legacy]);
     expect(coverage.hours.every((r) => r.breaks.count === 0)).toBe(true);
     expect(coverage.totals.fold.hours).toBe(8);
-    expect(coverage.unscheduledBreaks).toEqual([{ userId: 1, name: "Employee A", entry: legacy, hours: 0.5 }]);
+    expect(coverage.unscheduledBreaks).toEqual([
+      {
+        userId: 1,
+        name: "Employee A",
+        entry: legacy,
+        hours: 0.5,
+        roles: ["fold"],
+        withoutRole: false,
+        allocatedRole: "fold",
+        unallocated: false,
+      },
+    ]);
+    // Single-role shift: the break comes off fold in the day total; hourly cells stay gross of it.
+    expect(coverage.totals.fold).toMatchObject({ hours: 8, untimedBreak: 0.5, unallocatedBreak: 0, net: 7.5 });
     expect(coverage.unscheduledBreakTotal).toEqual({ count: 1, hours: 0.5 });
   });
 
@@ -182,8 +195,10 @@ describe("totals reconcile across views", () => {
     expect(summary.breakHours).toBe(1.5);
     expect(summary.unscheduledBreakHours).toBe(0.5);
     expect(summary.totalHours).toBe(18.5);
-    // Role hours are net (breaks without a time are shared into them), so role + no-role time = net hours.
-    expect(summary.roleTotal + summary.unassignedHours).toBeCloseTo(summary.totalHours, 6);
+    // B's sort+fold shift has an untimed 0.25h break that stays unallocated (sort and fold are gross of it);
+    // the no-role shift's 0.25h comes off the no-role time. Net hours still include both.
+    expect(summary.roleUnallocatedBreakHours).toBe(0.25);
+    expect(summary.roleTotal + summary.unassignedHours - summary.roleUnallocatedBreakHours).toBeCloseTo(summary.totalHours, 6);
 
     const totals = employeeTotalsFromEntries(entries, employees);
     expect(totals.get(1)).toMatchObject({ total_hours: 7.5, gross_hours: 8, break_hours: 0.5 });
@@ -223,6 +238,8 @@ describe("totals reconcile across views", () => {
     const days = buildHourlyCoverage(entries, { dayIndices: [1, 3], employeesById });
     const hourly = buildHourlyCoverageCsvRows({ days, weekStart: "2026-06-14", columns: ["wash", "sort", "fold"] });
     expect(hourly).toContain("Mon,Jun 15,11 AM-12 PM,On break,1,0.5,0.5,Employee A: 11-11:30");
-    expect(hourly).toContain("Wed,Jun 17,Break without a time,Not scheduled,1,0.25,,Employee B: not placed in any hour");
+    expect(hourly).toContain(
+      "Wed,Jun 17,Break without a time,Not scheduled,1,0.25,,Employee B: not placed in any hour; deducted from shift time without a role",
+    );
   });
 });

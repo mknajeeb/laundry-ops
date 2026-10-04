@@ -565,6 +565,7 @@ def employee_day_timeline(
 
     gross = timed = unscheduled = 0
     break_ranges: list[tuple[int, int]] = []
+    untimed_breaks: list[dict[str, Any]] = []
     for cluster in clusters:
         span = cluster["end"] - cluster["start"]
         per_entry = [_merge_ranges(_placed_break_ranges(e, (s, en))) for s, en, e in cluster["items"]]
@@ -578,6 +579,10 @@ def employee_day_timeline(
         gross += span
         timed += cluster_timed
         unscheduled += deduction - cluster_timed
+        if deduction > cluster_timed:
+            untimed_breaks.append(
+                {"start": cluster["start"], "end": cluster["end"], "minutes": deduction - cluster_timed}
+            )
         break_ranges.extend(ranges)
 
     segments: list[tuple[str, int, int]] = []
@@ -614,6 +619,15 @@ def employee_day_timeline(
             }
         )
 
+    for item in untimed_breaks:
+        keys: set[str] = set()
+        for piece in pieces:
+            if piece["on_break"] or piece["start"] < item["start"] or piece["end"] > item["end"]:
+                continue
+            keys.update(piece["roles"] or [""])
+        item["role_keys"] = sorted(keys)
+        item["resolved_role"] = next(iter(keys)) if len(keys) == 1 else ("" if not keys else None)
+
     break_minutes = timed + unscheduled
     return {
         "gross_hours": gross / 60.0 + direct_hours,
@@ -623,6 +637,7 @@ def employee_day_timeline(
         "net_hours": (gross - break_minutes) / 60.0 + direct_hours,
         "pieces": pieces,
         "break_ranges": break_ranges,
+        "untimed_breaks": untimed_breaks,
         "direct_hours": direct_hours,
         "direct_role_hours": dict(direct_roles),
         "assigned_roles": _sort_roles(list(assigned)),
@@ -634,16 +649,20 @@ def timeline_role_breakdown(timeline: Mapping[str, Any]) -> dict[str, dict[str, 
     Per-role hours for one day timeline (key ``""`` = shift time without a role).
 
     Worked time off timed breaks is split evenly between simultaneous roles, and a timed break is split
-    the same way between the roles it pauses. A duration-only break has no position, so each role carries
-    a share of it in proportion to its worked time that day. Shares always use every role the employee
-    holds, so leaving a role out of a report never moves its hours to another role.
+    the same way between the roles it pauses. A duration-only break has no position: when its shift holds
+    a single role (or only time without a role) it comes off that role (``untimed_break``); otherwise it
+    is not allocated, and each role it could fall in reports it as ``unallocated_break`` with ``net``
+    left gross of it until the break is scheduled. Splits always use every role the employee holds, so
+    leaving a role out of a report never moves its hours to another role.
     """
     out: dict[str, dict[str, float]] = {}
 
     def parts(role: str) -> dict[str, float]:
-        return out.setdefault(role, {"gross": 0.0, "worked": 0.0, "timed_break": 0.0, "untimed_break": 0.0, "net": 0.0})
+        return out.setdefault(
+            role,
+            {"gross": 0.0, "worked": 0.0, "timed_break": 0.0, "untimed_break": 0.0, "unallocated_break": 0.0, "net": 0.0},
+        )
 
-    worked = 0.0
     for piece in timeline.get("pieces") or []:
         keys = list(piece["roles"]) or [""]
         share = (piece["end"] - piece["start"]) / 60.0 / len(keys)
@@ -654,10 +673,14 @@ def timeline_role_breakdown(timeline: Mapping[str, Any]) -> dict[str, dict[str, 
                 row["timed_break"] += share
             else:
                 row["worked"] += share
-                worked += share
-    factor = min(1.0, float(timeline.get("unscheduled_break_hours") or 0.0) / worked) if worked > 0 else 0.0
+    for item in timeline.get("untimed_breaks") or []:
+        hours = item["minutes"] / 60.0
+        if item.get("resolved_role") is None:
+            for role in item.get("role_keys") or []:
+                parts(role)["unallocated_break"] += hours
+        else:
+            parts(item["resolved_role"])["untimed_break"] += hours
     for row in out.values():
-        row["untimed_break"] = row["worked"] * factor
         row["net"] = row["worked"] - row["untimed_break"]
     direct_roles = timeline.get("direct_role_hours") or {}
     direct_no_role = max(0.0, float(timeline.get("direct_hours") or 0.0) - sum(direct_roles.values()))
@@ -859,9 +882,10 @@ def allocate_role_hours_by_day(
     task_roles: set[str] | frozenset[str] | None = None,
 ) -> list[dict[str, float]]:
     """
-    Net role hours for wash/sort/fold/PT per day from the shared day timeline: each assignment counts
-    over its own range, timed breaks come off the roles they pause, simultaneous roles split the time,
-    and duration-only breaks are shared across the employee's roles (see ``timeline_role_breakdown``).
+    Role hours for wash/sort/fold/PT per day from the shared day timeline: each assignment counts over
+    its own range, timed breaks come off the roles they pause, simultaneous roles split the time, and a
+    duration-only break comes off the role only when its shift has a single role; on a multi-role shift
+    it stays unallocated (see ``timeline_role_breakdown`` and ``day_role_totals``).
     """
     totals = day_role_totals(entries, task_roles=task_roles)
     return [
@@ -875,18 +899,40 @@ def day_role_totals(
     *,
     task_roles: set[str] | frozenset[str] | None = None,
 ) -> list[dict[str, dict[str, Any]]]:
-    """Per day and role: distinct employees assigned the role and their net role hours (unrounded)."""
+    """
+    Per day and role: distinct employees assigned the role, their role hours after timed breaks and
+    allocated duration-only breaks (unrounded), and ``unallocated_break_hours`` — duration-only breaks on
+    that role's multi-role shifts, of which those hours are still gross.
+    """
     by_day: list[dict[str, dict[str, Any]]] = [{} for _ in range(7)]
     for (uid, dow), group in _entries_by_user_day(entries).items():
         if dow < 0 or dow > 6:
             continue
         timeline = employee_day_timeline(group, task_roles=task_roles)
-        net = timeline_role_hours(timeline)
+        breakdown = timeline_role_breakdown(timeline)
         for role in timeline["assigned_roles"]:
-            row = by_day[dow].setdefault(role, {"user_ids": set(), "hours": 0.0})
+            row = by_day[dow].setdefault(role, {"user_ids": set(), "hours": 0.0, "unallocated_break_hours": 0.0})
             row["user_ids"].add(uid)
-            row["hours"] += net.get(role, 0.0)
+            parts = breakdown.get(role) or {}
+            row["hours"] += float(parts.get("net") or 0.0)
+            row["unallocated_break_hours"] += float(parts.get("unallocated_break") or 0.0)
     return by_day
+
+
+def day_unallocated_break_hours(
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    task_roles: set[str] | frozenset[str] | None = None,
+) -> list[float]:
+    """Per day: duration-only breaks on multi-role shifts, not allocated to any role (each counted once)."""
+    out = [0.0] * 7
+    for (_, dow), group in _entries_by_user_day(entries).items():
+        if 0 <= dow <= 6:
+            timeline = employee_day_timeline(group, task_roles=task_roles)
+            out[dow] += sum(
+                item["minutes"] / 60.0 for item in timeline["untimed_breaks"] if item.get("resolved_role") is None
+            )
+    return out
 
 
 def _entry_employer_affiliation(
@@ -1068,14 +1114,21 @@ def compute_schedule_totals(
         day["operator_count"] = day["wash_count"]
         day["folder_count"] = day["fold_count"]
 
+    unallocated_by_day = day_unallocated_break_hours(included_entries, task_roles=task_roles)
     for dow, role_rows in enumerate(day_role_totals(included_entries, task_roles=task_roles)):
         day = day_totals[dow]
         for role in HOUR_TRACKED_ROLES:
             day[f"{role}_hours"] = round(float(role_rows.get(role, {}).get("hours") or 0.0), 2)
         day["roles"] = [
-            {"role": role, "employees": len(role_rows[role]["user_ids"]), "hours": round(role_rows[role]["hours"], 2)}
+            {
+                "role": role,
+                "employees": len(role_rows[role]["user_ids"]),
+                "hours": round(role_rows[role]["hours"], 2),
+                "unallocated_break_hours": round(role_rows[role]["unallocated_break_hours"], 2),
+            }
             for role in _sort_roles(list(role_rows))
         ]
+        day["unallocated_break_hours"] = round(unallocated_by_day[dow], 2)
 
     for uid, days in employee_days.items():
         if uid in employee_totals:

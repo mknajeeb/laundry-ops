@@ -8,6 +8,7 @@ import {
   entryRoleScopeView,
   formatHoursBreakdown,
   formatRoleResourcesLabel,
+  formatUnallocatedBreak,
   NO_ROLE_LABEL,
   parseEntryRoles,
   ROLE_HOURS_EXPLANATION,
@@ -15,9 +16,17 @@ import {
   scheduleEntryKey,
   scheduleRoleLabel,
   sortRoles,
+  UNALLOCATED_BREAK_NOTE,
 } from "./weeklyScheduleRoles";
 import { DAY_LABELS } from "./weeklyScheduleDates";
-import { compactClock, dayDateLabel, hourLabel, HOURLY_COVERAGE_EXPLANATION } from "./weeklyScheduleTimeBlocks";
+import {
+  compactClock,
+  coverageTotalIsGross,
+  dayDateLabel,
+  hourLabel,
+  HOURLY_COVERAGE_EXPLANATION,
+  untimedBreakTotalNote,
+} from "./weeklyScheduleTimeBlocks";
 
 /** Excel-safe text — no smart quotes, en-dashes, or middle dots. */
 export function exportAsciiText(value) {
@@ -66,8 +75,10 @@ function formatScopedShiftEntryText(entry, { showRoleLabels, forExport, schedule
     const text = `${formatTime12(entry.start_time)}${roleText}`;
     return forExport ? exportAsciiText(text) : text;
   }
-  const breakLines = showBreaks ? view.breaks : [];
-  const net = showBreaks && entryBreakBreakdown(entry).breakMinutes > 0 ? " net" : "";
+  const breakLines = showBreaks ? [...view.breaks] : [];
+  const pending = view.unallocatedBreakHours > 0.0001;
+  if (pending && showBreaks) breakLines.push(formatUnallocatedBreak(view.unallocatedBreakHours));
+  const net = pending ? " gross" : showBreaks && entryBreakBreakdown(entry).breakMinutes > 0 ? " net" : "";
   const hours = Math.round(view.hours * 100) / 100;
   const range = view.segments.length
     ? view.segments.map((segment) => segment.label).join(", ")
@@ -140,10 +151,12 @@ function csvCell(value) {
 
 /** "Fold: 3 people · 21.5 hours; Wash: 1 person · 4 hours" — distinct employees and net hours per role. */
 export function formatDayRoleTotalsText(summary, { daysOnly = false, forExport = false } = {}) {
-  const text = (summary?.roles || [])
+  const parts = (summary?.roles || [])
     .filter((row) => Number(row.employees || 0) > 0)
-    .map((row) => formatRoleResourcesLabel(row, { daysOnly, short: true }))
-    .join("; ");
+    .map((row) => formatRoleResourcesLabel(row, { daysOnly, short: true }));
+  const unallocated = Number(summary?.role_unallocated_break_hours || 0);
+  if (!daysOnly && unallocated > 0.0001) parts.push(`${formatUnallocatedBreak(unallocated)} (${UNALLOCATED_BREAK_NOTE})`);
+  const text = parts.join("; ");
   return forExport ? exportAsciiText(text) : text;
 }
 
@@ -151,6 +164,21 @@ export function formatDayRoleTotalsText(summary, { daysOnly = false, forExport =
 export function employeeRowRoles(employee, entries) {
   if (Array.isArray(employee?.role_hours)) return employee.role_hours.map((row) => row.role);
   return employeeScheduleRoles(employee?.user_id, entries);
+}
+
+/**
+ * "Gross 8 · Break 0.5 · Net 7.5"; with a role selection whose hours are still gross of a break without
+ * a time on a multi-role shift, the net is followed by the unallocated break and the unresolved note.
+ */
+export function formatDayHoursText(summary) {
+  const text = formatHoursBreakdown({
+    gross: summary?.gross_hours,
+    breakHours: summary?.break_hours,
+    net: summary?.hours,
+  });
+  const pending = Number(summary?.unallocated_break_hours || 0);
+  if (pending <= 0.0001) return text;
+  return `${text} before ${formatUnallocatedBreak(pending)} \u00b7 ${UNALLOCATED_BREAK_NOTE}`;
 }
 
 export function buildWeeklyScheduleCsvRows({
@@ -242,15 +270,7 @@ export function buildWeeklyScheduleCsvRows({
       [
         csvCell("Day Hours"),
         csvCell(""),
-        ...columnDays.map((dow) =>
-          csvCell(
-            formatHoursBreakdown({
-              gross: summaries[dow]?.gross_hours,
-              breakHours: summaries[dow]?.break_hours,
-              net: summaries[dow]?.hours,
-            }),
-          ),
-        ),
+        ...columnDays.map((dow) => csvCell(formatDayHoursText(summaries[dow]))),
         csvCell(""),
         csvCell(""),
         csvCell(""),
@@ -331,16 +351,30 @@ export function buildHoursSummaryCsvRows(summary) {
   if (summary.unscheduledBreakHours > 0) {
     lines.push([csvCell("Breaks without a time (included in break hours)"), "", "", hours(summary.unscheduledBreakHours)].join(","));
   }
-  lines.push("", csvCell("Role hours & resources"), ["Role", "People", "Net hours"].map(csvCell).join(","));
-  for (const row of summary.roles) lines.push([csvCell(row.label), String(row.employees), hours(row.hours)].join(","));
+  lines.push("", csvCell("Role hours & resources"), ["Role", "People", "Hours", "Basis"].map(csvCell).join(","));
+  const basis = (unallocated) => csvCell(Number(unallocated || 0) > 0.0001 ? `Gross of ${formatUnallocatedBreak(unallocated)}` : "Net");
+  for (const row of summary.roles) {
+    lines.push([csvCell(row.label), String(row.employees), hours(row.hours), basis(row.unallocatedBreakHours)].join(","));
+  }
   if (summary.unassignedHours > 0) {
-    lines.push([csvCell(summary.unassignedLabel || "Shift time without a role"), "", hours(summary.unassignedHours)].join(","));
+    lines.push([csvCell(summary.unassignedLabel || "Shift time without a role"), "", hours(summary.unassignedHours), ""].join(","));
+  }
+  if (summary.roleUnallocatedBreakHours > 0) {
+    lines.push(
+      [
+        csvCell("Breaks without a time not allocated to a role"),
+        "",
+        `-${hours(summary.roleUnallocatedBreakHours)}`,
+        csvCell(UNALLOCATED_BREAK_NOTE),
+      ].join(","),
+    );
   }
   lines.push(
     [
       csvCell(summary.roleFilter ? "Total (selected roles)" : "Total net hours"),
       String(summary.distinctEmployees ?? summary.employees.length),
-      hours(summary.roleTotal + (summary.unassignedHours || 0)),
+      hours(summary.totalHours),
+      basis(summary.unallocatedBreakHours),
     ].join(","),
   );
   lines.push("", csvCell(ROLE_HOURS_EXPLANATION));
@@ -416,7 +450,7 @@ export function buildHourlyCoverageCsvRows({ days, weekStart, columns, hoursSumm
       }
     }
     const netNote = (total) =>
-      total.untimedBreak > 0.0001 ? csvCell(`Net ${coverageHours(total.net)}h after ${coverageHours(total.untimedBreak)}h break without a time`) : "";
+      coverageTotalIsGross(total) ? csvCell(`Gross of breaks without a time; ${untimedBreakTotalNote(total)}`) : "";
     for (const role of columns) {
       const total = day.totals[role];
       if (!total) continue;
@@ -447,11 +481,17 @@ export function buildHourlyCoverageCsvRows({ days, weekStart, columns, hoursSumm
         [
           ...dayCells,
           csvCell("Break without a time"),
-          csvCell("Not scheduled"),
+          csvCell(item.roles?.length ? exportRoleLabels(item.roles) : "Not scheduled"),
           "1",
           coverageHours(item.hours),
           "",
-          csvCell(`${item.name}: not placed in any hour`),
+          csvCell(
+            `${item.name}: not placed in any hour; ${
+              item.unallocated
+                ? `not allocated to a role (shift has several roles); ${UNALLOCATED_BREAK_NOTE}`
+                : `deducted from ${item.allocatedRole ? scheduleRoleLabel(item.allocatedRole) : "shift time without a role"}`
+            }`,
+          ),
         ].join(","),
       );
     }

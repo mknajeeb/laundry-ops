@@ -2580,12 +2580,14 @@ def test_day_role_totals_count_distinct_people_and_net_hours_like_the_frontend()
     entries = _role_selection_fixture()
     totals = compute_schedule_totals(entries, {})
     mon = totals["day_totals"][1]
-    roles = {row["role"]: (row["employees"], row["hours"]) for row in mon["roles"]}
-    # Same fixture as weeklyScheduleRoleSelection.test.js.
-    assert roles == {"wash": (2, 9.0), "sort": (2, 9.25), "fold": (4, 14.25)}
+    roles = {row["role"]: (row["employees"], row["hours"], row["unallocated_break_hours"]) for row in mon["roles"]}
+    # Same fixture as weeklyScheduleRoleSelection.test.js. The overnight single-role sort shift's untimed
+    # 30 min comes off sort; the fold+sort shift's untimed 30 min stays unallocated (gross in both roles).
+    assert roles == {"wash": (2, 9.0, 0.0), "sort": (2, 9.5, 0.5), "fold": (4, 14.5, 0.5)}
+    assert mon["unallocated_break_hours"] == 0.5
     assert mon["fold_count"] == 4 and mon["wash_count"] == 2 and mon["folder_count"] == 4
-    assert mon["fold_hours"] == 14.25 and mon["sort_hours"] == 9.25
-    assert round(sum(hours for _, hours in roles.values()), 2) == mon["total_hours"]
+    assert mon["fold_hours"] == 14.5 and mon["sort_hours"] == 9.5
+    assert round(sum(hours for _, hours, _ in roles.values()) - mon["unallocated_break_hours"], 2) == mon["total_hours"]
 
 
 def test_day_role_counts_are_people_not_assignments():
@@ -2597,7 +2599,7 @@ def test_day_role_counts_are_people_not_assignments():
     ]
     mon = compute_schedule_totals(shifts, {})["day_totals"][1]
     assert mon["fold_count"] == 2
-    assert mon["roles"] == [{"role": "fold", "employees": 2, "hours": 10.0}]
+    assert mon["roles"] == [{"role": "fold", "employees": 2, "hours": 10.0, "unallocated_break_hours": 0.0}]
 
 
 def test_hidden_simultaneous_role_keeps_its_share():
@@ -2609,7 +2611,39 @@ def test_hidden_simultaneous_role_keeps_its_share():
     assert breakdown["fold"]["net"] == 3.0 and breakdown["wash"]["net"] == 7.0
     overnight = _break_row(41, 4, time(22, 0), time(6, 0), "sort", break_minutes=30)
     parts = timeline_role_breakdown(employee_day_timeline([overnight]))["sort"]
-    assert parts == {"gross": 8.0, "worked": 8.0, "timed_break": 0.0, "untimed_break": 0.5, "net": 7.5}
+    assert parts == {
+        "gross": 8.0,
+        "worked": 8.0,
+        "timed_break": 0.0,
+        "untimed_break": 0.5,
+        "unallocated_break": 0.0,
+        "net": 7.5,
+    }
+
+
+def test_untimed_break_on_multi_role_shift_stays_unallocated_but_net_hours_include_it():
+    from backend.planned_weekly_schedule import employee_day_timeline, timeline_role_breakdown
+
+    single = _break_row(1, 1, time(8, 0), time(16, 0), "fold", break_minutes=30)
+    single_day = employee_day_timeline([single])
+    assert single_day["net_hours"] == 7.5
+    assert timeline_role_breakdown(single_day)["fold"]["net"] == 7.5
+
+    multi = _break_row(2, 2, time(8, 0), time(16, 0), "wash,fold", break_minutes=30)
+    multi_day = employee_day_timeline([multi])
+    assert multi_day["gross_hours"] == 8.0 and multi_day["net_hours"] == 7.5
+    breakdown = timeline_role_breakdown(multi_day)
+    for role in ("wash", "fold"):
+        assert breakdown[role]["net"] == 4.0
+        assert breakdown[role]["untimed_break"] == 0.0
+        assert breakdown[role]["unallocated_break"] == 0.5
+    mon = compute_schedule_totals([single, multi], {})["day_totals"][1]
+    assert mon["total_hours"] == 15.0
+    assert mon["unallocated_break_hours"] == 0.5
+    assert {row["role"]: (row["hours"], row["unallocated_break_hours"]) for row in mon["roles"]} == {
+        "wash": (4.0, 0.5),
+        "fold": (11.5, 0.5),
+    }
 
 
 def test_create_update_and_copy_keep_break_slots_and_deletions():

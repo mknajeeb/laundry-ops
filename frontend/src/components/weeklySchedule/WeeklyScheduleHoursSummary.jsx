@@ -1,5 +1,11 @@
 import { Box, Paper, Stack, Typography } from "@mui/material";
-import { formatHours, ROLE_HOURS_EXPLANATION, roleStyle } from "./weeklyScheduleRoles";
+import {
+  formatHours,
+  formatRoleHoursValue,
+  ROLE_HOURS_EXPLANATION,
+  roleStyle,
+  UNALLOCATED_BREAK_NOTE,
+} from "./weeklyScheduleRoles";
 
 function hoursText(hours) {
   return `${formatHours(hours)}h`;
@@ -45,8 +51,11 @@ function Row({ label, value, sub, accent, bold = false }) {
 
 export default function WeeklyScheduleHoursSummary({ summary, scopeLabel = "", showBreaks = true }) {
   if (!summary) return null;
-  const { employees, totalHours, roles, roleTotal, unassignedHours } = summary;
+  const { employees, totalHours, roles } = summary;
   const unscheduledBreak = Number(summary.unscheduledBreakHours || 0);
+  const pending = Number(summary.unallocatedBreakHours || 0) > 0.0001;
+  const roleUnallocated = Number(summary.roleUnallocatedBreakHours || 0);
+  const people = summary.distinctEmployees ?? employees.length;
   return (
     <Box className="no-print" sx={{ mb: 1.25 }}>
       <Stack direction={{ xs: "column", md: "row" }} spacing={1.25}>
@@ -57,7 +66,13 @@ export default function WeeklyScheduleHoursSummary({ summary, scopeLabel = "", s
                 <Row
                   key={row.user_id}
                   label={row.name}
-                  sub={showBreaks && row.breakHours > 0 ? `${hoursText(row.grossHours)} − ${hoursText(row.breakHours)} break` : ""}
+                  sub={
+                    row.unallocatedBreakHours > 0
+                      ? `gross of ${showBreaks ? `${hoursText(row.unallocatedBreakHours)} ` : ""}unallocated break`
+                      : showBreaks && row.breakHours > 0
+                        ? `${hoursText(row.grossHours)} − ${hoursText(row.breakHours)} break`
+                        : ""
+                  }
                   value={hoursText(row.hours)}
                 />
               ))
@@ -78,7 +93,7 @@ export default function WeeklyScheduleHoursSummary({ summary, scopeLabel = "", s
             </>
           ) : null}
           <Row
-            label={`${showBreaks ? "Net" : "Total"} · ${employees.length} ${employees.length === 1 ? "person" : "people"}`}
+            label={`${pending ? "Gross of unallocated break" : showBreaks ? "Net" : "Total"} · ${employees.length} ${employees.length === 1 ? "person" : "people"}`}
             value={hoursText(totalHours)}
             bold
           />
@@ -91,7 +106,7 @@ export default function WeeklyScheduleHoursSummary({ summary, scopeLabel = "", s
                   key={row.role}
                   label={row.label}
                   sub={`${row.employees} ${row.employees === 1 ? "person" : "people"}`}
-                  value={hoursText(row.hours)}
+                  value={`${formatRoleHoursValue(row.hours, row.unallocatedBreakHours)}h`}
                   accent={roleStyle(row.role).accent}
                 />
               ))
@@ -100,19 +115,34 @@ export default function WeeklyScheduleHoursSummary({ summary, scopeLabel = "", s
                 No roles scheduled.
               </Typography>
             )}
-            {unassignedHours > 0 ? (
-              <Row label={summary.unassignedLabel || "Shift time without a role"} value={hoursText(unassignedHours)} />
+            {summary.unassignedHours > 0 ? (
+              <Row label={summary.unassignedLabel || "Shift time without a role"} value={hoursText(summary.unassignedHours)} />
+            ) : null}
+            {roleUnallocated > 0 ? (
+              <Row
+                label="Breaks without a time not allocated to a role"
+                value={showBreaks ? `−${hoursText(roleUnallocated)}` : "—"}
+              />
             ) : null}
           </Box>
           <Row
-            label={summary.roleFilter ? "Total · selected roles (net)" : "Total net hours"}
-            sub={`${summary.distinctEmployees ?? employees.length} ${(summary.distinctEmployees ?? employees.length) === 1 ? "person" : "people"}`}
-            value={hoursText(roleTotal + (unassignedHours || 0))}
+            label={
+              summary.roleFilter
+                ? `Total · selected roles (${pending ? "gross of unallocated break" : "net"})`
+                : "Total net hours"
+            }
+            sub={`${people} ${people === 1 ? "person" : "people"}`}
+            value={hoursText(totalHours)}
             bold
           />
+          {roleUnallocated > 0 ? (
+            <Typography variant="caption" data-role-hours-unresolved sx={{ display: "block", mt: 0.25, color: "#9a3412", fontWeight: 700 }}>
+              Role hours marked gross include breaks without a time on shifts with several roles. {UNALLOCATED_BREAK_NOTE}.
+            </Typography>
+          ) : null}
           {showBreaks && unscheduledBreak > 0 ? (
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.25 }}>
-              Includes {hoursText(unscheduledBreak)} of breaks without a time, shared across each person&apos;s roles.
+              Net hours include {hoursText(unscheduledBreak)} of breaks without a time.
             </Typography>
           ) : null}
         </SummaryCard>

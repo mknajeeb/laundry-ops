@@ -33,10 +33,13 @@ import {
   entryRoleCardStyle,
   entryRoleScopeView,
   formatHours,
+  formatUnallocatedBreak,
+  isScheduleTask,
   NO_ROLE_LABEL,
   parseEntryRoles,
   roleCompactLabel,
   roleLabels,
+  UNALLOCATED_BREAK_NOTE,
 } from "./weeklyScheduleRoles";
 import ScheduleRoleChip from "./ScheduleRoleChip";
 
@@ -75,16 +78,20 @@ export default function WeeklyScheduleShiftCard({
   const hours = scoped ? scopeView.hours : Number(entry.hours || 0);
   const showBreaks = scheduleEndTimeEnabled && showBreakMinutes;
   const breakParts = entryBreakBreakdown(entry);
-  const breakLines = showBreaks ? (scoped ? scopeView.breaks : entryBreakLines(entry)) : [];
+  const breakLines = showBreaks ? [...(scoped ? scopeView.breaks : entryBreakLines(entry))] : [];
   const formatH = (value) => `${formatHours(value)}h`;
   const shiftRange = `${formatTime12(entry.start_time)} – ${formatTime12(entry.end_time)}`;
+  const pending = scoped && scopeView.unallocatedBreakHours > 0.0001;
+  const timedRoles = parseEntryRoles(entry).filter((role) => !isScheduleTask(role));
+  const multiRoleUntimed = !scoped && showBreaks && timedRoles.length > 1 && breakParts.unscheduledBreakMinutes > 0;
+  if (pending && showBreaks) breakLines.push(formatUnallocatedBreak(scopeView.unallocatedBreakHours));
+  if (pending || multiRoleUntimed) breakLines.push(UNALLOCATED_BREAK_NOTE);
   let hoursLabel = showBreaks && breakParts.breakMinutes > 0
     ? `${formatH(hours)} net · ${formatH(breakParts.grossMinutes / 60)} gross`
     : formatH(hours);
   if (scoped) {
-    hoursLabel = `${formatH(hours)}${showBreaks && breakParts.breakMinutes > 0 ? " net" : ""} ${roles
-      .map((role) => roleCompactLabel(role))
-      .join(" + ")}`;
+    const kind = pending ? " gross" : showBreaks && breakParts.breakMinutes > 0 ? " net" : "";
+    hoursLabel = `${formatH(hours)}${kind} ${roles.map((role) => roleCompactLabel(role)).join(" + ")}`;
   }
   const timeLines = scheduleEndTimeEnabled
     ? scoped && scopeView.segments.length

@@ -4,9 +4,11 @@ import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
 import VisibilityOffOutlinedIcon from "@mui/icons-material/VisibilityOffOutlined";
 import {
   formatEmployeeWeeklySummary,
-  formatHours,
   formatHoursBreakdown,
+  formatRoleHoursValue,
+  formatUnallocatedBreak,
   roleStyle,
+  UNALLOCATED_BREAK_NOTE,
 } from "./weeklyScheduleRoles";
 
 /** `employee` carries totals from `withDisplayedTotals`, so its hours and role chips follow the role selection. */
@@ -32,6 +34,7 @@ export default function WeeklyScheduleEmployeeCell({
   const breakdown = !daysOnly && showBreaks && breakHours > 0
     ? formatHoursBreakdown({ gross: employee.gross_hours, breakHours, net: employee.total_hours })
     : "";
+  const roleUnallocated = daysOnly ? 0 : Number(employee?.role_unallocated_break_hours || 0);
 
   const rateParts = [];
   if (showRates && employee?.default_hourly_rate) {
@@ -86,14 +89,19 @@ export default function WeeklyScheduleEmployeeCell({
 
           {roleRows.length && !excluded ? (
             <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: 0.45 }}>
-              {roleRows.map(({ role, label, hours, days }) => {
+              {roleRows.map(({ role, label, hours, days, unallocated_break_hours: unallocated }) => {
                 const style = roleStyle(role);
                 return (
                 <Chip
                   key={role}
                   size="small"
                   data-employee-role={role}
-                  label={daysOnly ? `${label} · ${days} ${days === 1 ? "day" : "days"}` : `${label} · ${formatHours(hours)} hrs`}
+                  title={!daysOnly && unallocated > 0 ? UNALLOCATED_BREAK_NOTE : undefined}
+                  label={
+                    daysOnly
+                      ? `${label} · ${days} ${days === 1 ? "day" : "days"}`
+                      : `${label} · ${formatRoleHoursValue(hours, unallocated)} hrs`
+                  }
                   sx={{
                     height: 20,
                     fontSize: "0.68rem",
@@ -132,6 +140,16 @@ export default function WeeklyScheduleEmployeeCell({
               sx={{ display: "block", color: "#9a3412", fontWeight: 700, fontSize: "0.68rem", lineHeight: 1.3 }}
             >
               {breakdown}
+            </Typography>
+          ) : null}
+          {!excluded && roleUnallocated > 0 ? (
+            <Typography
+              variant="caption"
+              data-employee-role-unresolved
+              sx={{ display: "block", color: "#9a3412", fontWeight: 700, fontSize: "0.68rem", lineHeight: 1.3 }}
+            >
+              {showBreaks ? `${formatUnallocatedBreak(roleUnallocated)} · ` : ""}
+              {UNALLOCATED_BREAK_NOTE}
             </Typography>
           ) : null}
 

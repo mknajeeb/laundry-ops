@@ -1,6 +1,19 @@
 import { DAY_LABELS } from "./weeklyScheduleDates";
-import { formatHours, ROLE_HOURS_EXPLANATION, scheduleRoleLabel } from "./weeklyScheduleRoles";
-import { dayDateLabel, formatCoverageHours, HOURLY_COVERAGE_EXPLANATION } from "./weeklyScheduleTimeBlocks";
+import {
+  formatHours,
+  formatRoleHoursValue,
+  ROLE_HOURS_EXPLANATION,
+  scheduleRoleLabel,
+  UNALLOCATED_BREAK_NOTE,
+} from "./weeklyScheduleRoles";
+import {
+  coverageTotalIsGross,
+  dayDateLabel,
+  formatCoverageHours,
+  HOURLY_COVERAGE_EXPLANATION,
+  unscheduledBreakChipLabel,
+  untimedBreakTotalNote,
+} from "./weeklyScheduleTimeBlocks";
 
 function peopleCount(count) {
   return `${count} ${count === 1 ? "person" : "people"}`;
@@ -10,9 +23,10 @@ function formatRoleHoursLabel(hours) {
   return `${formatHours(hours)}h`;
 }
 
-function netNote(total) {
-  if (!total || !(Number(total.untimedBreak) > 0.0001)) return "";
-  return ` (net ${formatCoverageHours(total.net)} after ${formatCoverageHours(total.untimedBreak)} break without a time)`;
+function dayTotalCell(total, showBreaks) {
+  if (!total) return "—";
+  const note = untimedBreakTotalNote(total, { showBreaks });
+  return `${peopleCount(total.count)} · ${formatCoverageHours(total.hours)}${coverageTotalIsGross(total) ? " gross" : ""}${note ? ` (${note})` : ""}`;
 }
 
 function HoursSummaryPrint({ summary, showBreaks }) {
@@ -57,7 +71,7 @@ function HoursSummaryPrint({ summary, showBreaks }) {
           <tr>
             <th>Role</th>
             <th className="weekly-schedule-print-tr-count">People</th>
-            <th className="weekly-schedule-print-tr-count">Net hours</th>
+            <th className="weekly-schedule-print-tr-count">Hours</th>
           </tr>
         </thead>
         <tbody>
@@ -65,7 +79,7 @@ function HoursSummaryPrint({ summary, showBreaks }) {
             <tr key={row.role}>
               <td>{row.label}</td>
               <td>{row.employees}</td>
-              <td>{formatRoleHoursLabel(row.hours)}</td>
+              <td>{formatRoleHoursValue(row.hours, row.unallocatedBreakHours)}h</td>
             </tr>
           ))}
           {summary.unassignedHours > 0 ? (
@@ -75,13 +89,28 @@ function HoursSummaryPrint({ summary, showBreaks }) {
               <td>{formatRoleHoursLabel(summary.unassignedHours)}</td>
             </tr>
           ) : null}
+          {summary.roleUnallocatedBreakHours > 0 ? (
+            <tr>
+              <td>Breaks without a time not allocated to a role</td>
+              <td />
+              <td>−{formatRoleHoursLabel(summary.roleUnallocatedBreakHours)}</td>
+            </tr>
+          ) : null}
           <tr className="weekly-schedule-print-tr-day">
-            <td>{summary.roleFilter ? "Total (selected roles)" : "Total net hours"}</td>
+            <td>
+              {summary.roleFilter ? "Total (selected roles)" : "Total net hours"}
+              {summary.unallocatedBreakHours > 0 ? " · gross of unallocated break" : ""}
+            </td>
             <td>{summary.distinctEmployees ?? summary.employees.length}</td>
-            <td>{formatRoleHoursLabel(summary.roleTotal + (summary.unassignedHours || 0))}</td>
+            <td>{formatRoleHoursLabel(summary.totalHours)}</td>
           </tr>
         </tbody>
       </table>
+      {summary.roleUnallocatedBreakHours > 0 ? (
+        <div className="weekly-schedule-print-employee-meta">
+          Role hours marked gross include breaks without a time on shifts with several roles. {UNALLOCATED_BREAK_NOTE}.
+        </div>
+      ) : null}
       <div className="weekly-schedule-print-employee-meta">{ROLE_HOURS_EXPLANATION}</div>
     </div>
   );
@@ -212,15 +241,10 @@ export default function WeeklyScheduleTimeRolePrint({
                   {columns.map((role) => {
                     const total = day.totals[role];
                     return (
-                      <td key={role}>
-                        {total ? `${peopleCount(total.count)} · ${formatCoverageHours(total.hours)}${netNote(total)}` : "—"}
-                      </td>
+                      <td key={role}>{dayTotalCell(total, showBreaks)}</td>
                     );
                   })}
-                  <td>
-                    {peopleCount(day.overall.count)} · {formatCoverageHours(day.overall.hours)}
-                    {netNote(day.overall)}
-                  </td>
+                  <td>{dayTotalCell(day.overall, showBreaks)}</td>
                   {showBreaks ? (
                     <td>
                       {day.breakTotal?.count
@@ -234,10 +258,11 @@ export default function WeeklyScheduleTimeRolePrint({
           ) : !day.responsibilities.length ? (
             <div className="weekly-schedule-print-employee-meta">No assignments</div>
           ) : null}
-          {showBreaks && day.unscheduledBreaks?.length ? (
+          {day.unscheduledBreaks?.length ? (
             <div className="weekly-schedule-print-employee-meta">
-              Breaks without a time ({formatCoverageHours(day.unscheduledBreakTotal.hours)}, not placed in any hour):{" "}
-              {day.unscheduledBreaks.map((item) => `${item.name} ${Math.round(item.hours * 60)} min`).join("; ")}
+              {showBreaks
+                ? `Hourly figures are gross of breaks without a time (${formatCoverageHours(day.unscheduledBreakTotal.hours)}, not placed in any hour): ${day.unscheduledBreaks.map((item) => unscheduledBreakChipLabel(item, { separator: ", " })).join("; ")}`
+                : "Hourly figures are gross of breaks without a time, which cannot be placed in an hour."}
             </div>
           ) : null}
           <DayTasksPrint day={day} />

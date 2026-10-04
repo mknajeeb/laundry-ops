@@ -47,7 +47,8 @@ const c1 = shift(31, 3, "06:00", "14:00", "wash");
 const c2 = shift(32, 3, "12:00", "16:00", "fold");
 // D: overnight sort with a break without a time → 7.5 sort.
 const d = shift(41, 4, "22:00", "06:00", "sort", { break_minutes: 30 });
-// E: fold then sort in one shift with a 30-minute break without a time → 1.75 each.
+// E: fold then sort in one shift with a 30-minute break without a time → 2 gross each; the break is not
+// allocated to either role (net 3.5 for E, net by role unresolved).
 const e = shift(51, 5, "09:00", "13:00", ["fold", "sort"], {
   break_minutes: 30,
   assignments: [
@@ -65,23 +66,39 @@ afterEach(() => setScheduleRoleCatalog(null));
 describe("selecting one role", () => {
   it("shows only that role's employees, people, and net hours in every total", () => {
     const week = computeWeekSummary(data, { roles: ["fold"] });
-    expect(week).toMatchObject({ employeesScheduled: 4, totalHours: 14.25, roleFilter: ["fold"] });
-    expect(rows(week)).toEqual({ fold: [4, 14.25] });
+    // E's 2 fold hours stay gross of its unallocated 0.5h break, which is reported beside them.
+    expect(week).toMatchObject({
+      employeesScheduled: 4,
+      totalHours: 14.5,
+      unallocatedBreakHours: 0.5,
+      roleUnallocatedBreakHours: 0.5,
+      roleFilter: ["fold"],
+    });
+    expect(rows(week)).toEqual({ fold: [4, 14.5] });
+    expect(week.roles[0].unallocatedBreakHours).toBe(0.5);
 
     const day = computeFilteredDaySummaries(data, { roles: ["fold"] })[1];
-    expect(day).toMatchObject({ people: 4, hours: 14.25 });
-    expect(rows(day)).toEqual({ fold: [4, 14.25] });
+    expect(day).toMatchObject({ people: 4, hours: 14.5, unallocated_break_hours: 0.5 });
+    expect(rows(day)).toEqual({ fold: [4, 14.5] });
 
     const totals = employeeTotalsFromEntries(entries, employees, { roles: ["fold"] });
     expect([...totals.keys()].sort()).toEqual([1, 2, 3, 5]);
     expect(totals.get(1)).toMatchObject({ total_hours: 7.5, gross_hours: 8, break_hours: 0.5, scheduled_days: 1 });
     expect(totals.get(2)).toMatchObject({ total_hours: 2, estimated_cost: 20 });
-    expect(totals.get(3)).toMatchObject({ total_hours: 3 });
-    expect(totals.get(5)).toMatchObject({ total_hours: 1.75, gross_hours: 2, break_hours: 0.25 });
-    expect(totals.get(3).role_hours).toEqual([{ role: "fold", label: "Fold", hours: 3, days: 1 }]);
+    expect(totals.get(3)).toMatchObject({ total_hours: 3, unallocated_break_hours: 0 });
+    expect(totals.get(5)).toMatchObject({ total_hours: 2, gross_hours: 2, break_hours: 0, unallocated_break_hours: 0.5 });
+    expect(totals.get(3).role_hours).toEqual([
+      { role: "fold", label: "Fold", hours: 3, days: 1, unallocated_break_hours: 0 },
+    ]);
 
     const summary = summarizeSelectedRoleHours(entries, byIdMap, ["fold"]);
-    expect(summary).toMatchObject({ totalHours: 14.25, roleTotal: 14.25, distinctEmployees: 4, unassignedHours: 0 });
+    expect(summary).toMatchObject({
+      totalHours: 14.5,
+      roleTotal: 14.5,
+      unallocatedBreakHours: 0.5,
+      distinctEmployees: 4,
+      unassignedHours: 0,
+    });
   });
 
   it("limits the hourly matrix to that role and those employees", () => {
@@ -90,8 +107,12 @@ describe("selecting one role", () => {
     // D holds no fold, so the overnight sort shift adds no rows.
     expect(day.hours.map((row) => row.hour)).toEqual([6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     expect(day.hours[0]).toMatchObject({ gap: true, scheduled: 1 });
-    expect(day.totals.fold).toEqual({ count: 4, hours: 14.5, untimedBreak: 0.25, net: 14.25 });
-    expect(day.overall).toMatchObject({ count: 4, hours: 14.5, net: 14.25 });
+    expect(day.totals.fold).toEqual({ count: 4, hours: 14.5, untimedBreak: 0, unallocatedBreak: 0.5, net: 14.5 });
+    expect(day.overall).toMatchObject({ count: 4, hours: 14.5, untimedBreak: 0, unallocatedBreak: 0.5, net: 14.5 });
+    // E's break without a time is still listed under the fold filter, marked as not allocated.
+    expect(day.unscheduledBreaks).toEqual([
+      expect.objectContaining({ name: "Employee E", hours: 0.5, roles: expect.arrayContaining(["fold", "sort"]), unallocated: true }),
+    ]);
     expect(day.hours.every((row) => Object.keys(row.cells).join() === "fold")).toBe(true);
   });
 });
@@ -99,8 +120,8 @@ describe("selecting one role", () => {
 describe("selecting several roles", () => {
   it("counts an employee holding both selected roles once overall and once per role", () => {
     const week = computeWeekSummary(data, { roles: ["wash", "fold"] });
-    expect(rows(week)).toEqual({ wash: [2, 9], fold: [4, 14.25] });
-    expect(week).toMatchObject({ employeesScheduled: 4, totalHours: 23.25 });
+    expect(rows(week)).toEqual({ wash: [2, 9], fold: [4, 14.5] });
+    expect(week).toMatchObject({ employeesScheduled: 4, totalHours: 23.5, unallocatedBreakHours: 0.5 });
     const totals = employeeTotalsFromEntries(entries, employees, { roles: ["wash", "fold"] });
     expect(totals.get(2)).toMatchObject({ total_hours: 4 });
     expect(totals.get(3)).toMatchObject({ total_hours: 10 });
@@ -120,14 +141,40 @@ describe("hiding a simultaneous role", () => {
 });
 
 describe("breaks under a role selection", () => {
-  it("removes timed breaks and shares breaks without a time across the person's roles", () => {
+  it("takes a break without a time off a single-role shift and leaves a multi-role one unallocated", () => {
     const sortOnly = computeWeekSummary(data, { roles: ["sort"] });
-    // D: 8 − 0.5 untimed; E: 2 sort − 0.25 share of its 30-minute untimed break.
-    expect(rows(sortOnly)).toEqual({ sort: [2, 9.25] });
-    expect(sortOnly).toMatchObject({ grossHours: 10, breakHours: 0.75, unscheduledBreakHours: 0.75 });
+    // D (sort only): 8 − 0.5 untimed = 7.5 net. E: 2 sort, gross of its unallocated 0.5h break.
+    expect(rows(sortOnly)).toEqual({ sort: [2, 9.5] });
+    expect(sortOnly).toMatchObject({
+      grossHours: 10,
+      breakHours: 0.5,
+      unscheduledBreakHours: 0.5,
+      unallocatedBreakHours: 0.5,
+    });
     const all = computeWeekSummary(data);
+    // Without a selection net hours include every break; role rows + unallocated deduction reconcile.
+    expect(all).toMatchObject({ totalHours: 32.5, unallocatedBreakHours: 0, roleUnallocatedBreakHours: 0.5 });
     const roleSum = all.roles.reduce((sum, row) => sum + row.hours, 0);
-    expect(roleSum).toBeCloseTo(all.totalHours, 6);
+    expect(roleSum - all.roleUnallocatedBreakHours).toBeCloseTo(all.totalHours, 6);
+  });
+
+  it("resolves the break once every role it could fall in is selected", () => {
+    const both = computeWeekSummary({ entries: [e], employees }, { roles: ["fold", "sort"] });
+    expect(both).toMatchObject({ totalHours: 3.5, unallocatedBreakHours: 0, roleUnallocatedBreakHours: 0.5 });
+    expect(rows(both)).toEqual({ sort: [1, 2], fold: [1, 2] });
+    expect(both.roles.every((row) => row.unallocatedBreakHours === 0.5)).toBe(true);
+  });
+
+  it("keeps net employee hours correct when a break has no time", () => {
+    const legacy = shift(61, 1, "08:00", "16:00", "fold", { break_minutes: 30 });
+    const totals = employeeTotalsFromEntries([legacy], employees);
+    expect(totals.get(1)).toMatchObject({ total_hours: 7.5, gross_hours: 8, break_hours: 0.5, unallocated_break_hours: 0 });
+    expect(rows(computeWeekSummary({ entries: [legacy], employees }))).toEqual({ fold: [1, 7.5] });
+    const multi = shift(62, 1, "08:00", "16:00", ["wash", "fold"], { break_minutes: 30 });
+    expect(employeeTotalsFromEntries([multi], employees).get(1)).toMatchObject({ total_hours: 7.5, gross_hours: 8 });
+    const week = computeWeekSummary({ entries: [multi], employees });
+    expect(rows(week)).toEqual({ wash: [1, 4], fold: [1, 4] });
+    expect(week).toMatchObject({ totalHours: 7.5, roleUnallocatedBreakHours: 0.5 });
   });
 });
 
@@ -135,7 +182,7 @@ describe("overnight shifts", () => {
   it("keeps the overnight role on its start day with +1 hours and net totals", () => {
     const day = buildHourlyCoverage(entries, { dayIndices: [1], employeesById, roles: ["sort"] })[0];
     expect(day.hours.at(-1).label).toBe("5–6 AM (+1)");
-    expect(day.totals.sort).toEqual({ count: 2, hours: 10, untimedBreak: 0.75, net: 9.25 });
+    expect(day.totals.sort).toEqual({ count: 2, hours: 10, untimedBreak: 0.5, unallocatedBreak: 0.5, net: 9.5 });
     expect(computeFilteredDaySummaries(data, { roles: ["sort"] })[2].people).toBe(0);
   });
 });
@@ -191,7 +238,8 @@ describe("role-scoped shifts, print, and export", () => {
     expect(aView.breaks).toEqual(["Break 12:00 PM \u2013 12:30 PM"]);
     const eView = entryRoleScopeView(e, ["fold"], entryScopes.get(scheduleEntryKey(e)));
     expect(eView.segments.map((s) => s.label)).toEqual(["9:00 AM \u2013 11:00 AM"]);
-    expect(eView.hours).toBe(1.75);
+    expect(eView).toMatchObject({ hours: 2, unallocatedBreakHours: 0.5 });
+    expect(aView).toMatchObject({ hours: 7.5, unallocatedBreakHours: 0 });
   });
 
   it("exports only the selected role's segments, row totals, and day totals", () => {
@@ -211,13 +259,23 @@ describe("role-scoped shifts, print, and export", () => {
     expect(bRow).toBe("Employee B,Fold,8:00 AM - 12:00 PM (2h) Fold,2,0,2");
     const cRow = lines.find((line) => line.startsWith("Employee C"));
     expect(cRow).toBe("Employee C,Fold,12:00 PM - 4:00 PM (3h) Fold,3,0,3");
-    expect(lines.find((line) => line.startsWith("Day Role Totals"))).toContain("Fold: 4 people / 14.25 hours");
+    const eRow = lines.find((line) => line.startsWith("Employee E"));
+    expect(eRow).toContain("(2h gross, 0.5h break without a time, not allocated to a role)");
+    const dayTotals = lines.find((line) => line.startsWith("Day Role Totals"));
+    expect(dayTotals).toContain("Fold: 4 people / 14.5 hours gross");
+    expect(dayTotals).toContain("Net hours by role unresolved until the break is scheduled");
+    expect(lines.find((line) => line.startsWith("Day Hours"))).toContain("before 0.5h break without a time");
     expect(lines.join("\n")).not.toContain("Wash");
   });
 
-  it("puts net role hours beside the hourly coverage in the hourly export", () => {
+  it("labels hourly role coverage gross and lists the unallocated break in the hourly export", () => {
     const days = buildHourlyCoverage(entries, { dayIndices: [1], employeesById, roles: ["fold"] });
     const csv = buildHourlyCoverageCsvRows({ days, weekStart: "2026-06-14", columns: ["fold"] });
-    expect(csv).toContain("Mon,Jun 15,Day total,Fold,4,14.5,,Net 14.25h after 0.25h break without a time");
+    expect(csv).toContain(
+      "Mon,Jun 15,Day total,Fold,4,14.5,,Gross of breaks without a time; 0.5h break without a time not allocated to a role / Net hours by role unresolved until the break is scheduled",
+    );
+    expect(csv.find((line) => line.includes("Break without a time") && line.includes("Employee E"))).toContain(
+      "not allocated to a role (shift has several roles)",
+    );
   });
 });

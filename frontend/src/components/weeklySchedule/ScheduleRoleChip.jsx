@@ -1,21 +1,27 @@
 import { Chip } from "@mui/material";
-import { formatHours, roleCompactLabel, roleStyle } from "./weeklyScheduleRoles";
+import { formatRoleHoursValue, roleCompactLabel, roleStyle, UNALLOCATED_BREAK_NOTE } from "./weeklyScheduleRoles";
 
-/** Role chip; with `count` it reads "Fold: 3 people · 21.5 hrs" (distinct employees and net hours). */
-export default function ScheduleRoleChip({ roleKey, count = null, hours = null, sx = {} }) {
+/**
+ * Role chip; with `count` it reads "Fold: 3 people · 21.5 hrs" (distinct employees and net hours), or
+ * "… 22 gross hrs" while a break without a time on a multi-role shift is not allocated to a role.
+ */
+export default function ScheduleRoleChip({ roleKey, count = null, hours = null, unallocatedBreakHours = 0, sx = {} }) {
   const style = roleStyle(roleKey);
   const label = roleCompactLabel(roleKey);
+  const pending = hours != null && Number(unallocatedBreakHours || 0) > 0.0001;
   let text = label;
   if (count != null) {
     const people = `${count} ${Number(count) === 1 ? "person" : "people"}`;
-    text = hours != null ? `${label}: ${people} · ${formatHours(hours)} hrs` : `${label}: ${people}`;
+    text = hours != null ? `${label}: ${people} · ${formatRoleHoursValue(hours, unallocatedBreakHours)} hrs` : `${label}: ${people}`;
   }
 
   return (
     <Chip
       size="small"
       label={text}
+      title={pending ? UNALLOCATED_BREAK_NOTE : undefined}
       data-role-chip={roleKey}
+      data-role-hours-gross={pending ? "true" : undefined}
       sx={{
         height: count != null ? "auto" : 19,
         minHeight: 19,

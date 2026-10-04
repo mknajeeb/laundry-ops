@@ -3,6 +3,7 @@ import {
   scheduleRoleLabel,
   sortRoles,
   timelineRoleBreakdown,
+  UNALLOCATED_BREAK_NOTE,
 } from "./weeklyScheduleRoles";
 
 export const ASSIGNMENT_KIND = { SHIFT: "shift", RESPONSIBILITY: "responsibility" };
@@ -11,11 +12,13 @@ export const HOURLY_COVERAGE_EXPLANATION =
   "Hourly cells are role coverage after timed breaks: an employee on a timed break is taken off every role "
   + "for that time, then the remaining time is intersected with each hour and simultaneous roles split it "
   + "evenly. The Break column counts employees on a timed break in each hour and their break hours. Breaks "
-  + "without a time (\u201cNot scheduled\u201d) are not placed in any hour; each role carries a share of them in "
-  + "proportion to that person\u2019s time in it, so the day total shows hourly coverage and then net role hours "
-  + "after that share. With roles selected, only employees assigned one of them that day appear, and only "
-  + "their selected-role time counts; cumulative totals still start from the day\u2019s first hour. Overnight "
-  + "shifts stay on the day they start (hours after midnight are marked +1).";
+  + "without a time (\u201cNot scheduled\u201d) cannot be placed in an hour, so hourly figures are gross of them "
+  + "and they are listed separately. In the day total, such a break comes off the role when its shift has a "
+  + "single role; on a shift with several roles it stays unallocated and net hours by role are unresolved "
+  + "until the break is scheduled. With roles selected, only employees assigned one of them that day appear, "
+  + "only their selected-role time counts, and breaks without a time on those shifts are still listed; "
+  + "cumulative totals still start from the day\u2019s first hour. Overnight shifts stay on the day they start "
+  + "(hours after midnight are marked +1).";
 
 /** Calendar date for a schedule day; week_start is a plain ET date, so format without zone shifts. */
 export function dayDateLabel(weekStart, dow) {
@@ -136,13 +139,16 @@ function clockRangeLabel(start, end) {
  * each hour. A role cell holds the distinct employees on that role in the hour, the employee-hours they
  * contribute, and the cumulative employee-hours through the end of the hour (counted from the first hour
  * of the day, so hidden rows still count). `breaks` holds the employees on a timed break in the hour.
- * Breaks without a time are listed per day in `unscheduledBreaks` and never placed in an hour.
- * `roles` limits columns and totals (null = all): only employee-days assigned a selected role count, and
- * breaks count when they interrupt a selected role (or the employee holds one that day, for breaks
- * without a time). The split between simultaneous roles is always computed over all of the employee's
- * roles. Day `totals` per role carry the hourly coverage (`hours`), the share of breaks without a time
- * (`untimedBreak`), and the net role hours (`net`) used by every other summary; `count` is distinct
- * employees assigned the role that day.
+ * Breaks without a time are listed per day in `unscheduledBreaks` (with the roles of their shift and
+ * whether they are allocated to a single role) and never placed in an hour, so hourly figures are gross
+ * of them. `roles` limits columns and totals (null = all): only employee-days assigned a selected role
+ * count, and breaks count when they interrupt (or, without a time, belong to a shift with) a selected
+ * role. The split between simultaneous roles is always computed over all of the employee's roles.
+ * Day `totals` per role carry the hourly coverage (`hours`, gross of breaks without a time), the break
+ * without a time allocated to the role (`untimedBreak`), `net` = hours − untimedBreak, and
+ * `unallocatedBreak` — breaks without a time on that role's multi-role shifts, which leave `net`
+ * unresolved; `count` is distinct employees assigned the role that day. `overall` follows the same rules
+ * for the shown columns together.
  */
 export function buildHourlyCoverage(
   entries,
@@ -174,20 +180,30 @@ export function buildHourlyCoverage(
     const unscheduledBreaks = [];
     const dayRoles = new Set();
     const roleNet = new Map();
+    const emptyRoleRow = () => ({ untimedBreak: 0, unallocatedBreak: 0, people: new Set() });
+    let containedUnallocated = 0;
+    let partialUnallocated = 0;
     for (const t of dayTimelines) {
       const uid = t.userId;
       const name = employeeName(employeesById, uid);
-      for (const [role, parts] of timelineRoleBreakdown(t).roles) {
+      const breakdown = timelineRoleBreakdown(t);
+      for (const [role, parts] of breakdown.roles) {
         if (!role || (roleFilter && !roleFilter.has(role))) continue;
-        if (!roleNet.has(role)) roleNet.set(role, { net: 0, untimedBreak: 0, people: new Set() });
+        if (!roleNet.has(role)) roleNet.set(role, emptyRoleRow());
         const row = roleNet.get(role);
-        row.net += parts.net;
         row.untimedBreak += parts.untimedBreak;
+        row.unallocatedBreak += parts.unallocatedBreak;
       }
       for (const role of t.assignedRoles) {
         if (roleFilter && !roleFilter.has(role)) continue;
-        if (!roleNet.has(role)) roleNet.set(role, { net: 0, untimedBreak: 0, people: new Set() });
+        if (!roleNet.has(role)) roleNet.set(role, emptyRoleRow());
         roleNet.get(role).people.add(uid);
+      }
+      for (const item of breakdown.unallocated) {
+        const shown = item.roleKeys.filter((role) => role && (!roleFilter || roleFilter.has(role)));
+        if (!shown.length) continue;
+        if (shown.length === item.roleKeys.length) containedUnallocated += item.hours;
+        else partialUnallocated += item.hours;
       }
       for (const piece of t.pieces) {
         if (piece.onBreak || !piece.roles.length) continue;
@@ -240,13 +256,18 @@ export function buildHourlyCoverage(
           person.roles = sortRoles([...new Set([...person.roles, ...range.roles])]);
         }
       }
-      if (t.unscheduledBreakHours > 0) {
-        const dayRolesForUser = new Set(t.pieces.flatMap((piece) => piece.roles));
-        if (!roleFilter || [...dayRolesForUser].some((role) => roleFilter.has(role))) {
-          for (const item of t.unscheduledEntries) {
-            unscheduledBreaks.push({ userId: uid, name, entry: item.entry, hours: item.minutes / 60 });
-          }
-        }
+      for (const item of t.unscheduledEntries) {
+        if (roleFilter && !item.roles.some((role) => roleFilter.has(role))) continue;
+        unscheduledBreaks.push({
+          userId: uid,
+          name,
+          entry: item.entry,
+          hours: item.minutes / 60,
+          roles: item.roles,
+          withoutRole: item.roleKeys.includes(""),
+          allocatedRole: item.resolvedRole || null,
+          unallocated: item.resolvedRole == null,
+        });
       }
     }
     breakRanges.sort((a, b) => a.start - b.start || byName(a, b));
@@ -302,19 +323,22 @@ export function buildHourlyCoverage(
     const totals = Object.fromEntries(
       columns.map((role) => {
         const row = roleNet.get(role);
+        const untimedBreak = row ? row.untimedBreak : 0;
         return [
           role,
           {
             count: row ? row.people.size : 0,
             hours: cumulative[role],
-            untimedBreak: row ? row.untimedBreak : 0,
-            net: row ? row.net : cumulative[role],
+            untimedBreak,
+            unallocatedBreak: row ? row.unallocatedBreak : 0,
+            net: cumulative[role] - untimedBreak,
           },
         ];
       }),
     );
     const overallPeople = new Set(columns.flatMap((role) => [...(roleNet.get(role)?.people || [])]));
     const unscheduledHours = unscheduledBreaks.reduce((sum, item) => sum + item.hours, 0);
+    const overallUntimed = columns.reduce((sum, role) => sum + totals[role].untimedBreak, 0) + containedUnallocated;
     return {
       dow,
       columns,
@@ -323,8 +347,9 @@ export function buildHourlyCoverage(
       overall: {
         count: overallPeople.size,
         hours: cumulativeTotal,
-        untimedBreak: columns.reduce((sum, role) => sum + totals[role].untimedBreak, 0),
-        net: columns.reduce((sum, role) => sum + totals[role].net, 0),
+        untimedBreak: overallUntimed,
+        unallocatedBreak: partialUnallocated,
+        net: cumulativeTotal - overallUntimed,
       },
       breakTotal: { count: dayBreakPeople.size, hours: cumulativeBreak },
       breakRanges,
@@ -333,6 +358,50 @@ export function buildHourlyCoverage(
       responsibilities: dayTaskGroups(responsibilities, dow, employeesById),
     };
   });
+}
+
+/** True when a break without a time applies to a coverage total, so its hours are gross of it. */
+export function coverageTotalIsGross(total) {
+  return Number(total?.untimedBreak || 0) > 0.0001 || Number(total?.unallocatedBreak || 0) > 0.0001;
+}
+
+/**
+ * Text for breaks without a time against a coverage day total ("" when none), e.g.
+ * "−0.5h break without a time · net 7.5h" or
+ * "0.5h break without a time not allocated to a role · Net hours by role unresolved until the break is scheduled".
+ * Without `showBreaks` only the unresolved note is given.
+ */
+export function untimedBreakTotalNote(total, { showBreaks = true } = {}) {
+  if (!coverageTotalIsGross(total)) return "";
+  const unallocated = Number(total.unallocatedBreak || 0) > 0.0001;
+  const parts = [];
+  if (showBreaks && Number(total.untimedBreak || 0) > 0.0001) {
+    parts.push(
+      `\u2212${formatCoverageHours(total.untimedBreak)} break without a time \u00b7 net ${formatCoverageHours(total.net)}`
+      + (unallocated ? " before unallocated break" : ""),
+    );
+  }
+  if (unallocated) {
+    parts.push(
+      showBreaks
+        ? `${formatCoverageHours(total.unallocatedBreak)} break without a time not allocated to a role \u00b7 ${UNALLOCATED_BREAK_NOTE}`
+        : UNALLOCATED_BREAK_NOTE,
+    );
+  }
+  return parts.join("; ");
+}
+
+/**
+ * "Ana · 30 min · Not scheduled · Fold" for a single-role shift, or
+ * "Ana · 30 min · Not scheduled · Wash/Fold · not allocated to a role" when the shift has several roles.
+ */
+export function unscheduledBreakChipLabel(item, { separator = " \u00b7 " } = {}) {
+  const parts = [item.name, `${Math.round(Number(item.hours || 0) * 60)} min`, "Not scheduled"];
+  const roles = (item.roles || []).map((role) => scheduleRoleLabel(role));
+  if (item.withoutRole) roles.push("no role");
+  if (roles.length) parts.push(roles.join("/"));
+  if (item.unallocated) parts.push("not allocated to a role");
+  return parts.join(separator);
 }
 
 /** Columns shared across the shown days, in configured role order. */

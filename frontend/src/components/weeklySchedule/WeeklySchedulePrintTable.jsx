@@ -2,15 +2,23 @@ import {
   formatEmployeeWeeklySummary,
   formatHoursBreakdown,
   formatRoleResourcesLabel,
+  formatUnallocatedBreak,
   roleLabels,
+  UNALLOCATED_BREAK_NOTE,
 } from "./weeklyScheduleRoles";
 import { employeeRowRoles, formatDayShiftsText } from "./weeklyScheduleExport";
+
+function unresolvedText(hours, showBreaks) {
+  return `${showBreaks ? `${formatUnallocatedBreak(hours)} · ` : ""}${UNALLOCATED_BREAK_NOTE}`;
+}
 
 function DayHeaderTotals({ summary, daysOnly = false, showBreaks = false }) {
   if (!summary) return null;
   const people = Number(summary.people || 0);
   const hours = Number(summary.hours || 0);
   const hoursLabel = Number.isInteger(hours) ? `${hours}` : hours.toFixed(1);
+  const pending = !daysOnly && Number(summary.unallocated_break_hours || 0) > 0.0001;
+  const roleUnallocated = daysOnly ? 0 : Number(summary.role_unallocated_break_hours || 0);
   const roleParts = (summary.roles || [])
     .filter((row) => Number(row.employees || 0) > 0)
     .map((row) => formatRoleResourcesLabel(row, { daysOnly, short: true }));
@@ -18,7 +26,7 @@ function DayHeaderTotals({ summary, daysOnly = false, showBreaks = false }) {
   return (
     <div className="weekly-schedule-print-day-totals">
       <div>
-        {people} emp{daysOnly ? "" : ` · ${hoursLabel} hrs`}
+        {people} emp{daysOnly ? "" : ` · ${hoursLabel}${pending ? " gross" : ""} hrs`}
       </div>
       {!daysOnly && showBreaks && Number(summary.break_hours || 0) > 0 ? (
         <div className="weekly-schedule-print-day-roles">
@@ -30,6 +38,9 @@ function DayHeaderTotals({ summary, daysOnly = false, showBreaks = false }) {
           {part}
         </div>
       ))}
+      {roleUnallocated > 0.0001 ? (
+        <div className="weekly-schedule-print-day-roles">{unresolvedText(roleUnallocated, showBreaks)}</div>
+      ) : null}
     </div>
   );
 }
@@ -86,6 +97,11 @@ export default function WeeklySchedulePrintTable({
                       breakHours: employee.break_hours,
                       net: employee.total_hours,
                     })}
+                  </div>
+                ) : null}
+                {!daysOnly && Number(employee.role_unallocated_break_hours || 0) > 0.0001 ? (
+                  <div className="weekly-schedule-print-employee-meta">
+                    {unresolvedText(employee.role_unallocated_break_hours, showBreaks)}
                   </div>
                 ) : null}
               </td>

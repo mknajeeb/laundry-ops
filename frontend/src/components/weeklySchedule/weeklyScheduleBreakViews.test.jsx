@@ -93,4 +93,43 @@ describe("break and task views", () => {
     }
     expect(html).not.toContain("Wash");
   });
+
+  it("labels role hours gross and shows the unallocated break when a multi-role shift's break has no time", () => {
+    const multi = {
+      id: 3, user_id: 1, day_of_week: 1, start_time: "08:00", end_time: "16:00", hours: 7.5, break_minutes: 30,
+      role: "wash,fold", roles: ["wash", "fold"],
+      assignments: [{ role: "wash", full_shift: true }, { role: "fold", full_shift: true }],
+    };
+    const list = [multi];
+    const roles = ["fold"];
+    const days = buildHourlyCoverage(list, { dayIndices: [1], employeesById: byId, roles });
+    const summary = summarizeScheduleHours(list, new Map(employees.map((e) => [e.user_id, e])));
+    const { entryScopes } = summarizeRoleSelection(list, { roles });
+    const html = [
+      renderToString(<WeeklyScheduleTimeRoleView weekStart="2026-10-04" days={days} columns={["fold"]} showNames />),
+      renderToString(<WeeklyScheduleHoursSummary summary={summary} />),
+      renderToString(<WeeklyScheduleSummaryBar summary={computeWeekSummary({ entries: list, employees }, { entries: list, roles })} />),
+      renderToString(
+        <WeeklyScheduleDayHeader dayLabel="Mon" summary={computeFilteredDaySummaries({ entries: list, employees }, { entries: list, roles })[1]} />,
+      ),
+      renderToString(<WeeklyScheduleShiftCard entry={multi} employee={employees[0]} />),
+      renderToString(
+        <WeeklyScheduleShiftCard entry={multi} employee={employees[0]} roleFilter={roles} roleScope={entryScopes.get(scheduleEntryKey(multi))} />,
+      ),
+      renderToString(<WeeklyScheduleTimeRolePrint days={days} weekStart="2026-10-04" columns={["fold"]} hoursSummary={summary} />),
+    ].join("\n");
+    for (const text of [
+      "Hourly figures are gross of",
+      "4h gross",
+      "not allocated to a role",
+      "Net hours by role unresolved until the break is scheduled",
+      "Breaks without a time not allocated to a role",
+      "1 person · 4 gross hours",
+      "4h gross Fold",
+      "7.5h net · 8h gross",
+    ]) {
+      expect(html, text).toContain(text);
+    }
+    expect(html).not.toContain("4h net Fold");
+  });
 });

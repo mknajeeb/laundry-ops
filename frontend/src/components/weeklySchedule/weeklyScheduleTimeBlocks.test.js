@@ -104,10 +104,10 @@ describe("hourly coverage", () => {
     expect(day.hours[1].total).toEqual({ count: 1, hours: 1, cumulative: 3.5 });
     expect(day.hours[2].total.cumulative).toBe(4.5);
     expect(day.totals).toEqual({
-      wash: { count: 1, hours: 3, untimedBreak: 0, net: 3 },
-      sort: { count: 2, hours: 1.5, untimedBreak: 0, net: 1.5 },
+      wash: { count: 1, hours: 3, untimedBreak: 0, unallocatedBreak: 0, net: 3 },
+      sort: { count: 2, hours: 1.5, untimedBreak: 0, unallocatedBreak: 0, net: 1.5 },
     });
-    expect(day.overall).toEqual({ count: 3, hours: 4.5, untimedBreak: 0, net: 4.5 });
+    expect(day.overall).toEqual({ count: 3, hours: 4.5, untimedBreak: 0, unallocatedBreak: 0, net: 4.5 });
   });
 
   it("splits simultaneous roles evenly but counts the employee once per hour", () => {
@@ -223,7 +223,9 @@ describe("summaries for selected roles", () => {
     expect(summary.roleTotal).toBe(3);
     // Only the selected role's hours count; the fold half of the shift is not shown or moved to sort.
     expect(summary.totalHours).toBe(3);
-    expect(summary.employees).toEqual([{ user_id: 1, name: "Employee A", hours: 3, grossHours: 3, breakHours: 0 }]);
+    expect(summary.employees).toEqual([
+      { user_id: 1, name: "Employee A", hours: 3, grossHours: 3, breakHours: 0, unallocatedBreakHours: 0 },
+    ]);
     expect(summary.unassignedHours).toBe(0);
     expect(summarizeSelectedRoleHours([split, other], byId, null).totalHours).toBe(8);
   });
@@ -309,8 +311,8 @@ describe("schedule exports", () => {
     expect(lines).toContain("Mon,Jun 15,5-6 AM,Fold,1,1,1,Employee A");
     expect(lines).toContain("Employee A,6,6,0");
     expect(lines).toContain("Total (1 employees),6,6,0");
-    expect(lines).toContain("Sort,1,3");
-    expect(lines).toContain("Total net hours,1,6");
+    expect(lines).toContain("Sort,1,3,Net");
+    expect(lines).toContain("Total net hours,1,6,Net");
   });
 
   it("adds role ranges, remarks, and tasks to the employee export", () => {
@@ -344,17 +346,19 @@ describe("hours summaries above the time-and-role view", () => {
     const overlap2 = shift(3, 2, "12:00", "16:00", "sort", { hours: 4 });
     const summary = summarizeScheduleHours([multi, overlap, overlap2], byId);
     expect(summary.employees).toEqual([
-      { user_id: 2, name: "Employee B", hours: 8, grossHours: 8, breakHours: 0 },
-      { user_id: 1, name: "Employee A", hours: 3.5, grossHours: 4, breakHours: 0.5 },
+      { user_id: 2, name: "Employee B", hours: 8, grossHours: 8, breakHours: 0, unallocatedBreakHours: 0 },
+      { user_id: 1, name: "Employee A", hours: 3.5, grossHours: 4, breakHours: 0.5, unallocatedBreakHours: 0 },
     ]);
     expect(summary.totalHours).toBe(11.5);
     expect(summary.grossHours).toBe(12);
     expect(summary.unscheduledBreakHours).toBe(0.5);
     const roles = Object.fromEntries(summary.roles.map((r) => [r.role, r]));
-    // The 30-minute break has no time, so wash and fold each carry half of it (in proportion to their time).
-    expect(roles.wash).toMatchObject({ hours: 1.75, employees: 1 });
-    expect(roles.fold).toMatchObject({ hours: 1.75, employees: 1 });
-    expect(summary.roleTotal + summary.unassignedHours).toBe(summary.totalHours);
+    // The 30-minute break has no time on a wash+fold shift, so it is not allocated to either role: both stay
+    // gross of it and it is reported once as an unallocated deduction. Employee A's net hours still include it.
+    expect(roles.wash).toMatchObject({ hours: 2, employees: 1, unallocatedBreakHours: 0.5 });
+    expect(roles.fold).toMatchObject({ hours: 2, employees: 1, unallocatedBreakHours: 0.5 });
+    expect(summary.roleUnallocatedBreakHours).toBe(0.5);
+    expect(summary.roleTotal + summary.unassignedHours - summary.roleUnallocatedBreakHours).toBe(summary.totalHours);
     expect(roles.sort.employees).toBe(1);
     expect(summary.roles.map((r) => r.role)).toEqual(["wash", "sort", "fold"]);
   });

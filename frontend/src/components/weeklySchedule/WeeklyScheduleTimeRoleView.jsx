@@ -21,13 +21,14 @@ import {
 import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
 import { formatTime12 } from "../datetime/scheduleTimeUi";
 import { DAY_LABELS } from "./weeklyScheduleDates";
-import { groupRoleCodes, roleStyle, scheduleRoleLabel } from "./weeklyScheduleRoles";
+import { groupRoleCodes, roleStyle, scheduleRoleLabel, UNALLOCATED_BREAK_NOTE } from "./weeklyScheduleRoles";
 import {
   ASSIGNMENT_KIND,
   dayDateLabel,
   formatCoverageHours,
   hourBoundaryLabel,
   HOURLY_COVERAGE_EXPLANATION,
+  unscheduledBreakChipLabel,
 } from "./weeklyScheduleTimeBlocks";
 
 function peopleCountLabel(count) {
@@ -231,20 +232,63 @@ function CoverageCell({ cell, endLabel, showNames, onEditEntry, canEdit }) {
 const stickyCol = { position: "sticky", left: 0, zIndex: 1, bgcolor: "inherit" };
 const BREAK_ACCENT = "#9a3412";
 
-/** Net role hours after the share of breaks without a time (shown only when there is such a share). */
-function NetAfterUntimed({ total }) {
-  if (!total || !(Number(total.untimedBreak) > 0.0001)) return null;
+function hasUntimed(total) {
+  return Number(total?.untimedBreak || 0) > 0.0001 || Number(total?.unallocatedBreak || 0) > 0.0001;
+}
+
+/** Day-total coverage; "gross" when a break without a time applies to it. */
+function dayTotalText(total) {
+  if (!total) return "—";
+  return `${peopleCountLabel(total.count)} · ${formatCoverageHours(total.hours)}${hasUntimed(total) ? " gross" : ""}`;
+}
+
+/**
+ * Breaks without a time against a day total: the part allocated to the role(s) gives a net figure; a
+ * break on a multi-role shift stays unallocated and leaves net by role unresolved.
+ */
+function UntimedBreakTotalNote({ total, showBreaks }) {
+  if (!hasUntimed(total)) return null;
+  const unallocated = Number(total.unallocatedBreak || 0) > 0.0001;
+  const sx = { display: "block", lineHeight: 1.2, color: BREAK_ACCENT };
+  if (!showBreaks) {
+    return unallocated ? (
+      <Typography variant="caption" data-day-net-unresolved sx={sx}>
+        {UNALLOCATED_BREAK_NOTE}
+      </Typography>
+    ) : null;
+  }
   return (
-    <Typography variant="caption" data-day-net-hours sx={{ display: "block", lineHeight: 1.2, color: BREAK_ACCENT, whiteSpace: "nowrap" }}>
-      Net {formatCoverageHours(total.net)} after {formatCoverageHours(total.untimedBreak)} break without a time
-    </Typography>
+    <>
+      {Number(total.untimedBreak || 0) > 0.0001 ? (
+        <Typography variant="caption" data-day-net-hours sx={{ ...sx, whiteSpace: "nowrap" }}>
+          −{formatCoverageHours(total.untimedBreak)} break without a time · Net {formatCoverageHours(total.net)}
+          {unallocated ? " before unallocated break" : ""}
+        </Typography>
+      ) : null}
+      {unallocated ? (
+        <Typography variant="caption" data-day-net-unresolved sx={sx}>
+          {formatCoverageHours(total.unallocatedBreak)} break without a time not allocated to a role · {UNALLOCATED_BREAK_NOTE}
+        </Typography>
+      ) : null}
+    </>
   );
 }
 
 /** Employees on a timed break in each hour, kept out of the role cells. */
 export function DayMatrix({ day, columns, showNames, canEdit, onEditEntry, showBreaks = true }) {
+  const untimedHours = Number(day.unscheduledBreakTotal?.hours || 0);
   return (
     <TableContainer sx={{ maxWidth: "100%" }}>
+      {untimedHours > 0 ? (
+        <Typography
+          variant="caption"
+          data-hourly-gross-note
+          sx={{ display: "block", px: 1, py: 0.5, color: BREAK_ACCENT, fontWeight: 700, bgcolor: "#fffaf5" }}
+        >
+          Hourly figures are gross of {showBreaks ? `${formatCoverageHours(untimedHours)} of ` : ""}breaks without a
+          time, which cannot be placed in an hour.
+        </Typography>
+      ) : null}
       <Table size="small" sx={{ "& td, & th": { verticalAlign: "top", borderColor: "#eef2f6", px: 1, py: 0.6 } }}>
         <TableHead>
           <TableRow sx={{ bgcolor: "#fff" }}>
@@ -311,17 +355,17 @@ export function DayMatrix({ day, columns, showNames, canEdit, onEditEntry, showB
               return (
                 <TableCell key={role}>
                   <Typography variant="body2" sx={{ fontWeight: 800, fontSize: "0.8rem", whiteSpace: "nowrap" }}>
-                    {total ? `${peopleCountLabel(total.count)} · ${formatCoverageHours(total.hours)}` : "—"}
+                    {dayTotalText(total)}
                   </Typography>
-                  <NetAfterUntimed total={total} />
+                  <UntimedBreakTotalNote total={total} showBreaks={showBreaks} />
                 </TableCell>
               );
             })}
             <TableCell>
               <Typography variant="body2" sx={{ fontWeight: 800, fontSize: "0.8rem", whiteSpace: "nowrap" }}>
-                {peopleCountLabel(day.overall.count)} · {formatCoverageHours(day.overall.hours)}
+                {dayTotalText(day.overall)}
               </Typography>
-              <NetAfterUntimed total={day.overall} />
+              <UntimedBreakTotalNote total={day.overall} showBreaks={showBreaks} />
             </TableCell>
             {showBreaks ? (
               <TableCell>
@@ -353,14 +397,16 @@ export function UnscheduledBreaksNote({ day, canEdit, onEditEntry }) {
           <Chip
             key={`${item.userId}-${index}`}
             size="small"
-            label={`${item.name} · ${Math.round(item.hours * 60)} min · Not scheduled`}
+            label={unscheduledBreakChipLabel(item)}
             onClick={canEdit && item.entry ? () => onEditEntry?.(item.entry) : undefined}
             sx={{ height: 22, fontSize: "0.7rem", fontWeight: 700, bgcolor: "#fff", border: "1px dashed #fdba74" }}
           />
         ))}
       </Stack>
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.25 }}>
-        Not placed in any hourly cell. Each role&apos;s day total shows its share as net hours. Set a break time to place it.
+        Not placed in any hourly cell, so hourly figures are gross of these breaks. On a single-role shift the break
+        comes off that role&apos;s day total; on a shift with several roles it stays unallocated and net hours by role are
+        unresolved until the break is scheduled. Set a break time to place it.
       </Typography>
     </Box>
   );

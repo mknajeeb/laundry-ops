@@ -1,6 +1,6 @@
 import { Box, Typography } from "@mui/material";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
-import { formatHours, roleStyle } from "./weeklyScheduleRoles";
+import { formatHours, formatRoleHoursValue, formatUnallocatedBreak, roleStyle, UNALLOCATED_BREAK_NOTE } from "./weeklyScheduleRoles";
 
 function formatCurrency(value) {
   const n = Number(value || 0);
@@ -12,11 +12,11 @@ function peopleText(count) {
   return `${n} ${n === 1 ? "person" : "people"}`;
 }
 
-/** "8 people · 42.5 hours" — distinct employees and net hours for one role. */
+/** "8 people · 42.5 hours" — distinct employees and net hours for one role ("… 43 gross hours" while unresolved). */
 function roleMetricValue(row, daysOnly) {
   if (daysOnly) return peopleText(row.employees);
   const hours = Math.round(Number(row.hours || 0) * 100) / 100;
-  return `${peopleText(row.employees)} · ${hours} ${hours === 1 ? "hour" : "hours"}`;
+  return `${peopleText(row.employees)} · ${formatRoleHoursValue(hours, row.unallocatedBreakHours)} ${hours === 1 ? "hour" : "hours"}`;
 }
 
 function SummaryMetric({ label, value, accent, compact = false }) {
@@ -57,6 +57,8 @@ export default function WeeklyScheduleSummaryBar({ summary, showCost, compact = 
 
   const daysOnly = summary.daysOnly === true;
   const filtered = Array.isArray(summary.roleFilter);
+  const pending = !daysOnly && Number(summary.unallocatedBreakHours || 0) > 0.0001;
+  const roleUnallocated = daysOnly ? 0 : Number(summary.roleUnallocatedBreakHours || 0);
   const metrics = [
     {
       label: filtered ? "Selected roles" : compact ? "Employees" : "Employees Scheduled",
@@ -69,6 +71,12 @@ export default function WeeklyScheduleSummaryBar({ summary, showCost, compact = 
           value: summary.totalDays,
           accent: VEEWASH_DASHBOARD.tealDark,
         }
+      : pending
+        ? {
+            label: compact ? "Gross hrs" : "Hours (gross of unallocated break)",
+            value: formatHours(summary.totalHours),
+            accent: VEEWASH_DASHBOARD.tealDark,
+          }
       : showBreaks
         ? {
             label: compact ? "Net hrs" : "Net Hours",
@@ -102,6 +110,15 @@ export default function WeeklyScheduleSummaryBar({ summary, showCost, compact = 
       value: roleMetricValue(row, daysOnly),
       accent: roleStyle(row.role).accent,
       role: row.role,
+    });
+  }
+
+  if (roleUnallocated > 0.0001) {
+    metrics.push({
+      label: showBreaks ? "Unallocated break" : "Role hours",
+      value: showBreaks ? `${formatUnallocatedBreak(roleUnallocated)} · ${UNALLOCATED_BREAK_NOTE}` : UNALLOCATED_BREAK_NOTE,
+      accent: "#9a3412",
+      role: "__unallocated_break",
     });
   }
 
