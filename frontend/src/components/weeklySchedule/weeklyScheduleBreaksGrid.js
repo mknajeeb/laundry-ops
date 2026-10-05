@@ -133,6 +133,28 @@ export function buildBreaksTasksGrid({
   };
 }
 
+/** Tasks of each shown day with the employee's name, from the same grid rows (by task type, then name). */
+export function gridTasksByDay(grid) {
+  const roles = new Set();
+  for (const row of grid?.rows || []) {
+    for (const cell of Object.values(row.cells)) cell.tasks.forEach((task) => roles.add(task.role));
+  }
+  const order = new Map(sortRoles([...roles]).map((role, i) => [role, i]));
+  return Object.fromEntries(
+    (grid?.columns || []).map((column) => {
+      const tasks = [];
+      for (const row of grid?.rows || []) {
+        for (const task of row.cells[column.dow]?.tasks || []) tasks.push({ ...task, userId: row.userId, name: row.name });
+      }
+      tasks.sort(
+        (a, b) =>
+          (order.get(a.role) ?? 0) - (order.get(b.role) ?? 0) || a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+      );
+      return [column.dow, tasks];
+    }),
+  );
+}
+
 /** "Breaks 1.5h · 0.5h not scheduled" for a day header ("" without breaks). */
 export function gridDayBreakText(column, formatHours) {
   if (!column.breakHours) return "";

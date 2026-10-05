@@ -55,6 +55,8 @@ import WeeklyScheduleTimeRoleView, {
 } from "../components/weeklySchedule/WeeklyScheduleTimeRoleView";
 import WeeklyScheduleHoursSummary from "../components/weeklySchedule/WeeklyScheduleHoursSummary";
 import WeeklyScheduleBreaksTasksView from "../components/weeklySchedule/WeeklyScheduleBreaksTasksView";
+import WeeklyScheduleBreaksByTimeView, { BreaksViewToggle } from "../components/weeklySchedule/WeeklyScheduleBreaksByTimeView";
+import { BREAKS_VIEW, buildBreaksByTime } from "../components/weeklySchedule/weeklyScheduleBreaksByTime";
 import WeeklyScheduleResponsibilityChip from "../components/weeklySchedule/WeeklyScheduleResponsibilityChip";
 import {
   ASSIGNMENT_KIND,
@@ -88,6 +90,7 @@ import {
   shiftWeek,
 } from "../components/weeklySchedule/weeklyScheduleDates";
 import {
+  exportWeeklyScheduleBreaksByTimeCsv,
   exportWeeklyScheduleBreaksTasksCsv,
   exportWeeklyScheduleCsv,
   exportWeeklyScheduleHourlyCsv,
@@ -95,6 +98,7 @@ import {
 import WeeklySchedulePrintTable from "../components/weeklySchedule/WeeklySchedulePrintTable";
 import WeeklyScheduleTimeRolePrint from "../components/weeklySchedule/WeeklyScheduleTimeRolePrint";
 import WeeklyScheduleBreaksTasksPrint from "../components/weeklySchedule/WeeklyScheduleBreaksTasksPrint";
+import WeeklyScheduleBreaksByTimePrint from "../components/weeklySchedule/WeeklyScheduleBreaksByTimePrint";
 import WeeklyScheduleSummaryPrint from "../components/weeklySchedule/WeeklyScheduleSummaryPrint";
 import WeeklyScheduleViewTabs from "../components/weeklySchedule/WeeklyScheduleViewTabs";
 import {
@@ -111,6 +115,7 @@ import {
 import {
   buildBreaksTasksGrid,
   filterResponsibilitiesByTaskSelection,
+  gridTasksByDay,
   taskRoleOptions,
 } from "../components/weeklySchedule/weeklyScheduleBreaksGrid";
 import { noRolesSelectedText, summaryTextLines } from "../components/weeklySchedule/weeklyScheduleSummaryLines";
@@ -354,6 +359,8 @@ export default function WeeklySchedulePage() {
   const [roleSelection, setRoleSelection] = useState(null);
   // Task types shown in Breaks & tasks (null = all); independent of the role selection.
   const [taskSelection, setTaskSelection] = useState(null);
+  const [breaksView, setBreaksView] = useState(BREAKS_VIEW.EMPLOYEE);
+  const [breakInterval, setBreakInterval] = useState(30);
   const [dayViewTab, setDayViewTab] = useState(SCHEDULE_VIEW_ALL);
   const [showCoverageNames, setShowCoverageNames] = useState(true);
   const [coverageRange, setCoverageRange] = useState({ fromHour: null, toHour: null });
@@ -752,6 +759,17 @@ export default function WeeklySchedulePage() {
     taskSelection,
     roleCatalog,
   ]);
+  /** Breaks by time: the same coverage records and filters as the employee grid, in time intervals. */
+  const breaksByTime = useMemo(() => {
+    const includeBreaks = showBreakMinutes && scheduleEndTimeEnabled && !noRolesSelected;
+    return buildBreaksByTime({
+      days: includeBreaks ? coverageAllHours : [],
+      dayIndices: visibleDayColumns,
+      interval: breakInterval,
+      includeBreaks,
+    });
+  }, [coverageAllHours, visibleDayColumns, breakInterval, showBreakMinutes, scheduleEndTimeEnabled, noRolesSelected]);
+  const breaksTasksByDay = useMemo(() => gridTasksByDay(breaksTasksGrid), [breaksTasksGrid]);
 
   const addableEmployees = useMemo(() => {
     const ids = new Set(tabEmployees.map((e) => Number(e.user_id)));
@@ -964,6 +982,18 @@ export default function WeeklySchedulePage() {
 
   const handleExport = () => {
     const viewSuffix = scheduleViewLabel ? ` - ${scheduleViewLabel}` : "";
+    if (viewMode === VIEW_MODE.BREAKS_TASKS && breaksView === BREAKS_VIEW.TIME) {
+      exportWeeklyScheduleBreaksByTimeCsv({
+        byTime: breaksByTime,
+        grid: breaksTasksGrid,
+        tasksByDay: breaksTasksByDay,
+        weekStart,
+        tabLabel: `${ENTITY_TAB_LABELS[employerTab]}${viewSuffix}`,
+        summaryLines: noRolesSelected ? [noRolesText] : summaryTextLines(weekSummary, { showBreaks: showBreakMinutes }),
+        showBreaks: showBreakMinutes && scheduleEndTimeEnabled && !noRolesSelected,
+      });
+      return;
+    }
     if (viewMode === VIEW_MODE.BREAKS_TASKS) {
       exportWeeklyScheduleBreaksTasksCsv({
         grid: breaksTasksGrid,
@@ -1533,23 +1563,52 @@ export default function WeeklySchedulePage() {
                       roleUniverse={roleUniverse}
                       showViewOptions={false}
                     />
-                    <WeeklyScheduleBreaksTasksView
-                      weekStart={weekStart}
-                      grid={breaksTasksGrid}
-                      canEdit={canEdit}
-                      showBreaks={showBreakMinutes}
-                      endTimeEnabled={scheduleEndTimeEnabled}
-                      noRolesSelected={noRolesSelected}
-                      noRolesText={noRolesText}
-                      onSelectAllRoles={selectAllRoles}
-                      taskOptions={gridTaskOptions}
-                      taskSelection={taskSelection}
-                      onTaskSelectionChange={updateTaskSelection}
-                      onEditEntry={openEdit}
-                      onEditResponsibility={openEditResponsibility}
-                      onAdd={openCreateFromTimeView}
-                      onAddTask={({ userId, day }) => openCreate(userId, day, { kind: ASSIGNMENT_KIND.RESPONSIBILITY })}
-                    />
+                    <Box sx={{ px: 0.25, pb: 0.75 }}>
+                      <BreaksViewToggle
+                        view={breaksView}
+                        onViewChange={setBreaksView}
+                        interval={breakInterval}
+                        onIntervalChange={setBreakInterval}
+                      />
+                    </Box>
+                    {breaksView === BREAKS_VIEW.TIME ? (
+                      <WeeklyScheduleBreaksByTimeView
+                        weekStart={weekStart}
+                        byTime={breaksByTime}
+                        grid={breaksTasksGrid}
+                        tasksByDay={breaksTasksByDay}
+                        canEdit={canEdit}
+                        showBreaks={showBreakMinutes}
+                        endTimeEnabled={scheduleEndTimeEnabled}
+                        noRolesSelected={noRolesSelected}
+                        noRolesText={noRolesText}
+                        onSelectAllRoles={selectAllRoles}
+                        taskOptions={gridTaskOptions}
+                        taskSelection={taskSelection}
+                        onTaskSelectionChange={updateTaskSelection}
+                        onEditEntry={openEdit}
+                        onEditResponsibility={openEditResponsibility}
+                        onAdd={openCreateFromTimeView}
+                      />
+                    ) : (
+                      <WeeklyScheduleBreaksTasksView
+                        weekStart={weekStart}
+                        grid={breaksTasksGrid}
+                        canEdit={canEdit}
+                        showBreaks={showBreakMinutes}
+                        endTimeEnabled={scheduleEndTimeEnabled}
+                        noRolesSelected={noRolesSelected}
+                        noRolesText={noRolesText}
+                        onSelectAllRoles={selectAllRoles}
+                        taskOptions={gridTaskOptions}
+                        taskSelection={taskSelection}
+                        onTaskSelectionChange={updateTaskSelection}
+                        onEditEntry={openEdit}
+                        onEditResponsibility={openEditResponsibility}
+                        onAdd={openCreateFromTimeView}
+                        onAddTask={({ userId, day }) => openCreate(userId, day, { kind: ASSIGNMENT_KIND.RESPONSIBILITY })}
+                      />
+                    )}
                   </>
                 ) : viewMode === VIEW_MODE.TIME_ROLE ? (
                   <>
@@ -1776,13 +1835,26 @@ export default function WeeklySchedulePage() {
             <div className="weekly-schedule-print-doc-title">
               Weekly Schedule — {ENTITY_TAB_LABELS[employerTab]}
               {viewMode === VIEW_MODE.TIME_ROLE ? " — Hourly coverage by role" : ""}
-              {viewMode === VIEW_MODE.BREAKS_TASKS ? " — Breaks & tasks" : ""}
+              {viewMode === VIEW_MODE.BREAKS_TASKS
+                ? breaksView === BREAKS_VIEW.TIME
+                  ? ` — Breaks by time (${breaksByTime.interval} min) & tasks`
+                  : " — Breaks & tasks by employee"
+                : ""}
               {scheduleViewLabel ? ` — ${scheduleViewLabel}` : ""}
             </div>
             <div className="weekly-schedule-print-doc-subtitle">{formatWeekRange(weekStart)}</div>
             <WeeklyScheduleSummaryPrint summary={weekSummary} showBreaks={showBreakMinutes} noRolesText={noRolesText} />
           </div>
-          {viewMode === VIEW_MODE.BREAKS_TASKS ? (
+          {viewMode === VIEW_MODE.BREAKS_TASKS && breaksView === BREAKS_VIEW.TIME ? (
+            <WeeklyScheduleBreaksByTimePrint
+              byTime={breaksByTime}
+              grid={breaksTasksGrid}
+              tasksByDay={breaksTasksByDay}
+              weekStart={weekStart}
+              showBreaks={showBreakMinutes && scheduleEndTimeEnabled && !noRolesSelected}
+              noRolesText={showBreakMinutes && scheduleEndTimeEnabled ? noRolesText : ""}
+            />
+          ) : viewMode === VIEW_MODE.BREAKS_TASKS ? (
             <WeeklyScheduleBreaksTasksPrint
               grid={breaksTasksGrid}
               weekStart={weekStart}

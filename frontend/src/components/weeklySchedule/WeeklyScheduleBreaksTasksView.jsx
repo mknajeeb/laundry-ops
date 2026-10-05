@@ -50,7 +50,31 @@ function activate(handler) {
   };
 }
 
-function TaskFilter({ options, selection, onChange }) {
+export function BreaksNotices({ showBreaks, endTimeEnabled, noRolesSelected, noRolesText, onSelectAllRoles }) {
+  return (
+    <>
+      {!endTimeEnabled ? <Alert severity="info">Planned break times need shift end times. Tasks are listed below.</Alert> : null}
+      {endTimeEnabled && !showBreaks ? <Alert severity="info">Break details are hidden in this view.</Alert> : null}
+      {noRolesSelected && showBreaks && endTimeEnabled ? (
+        <Alert
+          severity="info"
+          data-no-roles-selected
+          action={
+            onSelectAllRoles ? (
+              <Button color="inherit" size="small" onClick={onSelectAllRoles} sx={{ fontWeight: 800 }}>
+                Select all
+              </Button>
+            ) : null
+          }
+        >
+          {`${noRolesText}—breaks are hidden until a role is selected. Tasks are still shown.`}
+        </Alert>
+      ) : null}
+    </>
+  );
+}
+
+export function TaskFilter({ options, selection, onChange }) {
   if (!options.length || !onChange) return null;
   const allSelected = !Array.isArray(selection);
   return (
@@ -222,23 +246,13 @@ export default function WeeklyScheduleBreaksTasksView({
   const hasUnassigned = columns.some((column) => column.unassignedTasks.length);
   return (
     <Stack spacing={0.75} sx={{ pb: 2 }}>
-      {!endTimeEnabled ? <Alert severity="info">Planned break times need shift end times. Tasks are listed below.</Alert> : null}
-      {endTimeEnabled && !showBreaks ? <Alert severity="info">Break details are hidden in this view.</Alert> : null}
-      {noRolesSelected && showBreaks && endTimeEnabled ? (
-        <Alert
-          severity="info"
-          data-no-roles-selected
-          action={
-            onSelectAllRoles ? (
-              <Button color="inherit" size="small" onClick={onSelectAllRoles} sx={{ fontWeight: 800 }}>
-                Select all
-              </Button>
-            ) : null
-          }
-        >
-          {`${noRolesText}—breaks are hidden until a role is selected. Tasks are still shown.`}
-        </Alert>
-      ) : null}
+      <BreaksNotices
+        showBreaks={showBreaks}
+        endTimeEnabled={endTimeEnabled}
+        noRolesSelected={noRolesSelected}
+        noRolesText={noRolesText}
+        onSelectAllRoles={onSelectAllRoles}
+      />
       <TaskFilter options={taskOptions} selection={taskSelection} onChange={onTaskSelectionChange} />
       <Paper elevation={0} sx={{ border: "1px solid #e2e8f0", borderRadius: 2, overflow: "hidden", bgcolor: "#fff" }}>
         <TableContainer sx={{ overflowX: "auto" }}>

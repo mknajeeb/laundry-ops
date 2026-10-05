@@ -28,6 +28,7 @@ import {
   untimedBreakTotalNote,
 } from "./weeklyScheduleTimeBlocks";
 import { gridDayBreakText, gridDayTaskText } from "./weeklyScheduleBreaksGrid";
+import { byTimeDayHeaderText, slotHeadline, slotPersonDetail, untimedPersonText } from "./weeklyScheduleBreaksByTime";
 
 /** Excel-safe text — no smart quotes, en-dashes, or middle dots. */
 export function exportAsciiText(value) {
@@ -565,4 +566,79 @@ export function buildBreaksTasksCsvRows({ grid, weekStart, summaryLines = [], sh
 export function exportWeeklyScheduleBreaksTasksCsv({ grid, weekStart, tabLabel, summaryLines = [], showBreaks = true }) {
   const lines = buildBreaksTasksCsvRows({ grid, weekStart, summaryLines, showBreaks });
   downloadCsv(lines, csvFileName({ weekStart, tabLabel: `${tabLabel || "schedule"} breaks and tasks` }));
+}
+
+function slotCellText(cell) {
+  if (!cell?.count) return "";
+  return [slotHeadline(cell), ...cell.people.map((person) => `${person.name} ${slotPersonDetail(person)}`)].join("; ");
+}
+
+/**
+ * Breaks by time export: summary lines, one column per shown day, one row per interval (gaps collapsed),
+ * the scheduled total, breaks without a time, then the tasks section and unassigned tasks.
+ */
+export function buildBreaksByTimeCsvRows({ byTime, grid, tasksByDay = {}, weekStart, summaryLines = [], showBreaks = true }) {
+  const columns = byTime?.columns || [];
+  const gridColumns = new Map((grid?.columns || []).map((column) => [column.dow, column]));
+  const dayHeaders = columns.map((c) => csvCell(`${DAY_LABELS[c.dow]} ${dayDateLabel(weekStart, c.dow)}`));
+  const lines = summaryLines.map((line) => csvCell(line));
+  if (lines.length) lines.push("");
+  if (showBreaks) {
+    lines.push([csvCell(`Time (${byTime.interval} min)`), ...dayHeaders].join(","));
+    lines.push(
+      [csvCell("Day totals"), ...columns.map((c) => csvCell(byTimeDayHeaderText(c, (h) => `${coverageHours(h)}h`)))].join(","),
+    );
+    for (const row of byTime.rows) {
+      if (row.gap) lines.push([csvCell(row.label), csvCell("No timed breaks")].join(","));
+      else lines.push([csvCell(row.label), ...columns.map((c) => csvCell(slotCellText(row.cells[c.dow])))].join(","));
+    }
+    if (byTime.hasTimed) {
+      lines.push(
+        [
+          csvCell(`Scheduled total (week ${coverageHours(byTime.week.intervalHours)}h)`),
+          ...columns.map((c) => csvCell(`${coverageHours(c.intervalHours)}h`)),
+        ].join(","),
+      );
+    }
+    if (columns.some((c) => c.untimed.length)) {
+      lines.push(
+        [
+          csvCell(`Not scheduled (week ${coverageHours(byTime.week.untimedBreakHours)}h)`),
+          ...columns.map((c) => csvCell(c.untimed.map(untimedPersonText).join("; "))),
+        ].join(","),
+      );
+    }
+    lines.push("");
+  }
+  lines.push([csvCell("Tasks"), ...dayHeaders].join(","));
+  lines.push(
+    [
+      csvCell("Assigned"),
+      ...columns.map((c) =>
+        csvCell(
+          (tasksByDay[c.dow] || []).map((task) => `${task.label} - ${task.name}: ${task.remarks || "no instructions"}`).join("; "),
+        ),
+      ),
+    ].join(","),
+  );
+  if ([...gridColumns.values()].some((c) => c.unassignedTasks.length)) {
+    lines.push(
+      [
+        csvCell("Unassigned tasks"),
+        ...columns.map((c) => csvCell((gridColumns.get(c.dow)?.unassignedTasks || []).map(scheduleRoleLabel).join(" / "))),
+      ].join(","),
+    );
+  }
+  lines.push(
+    "",
+    csvCell(
+      "Break-hours in a row count only the part of each break inside that interval. Max at once is shown when not everyone listed is on break together. Breaks without a time are never placed in a row.",
+    ),
+  );
+  return lines;
+}
+
+export function exportWeeklyScheduleBreaksByTimeCsv({ byTime, grid, tasksByDay, weekStart, tabLabel, summaryLines = [], showBreaks = true }) {
+  const lines = buildBreaksByTimeCsvRows({ byTime, grid, tasksByDay, weekStart, summaryLines, showBreaks });
+  downloadCsv(lines, csvFileName({ weekStart, tabLabel: `${tabLabel || "schedule"} breaks by time` }));
 }

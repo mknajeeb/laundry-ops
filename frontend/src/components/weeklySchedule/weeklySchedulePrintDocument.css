@@ -35,6 +35,12 @@
 
 .weekly-schedule-print-breaks-grid td {
   vertical-align: top;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.weekly-schedule-print-breaks-grid + .weekly-schedule-print-breaks-grid {
+  margin-top: 8px;
 }
 
 .weekly-schedule-print-table {
