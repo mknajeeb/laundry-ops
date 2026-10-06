@@ -784,8 +784,11 @@ export default function ScanChronologyPage() {
     if (isEventStage) {
       return (
         <>
-          <SummaryCard label="Washer loads" value={summary.washer_loads ?? summary.total_washer_loads ?? 0} />
-          <SummaryCard label="Dryer loads" value={summary.dryer_loads ?? summary.total_drying_scans ?? 0} />
+          {activeStage === "washing" ? (
+            <SummaryCard label="Washer loads" value={summary.washer_loads ?? summary.total_washer_loads ?? 0} />
+          ) : (
+            <SummaryCard label="Dryer loads" value={summary.dryer_loads ?? summary.total_drying_scans ?? 0} />
+          )}
           <SummaryCard label="Unique bags" value={summary.unique_bags_handled ?? 0} />
           <SummaryCard label="First" value={formatDateTime(summary.first_time_et) || "—"} />
           <SummaryCard label="Last" value={formatDateTime(summary.last_time_et) || "—"} />
@@ -972,26 +975,27 @@ export default function ScanChronologyPage() {
     }
 
     if (isEventStage) {
+      const isWashing = activeStage === "washing";
+      const rackKey = isWashing ? "washer_rack" : "dryer_rack";
+      const timeKey = isWashing ? "wash_time_et" : "dry_time_et";
       return (
         <TableContainer
           component={Paper}
           elevation={0}
           sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2 }}
         >
-          <Table size="small" sx={{ minWidth: 720 }}>
+          <Table size="small" sx={{ minWidth: 560 }}>
             <TableHead>
               <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue, "& th": { color: "#fff", fontWeight: 700 } }}>
                 <TableCell>Bag</TableCell>
                 <TableCell>Employee</TableCell>
-                <TableCell>Washer</TableCell>
-                <TableCell>Wash Time</TableCell>
-                <TableCell>Dryer</TableCell>
-                <TableCell>Dry Time</TableCell>
+                <TableCell>{isWashing ? "Washer" : "Dryer"}</TableCell>
+                <TableCell>{isWashing ? "Wash Time" : "Dry Time"}</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {sessions.map((row) => (
-                <TableRow key={`${row.index}-${row.bag_id}-${row.wash_time_et}-${row.dry_time_et}-${row.washer_rack}`} hover>
+                <TableRow key={`${row.index}-${row.bag_id}-${row[timeKey]}-${row[rackKey]}`} hover>
                   <TableCell>
                     <Button
                       size="small"
@@ -1002,10 +1006,8 @@ export default function ScanChronologyPage() {
                     </Button>
                   </TableCell>
                   <TableCell>{row.employee || "—"}</TableCell>
-                  <TableCell>{row.washer_rack || "—"}</TableCell>
-                  <TableCell>{formatDateTime(row.wash_time_et) || "—"}</TableCell>
-                  <TableCell>{row.dryer_rack || "—"}</TableCell>
-                  <TableCell>{formatDateTime(row.dry_time_et) || "—"}</TableCell>
+                  <TableCell>{row[rackKey] || "—"}</TableCell>
+                  <TableCell>{formatDateTime(row[timeKey] || row.timestamp_et) || "—"}</TableCell>
                 </TableRow>
               ))}
             </TableBody>

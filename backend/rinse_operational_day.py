@@ -616,6 +616,19 @@ def _employees(rows: Sequence[Mapping[str, Any]]) -> list[str]:
     )
 
 
+def _load_sort_key(rack_key: str):
+    def key(row: Mapping[str, Any]) -> tuple:
+        ts = row.get("timestamp_et")
+        return (
+            ts is None,
+            ts if isinstance(ts, datetime) else datetime.min,
+            str(row.get("bag_id") or ""),
+            str(row.get(rack_key) or ""),
+        )
+
+    return key
+
+
 def _performance_for_employee_filter(
     performance: Sequence[Mapping[str, Any]] | None,
     employee_filter: str | None,
@@ -672,13 +685,30 @@ def chronology_payload_from_views(
             employee_filter=employee_filter,
             bag_id_filter=bag_id_filter,
         )
-    elif stage in ("washing", "drying"):
-        rows = _apply_filters(
-            list(views.get("wash_dry") or []),
+    elif stage == "washing":
+        loads = _apply_filters(
+            list(views.get("washer_loads") or []),
             employee_filter=employee_filter,
             bag_id_filter=bag_id_filter,
             machine_filter=machine_filter,
+            machine_keys=("washer_rack",),
         )
+        rows = [
+            {**row, "wash_time_et": row.get("timestamp_et")}
+            for row in sorted(loads, key=_load_sort_key("washer_rack"))
+        ]
+    elif stage == "drying":
+        loads = _apply_filters(
+            list(views.get("dryer_loads") or []),
+            employee_filter=employee_filter,
+            bag_id_filter=bag_id_filter,
+            machine_filter=machine_filter,
+            machine_keys=("dryer_rack",),
+        )
+        rows = [
+            {**row, "dry_time_et": row.get("timestamp_et")}
+            for row in sorted(loads, key=_load_sort_key("dryer_rack"))
+        ]
     elif stage == "washer_utilization":
         loads = _apply_filters(
             list(views.get("washer_loads") or []),
@@ -767,42 +797,35 @@ def chronology_payload_from_views(
             "current time; closed segments end at the segment end. No start-to-end session. "
             "Summary SORT hours and bags/hr use the same employee scope as the rows."
         )
-    elif stage in ("washing", "drying"):
-        # Load KPIs must match the employee/bag/machine filter used for rows.
-        payload_washer_loads = _apply_filters(
-            list(views.get("washer_loads") or []),
-            employee_filter=employee_filter,
-            bag_id_filter=bag_id_filter,
-            machine_filter=machine_filter,
-            machine_keys=("washer_rack",),
-        )
-        payload_dryer_loads = _apply_filters(
-            list(views.get("dryer_loads") or []),
-            employee_filter=employee_filter,
-            bag_id_filter=bag_id_filter,
-            machine_filter=machine_filter,
-            machine_keys=("dryer_rack",),
-        )
-        wash_n = len(payload_washer_loads)
-        dry_n = len(payload_dryer_loads)
-        bags = len(
-            {r["bag_id"] for r in payload_washer_loads}
-            | {r["bag_id"] for r in payload_dryer_loads}
-        )
+    elif stage == "washing":
+        payload_washer_loads = rows
+        payload_dryer_loads = []
         summary = {
-            "washer_loads": wash_n,
-            "dryer_loads": dry_n,
-            "unique_bags_handled": bags,
-            "total_washer_loads": wash_n,
-            "total_drying_scans": dry_n,
+            "washer_loads": len(rows),
+            "total_washer_loads": len(rows),
+            "unique_bags_handled": len({r["bag_id"] for r in rows}),
             "first_time_et": min(times) if times else None,
             "last_time_et": max(times) if times else None,
         }
         rules = (
-            "Washer loads are start-cleaning on a washer rack. Dryer loads are drying on "
-            "a dryer rack. Both count only inside OPERATOR time. Dedupe is bag + timestamp "
-            "+ rack, so two machines in the same minute stay two loads. Summary load and "
-            "unique-bag counts use the same employee filter as the displayed rows."
+            "One row per washer load in time order: start-cleaning on a washer rack, "
+            "counted only inside OPERATOR time. Dedupe is bag + timestamp + rack, so two "
+            "machines in the same minute stay two loads."
+        )
+    elif stage == "drying":
+        payload_washer_loads = []
+        payload_dryer_loads = rows
+        summary = {
+            "dryer_loads": len(rows),
+            "total_drying_scans": len(rows),
+            "unique_bags_handled": len({r["bag_id"] for r in rows}),
+            "first_time_et": min(times) if times else None,
+            "last_time_et": max(times) if times else None,
+        }
+        rules = (
+            "One row per dryer load in time order: drying on a dryer rack, counted only "
+            "inside OPERATOR time. Dedupe is bag + timestamp + rack, so two machines in "
+            "the same minute stay two loads."
         )
     else:
         machines = sorted({str(r.get("machine") or "") for r in rows if r.get("machine")})

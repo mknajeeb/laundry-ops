@@ -251,14 +251,22 @@ def test_sorting_sep18_prior_date_regression():
     assert yesenia["sorting_bags_per_hour"] == 12.49
 
 
-def test_wash_dry_all_employees_keeps_full_day_totals():
-    for stage in ("washing", "drying"):
-        summary = chronology_payload_from_views(_sep23_views(), stage)["summary"]
-        assert summary["washer_loads"] == 124
-        assert summary["dryer_loads"] == 107
-        assert summary["unique_bags_handled"] == 124
-        assert summary["total_washer_loads"] == 124
-        assert summary["total_drying_scans"] == 107
+def test_washing_all_employees_keeps_full_day_washer_totals():
+    payload = chronology_payload_from_views(_sep23_views(), "washing")
+    summary = payload["summary"]
+    assert summary["washer_loads"] == 124
+    assert summary["total_washer_loads"] == 124
+    assert summary["unique_bags_handled"] == 124
+    assert "dryer_loads" not in summary
+
+
+def test_drying_all_employees_keeps_full_day_dryer_totals():
+    payload = chronology_payload_from_views(_sep23_views(), "drying")
+    summary = payload["summary"]
+    assert summary["dryer_loads"] == 107
+    assert summary["total_drying_scans"] == 107
+    assert summary["unique_bags_handled"] == 78
+    assert "washer_loads" not in summary
 
 
 def test_wash_dry_employee_filter_uses_filtered_load_population():
@@ -266,30 +274,76 @@ def test_wash_dry_employee_filter_uses_filtered_load_population():
     maria_wash = chronology_payload_from_views(
         views, "washing", employee_filter="Maria Perez"
     )
+    assert maria_wash["summary"]["washer_loads"] == 0
+    assert maria_wash["summary"]["unique_bags_handled"] == 0
+    assert maria_wash["sessions"] == []
+
     maria_dry = chronology_payload_from_views(
         views, "drying", employee_filter="Maria Perez"
     )
-    for payload in (maria_wash, maria_dry):
-        summary = payload["summary"]
-        assert summary["washer_loads"] == 0
-        assert summary["dryer_loads"] == 29
-        assert summary["unique_bags_handled"] == 29
-        assert len(payload["washer_loads"]) == 0
-        assert len(payload["dryer_loads"]) == 29
+    assert maria_dry["summary"]["dryer_loads"] == 29
+    assert maria_dry["summary"]["unique_bags_handled"] == 29
+    assert len(maria_dry["sessions"]) == 29
+    assert len(maria_dry["dryer_loads"]) == 29
 
-    varun = chronology_payload_from_views(
+    varun_wash = chronology_payload_from_views(
         views, "washing", employee_filter="Varun Kumar Mongia"
     )["summary"]
-    assert varun["washer_loads"] == 124
-    assert varun["dryer_loads"] == 78
-    assert varun["unique_bags_handled"] == 124
+    assert varun_wash["washer_loads"] == 124
+    assert varun_wash["unique_bags_handled"] == 124
+
+    varun_dry = chronology_payload_from_views(
+        views, "drying", employee_filter="Varun Kumar Mongia"
+    )["summary"]
+    assert varun_dry["dryer_loads"] == 78
+    assert varun_dry["unique_bags_handled"] == 78
 
     francis = chronology_payload_from_views(
         views, "washing", employee_filter="Francis"
     )["summary"]
     assert francis["washer_loads"] == 0
-    assert francis["dryer_loads"] == 0
     assert francis["unique_bags_handled"] == 0
+
+
+def test_washing_rows_are_wash_only_and_chronological():
+    payload = chronology_payload_from_views(_sep23_views(), "washing")
+    rows = payload["sessions"]
+    assert len(rows) == 124
+    times = [r["wash_time_et"] for r in rows]
+    assert times == sorted(times)
+    for row in rows:
+        assert row["washer_rack"]
+        assert row["wash_time_et"] == row["timestamp_et"]
+        assert not row.get("dryer_rack")
+        assert not row.get("dry_time_et")
+
+
+def test_drying_rows_are_dry_only_and_chronological():
+    payload = chronology_payload_from_views(_sep23_views(), "drying")
+    rows = payload["sessions"]
+    assert len(rows) == 107
+    times = [r["dry_time_et"] for r in rows]
+    assert times == sorted(times)
+    for row in rows:
+        assert row["dryer_rack"]
+        assert row["dry_time_et"] == row["timestamp_et"]
+        assert not row.get("washer_rack")
+        assert not row.get("wash_time_et")
+
+
+def test_same_minute_loads_on_two_washers_stay_two_rows():
+    ts = datetime(2026, 9, 23, 6, 3)
+    views = {
+        "date_et": "2026-09-23",
+        "washer_loads": [
+            _wash("BAG1", "Varun Kumar Mongia", 26, ts, "W26-30-VW"),
+            _wash("BAG1", "Varun Kumar Mongia", 26, ts, "W24-30-VW"),
+        ],
+        "dryer_loads": [],
+        "performance": [],
+    }
+    rows = chronology_payload_from_views(views, "washing")["sessions"]
+    assert [r["washer_rack"] for r in rows] == ["W24-30-VW", "W26-30-VW"]
 
 
 def test_washer_utilization_remains_employee_filtered():
