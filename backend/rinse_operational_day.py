@@ -14,6 +14,7 @@ A neighboring scan never assigns the employee.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from collections.abc import Collection
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
@@ -36,10 +37,12 @@ from backend.rinse_scan_purpose import (
     is_weight_entry_purpose,
 )
 from backend.rinse_sorting_session import is_wash_handoff_add_photos_scan
+from backend.scan_chronology_service_filter import allowed_bag_ids, keep_allowed_rows
 
 ROLE_SORT = "SORT"
 ROLE_OPERATOR = "OPERATOR"
 _CATEGORY = "RINSE_WF"
+_VIEW_ROW_KEYS = ("weighing", "sorting", "washer_loads", "dryer_loads", "wash_dry")
 
 
 def _naive(raw: Any) -> datetime | None:
@@ -592,7 +595,16 @@ def chronology_payload_from_views(
     bag_id_filter: str | None = None,
     confidence_filter: str | None = None,
     machine_filter: str | None = None,
+    allowed_bag_ids: Collection[str] | None = None,
 ) -> dict[str, Any]:
+    if allowed_bag_ids is not None:
+        views = {
+            **views,
+            **{
+                key: keep_allowed_rows(views.get(key) or [], allowed_bag_ids)
+                for key in _VIEW_ROW_KEYS
+            },
+        }
     if confidence_filter and str(confidence_filter).strip().lower() == "inferred":
         rows: list[dict[str, Any]] = []
     elif stage == "weighing":
@@ -985,6 +997,7 @@ def build_operational_chronology_payload(
     machine_filter: str | None = None,
     views: Mapping[str, Any] | None = None,
     now: datetime | None = None,
+    service_types: Collection[str] | None = None,
 ) -> dict[str, Any]:
     if views is None:
         views = load_operational_day(
@@ -997,4 +1010,15 @@ def build_operational_chronology_payload(
         bag_id_filter=bag_id_filter,
         confidence_filter=confidence_filter,
         machine_filter=machine_filter,
+        allowed_bag_ids=views_allowed_bag_ids(cursor, organization_id, views, service_types),
     )
+
+
+def views_allowed_bag_ids(
+    cursor,
+    organization_id: int,
+    views: Mapping[str, Any],
+    service_types: Collection[str] | None,
+) -> set[str] | None:
+    bag_ids = {row.get("bag_id") for key in _VIEW_ROW_KEYS for row in views.get(key) or []}
+    return allowed_bag_ids(cursor, organization_id, bag_ids, service_types)

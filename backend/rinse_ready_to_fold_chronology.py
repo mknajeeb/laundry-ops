@@ -7,6 +7,7 @@ Builds a 24-hour report in 15-minute intervals for the selected ET day.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
@@ -24,6 +25,7 @@ from backend.rinse_folding_et import (
 )
 from backend.rinse_scan_purpose import is_sent_to_vendor_purpose
 from backend.rinse_simple_shift_performance import _load_bag_metadata
+from backend.scan_chronology_service_filter import restrict_bag_ids
 from backend.ta_helpers import table_exists
 
 DEFAULT_DRYING_DURATION_MINUTES = 40
@@ -505,6 +507,7 @@ def build_ready_to_fold_chronology_payload(
     # Accepted for API symmetry with other stages; unused for bag-status report.
     employee_filter: str | None = None,
     confidence_filter: str | None = None,
+    service_types: Collection[str] | None = None,
 ) -> dict[str, Any]:
     del employee_filter, confidence_filter  # unused
 
@@ -541,6 +544,7 @@ def build_ready_to_fold_chronology_payload(
     if bag_id_filter:
         needle = _bag_key(bag_id_filter)
         candidate_ids = [bid for bid in candidate_ids if bid == needle]
+    candidate_ids = restrict_bag_ids(cursor, organization_id, candidate_ids, service_types)
 
     candidate_set = set(candidate_ids)
     events_by_bag: dict[str, list[dict[str, Any]]] = {}

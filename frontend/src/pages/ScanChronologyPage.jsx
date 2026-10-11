@@ -4,10 +4,12 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   Drawer,
   FormControl,
+  FormControlLabel,
   IconButton,
   InputLabel,
   MenuItem,
@@ -68,6 +70,14 @@ const EVENT_STAGES = new Set(["washing", "drying"]);
 const SIMPLE_EVENT_STAGES = new Set(["weighing", "sorting"]);
 const UTIL_STAGES = new Set(["washer_utilization", "dryer_utilization"]);
 const LOCAL_SESSION_STAGES = new Set(["weighing", "sorting", "washing", "drying", "folder"]);
+const NO_SERVICE_TYPES = "none";
+
+function serviceTypesParam(wf, hd) {
+  if (wf && hd) return "";
+  if (wf) return "WF";
+  if (hd) return "HD";
+  return NO_SERVICE_TYPES;
+}
 const DEFAULT_DRYING_DURATION_MINUTES = 40;
 
 const READY_VIEW_OPTIONS = [
@@ -358,6 +368,9 @@ export default function ScanChronologyPage() {
   const [activityTypeFilter, setActivityTypeFilter] = useState("all");
   const [dryingDurationMinutes, setDryingDurationMinutes] = useState(DEFAULT_DRYING_DURATION_MINUTES);
   const [orderTypeFilter, setOrderTypeFilter] = useState("");
+  const [serviceWF, setServiceWF] = useState(true);
+  const [serviceHD, setServiceHD] = useState(true);
+  const serviceTypes = serviceTypesParam(serviceWF, serviceHD);
   const [machineFilter, setMachineFilter] = useState("");
   const [readyViewMode, setReadyViewMode] = useState("both");
   const [pfCurrentStageFilter, setPfCurrentStageFilter] = useState("");
@@ -381,10 +394,17 @@ export default function ScanChronologyPage() {
     loadAbortRef.current = controller;
     const seq = ++loadSeqRef.current;
 
-    setLoading(true);
     setError("");
+    if (filters.service_types === NO_SERVICE_TYPES) {
+      setData(null);
+      setActiveDateEt(dateEt);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
     try {
       const params = { date_et: dateEt, stage };
+      if (filters.service_types) params.service_types = filters.service_types;
       if (filters.employee) params.employee = filters.employee;
       if (filters.bag_id) params.bag_id = filters.bag_id;
       if (filters.confidence) params.confidence = filters.confidence;
@@ -433,8 +453,10 @@ export default function ScanChronologyPage() {
       order_type: isReadyToFold ? orderTypeFilter : undefined,
       machine: isReadyToFold ? machineFilter : undefined,
       view_mode: isReadyToFold ? readyViewMode : undefined,
+      service_types: serviceTypes,
     }),
     [
+      serviceTypes,
       employeeFilter,
       bagFilter,
       confidenceFilter,
@@ -660,6 +682,17 @@ export default function ScanChronologyPage() {
     load(activeDateEt, activeStage, {
       ...currentFilters,
       employee: value,
+    });
+  };
+
+  const handleServiceToggle = (service, checked) => {
+    const nextWF = service === "WF" ? checked : serviceWF;
+    const nextHD = service === "HD" ? checked : serviceHD;
+    setServiceWF(nextWF);
+    setServiceHD(nextHD);
+    load(activeDateEt, activeStage, {
+      ...currentFilters,
+      service_types: serviceTypesParam(nextWF, nextHD),
     });
   };
 
@@ -1199,6 +1232,28 @@ export default function ScanChronologyPage() {
 
       <Paper elevation={0} sx={{ p: 1.5, mb: 2, borderRadius: 2, border: "1px solid", borderColor: "divider" }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} flexWrap="wrap" useFlexGap>
+          <Stack direction="row" alignItems="center">
+            <FormControlLabel
+              control={
+                <Checkbox
+                  size="small"
+                  checked={serviceWF}
+                  onChange={(e) => handleServiceToggle("WF", e.target.checked)}
+                />
+              }
+              label="Wash & Fold (WF)"
+            />
+            <FormControlLabel
+              control={
+                <Checkbox
+                  size="small"
+                  checked={serviceHD}
+                  onChange={(e) => handleServiceToggle("HD", e.target.checked)}
+                />
+              }
+              label="Hang Dry (HD)"
+            />
+          </Stack>
           {isProcessFlow ? (
             <>
               <FormControl size="small" sx={{ minWidth: 180 }}>
@@ -1429,6 +1484,12 @@ export default function ScanChronologyPage() {
       {loading && data ? (
         <Alert severity="info" sx={{ mb: 2 }} icon={<CircularProgress size={16} />}>
           Refreshing {stageLabel}…
+        </Alert>
+      ) : null}
+
+      {serviceTypes === NO_SERVICE_TYPES ? (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          No service type selected. Check Wash & Fold (WF) and/or Hang Dry (HD) to show scans.
         </Alert>
       ) : null}
 
