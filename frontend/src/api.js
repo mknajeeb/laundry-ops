@@ -982,6 +982,22 @@ export const getScanChronology = (params = {}, config = {}) =>
     ...config,
   });
 
+/** Scan Chronology local sessions (separate from payroll / attendance). */
+export const createScanChronologyLocalSession = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/scan-chronology/local-sessions`, body, {
+    timeout: 30000,
+  });
+
+export const updateScanChronologyLocalSession = (id, body) =>
+  axios.put(`${API_BASE}/rinse/shift-analysis/scan-chronology/local-sessions/${id}`, body, {
+    timeout: 30000,
+  });
+
+export const deleteScanChronologyLocalSession = (id) =>
+  axios.delete(`${API_BASE}/rinse/shift-analysis/scan-chronology/local-sessions/${id}`, {
+    timeout: 30000,
+  });
+
 /** Read-only Process Flow stage-availability calculator. */
 export const calculateProcessFlowIntervals = (body = {}, config = {}) =>
   axios.post(`${API_BASE}/rinse/shift-analysis/process-flow-calculator`, body, {

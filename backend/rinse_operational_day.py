@@ -4,10 +4,9 @@ One bounded read of RINSE_WF role segments and one bounded read of
 ``rinse_bag_scan_events`` for the requested Eastern day. Ordinary day views
 do not load ``raw_json`` or a bag's full history.
 
-Attribution requires both:
-
-* the scan ``user_name`` maps to the employee, and
-* the scan timestamp falls inside that employee's applicable role segment.
+Each row is attributed to the scan's own ``user_name`` (mapped to the app
+employee when the name is known, otherwise the portal name as scanned). Rows
+are never hidden because the employee has no payroll / attendance segment.
 
 A neighboring scan never assigns the employee.
 """
@@ -123,43 +122,15 @@ def _resolve_employee(
     return hit if hit else None
 
 
-def _covers(seg: Mapping[str, Any], ts: datetime, now: datetime) -> bool:
-    start = _naive(seg.get("started_at"))
-    if start is None or ts < start:
-        return False
-    end = _naive(seg.get("ended_at")) if seg.get("ended_at") is not None else now
-    if end is None:
-        return False
-    return ts <= end
-
-
-def _covering_segment(
-    segments: Sequence[Mapping[str, Any]],
-    user_id: int,
-    ts: datetime,
-    now: datetime,
-    *,
-    role: str | None,
-) -> Mapping[str, Any] | None:
-    hits = []
-    for seg in segments:
-        try:
-            uid = int(seg.get("user_id") or 0)
-        except (TypeError, ValueError):
-            continue
-        if uid != user_id:
-            continue
-        if str(seg.get("category_code") or _CATEGORY).strip().upper() not in ("", _CATEGORY):
-            if str(seg.get("category_code") or "").strip().upper() != _CATEGORY:
-                continue
-        code = str(seg.get("role_code") or "").strip().upper()
-        if role and code != role:
-            continue
-        if _covers(seg, ts, now):
-            hits.append(seg)
-    if not hits:
-        return None
-    return max(hits, key=lambda s: _naive(s.get("started_at")) or datetime.min)
+def _scan_employee(
+    scan_name: Any,
+    name_index: Mapping[str, tuple[int, str]],
+) -> tuple[int | None, str | None]:
+    hit = _resolve_employee(scan_name, name_index)
+    if hit:
+        return hit
+    raw = str(scan_name or "").strip()
+    return None, raw or None
 
 
 def _merged_hours(intervals: list[tuple[datetime, datetime]]) -> float:
@@ -305,23 +276,19 @@ def build_operational_views(
         for anchor, ev in first_weight_by_anchor.items():
             if _already_marked_before_day(prior_weight.get(bid), anchor, day_start):
                 continue
-            who = _resolve_employee(ev.get("user_name"), index)
+            uid, employee = _scan_employee(ev.get("user_name"), index)
             ts = _naive(event_ts(ev))
-            if who is None or ts is None:
-                continue
-            seg = _covering_segment(segments, who[0], ts, now_wall, role=None)
-            if seg is None:
+            if ts is None:
                 continue
             weighing.append(
                 {
                     "bag_id": bid,
-                    "employee": who[1],
-                    "user_id": who[0],
+                    "employee": employee,
+                    "user_id": uid,
                     "time_et": ts,
                     "start_et": ts,
                     "end_et": ts,
                     "weight_lbs": _weight_value(ev.get("weight_lbs")),
-                    "work_slot_role": str(seg.get("role_code") or "").strip().upper() or None,
                     "confidence": "exact",
                     "source": "weight-entry",
                     "event_purpose": "weight-entry",
@@ -355,18 +322,15 @@ def build_operational_views(
         for anchor, ev in first_sort_by_anchor.items():
             if _already_marked_before_day(prior_add_photos.get(bid), anchor, day_start):
                 continue
-            who = _resolve_employee(ev.get("user_name"), index)
+            uid, employee = _scan_employee(ev.get("user_name"), index)
             ts = _naive(event_ts(ev))
-            if who is None or ts is None:
-                continue
-            seg = _covering_segment(segments, who[0], ts, now_wall, role=ROLE_SORT)
-            if seg is None:
+            if ts is None:
                 continue
             sorting.append(
                 {
                     "bag_id": bid,
-                    "employee": who[1],
-                    "user_id": who[0],
+                    "employee": employee,
+                    "user_id": uid,
                     "sort_time_et": ts,
                     "time_et": ts,
                     "start_et": ts,
@@ -374,7 +338,6 @@ def build_operational_views(
                     "confidence": "exact",
                     "source": "add-photos",
                     "event_purpose": "add-photos",
-                    "work_slot_role": ROLE_SORT,
                 }
             )
 
@@ -391,16 +354,12 @@ def build_operational_views(
                 if key in wash_seen:
                     continue
                 wash_seen.add(key)
-                who = _resolve_employee(ev.get("user_name"), index)
-                if who is None:
-                    continue
-                if _covering_segment(segments, who[0], ts, now_wall, role=ROLE_OPERATOR) is None:
-                    continue
+                uid, employee = _scan_employee(ev.get("user_name"), index)
                 washes.append(
                     {
                         "bag_id": bid,
-                        "employee": who[1],
-                        "user_id": who[0],
+                        "employee": employee,
+                        "user_id": uid,
                         "timestamp_et": ts,
                         "washer_rack": rack,
                         "confidence": "exact",
@@ -415,16 +374,12 @@ def build_operational_views(
                 if key in dry_seen:
                     continue
                 dry_seen.add(key)
-                who = _resolve_employee(ev.get("user_name"), index)
-                if who is None:
-                    continue
-                if _covering_segment(segments, who[0], ts, now_wall, role=ROLE_OPERATOR) is None:
-                    continue
+                uid, employee = _scan_employee(ev.get("user_name"), index)
                 dries.append(
                     {
                         "bag_id": bid,
-                        "employee": who[1],
-                        "user_id": who[0],
+                        "employee": employee,
+                        "user_id": uid,
                         "timestamp_et": ts,
                         "dryer_rack": rack,
                         "confidence": "exact",
@@ -530,15 +485,15 @@ def _performance(
     dry_n: dict[int, int] = defaultdict(int)
     handled: dict[int, set[str]] = defaultdict(set)
     for row in weighing:
-        weigh_bags[int(row["user_id"])].add(row["bag_id"])
+        weigh_bags[int(row.get("user_id") or 0)].add(row["bag_id"])
     for row in sorting:
-        sort_bags[int(row["user_id"])].add(row["bag_id"])
+        sort_bags[int(row.get("user_id") or 0)].add(row["bag_id"])
     for row in washes:
-        wash_n[int(row["user_id"])] += 1
-        handled[int(row["user_id"])].add(row["bag_id"])
+        wash_n[int(row.get("user_id") or 0)] += 1
+        handled[int(row.get("user_id") or 0)].add(row["bag_id"])
     for row in dries:
-        dry_n[int(row["user_id"])] += 1
-        handled[int(row["user_id"])].add(row["bag_id"])
+        dry_n[int(row.get("user_id") or 0)] += 1
+        handled[int(row.get("user_id") or 0)].add(row["bag_id"])
 
     rows = []
     for uid, name in people.items():
@@ -627,39 +582,6 @@ def _load_sort_key(rack_key: str):
         )
 
     return key
-
-
-def _performance_for_employee_filter(
-    performance: Sequence[Mapping[str, Any]] | None,
-    employee_filter: str | None,
-) -> list[Mapping[str, Any]]:
-    """Employee-scoped performance rows, or the full day list when unfiltered."""
-    rows = list(performance or [])
-    if not employee_filter:
-        return rows
-    needle = str(employee_filter).strip().casefold()
-    if not needle:
-        return rows
-    return [
-        p
-        for p in rows
-        if str(p.get("employee") or "").strip().casefold() == needle
-    ]
-
-
-def _sort_hours_for_summary(
-    performance: Sequence[Mapping[str, Any]] | None,
-    employee_filter: str | None,
-) -> float:
-    """Authoritative SORT hours matching the active employee filter.
-
-    No filter → sum of applicable employee SORT role hours for the day.
-    Employee filter → that employee's SORT role hours only.
-    """
-    return sum(
-        float(p.get("sort_hours") or 0)
-        for p in _performance_for_employee_filter(performance, employee_filter)
-    )
 
 
 def chronology_payload_from_views(
@@ -773,29 +695,21 @@ def chronology_payload_from_views(
         }
         rules = (
             "One row per bag: the first weight-entry after the current sent-to-vendor "
-            "anchor, counted only when that scan's employee is inside a RINSE_WF role "
-            "segment. No duration, gap, or session."
+            "anchor, attributed to the scanning employee whether or not they have a "
+            "payroll session."
         )
     elif stage == "sorting":
-        # Bags come from filtered sorting rows; SORT hours must use the same
-        # employee scope (never org-wide hours under an employee filter).
-        sort_hours = _sort_hours_for_summary(
-            views.get("performance") or [], employee_filter
-        )
         bags = len({r["bag_id"] for r in rows})
         summary = {
             "total_bags": bags,
             "total_sessions": bags,
-            "sort_hours": round(sort_hours, 4),
-            "sorting_bags_per_hour": round(bags / sort_hours, 2) if sort_hours > 0 else None,
             "first_time_et": min(times) if times else None,
             "last_time_et": max(times) if times else None,
         }
         rules = (
-            "One row per bag: qualifying sorting add-photos inside the employee's SORT "
-            "segment. Wash-handoff add-photos are excluded. Open SORT hours end at the "
-            "current time; closed segments end at the segment end. No start-to-end session. "
-            "Summary SORT hours and bags/hr use the same employee scope as the rows."
+            "One row per bag: the qualifying sorting add-photos, attributed to the scanning "
+            "employee whether or not they have a payroll session. Wash-handoff add-photos "
+            "are excluded."
         )
     elif stage == "washing":
         payload_washer_loads = rows
@@ -809,7 +723,7 @@ def chronology_payload_from_views(
         }
         rules = (
             "One row per washer load in time order: start-cleaning on a washer rack, "
-            "counted only inside OPERATOR time. Dedupe is bag + timestamp + rack, so two "
+            "attributed to the scanning employee. Dedupe is bag + timestamp + rack, so two "
             "machines in the same minute stay two loads."
         )
     elif stage == "drying":
@@ -823,8 +737,8 @@ def chronology_payload_from_views(
             "last_time_et": max(times) if times else None,
         }
         rules = (
-            "One row per dryer load in time order: drying on a dryer rack, counted only "
-            "inside OPERATOR time. Dedupe is bag + timestamp + rack, so two machines in "
+            "One row per dryer load in time order: drying on a dryer rack, attributed to "
+            "the scanning employee. Dedupe is bag + timestamp + rack, so two machines in "
             "the same minute stay two loads."
         )
     else:

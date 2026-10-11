@@ -23,6 +23,11 @@ from backend.rinse_post_processing_weight_chronology import (
     build_post_processing_weight_chronology_payload,
 )
 from backend.rinse_weighing_chronology import build_weighing_chronology_payload
+from backend.scan_chronology_local_sessions import (
+    ROLES as LOCAL_SESSION_ROLES,
+    apply_local_sessions,
+    list_local_sessions,
+)
 
 VALID_STAGES = frozenset(
     {
@@ -618,6 +623,11 @@ def build_scan_chronology_payload(
         "event_purposes": event_purposes,
         "grouping_rules": grouping_rules,
     }
+    if stage_key in LOCAL_SESSION_ROLES:
+        local = list_local_sessions(cursor, organization_id, selected_date_et, role=stage_key)
+        payload["local_sessions"] = apply_local_sessions(
+            sessions, local, stage=stage_key, employee_filter=employee_filter
+        )
     if operational_performance is not None:
         payload["operational_performance"] = operational_performance
         payload["raw_json_loaded"] = False

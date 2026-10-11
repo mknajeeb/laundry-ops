@@ -179,76 +179,39 @@ def _sep18_views():
     }
 
 
-def test_sorting_sep23_all_employees_uses_org_sort_hours():
-    payload = chronology_payload_from_views(_sep23_views(), "sorting")
-    summary = payload["summary"]
-    assert summary["total_bags"] == 142
-    assert summary["sort_hours"] == 9.9606
-    assert summary["sorting_bags_per_hour"] == 14.26
-
-
-def test_sorting_sep23_francis_uses_employee_sort_hours():
-    payload = chronology_payload_from_views(
-        _sep23_views(), "sorting", employee_filter="Francis"
-    )
-    summary = payload["summary"]
-    assert summary["total_bags"] == 132
-    assert summary["sort_hours"] == 8.4181
-    assert summary["sorting_bags_per_hour"] == 15.68
-    assert {r["employee"] for r in payload["sessions"]} == {"Francis"}
-
-
-def test_sorting_sep23_maria_uses_employee_sort_hours():
-    payload = chronology_payload_from_views(
-        _sep23_views(), "sorting", employee_filter="Maria Perez"
-    )
-    summary = payload["summary"]
-    assert summary["total_bags"] == 10
-    assert summary["sort_hours"] == 1.5425
-    assert summary["sorting_bags_per_hour"] == 6.48
-    assert {r["employee"] for r in payload["sessions"]} == {"Maria Perez"}
-
-
-def test_sorting_employee_filter_changes_numerator_and_denominator():
+def test_sorting_sep23_bag_counts_follow_employee_filter():
     views = _sep23_views()
-    all_s = chronology_payload_from_views(views, "sorting")["summary"]
-    francis = chronology_payload_from_views(
-        views, "sorting", employee_filter="Francis"
-    )["summary"]
-    maria = chronology_payload_from_views(
-        views, "sorting", employee_filter="Maria Perez"
-    )["summary"]
-
-    assert all_s["total_bags"] != francis["total_bags"] != maria["total_bags"]
-    assert all_s["sort_hours"] != francis["sort_hours"]
-    assert francis["sort_hours"] != maria["sort_hours"]
-    assert all_s["sorting_bags_per_hour"] != francis["sorting_bags_per_hour"]
-    assert francis["sorting_bags_per_hour"] != maria["sorting_bags_per_hour"]
-    # Never reuse org hours under an employee filter.
-    assert francis["sort_hours"] != all_s["sort_hours"]
-    assert maria["sort_hours"] != all_s["sort_hours"]
+    assert chronology_payload_from_views(views, "sorting")["summary"]["total_bags"] == 142
+    francis = chronology_payload_from_views(views, "sorting", employee_filter="Francis")
+    assert francis["summary"]["total_bags"] == 132
+    assert {r["employee"] for r in francis["sessions"]} == {"Francis"}
+    maria = chronology_payload_from_views(views, "sorting", employee_filter="Maria Perez")
+    assert maria["summary"]["total_bags"] == 10
+    assert {r["employee"] for r in maria["sessions"]} == {"Maria Perez"}
 
 
-def test_sorting_sep18_prior_date_regression():
+def test_sorting_sep18_prior_date_bag_counts():
     views = _sep18_views()
-    all_s = chronology_payload_from_views(views, "sorting")["summary"]
-    assert all_s["total_bags"] == 135
-    assert all_s["sort_hours"] == 9.3631
-    assert all_s["sorting_bags_per_hour"] == 14.42
+    assert chronology_payload_from_views(views, "sorting")["summary"]["total_bags"] == 135
+    assert (
+        chronology_payload_from_views(views, "sorting", employee_filter="Francis")["summary"][
+            "total_bags"
+        ]
+        == 114
+    )
+    assert (
+        chronology_payload_from_views(views, "sorting", employee_filter="Yesenia")["summary"][
+            "total_bags"
+        ]
+        == 21
+    )
 
-    francis = chronology_payload_from_views(
-        views, "sorting", employee_filter="Francis"
-    )["summary"]
-    assert francis["total_bags"] == 114
-    assert francis["sort_hours"] == 7.6803
-    assert francis["sorting_bags_per_hour"] == 14.84
 
-    yesenia = chronology_payload_from_views(
-        views, "sorting", employee_filter="Yesenia"
-    )["summary"]
-    assert yesenia["total_bags"] == 21
-    assert yesenia["sort_hours"] == 1.6811
-    assert yesenia["sorting_bags_per_hour"] == 12.49
+def test_sorting_summary_no_longer_uses_payroll_sort_hours():
+    """Scan Chronology hours come from local sessions, not payroll SORT segments."""
+    summary = chronology_payload_from_views(_sep23_views(), "sorting")["summary"]
+    assert "sort_hours" not in summary
+    assert "sorting_bags_per_hour" not in summary
 
 
 def test_washing_all_employees_keeps_full_day_washer_totals():

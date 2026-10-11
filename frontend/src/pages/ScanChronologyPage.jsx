@@ -32,6 +32,7 @@ import { getScanChronology } from "../api";
 import ReadyToFoldChronologyPanel from "../components/ReadyToFoldChronologyPanel";
 import ProcessFlowChronologyPanel from "../components/ProcessFlowChronologyPanel";
 import ProcessFlowAvailabilityCalculator from "../components/ProcessFlowAvailabilityCalculator";
+import ScanChronologyLocalSessions, { ScanSessionCell } from "../components/ScanChronologyLocalSessions";
 import { todayRange, yesterdayRange } from "../utils/foldingDateRange";
 import { formatDateTime, formatFoldingDuration } from "../utils/foldingFormat";
 import { displayCustomerName } from "../utils/displayCustomerName";
@@ -66,6 +67,7 @@ const DURATION_STAGES = new Set(["folder"]);
 const EVENT_STAGES = new Set(["washing", "drying"]);
 const SIMPLE_EVENT_STAGES = new Set(["weighing", "sorting"]);
 const UTIL_STAGES = new Set(["washer_utilization", "dryer_utilization"]);
+const LOCAL_SESSION_STAGES = new Set(["weighing", "sorting", "washing", "drying", "folder"]);
 const DEFAULT_DRYING_DURATION_MINUTES = 40;
 
 const READY_VIEW_OPTIONS = [
@@ -342,6 +344,7 @@ export default function ScanChronologyPage() {
   const isEventStage = EVENT_STAGES.has(activeStage);
   const isSimpleEventStage = SIMPLE_EVENT_STAGES.has(activeStage);
   const isUtilStage = UTIL_STAGES.has(activeStage);
+  const isLocalSessionStage = LOCAL_SESSION_STAGES.has(activeStage);
 
   const [datePreset, setDatePreset] = useState("today");
   const [customDate, setCustomDate] = useState(todayRange().start);
@@ -543,6 +546,11 @@ export default function ScanChronologyPage() {
 
   const summary = data?.summary || {};
   const sessions = data?.sessions || [];
+  const localSessions = data?.local_sessions || null;
+  const localSessionsById = useMemo(
+    () => new Map((localSessions?.sessions || []).map((s) => [s.id, s])),
+    [localSessions],
+  );
   const processFlowSessions = useMemo(() => {
     if (!isProcessFlow) return [];
     let rows = sessions;
@@ -753,49 +761,6 @@ export default function ScanChronologyPage() {
       );
     }
 
-    if (isSimpleEventStage) {
-      return (
-        <>
-          <SummaryCard
-            label={activeStage === "weighing" ? "Bags weighed" : "Bags sorted"}
-            value={summary.total_bags ?? summary.total_sessions ?? 0}
-          />
-          <SummaryCard
-            label="First"
-            value={formatDateTime(summary.first_time_et) || "—"}
-          />
-          <SummaryCard
-            label="Last"
-            value={formatDateTime(summary.last_time_et) || "—"}
-          />
-          {activeStage === "sorting" ? (
-            <>
-              <SummaryCard label="SORT hours" value={summary.sort_hours ?? "—"} />
-              <SummaryCard
-                label="Bags / SORT hour"
-                value={summary.sorting_bags_per_hour ?? "—"}
-              />
-            </>
-          ) : null}
-        </>
-      );
-    }
-
-    if (isEventStage) {
-      return (
-        <>
-          {activeStage === "washing" ? (
-            <SummaryCard label="Washer loads" value={summary.washer_loads ?? summary.total_washer_loads ?? 0} />
-          ) : (
-            <SummaryCard label="Dryer loads" value={summary.dryer_loads ?? summary.total_drying_scans ?? 0} />
-          )}
-          <SummaryCard label="Unique bags" value={summary.unique_bags_handled ?? 0} />
-          <SummaryCard label="First" value={formatDateTime(summary.first_time_et) || "—"} />
-          <SummaryCard label="Last" value={formatDateTime(summary.last_time_et) || "—"} />
-        </>
-      );
-    }
-
     return (
       <>
         <SummaryCard label={labels.firstStart} value={formatDateTime(summary.first_start_et) || "—"} />
@@ -813,6 +778,26 @@ export default function ScanChronologyPage() {
       </>
     );
   };
+
+  const renderLocalSessionCards = () => {
+    const ls = localSessions?.summary || {};
+    const num = (v) => (v == null || !Number.isFinite(Number(v)) ? "—" : Number(v).toFixed(2));
+    return (
+      <>
+        <SummaryCard
+          label="Total Scans"
+          value={ls.total_scans ?? sessions.length}
+          sub={`${ls.unassigned_scans ?? 0} unassigned`}
+        />
+        <SummaryCard label="Total Sessions" value={ls.total_sessions ?? 0} />
+        <SummaryCard label="Total Hours" value={num(ls.total_hours)} />
+        <SummaryCard label="Average per Session" value={num(ls.average_per_session)} />
+        <SummaryCard label="Scans per Hour" value={num(ls.scans_per_hour)} />
+      </>
+    );
+  };
+
+  const reloadCurrent = () => load(activeDateEt, activeStage, currentFilters);
 
   const renderCoverageAuditTable = () => (
     <TableContainer
@@ -947,6 +932,7 @@ export default function ScanChronologyPage() {
                 <TableCell>Employee</TableCell>
                 <TableCell>{activeStage === "sorting" ? "Sort Time" : "Time"}</TableCell>
                 {activeStage === "weighing" ? <TableCell>Weight</TableCell> : null}
+                <TableCell>Session</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -966,6 +952,9 @@ export default function ScanChronologyPage() {
                   {activeStage === "weighing" ? (
                     <TableCell>{row.weight_lbs != null ? row.weight_lbs : "—"}</TableCell>
                   ) : null}
+                  <TableCell>
+                    <ScanSessionCell row={row} sessionsById={localSessionsById} />
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -991,6 +980,7 @@ export default function ScanChronologyPage() {
                 <TableCell>Employee</TableCell>
                 <TableCell>{isWashing ? "Washer" : "Dryer"}</TableCell>
                 <TableCell>{isWashing ? "Wash Time" : "Dry Time"}</TableCell>
+                <TableCell>Session</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -1008,6 +998,9 @@ export default function ScanChronologyPage() {
                   <TableCell>{row.employee || "—"}</TableCell>
                   <TableCell>{row[rackKey] || "—"}</TableCell>
                   <TableCell>{formatDateTime(row[timeKey] || row.timestamp_et) || "—"}</TableCell>
+                  <TableCell>
+                    <ScanSessionCell row={row} sessionsById={localSessionsById} />
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -1033,6 +1026,7 @@ export default function ScanChronologyPage() {
               <TableCell>Duration</TableCell>
               {activeStage === "folder" ? <TableCell>Weight</TableCell> : null}
               {activeStage === "folder" ? <TableCell>Status</TableCell> : null}
+              {isLocalSessionStage ? <TableCell>Session</TableCell> : null}
               <TableCell>Next start</TableCell>
               <TableCell>Gap</TableCell>
               <TableCell>Confidence</TableCell>
@@ -1084,6 +1078,11 @@ export default function ScanChronologyPage() {
                           : row.status === "incomplete_missing_start"
                             ? "Missing start"
                             : row.status || "—"}
+                    </TableCell>
+                  ) : null}
+                  {isLocalSessionStage ? (
+                    <TableCell>
+                      <ScanSessionCell row={row} sessionsById={localSessionsById} />
                     </TableCell>
                   ) : null}
                   <TableCell>{formatDateTime(row.next_start_et) || "—"}</TableCell>
@@ -1498,9 +1497,26 @@ export default function ScanChronologyPage() {
             </>
           ) : (
             <>
-              <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 2 }}>
-                {renderSummaryCards()}
-              </Stack>
+              {isLocalSessionStage ? (
+                <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 2 }}>
+                  {renderLocalSessionCards()}
+                </Stack>
+              ) : null}
+              {!isLocalSessionStage || isDurationStage ? (
+                <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 2 }}>
+                  {renderSummaryCards()}
+                </Stack>
+              ) : null}
+              {isLocalSessionStage ? (
+                <ScanChronologyLocalSessions
+                  dateEt={activeDateEt}
+                  stage={activeStage}
+                  localSessions={localSessions}
+                  employeeOptions={employeeOptions}
+                  defaultEmployee={employeeFilter}
+                  onChanged={reloadCurrent}
+                />
+              ) : null}
 
               {sessions.length === 0 ? (
                 <Alert severity="info">

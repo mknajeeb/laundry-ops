@@ -1115,6 +1115,72 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    def _local_session_write(session_id: int | None, action: str):
+        """Scan Chronology local sessions only — never touches payroll/attendance tables."""
+        from backend.scan_chronology_local_sessions import (
+            create_local_session,
+            delete_local_session,
+            update_local_session,
+        )
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            ok, err_j, err_c = _require_manager_or_admin(me)
+            if not ok:
+                return err_j, err_c
+            org = user_org_id(me)
+            actor = me.get("user_id") or me.get("id")
+            body = request.get_json(silent=True) or {}
+            fields = {
+                "employee": body.get("employee"),
+                "role": body.get("role"),
+                "start_et": body.get("start_et"),
+                "end_et": body.get("end_et"),
+            }
+            if action == "create":
+                row = create_local_session(cursor, org, actor_user_id=actor, **fields)
+            elif action == "update":
+                row = update_local_session(cursor, org, session_id, actor_user_id=actor, **fields)
+            else:
+                delete_local_session(cursor, org, session_id)
+                row = {"id": session_id}
+            conn.commit()
+            return jsonify({"ok": True, "session": json_safe_rinse(row)})
+        except LookupError as exc:
+            conn.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 404
+        except ValueError as exc:
+            conn.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/scan-chronology/local-sessions", methods=["POST"])
+    def rinse_scan_chronology_local_session_create():
+        return _local_session_write(None, "create")
+
+    @app.route(
+        "/rinse/shift-analysis/scan-chronology/local-sessions/<int:session_id>",
+        methods=["PUT"],
+    )
+    def rinse_scan_chronology_local_session_update(session_id: int):
+        return _local_session_write(session_id, "update")
+
+    @app.route(
+        "/rinse/shift-analysis/scan-chronology/local-sessions/<int:session_id>",
+        methods=["DELETE"],
+    )
+    def rinse_scan_chronology_local_session_delete(session_id: int):
+        return _local_session_write(session_id, "delete")
+
     @app.route("/rinse/shift-analysis/process-flow-calculator", methods=["GET", "POST"])
     def rinse_shift_analysis_process_flow_calculator():
         """
