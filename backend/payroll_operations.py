@@ -108,14 +108,25 @@ def worker_category_for_user(
 
 
 def _session_work_date_et(clock_in_at: Any) -> Optional[date]:
-    """Business (America/New_York) calendar date for a shift clock-in."""
-    from backend.business_time import system_datetime_to_et
+    """Business (America/New_York) calendar date for a shift clock-in.
 
-    dt = _parse_dt(clock_in_at)
+    ``shift_sessions.clock_in_at`` is stored as naive Eastern wall time
+    (``eastern_now_naive``), not UTC — same rule as the payroll cycle week.
+    Aware values are converted to Eastern.
+    """
+    from backend.payroll_identity import payroll_calendar_date_for_cycle
+
+    dt: Optional[datetime] = None
+    if isinstance(clock_in_at, datetime):
+        dt = clock_in_at
+    elif clock_in_at is not None:
+        try:
+            dt = datetime.fromisoformat(str(clock_in_at).strip().replace("Z", "+00:00"))
+        except ValueError:
+            dt = _parse_dt(clock_in_at)
     if dt is None:
         return None
-    et = system_datetime_to_et(dt)
-    return et.date() if et is not None else None
+    return payroll_calendar_date_for_cycle(dt)
 
 
 def _date_start_dt(value: str) -> datetime:

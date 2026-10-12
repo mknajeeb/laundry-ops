@@ -74,7 +74,7 @@ def test_session_work_date_uses_eastern_calendar():
     assert _session_work_date_et(datetime(2026, 7, 30, 2, 0, 0, tzinfo=UTC)) == date(
         2026, 7, 29
     )
-    # Naive treated as UTC
+    # Naive is Eastern wall time (shift_sessions storage convention)
     assert _session_work_date_et(datetime(2026, 7, 30, 14, 0, 0)) == date(2026, 7, 30)
 
 
