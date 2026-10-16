@@ -378,6 +378,83 @@ def format_focus_period_label(ps: str, pe: str) -> str:
     return f"{s.strftime('%b')} {s.day}, {s.year}–{e.strftime('%b')} {e.day}, {e.year}"
 
 
+def _ordered_period_keys(periods: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    return sorted(
+        {
+            (str(ps)[:10], str(pe)[:10])
+            for ps, pe in periods or []
+            if str(ps or "")[:10] and str(pe or "")[:10]
+        }
+    )
+
+
+def format_selected_periods_label(periods: list[tuple[str, str]]) -> str:
+    """Label the selected reporting window, not the trend chart.
+
+    One week stays a single week label. Several weeks span the earliest start
+    through the latest end and state how many payroll weeks were selected.
+    """
+    ordered = _ordered_period_keys(periods)
+    if not ordered:
+        return ""
+    if len(ordered) == 1:
+        return format_focus_period_label(ordered[0][0], ordered[0][1])
+    label = format_focus_period_label(ordered[0][0], ordered[-1][1])
+    return f"{label} ({len(ordered)} payroll weeks)"
+
+
+def equivalent_prior_periods(
+    all_periods_asc: list[tuple[str, str]],
+    selected_periods: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Same count of available weeks immediately before the selection.
+
+    The prior window stops at the week before the earliest selected week, so
+    it does not overlap the selection.
+    """
+    selected = _ordered_period_keys(selected_periods)
+    if not selected or not all_periods_asc:
+        return []
+    try:
+        idx = list(all_periods_asc).index(selected[0])
+    except ValueError:
+        return []
+    n = len(selected)
+    start = idx - n
+    if start < 0:
+        return []
+    prior = list(all_periods_asc[start:idx])
+    if len(prior) != n or (set(prior) & set(selected)):
+        return []
+    return prior
+
+
+def periods_shifted_4_weeks_earlier(
+    all_periods_asc: list[tuple[str, str]],
+    selected_periods: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Map each selected week to the period about four weeks earlier.
+
+    Returns nothing when the map is incomplete or would overlap the selection,
+    so a multi-week total is never compared with a shorter window.
+    """
+    selected = _ordered_period_keys(selected_periods)
+    if not selected:
+        return []
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    selected_set = set(selected)
+    for period in selected:
+        earlier = find_period_4_weeks_earlier(all_periods_asc, period)
+        if not earlier or earlier in selected_set or earlier in seen:
+            return []
+        seen.add(earlier)
+        out.append(earlier)
+    if len(out) != len(selected):
+        return []
+    return sorted(out)
+
+
 def build_executive_narrative(
     current: dict[str, Any], previous: Optional[dict[str, Any]], categories: list[dict]
 ) -> dict[str, Any]:
@@ -1222,6 +1299,10 @@ def build_report_analytics(
     focus_metrics = detail_metrics
     prev_metrics = None
     analytics_rows = list(detail_rows)
+    # Rows and weeks that own KPI, category, and employee totals.
+    # The trend window must not be added to this set.
+    reporting_rows = list(detail_rows)
+    reporting_periods: list[tuple[str, str]] = []
 
     if comparison_mode == "month":
         try:
@@ -1344,7 +1425,6 @@ def build_report_analytics(
         complete_set = {
             key for key, st in completeness_map.items() if st.get("is_complete")
         }
-        complete_anchors = [p for p in display_anchors if p in complete_set]
 
         analytics_rows = [
             r
@@ -1391,80 +1471,50 @@ def build_report_analytics(
         )
         employment_mix = employment_mix_by_period(period_rows_map, selected)
 
-        focus = None
-        if complete_anchors:
-            focus = max(complete_anchors, key=lambda t: (t[1] or "", t[0] or ""))
-        elif display_anchors:
-            focus = max(display_anchors, key=lambda t: (t[1] or "", t[0] or ""))
-        elif selected:
-            focus = selected[-1]
-        if focus:
-            focus_label = format_focus_period_label(focus[0], focus[1])
-            focus_is_incomplete = focus not in complete_set
-            if focus_is_incomplete:
+        # Selected weeks own the headline totals. `selected` is only the trend chart.
+        reporting_periods = list(display_anchors)
+        reporting_set = set(reporting_periods)
+        reporting_rows = [
+            r
+            for r in analytics_rows
+            if period_key_from_row(r) in reporting_set
+        ]
+        focus_metrics = aggregate_period_metrics(reporting_rows)
+        if reporting_periods:
+            focus_label = format_selected_periods_label(reporting_periods)
+            focus_is_incomplete = any(p not in complete_set for p in reporting_periods)
+            if focus_is_incomplete and focus_label:
                 focus_label = f"{focus_label} (incomplete / payroll pending)"
-            idx = next(
-                (
-                    i
-                    for i, e in enumerate(period_comparison)
-                    if e.get("pay_period_start") == focus[0]
-                    and e.get("pay_period_end") == focus[1]
-                ),
-                None,
-            )
-            if (
-                report_type == "payroll_period"
-                and len(display_anchors) == 1
-                and idx is not None
-            ):
-                focus_metrics = period_comparison[idx]
-            else:
-                focus_metrics = aggregate_period_metrics(analytics_rows)
 
             if compare_key == "same_period_4_weeks_earlier":
-                prior = find_period_4_weeks_earlier(all_periods, focus)
-                if prior:
-                    prior_rows = period_rows_map.get(prior) or fetch_rows_for_periods(
-                        conn, organization_id, [prior], **common_filters
-                    )
-                    if prior_rows:
-                        prev_metrics = aggregate_period_metrics(prior_rows)
-                        previous_label = format_focus_period_label(prior[0], prior[1])
+                prior_periods = periods_shifted_4_weeks_earlier(
+                    all_periods, reporting_periods
+                )
             else:
-                if idx is not None and idx > 0:
-                    prev_metrics = period_comparison[idx - 1]
-                    previous_label = format_focus_period_label(
-                        prev_metrics.get("pay_period_start") or "",
-                        prev_metrics.get("pay_period_end") or "",
-                    )
-                elif focus in terminal_set:
-                    try:
-                        fi = all_periods.index(focus)
-                    except ValueError:
-                        fi = -1
-                    if fi > 0:
-                        prior = all_periods[fi - 1]
-                        prior_rows = fetch_rows_for_periods(
-                            conn, organization_id, [prior], **common_filters
+                prior_periods = equivalent_prior_periods(all_periods, reporting_periods)
+            if prior_periods:
+                prior_rows: list[dict] = []
+                missing_prior = []
+                for period in prior_periods:
+                    chunk = period_rows_map.get(period)
+                    if chunk:
+                        prior_rows.extend(chunk)
+                    else:
+                        missing_prior.append(period)
+                if missing_prior:
+                    prior_rows.extend(
+                        fetch_rows_for_periods(
+                            conn, organization_id, missing_prior, **common_filters
                         )
-                        if prior_rows:
-                            prev_metrics = aggregate_period_metrics(prior_rows)
-                            previous_label = format_focus_period_label(prior[0], prior[1])
+                    )
+                prev_metrics = aggregate_period_metrics(prior_rows)
+                previous_label = format_selected_periods_label(prior_periods)
 
-    # An open selected week is the workforce on screen. Finalized-only selections
-    # and historical trend charts stay on stored costs.
-    open_selection = report_type == "payroll_period" and any(
-        str(row.get("employer_cost_basis") or "actual") != "actual" for row in detail_rows
-    )
-    breakdown_rows = detail_rows if open_selection else analytics_rows
-    if open_selection:
-        focus_metrics = aggregate_period_metrics(detail_rows)
-        period_keys = {period_key_from_row(row) for row in detail_rows}
-        if len(period_keys) == 1:
-            only = next(iter(period_keys))
-            if only[0] and only[1]:
-                focus_label = format_focus_period_label(only[0], only[1])
-    categories = attach_category_cost_shares(category_breakdown(breakdown_rows))
+    # Selected weeks own category and employee totals. Trend rows stay in the chart.
+    # Open-week employer cost is already on those rows; do not widen totals to
+    # every loaded week.
+    summary_rows = reporting_rows if comparison_mode == "period" else analytics_rows
+    categories = attach_category_cost_shares(category_breakdown(summary_rows))
     workforce_totals = workforce_breakdown_totals(categories)
     kpis = build_kpi_cards(focus_metrics, prev_metrics)
     ot_summary = build_ot_summary(focus_metrics, prev_metrics)
@@ -1475,7 +1525,7 @@ def build_report_analytics(
     pay_date_count = len(
         {
             str(r.get("pay_date") or r.get("official_pay_date") or "")[:10]
-            for r in detail_rows
+            for r in summary_rows
             if str(r.get("pay_date") or r.get("official_pay_date") or "").strip()
         }
     )
@@ -1493,7 +1543,7 @@ def build_report_analytics(
         tax_settings = None
         labor_target = None
     employee_summaries = employee_summaries_by_category(
-        detail_rows,
+        summary_rows,
         include_identities=include_identities,
         tax_settings=tax_settings,
         labor_cost_target=labor_target,
@@ -1508,12 +1558,16 @@ def build_report_analytics(
         MONTH_TREND_OPTIONS if comparison_mode == "month" else PERIOD_TREND_OPTIONS
     )
 
+    selected_count = (
+        len(reporting_periods) if comparison_mode == "period" else len(groups)
+    )
     summary = {
-        **detail_metrics,
-        "payroll_period_count": len(groups),
+        **focus_metrics,
+        "payroll_period_count": selected_count or len(groups),
+        "selected_period_count": selected_count or len(groups),
         "official_pay_date_count": pay_date_count,
-        "unique_employees": detail_metrics.get("worker_count", 0),
-        "head_count": detail_metrics.get("worker_count", 0),
+        "unique_employees": focus_metrics.get("worker_count", 0),
+        "head_count": focus_metrics.get("worker_count", 0),
         "comparison_range": n,
         "trend_range": n,
         "compare_with": compare_key,
@@ -1523,7 +1577,7 @@ def build_report_analytics(
         "focus_kind": comparison_mode,
         "focus_is_partial": focus_is_partial,
         "focus_is_incomplete": focus_is_incomplete,
-        "employer_cost_basis": _employer_cost_basis_label(detail_rows),
+        "employer_cost_basis": _employer_cost_basis_label(summary_rows),
     }
 
     return {

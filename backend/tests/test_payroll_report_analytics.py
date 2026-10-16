@@ -1081,3 +1081,278 @@ def test_list_org_periods_complete_uses_manual_availability():
     assert periods == [("2026-06-01", "2026-06-07")]
     mock_list.assert_called_once()
     assert mock_list.call_args[0][1] == 3
+
+
+# Validation weeks from the Sep 14–20 vs Aug 24–Sep 20 dashboard mismatch.
+_PRIOR_WEEKS = [
+    ("2026-07-27", "2026-08-02"),
+    ("2026-08-03", "2026-08-09"),
+    ("2026-08-10", "2026-08-16"),
+    ("2026-08-17", "2026-08-23"),
+]
+_FOCUS_WEEKS = [
+    ("2026-08-24", "2026-08-30", 576.89, 10611.85, {"reg": 40, "ot": 1.53}),
+    ("2026-08-31", "2026-09-06", 572.85, 10426.90, None),
+    ("2026-09-07", "2026-09-13", 646.30, 11877.59, {"reg": 35.67, "ot": 0}),
+    ("2026-09-14", "2026-09-20", 642.69, 11425.26, {"reg": 40, "ot": 8.54}),
+]
+_ALL_WEEKS = [*(p for p in _PRIOR_WEEKS), *[(w[0], w[1]) for w in _FOCUS_WEEKS]]
+
+
+class _NoDb:
+    def cursor(self, dictionary=False):
+        raise AssertionError("dashboard period tests must not hit the database")
+
+
+def _week_rows(ps, pe, hours, cost, guiying, line_id):
+    rows = []
+    used_h = 0.0
+    used_cost = 0.0
+    if guiying:
+        g = _row(
+            name="Guiying Temp",
+            cat="temp",
+            ps=ps,
+            pe=pe,
+            pay_date="2026-09-26",
+            reg=guiying["reg"],
+            ot=guiying["ot"],
+            user_id=27,
+            line_id=line_id,
+            batch_id=line_id,
+        )
+        rows.append(g)
+        used_h = round(g["regular_hours"] + g["ot_hours"], 2)
+        used_cost = round(g["total_payroll_cost"], 2)
+    rem_h = round(hours - used_h, 2)
+    rem_cost = round(cost - used_cost, 2)
+    gross = round(rem_h * 10.0, 2)
+    filler = _row(
+        name="Other Staff",
+        cat="w2",
+        ps=ps,
+        pe=pe,
+        pay_date="2026-09-26",
+        reg=rem_h,
+        ot=0,
+        rate=10.0,
+        ot_rate=15.0,
+        employer_taxes=round(rem_cost - gross, 2),
+        user_id=2,
+        line_id=line_id + 1,
+        batch_id=line_id + 1,
+    )
+    rows.append(filler)
+    return rows
+
+
+def _period_catalog():
+    catalog = {}
+    for i, (ps, pe) in enumerate(_PRIOR_WEEKS):
+        catalog[(ps, pe)] = [
+            _row(
+                name=f"Prior {i}",
+                cat="w2",
+                ps=ps,
+                pe=pe,
+                pay_date="2026-08-28",
+                reg=100,
+                ot=0,
+                rate=10.0,
+                ot_rate=15.0,
+                user_id=80 + i,
+                line_id=800 + i,
+                batch_id=800 + i,
+            )
+        ]
+    for i, (ps, pe, hours, cost, guiying) in enumerate(_FOCUS_WEEKS):
+        catalog[(ps, pe)] = _week_rows(ps, pe, hours, cost, guiying, line_id=1000 + i * 10)
+    return catalog
+
+
+def _patch_period_sources(monkeypatch, catalog):
+    monkeypatch.setattr(
+        "backend.payroll_report_analytics.list_org_periods_asc",
+        lambda *a, **k: list(_ALL_WEEKS),
+    )
+    monkeypatch.setattr(
+        "backend.payroll_report_analytics.build_period_completeness_map",
+        lambda conn, oid, periods: {
+            p: {
+                "is_complete": True,
+                "completeness_status": "complete",
+                "completeness_label": "Complete",
+            }
+            for p in periods
+        },
+    )
+
+    def _fetch(conn, oid, periods, **kwargs):
+        out = []
+        for period in periods:
+            out.extend(catalog.get(tuple(period), []))
+        return out
+
+    monkeypatch.setattr(
+        "backend.payroll_report_analytics.fetch_rows_for_periods",
+        _fetch,
+    )
+
+
+def _kpi(analytics, key):
+    return next(card for card in analytics["kpis"] if card["key"] == key)
+
+
+def _guiying(analytics):
+    temps = analytics["employee_summaries_by_category"].get("temp") or []
+    return next(emp for emp in temps if emp["user_id"] == 27)
+
+
+def _assert_employee_category_totals_match(analytics):
+    categories = analytics["category_breakdown"]
+    employees = analytics["employee_summaries_by_category"]
+    hours = _kpi(analytics, "total_hours")["value"]
+    cost = _kpi(analytics, "total_payroll_cost")["value"]
+    cat_hours = round(sum(c["total_hours"] for c in categories), 2)
+    cat_cost = round(sum(c["total_payroll_cost"] for c in categories), 2)
+    emp_hours = round(
+        sum(e["total_hours"] for rows in employees.values() for e in rows), 2
+    )
+    emp_cost = round(
+        sum(e["total_payroll_cost"] for rows in employees.values() for e in rows), 2
+    )
+    assert cat_hours == emp_hours == round(hours, 2)
+    assert cat_cost == emp_cost == round(cost, 2)
+    for category in categories:
+        rows = employees.get(category["worker_category"], [])
+        assert round(sum(e["total_hours"] for e in rows), 2) == round(
+            category["total_hours"], 2
+        )
+        assert round(sum(e["gross_pay"] for e in rows), 2) == round(
+            category["gross_pay"], 2
+        )
+        assert round(sum(e["total_payroll_cost"] for e in rows), 2) == round(
+            category["total_payroll_cost"], 2
+        )
+
+
+def _run_period_report(catalog, periods, *, trend_range=4, compare_with="previous_period", extra_rows=None):
+    detail = []
+    for period in periods:
+        detail.extend(catalog[period])
+    if extra_rows:
+        detail.extend(extra_rows)
+    starts = [p[0] for p in periods]
+    ends = [p[1] for p in periods]
+    return build_report_analytics(
+        _NoDb(),
+        3,
+        detail_rows=detail,
+        report_type="payroll_period",
+        filters={
+            "period_starts": starts,
+            "period_ends": ends,
+            "include_employee_detail": True,
+        },
+        trend_range=trend_range,
+        comparison_range=trend_range,
+        compare_with=compare_with,
+    )
+
+
+def test_single_week_totals_ignore_trend_window(monkeypatch):
+    catalog = _period_catalog()
+    _patch_period_sources(monkeypatch, catalog)
+    week = ("2026-09-14", "2026-09-20")
+    analytics = _run_period_report(catalog, [week], trend_range=4)
+    narrow = _run_period_report(catalog, [week], trend_range=3)
+
+    assert analytics["summary"]["focus_period"] == "Sep 14–20, 2026"
+    assert analytics["summary"]["previous_period"] == "Sep 7–13, 2026"
+    assert analytics["summary"]["selected_period_count"] == 1
+    assert _kpi(analytics, "total_hours")["value"] == 642.69
+    assert _kpi(analytics, "total_payroll_cost")["value"] == 11425.26
+    assert _kpi(analytics, "total_hours")["previous"] == 646.30
+    guiying = _guiying(analytics)
+    assert guiying["line_count"] == 1
+    assert guiying["regular_hours"] == 40
+    assert guiying["ot_hours"] == 8.54
+    assert guiying["gross_pay"] == 897.77
+    assert len(analytics["period_comparison"]) == 4
+    chart_hours = round(sum(p["total_hours"] for p in analytics["period_comparison"]), 2)
+    assert chart_hours == 2438.73
+    assert chart_hours != _kpi(analytics, "total_hours")["value"]
+    assert _kpi(narrow, "total_hours")["value"] == 642.69
+    assert _kpi(narrow, "total_payroll_cost")["value"] == 11425.26
+    assert narrow["summary"]["focus_period"] == analytics["summary"]["focus_period"]
+    _assert_employee_category_totals_match(analytics)
+
+
+def test_four_week_selection_aggregates_full_range(monkeypatch):
+    catalog = _period_catalog()
+    _patch_period_sources(monkeypatch, catalog)
+    periods = [(w[0], w[1]) for w in _FOCUS_WEEKS]
+    analytics = _run_period_report(catalog, periods, trend_range=4)
+    other_trend = _run_period_report(catalog, periods, trend_range=8)
+
+    assert analytics["summary"]["focus_period"] == "Aug 24–Sep 20, 2026 (4 payroll weeks)"
+    assert analytics["summary"]["previous_period"] == "Jul 27–Aug 23, 2026 (4 payroll weeks)"
+    assert analytics["summary"]["selected_period_count"] == 4
+    assert _kpi(analytics, "total_hours")["value"] == 2438.73
+    assert _kpi(analytics, "total_payroll_cost")["value"] == 44341.60
+    # Equivalent prior block: four 100-hour weeks, not the single week before Sep 14.
+    assert _kpi(analytics, "total_hours")["previous"] == 400.0
+    assert _kpi(analytics, "total_hours")["previous"] != 646.30
+    guiying = _guiying(analytics)
+    assert guiying["line_count"] == 3
+    assert guiying["regular_hours"] == 115.67
+    assert guiying["ot_hours"] == 10.07
+    assert guiying["gross_pay"] == 2223.18
+    assert _kpi(other_trend, "total_hours")["value"] == 2438.73
+    assert _kpi(other_trend, "total_payroll_cost")["value"] == 44341.60
+    assert other_trend["summary"]["focus_period"] == analytics["summary"]["focus_period"]
+    _assert_employee_category_totals_match(analytics)
+
+    shifted = _run_period_report(
+        catalog,
+        periods,
+        trend_range=4,
+        compare_with="same_period_4_weeks_earlier",
+    )
+    assert shifted["summary"]["previous_period"] == "Jul 27–Aug 23, 2026 (4 payroll weeks)"
+    assert _kpi(shifted, "total_hours")["previous"] == 400.0
+    assert _kpi(shifted, "total_hours")["value"] == 2438.73
+
+
+def test_custom_multi_week_selection_excludes_unselected_weeks(monkeypatch):
+    catalog = _period_catalog()
+    _patch_period_sources(monkeypatch, catalog)
+    selected = [
+        ("2026-08-24", "2026-08-30"),
+        ("2026-09-14", "2026-09-20"),
+    ]
+    # Unselected middle week is present in the loaded rows and must stay out of totals.
+    extra = catalog[("2026-09-07", "2026-09-13")]
+    analytics = _run_period_report(
+        catalog, selected, trend_range=4, extra_rows=extra
+    )
+
+    assert analytics["summary"]["focus_period"] == "Aug 24–Sep 20, 2026 (2 payroll weeks)"
+    assert analytics["summary"]["previous_period"] == "Aug 10–23, 2026 (2 payroll weeks)"
+    assert analytics["summary"]["selected_period_count"] == 2
+    assert _kpi(analytics, "total_hours")["value"] == 1219.58
+    assert _kpi(analytics, "total_payroll_cost")["value"] == 22037.11
+    assert _kpi(analytics, "total_hours")["previous"] == 200.0
+    guiying = _guiying(analytics)
+    assert guiying["line_count"] == 2
+    assert guiying["regular_hours"] == 80
+    assert guiying["ot_hours"] == 10.07
+    assert guiying["gross_pay"] == 1616.79
+    assert guiying["gross_pay"] != 2223.18
+    assert guiying["gross_pay"] != 897.77
+    chart_keys = {
+        (p["pay_period_start"], p["pay_period_end"]) for p in analytics["period_comparison"]
+    }
+    assert ("2026-08-31", "2026-09-06") in chart_keys
+    assert _kpi(analytics, "total_hours")["value"] != 2438.73
+    _assert_employee_category_totals_match(analytics)

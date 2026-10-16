@@ -318,13 +318,30 @@ export default function PayrollReportAnalyticsDashboard({
           </Typography>
           <Typography variant="body2" color="text.secondary">
             {summary?.focus_period
-              ? `Focus: ${summary.focus_period}${
-                  summary?.previous_period ? ` · Previous: ${summary.previous_period}` : ""
+              ? `Selected: ${summary.focus_period}${
+                  summary?.previous_period
+                    ? ` · Compared with: ${summary.previous_period}`
+                    : ""
                 }`
               : isMonth
                 ? "Select a month with Official Pay Date payroll."
                 : "No terminal payroll period in selection (batches paid/finalized; eligible work must be batched for Complete)."}
           </Typography>
+          {!isMonth ? (
+            <Typography variant="caption" color="text.secondary" display="block">
+              {`Totals use the selected payroll period${
+                summary?.selected_period_count
+                  ? ` (${summary.selected_period_count} week${
+                      Number(summary.selected_period_count) === 1 ? "" : "s"
+                    })`
+                  : ""
+              }. Show Trend changes the chart only.`}
+            </Typography>
+          ) : (
+            <Typography variant="caption" color="text.secondary" display="block">
+              Totals use the selected month. Show Trend changes the chart only.
+            </Typography>
+          )}
             {summary?.employer_cost_basis === "estimated" ? (
               <Typography variant="caption" color="text.secondary" display="block">
                 Open W-2 payroll shows an estimated employer burden from prior finalized payroll. Temp and 1099 stay at gross unless that classification has its own configured percent. Finalized payroll keeps its stored employer taxes.
