@@ -432,6 +432,7 @@ def aggregate_classified_batch_lines(
     threshold_hours: Any = DEFAULT_OT_THRESHOLD,
     ot_enabled: bool = True,
     week_ot_enabled: Optional[dict[str, bool]] = None,
+    omit_session_ids: Optional[set[int]] = None,
 ) -> list[dict]:
     """Payout-line payload(s) per user for sessions in ``batch_category``.
 
@@ -439,12 +440,17 @@ def aggregate_classified_batch_lines(
     per payroll week when ``week_ot_enabled`` is provided), including other
     classifications, then only this category's regular/OT hours are kept.
 
+    ``omit_session_ids`` still count toward that weekly allocation, but their
+    hours are not placed on a new line. Use this for sessions already attached
+    to another payout batch.
+
     Sessions with different resolved rates become separate lines so each session
     rate is frozen — never blended.
     """
     by_user: dict[int, list[dict]] = {}
     for rec in records or []:
         by_user.setdefault(int(rec["user_id"]), []).append(rec)
+    omit = {int(sid) for sid in (omit_session_ids or set())}
     lines = []
     for uid, recs in by_user.items():
         if week_ot_enabled is not None:
@@ -476,6 +482,8 @@ def aggregate_classified_batch_lines(
             ot_week_modes = set()
             for rec in rate_recs:
                 sid = int(rec["id"])
+                if sid in omit:
+                    continue
                 reg_h, ot_h = alloc.get(sid, (Decimal("0.00"), Decimal("0.00")))
                 regular += reg_h
                 ot += ot_h
@@ -504,6 +512,8 @@ def aggregate_classified_batch_lines(
                     }
                 )
             # Prefer disable_ot snapshot when any contributing session had it.
+            if not session_ids:
+                continue
             ot_snap = "disable_ot" if "disable_ot" in ot_week_modes else "default"
             lines.append(
                 {

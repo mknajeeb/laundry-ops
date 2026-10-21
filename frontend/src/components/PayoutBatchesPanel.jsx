@@ -3,6 +3,7 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   Collapse,
   Dialog,
@@ -10,6 +11,7 @@ import {
   DialogContent,
   DialogTitle,
   FormControl,
+  FormControlLabel,
   IconButton,
   InputLabel,
   List,
@@ -380,6 +382,9 @@ export default function PayoutBatchesPanel({
     pay_period_end: payPeriodEnd || "",
     payout_frequency: "biweekly",
     notes: "",
+    supplemental: false,
+    supplemental_for_user_id: "",
+    supplemental_reason: "",
   });
   const [printPreviewOpen, setPrintPreviewOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -543,13 +548,25 @@ export default function PayoutBatchesPanel({
       pay_period_end: payPeriodEnd || "",
       payout_frequency: "biweekly",
       notes: "",
+      supplemental: false,
+      supplemental_for_user_id: "",
+      supplemental_reason: "",
     });
     setCreateOpen(true);
   };
 
   const createBatch = async () => {
     try {
-      const res = await postPayoutBatch(draft);
+      const payload = { ...draft };
+      if (!payload.supplemental) {
+        delete payload.supplemental_for_user_id;
+        delete payload.supplemental_reason;
+      } else if (!String(payload.supplemental_for_user_id || "").trim()) {
+        setError("Enter the employee user ID for this supplemental payout.");
+        return;
+      }
+      delete payload.supplemental;
+      const res = await postPayoutBatch(payload);
       setCreateOpen(false);
       onPayPeriodChange?.({
         start: draft.pay_period_start,
@@ -835,7 +852,11 @@ export default function PayoutBatchesPanel({
     setError("This batch cannot be deleted in its current status.");
   };
 
-  const renderBatchFormFields = ({ lockCategory = false, showCategoryPicker = false } = {}) => (
+  const renderBatchFormFields = ({
+    lockCategory = false,
+    showCategoryPicker = false,
+    showSupplemental = false,
+  } = {}) => (
     <Stack spacing={2} sx={{ pt: 1 }}>
       <TextField
         label="Batch name"
@@ -956,6 +977,42 @@ export default function PayoutBatchesPanel({
         value={draft.notes}
         onChange={(e) => setDraft({ ...draft, notes: e.target.value })}
       />
+      {showSupplemental ? (
+        <Box>
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={Boolean(draft.supplemental)}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    supplemental: e.target.checked,
+                    supplemental_for_user_id: e.target.checked ? draft.supplemental_for_user_id : "",
+                  })
+                }
+              />
+            }
+            label="Supplemental payout for one employee"
+          />
+          {draft.supplemental ? (
+            <Stack spacing={1.5} sx={{ mt: 1 }}>
+              <TextField
+                label="Employee user ID"
+                size="small"
+                value={draft.supplemental_for_user_id || ""}
+                onChange={(e) => setDraft({ ...draft, supplemental_for_user_id: e.target.value })}
+                helperText="Only this employee's approved hours that are not already on a payout batch are included. The batch stays a draft and is not marked Paid."
+              />
+              <TextField
+                label="Reason"
+                size="small"
+                value={draft.supplemental_reason || ""}
+                onChange={(e) => setDraft({ ...draft, supplemental_reason: e.target.value })}
+              />
+            </Stack>
+          ) : null}
+        </Box>
+      ) : null}
     </Stack>
   );
 
@@ -1019,7 +1076,9 @@ export default function PayoutBatchesPanel({
               >
                 <ListItemText
                   primary={b.batch_name}
-                  secondary={`${b.pay_period_start} – ${b.pay_period_end}`}
+                  secondary={`${b.pay_period_start} – ${b.pay_period_end}${
+                    b.supplemental_for_user_id ? " · Supplemental" : ""
+                  }`}
                   primaryTypographyProps={{ noWrap: true, variant: "body2" }}
                   secondaryTypographyProps={{ variant: "caption" }}
                 />
@@ -1351,7 +1410,9 @@ export default function PayoutBatchesPanel({
 
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>New payout batch</DialogTitle>
-        <DialogContent>{renderBatchFormFields({ showCategoryPicker: true })}</DialogContent>
+        <DialogContent>
+          {renderBatchFormFields({ showCategoryPicker: true, showSupplemental: true })}
+        </DialogContent>
         <DialogActions>
           <Button onClick={() => setCreateOpen(false)}>Cancel</Button>
           <Button variant="contained" onClick={createBatch}>

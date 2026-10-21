@@ -435,6 +435,8 @@ def build_report_row(batch: dict, line: dict, *, report_type: Optional[str] = No
         "payroll_status_key": display_status,
         "batch_status": batch.get("status"),
         "batch_name": batch.get("batch_name") or "",
+        "is_supplemental": bool(batch.get("supplemental_for_user_id") or batch.get("is_supplemental")),
+        "supplemental_for_user_id": batch.get("supplemental_for_user_id"),
     }
 
 
@@ -540,6 +542,7 @@ def query_payroll_report(
     c = conn.cursor(dictionary=True)
     has_details = table_has_column(c, "payout_batch_lines", "payout_details_json")
     has_official_pay_date = table_has_column(c, "payout_batches", "official_pay_date")
+    has_supplemental = table_has_column(c, "payout_batches", "supplemental_for_user_id")
 
     select_cols = """
         pb.id AS batch_id,
@@ -568,6 +571,8 @@ def query_payroll_report(
     """
     if has_official_pay_date:
         select_cols += ", pb.official_pay_date"
+    if has_supplemental:
+        select_cols += ", pb.supplemental_for_user_id"
     if has_details:
         select_cols += ", pbl.payout_details_json"
 
@@ -745,6 +750,7 @@ def query_payroll_report(
             "status": raw.get("batch_status"),
             "payout_details_finalized_at": raw.get("payout_details_finalized_at"),
             "official_pay_date": raw.get("official_pay_date") if has_official_pay_date else None,
+            "supplemental_for_user_id": raw.get("supplemental_for_user_id") if has_supplemental else None,
         }
         line = {
             "id": line_id,

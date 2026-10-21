@@ -2570,6 +2570,9 @@ def _validate_finalize_batch(
         ] + blockers
     if blockers:
         raise ValueError(blockers[0])
+    from backend.payroll_supplemental import validate_batch_sessions_for_finalize
+
+    validate_batch_sessions_for_finalize(conn, organization_id, batch)
 
 
 def finalize_payout_details(

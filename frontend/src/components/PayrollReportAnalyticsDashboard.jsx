@@ -450,7 +450,16 @@ export default function PayrollReportAnalyticsDashboard({
                         onClick={() => handleEmployeeClick(emp)}
                         sx={{ cursor: typeof onSelectEmployee === "function" ? "pointer" : "default" }}
                       >
-                        <TableCell>{emp.employee_name}</TableCell>
+                        <TableCell>
+                          {emp.employee_name}
+                          {emp.includes_supplemental ? (
+                            <Chip
+                              size="small"
+                              label={emp.is_supplemental ? "Supplemental" : "Includes supplemental"}
+                              sx={{ ml: 1 }}
+                            />
+                          ) : null}
+                        </TableCell>
                         <TableCell align="right">{hours(emp.regular_hours)}</TableCell>
                         <TableCell align="right">{hours(emp.ot_hours)}</TableCell>
                         <TableCell align="right">{money(emp.base_earnings)}</TableCell>

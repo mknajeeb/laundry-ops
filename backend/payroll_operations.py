@@ -227,6 +227,8 @@ def ensure_payout_batches_tables(cursor) -> None:
               payout_frequency VARCHAR(16) NOT NULL DEFAULT 'biweekly',
               status VARCHAR(32) NOT NULL DEFAULT 'draft',
               notes TEXT NULL,
+              supplemental_for_user_id INT NULL,
+              supplemental_reason VARCHAR(500) NULL,
               worker_count INT NOT NULL DEFAULT 0,
               total_approved_hours DECIMAL(12,2) NOT NULL DEFAULT 0,
               total_gross_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
@@ -267,6 +269,9 @@ def ensure_payout_batches_tables(cursor) -> None:
             """
         )
         invalidate_schema_cache()
+    # Existing databases receive supplemental_for_user_id and supplemental_reason
+    # only from backend/sql/payout_batch_supplemental_v1.sql. A payout-batch
+    # request must not ALTER production tables.
     if not table_exists(cursor, "payout_batch_lines"):
         cursor.execute(
             """
@@ -2038,6 +2043,12 @@ def create_payout_batch(
     conn, organization_id: int, body: dict, *, created_by: Optional[int] = None
 ) -> dict:
     ensure_payout_batches_tables(conn.cursor())
+    if body.get("supplemental_for_user_id") not in (None, "", 0, "0"):
+        from backend.payroll_supplemental import create_supplemental_payout_batch
+
+        return create_supplemental_payout_batch(
+            conn, organization_id, body, created_by=created_by
+        )
     cat = str(body.get("worker_category") or "").strip()
     if cat not in WORKER_CATEGORIES:
         raise ValueError("worker_category must be w2, contractor_1099, temp, or tryout")
@@ -2686,6 +2697,96 @@ def _restore_correction_ledgers(
         )
 
 
+def _planned_clock_payloads(
+    conn,
+    organization_id: int,
+    batch: dict,
+    records: list[dict],
+    *,
+    omit_session_ids: Optional[set[int]] = None,
+) -> list[dict]:
+    """Clock-record lines for one batch.
+
+    Already-attached sessions stay in the overtime walk and are omitted from
+    the lines. A supplemental batch keeps only its selected employee.
+    """
+    from backend.payroll_overtime import (
+        aggregate_classified_batch_lines,
+        resolve_batch_overtime_policy,
+        resolve_overtime_rate,
+        weekly_ot_policy_category,
+    )
+    from backend.payroll_session_rate import resolve_session_hourly_rate
+    from backend.payroll_week_ot import OT_MODE_DISABLE
+    from backend.payroll_workflow import resolve_rate_for_batch_line
+
+    only_raw = batch.get("supplemental_for_user_id")
+    only_user_id = None
+    if only_raw not in (None, "", 0, "0"):
+        only_user_id = int(only_raw)
+    by_user: dict[int, list] = {}
+    for rec in records:
+        by_user.setdefault(int(rec["user_id"]), []).append(rec)
+    planned: list[dict] = []
+    for uid, recs in by_user.items():
+        if only_user_id is not None and int(uid) != only_user_id:
+            continue
+        profile_rate = resolve_rate_for_batch_line(conn, organization_id, uid)
+        for rec in recs:
+            resolved, source, ov = resolve_session_hourly_rate(
+                rec.get("profile_hourly_rate")
+                if rec.get("profile_hourly_rate") is not None
+                else profile_rate,
+                rec.get("payroll_rate_override"),
+            )
+            if rec.get("resolved_hourly_rate") is None:
+                rec["resolved_hourly_rate"] = (
+                    float(resolved) if resolved > 0 else float(profile_rate or 0)
+                )
+                rec["rate_source"] = source
+                if ov is not None:
+                    rec["payroll_rate_override"] = float(ov)
+            if rec.get("profile_hourly_rate") is None and profile_rate:
+                rec["profile_hourly_rate"] = float(profile_rate)
+            if not rec.get("hourly_rate"):
+                rec["hourly_rate"] = rec.get("resolved_hourly_rate") or profile_rate
+        policy = resolve_batch_overtime_policy(
+            conn, organization_id, weekly_ot_policy_category(recs)
+        )
+        week_ot_enabled: dict[str, bool] = {}
+        for rec in recs:
+            ws = str(rec.get("payroll_week_start") or "")[:10]
+            if not ws:
+                continue
+            if rec.get("ot_week_mode") == OT_MODE_DISABLE:
+                week_ot_enabled[ws] = False
+            else:
+                week_ot_enabled.setdefault(ws, bool(policy["enabled"]))
+        any_rate = any(
+            float(r.get("resolved_hourly_rate") or r.get("hourly_rate") or 0) > 0
+            for r in recs
+        )
+        payloads = aggregate_classified_batch_lines(
+            recs,
+            batch_category=str(batch["worker_category"]),
+            threshold_hours=policy["threshold_hours"],
+            ot_enabled=bool(policy["enabled"]) and any_rate,
+            week_ot_enabled=week_ot_enabled if week_ot_enabled else None,
+            omit_session_ids=omit_session_ids,
+        )
+        for agg in payloads:
+            rate = float(agg.get("rate") or 0)
+            if rate <= 0:
+                rate = float(profile_rate or 0)
+            ot_rate = (
+                float(resolve_overtime_rate(rate, multiplier=policy["multiplier"]))
+                if float(agg["ot_hours"]) > 0 and rate > 0
+                else 0.0
+            )
+            planned.append({**agg, "rate": rate, "ot_rate": ot_rate, "user_id": uid})
+    return planned
+
+
 def build_batch_from_time_records(
     conn,
     organization_id: int,
@@ -2718,6 +2819,14 @@ def build_batch_from_time_records(
     if batch.get("correction_reopened_at"):
         ledgers = _load_correction_ledgers(conn, organization_id, batch_id)
     c = conn.cursor()
+    from backend.payroll_supplemental import attached_session_ids
+
+    # Query before deleting this batch's clock lines. except_batch_id keeps
+    # this batch's own sessions eligible on refresh and excludes every other
+    # live batch, including drafts and already paid batches.
+    omit_session_ids = attached_session_ids(
+        conn, organization_id, except_batch_id=int(batch_id)
+    )
     c.execute(
         """
         DELETE FROM payout_batch_lines
@@ -2734,107 +2843,52 @@ def build_batch_from_time_records(
             "No approved time records in this period. Approve hours on the Time Records tab first."
         )
     from backend.payroll_classification import write_line_classification_provenance
-    from backend.payroll_overtime import (
-        aggregate_classified_batch_lines,
-        resolve_batch_overtime_policy,
-        resolve_overtime_rate,
-        weekly_ot_policy_category,
-    )
-    from backend.payroll_session_rate import resolve_session_hourly_rate
-    from backend.payroll_week_ot import (
-        OT_MODE_DISABLE,
-        write_line_ot_week_snapshot,
-    )
-    from backend.payroll_workflow import resolve_rate_for_batch_line
+    from backend.payroll_week_ot import write_line_ot_week_snapshot
 
-    by_user: dict[int, list] = {}
-    for rec in records:
-        by_user.setdefault(int(rec["user_id"]), []).append(rec)
     wrote = False
-    for uid, recs in by_user.items():
-        profile_rate = resolve_rate_for_batch_line(conn, organization_id, uid)
-        for rec in recs:
-            resolved, source, ov = resolve_session_hourly_rate(
-                rec.get("profile_hourly_rate")
-                if rec.get("profile_hourly_rate") is not None
-                else profile_rate,
-                rec.get("payroll_rate_override"),
-            )
-            # Prefer already-resolved list_time_records values when present.
-            if rec.get("resolved_hourly_rate") is None:
-                rec["resolved_hourly_rate"] = float(resolved) if resolved > 0 else float(profile_rate or 0)
-                rec["rate_source"] = source
-                if ov is not None:
-                    rec["payroll_rate_override"] = float(ov)
-            if rec.get("profile_hourly_rate") is None and profile_rate:
-                rec["profile_hourly_rate"] = float(profile_rate)
-            if not rec.get("hourly_rate"):
-                rec["hourly_rate"] = rec.get("resolved_hourly_rate") or profile_rate
-        policy = resolve_batch_overtime_policy(
-            conn, organization_id, weekly_ot_policy_category(recs)
+    planned = _planned_clock_payloads(
+        conn,
+        organization_id,
+        batch,
+        records,
+        omit_session_ids=omit_session_ids,
+    )
+    for agg in planned:
+        created = add_payout_batch_line(
+            conn,
+            organization_id,
+            batch_id,
+            {
+                "user_id": int(agg["user_id"]),
+                "worker_name_snapshot": agg["worker_name"],
+                "approved_hours": agg["approved_hours"],
+                "ot_hours": agg["ot_hours"],
+                "rate": float(agg.get("rate") or 0),
+                "ot_rate": float(agg.get("ot_rate") or 0),
+                "adjustments": 0,
+                "line_status": "approved",
+                "source_type": "clock_records",
+                "source_shift_session_ids": agg["session_ids"],
+            },
         )
-        week_ot_enabled: dict[str, bool] = {}
-        for rec in recs:
-            ws = str(rec.get("payroll_week_start") or "")[:10]
-            if not ws:
-                continue
-            if rec.get("ot_week_mode") == OT_MODE_DISABLE:
-                week_ot_enabled[ws] = False
-            else:
-                week_ot_enabled.setdefault(ws, bool(policy["enabled"]))
-        any_rate = any(
-            float(r.get("resolved_hourly_rate") or r.get("hourly_rate") or 0) > 0 for r in recs
-        )
-        payloads = aggregate_classified_batch_lines(
-            recs,
-            batch_category=str(batch["worker_category"]),
-            threshold_hours=policy["threshold_hours"],
-            ot_enabled=bool(policy["enabled"]) and any_rate,
-            week_ot_enabled=week_ot_enabled if week_ot_enabled else None,
-        )
-        for agg in payloads:
-            rate = float(agg.get("rate") or 0)
-            if rate <= 0:
-                rate = float(profile_rate or 0)
-            ot_rate = (
-                float(
-                    resolve_overtime_rate(
-                        rate, multiplier=policy["multiplier"]
-                    )
-                )
-                if float(agg["ot_hours"]) > 0 and rate > 0
-                else 0.0
+        if created.get("id") is not None:
+            write_line_classification_provenance(
+                conn, int(created["id"]), agg["classification_provenance"]
             )
-            created = add_payout_batch_line(
-                conn,
-                organization_id,
-                batch_id,
-                {
-                    "user_id": uid,
-                    "worker_name_snapshot": agg["worker_name"],
-                    "approved_hours": agg["approved_hours"],
-                    "ot_hours": agg["ot_hours"],
-                    "rate": rate,
-                    "ot_rate": ot_rate,
-                    "adjustments": 0,
-                    "line_status": "approved",
-                    "source_type": "clock_records",
-                    "source_shift_session_ids": agg["session_ids"],
-                },
+            write_line_ot_week_snapshot(
+                conn, int(created["id"]), agg.get("ot_week_override_snapshot")
             )
-            if created.get("id") is not None:
-                write_line_classification_provenance(
-                    conn, int(created["id"]), agg["classification_provenance"]
-                )
-                write_line_ot_week_snapshot(
-                    conn, int(created["id"]), agg.get("ot_week_override_snapshot")
-                )
-            wrote = True
+        wrote = True
     if not wrote:
         _recompute_batch_totals(conn, batch_id)
         conn.commit()
         if allow_empty:
             return get_payout_batch(conn, organization_id, batch_id) or {}
+        if batch.get("supplemental_for_user_id") not in (None, "", 0, "0"):
+            raise ValueError(
+                "No approved time records for this employee are available for a supplemental payout. "
+                "Hours already on another payout batch are not included again."
+            )
         raise ValueError(
             "No approved time records in this period. Approve hours on the Time Records tab first."
         )

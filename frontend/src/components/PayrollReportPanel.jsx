@@ -4,6 +4,7 @@ import {
   Box,
   Button,
   Checkbox,
+  Chip,
   FormControl,
   InputLabel,
   ListItemText,
@@ -851,7 +852,12 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
               <TableBody>
                 {rows.map((row) => (
                   <TableRow key={`${row.batch_id}-${row.line_id}`} hover>
-                    <TableCell>{row.employee_name}</TableCell>
+                    <TableCell>
+                      {row.employee_name}
+                      {row.is_supplemental ? (
+                        <Chip size="small" label="Supplemental" sx={{ ml: 1 }} />
+                      ) : null}
+                    </TableCell>
                     <TableCell>{row.employee_category}</TableCell>
                     <TableCell>{row.payroll_period}</TableCell>
                     <TableCell>

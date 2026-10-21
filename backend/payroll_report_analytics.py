@@ -728,6 +728,8 @@ def employee_summaries_by_category(
                     "total_payroll_cost": metrics.get("total_payroll_cost"),
                     "avg_pay_rate": metrics.get("avg_pay_rate"),
                     "avg_cost_per_hour": metrics.get("avg_cost_per_hour"),
+                    "is_supplemental": all(bool(r.get("is_supplemental")) for r in emp_rows),
+                    "includes_supplemental": any(bool(r.get("is_supplemental")) for r in emp_rows),
                 }
             )
         summaries.sort(
