@@ -297,10 +297,24 @@ export default function ManagementTasksPage() {
                         <TableBody>
                           {(row.contributions || []).map((c) => (
                             <TableRow key={c.responsibility_id}>
-                              <TableCell>{c.employee_name}</TableCell>
+                              <TableCell>
+                                {c.employee_name}
+                                {c.is_activity_group ? " · Group" : ""}
+                                {(c.group_items || []).length ? (
+                                  <Box sx={{ mt: 0.5 }}>
+                                    {(c.group_items || []).map((gi) => (
+                                      <Typography key={gi.id} variant="caption" display="block" color="text.secondary">
+                                        {gi.role_label || gi.role}: {gi.display_status || gi.status}
+                                      </Typography>
+                                    ))}
+                                  </Box>
+                                ) : null}
+                              </TableCell>
                               <TableCell>{statusChip(c.status)}</TableCell>
                               <TableCell>
-                                {formatDuration(c.activity?.duration_seconds)}
+                                {formatDuration(
+                                  c.group_duration_seconds ?? c.activity?.duration_seconds
+                                )}
                               </TableCell>
                               <TableCell align="right">
                                 {!readOnly && c.status === "pending_approval" && c.activity?.id ? (
@@ -318,6 +332,25 @@ export default function ManagementTasksPage() {
                                     </Button>
                                   </Stack>
                                 ) : null}
+                                {!readOnly
+                                  ? (c.group_items || [])
+                                      .filter((gi) => gi.status === "pending_approval" || gi.display_status === "pending_verification")
+                                      .map((gi) => (
+                                        <Stack key={gi.id} direction="row" spacing={0.5} justifyContent="flex-end" sx={{ mt: 0.5 }}>
+                                          <Button size="small" disabled={busy} onClick={() => approve(gi.id)}>
+                                            Approve item
+                                          </Button>
+                                          <Button
+                                            size="small"
+                                            color="warning"
+                                            disabled={busy}
+                                            onClick={() => setRejectId(gi.id)}
+                                          >
+                                            Redo item
+                                          </Button>
+                                        </Stack>
+                                      ))
+                                  : null}
                               </TableCell>
                             </TableRow>
                           ))}

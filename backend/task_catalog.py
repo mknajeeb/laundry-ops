@@ -372,6 +372,9 @@ def list_task_definitions(cursor, organization_id: int, *, include_inactive: boo
                 merged["uses_time_slots"] = timed
         if timed and code not in CLEANING_TASK_CODES:
             return
+        # Activity-group synthetic roles are configured separately.
+        if code.startswith("agroup_"):
+            return
         if code in DEFAULT_TASK_CATEGORY_BY_CODE and not merged.get("task_category_code"):
             merged["task_category_code"] = DEFAULT_TASK_CATEGORY_BY_CODE[code]
         if not include_inactive and not merged.get("active", True):
@@ -394,9 +397,29 @@ def get_task_definition(cursor, organization_id: int, code: str) -> dict[str, An
     code_clean = str(code or "").strip()
     if not code_clean:
         return None
+    # Prefer the normal task list (excludes synthetic activity-group roles).
     for item in list_task_definitions(cursor, organization_id, include_inactive=True):
         if item["code"] == code_clean:
             return item
+    # Activity-group schedule roles (agroup_*) are omitted from list_task_definitions
+    # but still need a definition after upsert / for schedule labels.
+    if code_clean.startswith("agroup_"):
+        ensure_task_catalog_tables(cursor)
+        cats = {c["code"]: c for c in list_categories(cursor, organization_id)}
+        cursor.execute(
+            """
+            SELECT code, task_category_code, completion_type, timer_enabled, verification_required,
+                   verification_method, verification_timing, verifier_config_json, input_schema_json,
+                   checklist_id, active, name, display_order, uses_time_slots
+            FROM weekly_schedule_roles
+            WHERE organization_id = %s AND code = %s
+            LIMIT 1
+            """,
+            (int(organization_id), code_clean),
+        )
+        row = cursor.fetchone()
+        if isinstance(row, dict):
+            return task_definition_from_role(row, categories_by_code=cats)
     return None
 
 
@@ -473,8 +496,14 @@ def upsert_task_definition(cursor, organization_id: int, code: str, data: Mappin
     if not code_clean:
         raise TaskCatalogError("Task code is required.")
     # Align with weekly schedule catalog: non-builtin codes need custom_ prefix
-    # so they appear in list_role_catalog / assignments.
-    if code_clean not in BUILTIN_ROLE_CODES and not code_clean.startswith(CUSTOM_ROLE_PREFIX):
+    # (or agroup_ for Task Activity Groups) so they appear in list_role_catalog.
+    from backend.planned_weekly_schedule import ACTIVITY_GROUP_PREFIX
+
+    if (
+        code_clean not in BUILTIN_ROLE_CODES
+        and not code_clean.startswith(CUSTOM_ROLE_PREFIX)
+        and not code_clean.startswith(ACTIVITY_GROUP_PREFIX)
+    ):
         slug = re.sub(r"[^a-z0-9]+", "_", code_clean).strip("_") or "task"
         code_clean = f"{CUSTOM_ROLE_PREFIX}{slug}"
     name = " ".join(str(data.get("name") or code_clean).split())[:ROLE_NAME_MAX]

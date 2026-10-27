@@ -34,7 +34,9 @@ VALID_ROLES = frozenset(
     }
 )
 CUSTOM_ROLE_PREFIX = "custom_"
+ACTIVITY_GROUP_PREFIX = "agroup_"
 _CUSTOM_ROLE_RE = re.compile(r"^custom_[a-z0-9_]{1,32}$")
+_ACTIVITY_GROUP_ROLE_RE = re.compile(r"^agroup_[a-z0-9_]{1,32}$")
 ROLE_STORAGE_MAX = 64
 LEGACY_ROLE_MAP = {
     "folder": "fold",
@@ -109,7 +111,11 @@ DAY_LABELS = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
 
 def is_schedule_role_code(code: Any) -> bool:
     text = str(code or "").strip().lower()
-    return text in VALID_ROLES or bool(_CUSTOM_ROLE_RE.match(text))
+    return (
+        text in VALID_ROLES
+        or bool(_CUSTOM_ROLE_RE.match(text))
+        or bool(_ACTIVITY_GROUP_ROLE_RE.match(text))
+    )
 
 
 def normalize_weekly_role(raw: Any) -> str | None:

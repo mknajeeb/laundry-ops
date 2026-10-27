@@ -371,6 +371,26 @@ export const attendancePinCleaningTasksComplete = (organization_slug, pin, optio
     _pinCleaningOpts,
   );
 
+export const attendancePinCleaningTasksGroupCheckoff = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-cleaning-tasks/group-checkoff`,
+    _pinCleaningBody(organization_slug, pin, options, {
+      activity_id: options.activity_id,
+      task_code: options.task_code,
+      ...(options.completion_input != null ? { completion_input: options.completion_input } : {}),
+    }),
+    _pinCleaningOpts,
+  );
+
+export const attendancePinCleaningTasksCompleteGroup = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-cleaning-tasks/complete-group`,
+    _pinCleaningBody(organization_slug, pin, options, {
+      activity_id: options.activity_id,
+    }),
+    _pinCleaningOpts,
+  );
+
 export const attendancePinCleaningTasksCompleteUntimed = (organization_slug, pin, options = {}) =>
   axios.post(
     `${API_BASE}/api/public/attendance/pin-cleaning-tasks/complete-untimed`,
@@ -479,6 +499,9 @@ export const upsertManagementTaskDefinition = (body) =>
 
 export const upsertManagementTaskChecklist = (body) =>
   axios.post(`${API_BASE}/api/management/task-catalog/checklists`, body);
+
+export const upsertManagementTaskActivityGroup = (body) =>
+  axios.post(`${API_BASE}/api/management/task-catalog/activity-groups`, body);
 
 function mtlPinHeaders(sessionToken) {
   const token = String(sessionToken || "").trim();

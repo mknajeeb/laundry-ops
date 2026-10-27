@@ -99,6 +99,8 @@ _ACTIVITY_EXTRA_COLUMNS: tuple[tuple[str, str], ...] = (
     ("verification_timing", "VARCHAR(32) NULL"),
     ("completion_input_json", "TEXT NULL"),
     ("checklist_id", "INT NULL"),
+    ("parent_activity_id", "BIGINT NULL"),
+    ("activity_kind", "VARCHAR(20) NULL"),
 )
 
 
@@ -273,6 +275,12 @@ def serialize_activity(row: Mapping[str, Any], *, catalog: Mapping[str, Any] | N
         "verification_timing": (str(row.get("verification_timing") or "").strip() or None),
         "completion_input": completion_input,
         "checklist_id": int(row["checklist_id"]) if row.get("checklist_id") is not None else None,
+        "parent_activity_id": int(row["parent_activity_id"])
+        if row.get("parent_activity_id") is not None
+        else None,
+        "activity_kind": (str(row.get("activity_kind") or "").strip() or None),
+        "is_activity_group": str(row.get("activity_kind") or "") == "group"
+        or str(row.get("role") or "").startswith("agroup_"),
     }
 
 
@@ -375,10 +383,16 @@ def _employee_names(cursor, organization_id: int, user_ids: Sequence[int]) -> di
 
 
 def _latest_activity_by_resp(activities: Sequence[Mapping[str, Any]]) -> dict[int, dict[str, Any]]:
-    """Prefer in-progress, else newest non-cancelled row per responsibility."""
+    """Prefer in-progress, else newest non-cancelled row per responsibility.
+
+    Child group-item rows (parent_activity_id set) are ignored so assignment
+    status tracks the parent group / standalone activity only.
+    """
     best: dict[int, dict[str, Any]] = {}
     for row in activities:
         if str(row.get("status") or "") == STATUS_CANCELLED:
+            continue
+        if row.get("parent_activity_id") is not None or str(row.get("activity_kind") or "") == "group_item":
             continue
         rid = int(row.get("responsibility_id") or 0)
         prev = best.get(rid)
@@ -528,10 +542,41 @@ def list_employee_day_tasks(
     completed: list[dict] = []
     by_category: dict[str, list[dict]] = {c["code"]: [] for c in categories}
 
+    from backend.task_activity_groups import get_activity_group, is_activity_group_code
+
     for item in assignments:
         rid = int(item["id"])
         act = by_resp.get(rid)
-        meta = _task_meta_for_role(cursor, organization_id, str(item.get("role") or ""))
+        # Skip child verification rows when matching by responsibility — use latest parent/standalone.
+        if act and act.get("parent_activity_id") is not None:
+            act = None
+            for candidate in activities:
+                if int(candidate.get("responsibility_id") or 0) != rid:
+                    continue
+                if candidate.get("parent_activity_id") is not None:
+                    continue
+                act = candidate
+        role_code = str(item.get("role") or "")
+        is_group = is_activity_group_code(role_code)
+        group_cfg = get_activity_group(cursor, int(organization_id), role_code=role_code) if is_group else None
+        meta = _task_meta_for_role(cursor, organization_id, role_code)
+        if is_group and group_cfg:
+            cat_code = group_cfg.get("category_code") or meta.get("category_code") or "intra_day"
+            cat_name = next(
+                (c["name"] for c in categories if c["code"] == cat_code),
+                meta.get("category_name") or cat_code,
+            )
+            meta = {
+                **meta,
+                "name": group_cfg.get("name") or meta.get("name"),
+                "category_code": cat_code,
+                "category_name": cat_name,
+                "timer_enabled": True,
+                "completion_type": COMPLETION_SIMPLE,
+                "verification_required": False,
+                "verification_method": VERIFY_NONE,
+                "input_schema": [],
+            }
         member_ids = [int(x) for x in (item.get("user_ids") or [item["user_id"]])]
         member_names = [names.get(mid, f"User #{mid}") for mid in member_ids]
         member_names_sorted = sorted(member_names, key=lambda s: s.lower())
@@ -556,6 +601,10 @@ def list_employee_day_tasks(
             "user_ids": member_ids,
             "assigned_employees": member_names_sorted,
             "shared": len(member_ids) > 1,
+            "is_activity_group": is_group,
+            "activity_kind": "group" if is_group else "standalone",
+            "group_items": (group_cfg or {}).get("items") if is_group else None,
+            "group_item_count": int((group_cfg or {}).get("item_count") or 0) if is_group else None,
         }
         if act and str(act.get("status")) == STATUS_IN_PROGRESS:
             row = {**base, "status": DISPLAY_IN_PROGRESS, "activity": serialize_activity(act, catalog=catalog)}
@@ -589,6 +638,14 @@ def list_employee_day_tasks(
         open_meta = _task_meta_for_role(cursor, organization_id, str(open_row.get("role") or ""))
         open_ser["input_schema"] = open_meta.get("input_schema") or []
         open_ser["completion_type"] = open_meta.get("completion_type") or COMPLETION_SIMPLE
+        try:
+            from backend.cleaning_task_group_execution import enrich_open_group_activity
+            from backend.task_activity_groups import is_activity_group_code
+
+            if open_ser.get("is_activity_group") or is_activity_group_code(open_row.get("role")):
+                open_ser = enrich_open_group_activity(cursor, int(organization_id), open_ser)
+        except Exception:
+            pass
     return {
         "business_date": str(day),
         "user_id": int(user_id),
@@ -640,6 +697,13 @@ def start_task(
     if not target:
         raise CleaningTaskError("That task is not assigned to you today.", status=404)
 
+    from backend.task_activity_groups import is_activity_group_code
+
+    if is_activity_group_code(target.get("role")):
+        raise CleaningTaskError(
+            "Use Start Group for activity groups.",
+            status=400,
+        )
     meta = _task_meta_for_role(cursor, oid, str(target.get("role") or ""))
     if not bool(meta.get("timer_enabled", True)):
         raise CleaningTaskError(
@@ -678,8 +742,9 @@ def start_task(
           shift_session_id, business_date, role, timing_mode, planned_start_time,
           status, started_at, paused_category_id, paused_role_id,
           category_code, completion_type, timer_enabled, verification_required,
-          verification_method, verification_timing, checklist_id
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+          verification_method, verification_timing, checklist_id,
+          parent_activity_id, activity_kind
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             oid,
@@ -702,6 +767,8 @@ def start_task(
             verify_method,
             meta.get("verification_timing") or "same_shift",
             meta.get("checklist_id"),
+            None,
+            "standalone",
         ),
     )
     aid = int(cursor.lastrowid)
@@ -742,10 +809,14 @@ def _finalize_completion(
     duration: int | None,
     completion_input: Mapping[str, Any] | None,
     interrupt_role: bool,
+    force_status: str | None = None,
+    force_verify: bool | None = None,
 ) -> dict[str, Any]:
     catalog = _role_catalog(cursor, oid)
     meta = _task_meta_for_role(cursor, oid, str(row.get("role") or ""))
-    final_status = _resolve_post_complete_status(row, meta)
+    final_status = force_status or _resolve_post_complete_status(row, meta)
+    if force_verify is False and final_status == STATUS_PENDING_APPROVAL:
+        final_status = STATUS_COMPLETED
     cursor.execute(
         f"""
         UPDATE {TABLE}
@@ -1215,8 +1286,10 @@ def _group_shared_assignments(
     business_date: date,
     user_id: int | None = None,
     role: str | None = None,
+    activities: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """One dashboard row per shared/solo assignment, with member contributions nested."""
+    activities_all = list(activities or [])
     groups: dict[str, list[dict[str, Any]]] = {}
     order: list[str] = []
     for item in assignments:
@@ -1258,9 +1331,24 @@ def _group_shared_assignments(
                 )
                 st = DISPLAY_OVERDUE if overdue else DISPLAY_PENDING
             member_statuses.append(st)
-            contributions.append(
-                _contribution_entry(member, act, catalog=catalog, names=names, status=st)
-            )
+            entry = _contribution_entry(member, act, catalog=catalog, names=names, status=st)
+            # Activity-group drill-down: nest item-level child activities under the parent.
+            if act and (
+                str(act.get("activity_kind") or "") == "group"
+                or str(member.get("role") or "").startswith("agroup_")
+            ):
+                children = [
+                    serialize_activity(a, catalog=catalog)
+                    for a in activities_all
+                    if a.get("parent_activity_id") is not None
+                    and int(a.get("parent_activity_id") or 0) == int(act.get("id") or 0)
+                    and int(a.get("user_id") or 0) == int(member.get("user_id") or 0)
+                ]
+                entry["group_items"] = children
+                entry["is_activity_group"] = True
+                if act.get("duration_seconds") is not None:
+                    entry["group_duration_seconds"] = int(act.get("duration_seconds") or 0)
+            contributions.append(entry)
 
         # Assignment-level rollup for display (worst outstanding state first).
         if DISPLAY_OVERDUE in member_statuses:
@@ -1350,6 +1438,7 @@ def dashboard_summary(
         business_date=day,
         user_id=user_id,
         role=role,
+        activities=activities,
     )
 
     # Assigned / overdue counted once per shared assignment; activity metrics per contribution.
@@ -1373,7 +1462,14 @@ def dashboard_summary(
     verify_done = len(queue["approved"])
     completion_rate = round((completed / assigned_unique) * 100, 1) if assigned_unique else None
     verification_rate = round((verify_done / verify_due) * 100, 1) if verify_due else None
-    time_spent = sum(int(a.get("duration_seconds") or 0) for a in activities if a.get("duration_seconds") is not None)
+    # Count group timer once (parent only); ignore group_item children (duration NULL / excluded).
+    time_spent = sum(
+        int(a.get("duration_seconds") or 0)
+        for a in activities
+        if a.get("duration_seconds") is not None
+        and a.get("parent_activity_id") is None
+        and str(a.get("activity_kind") or "") != "group_item"
+    )
     try:
         cats = list_categories(cursor, int(organization_id), include_inactive=False)
     except Exception:

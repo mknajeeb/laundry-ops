@@ -78,17 +78,24 @@ function rowsFromEntry(entry) {
 }
 
 function roleOptions(catalog, { timed, keep = [] }) {
+  // Activity groups (agroup_*) appear as untimed assignable tasks with a clear label.
   const keepSet = new Set(keep.filter(Boolean));
   return catalog
     .filter((role) => {
       const matchesKind = timed ? role.uses_time_slots !== false : role.uses_time_slots === false;
       return (matchesKind && role.active !== false) || keepSet.has(role.code);
     })
-    .map((role) => ({
-      value: role.code,
-      label: role.active === false ? `${role.name} (inactive)` : role.name,
-      remarksEnabled: Boolean(role.remarks_enabled),
-    }));
+    .map((role) => {
+      const isGroup = String(role.code || "").startsWith("agroup_");
+      let label = role.name || role.code;
+      if (isGroup) label = `Group: ${label}`;
+      if (role.active === false) label = `${label} (inactive)`;
+      return {
+        value: role.code,
+        label,
+        remarksEnabled: Boolean(role.remarks_enabled),
+      };
+    });
 }
 
 export default function WeeklyScheduleEntryDialog({

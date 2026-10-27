@@ -13,7 +13,9 @@ import {
   attendancePinCleaningTasksChecklistRejectItem,
   attendancePinCleaningTasksChecklistVerify,
   attendancePinCleaningTasksComplete,
+  attendancePinCleaningTasksCompleteGroup,
   attendancePinCleaningTasksCompleteUntimed,
+  attendancePinCleaningTasksGroupCheckoff,
   attendancePinCleaningTasksList,
   attendancePinCleaningTasksNext,
   attendancePinCleaningTasksReject,
@@ -90,8 +92,10 @@ function TaskCard({ task, onStart, onCompleteUntimed, busy }) {
   const names = (task.assigned_employees || []).join(" + ");
   const canAct =
     task.status === "pending" || task.status === "overdue" || task.status === "rejected";
-  const untimed = task.timer_enabled === false;
+  const isGroup = Boolean(task.is_activity_group);
+  const untimed = !isGroup && task.timer_enabled === false;
   const needsInput = task.completion_type === "input_required";
+  const itemCount = task.group_item_count || (task.group_items || []).length || 0;
   return (
     <Box
       sx={{
@@ -105,13 +109,19 @@ function TaskCard({ task, onStart, onCompleteUntimed, busy }) {
         {task.role_label || task.role}
       </Typography>
       <Typography variant="body2" color="text.secondary">
-        {task.category_name || task.category_code || "Task"}
+        {isGroup ? "Activity Group" : task.category_name || task.category_code || "Task"}
         {" · "}
         {task.timing_label || "Anytime"}
         {names ? ` · ${names}` : ""}
-        {needsInput ? " · Input required" : ""}
+        {isGroup && itemCount ? ` · ${itemCount} tasks` : ""}
+        {!isGroup && needsInput ? " · Input required" : ""}
         {untimed ? " · Untimed" : ""}
       </Typography>
+      {isGroup && (task.group_items || []).length ? (
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+          {(task.group_items || []).map((it) => it.task_name || it.task_code).join(" · ")}
+        </Typography>
+      ) : null}
       <Typography variant="caption" sx={{ fontWeight: 700, color: "#b45309" }}>
         {statusLabel(task.status)}
       </Typography>
@@ -123,7 +133,13 @@ function TaskCard({ task, onStart, onCompleteUntimed, busy }) {
           onClick={() => (untimed ? onCompleteUntimed(task) : onStart(task))}
           sx={{ mt: 1.25, fontWeight: 800, textTransform: "none" }}
         >
-          {untimed ? (needsInput ? "Complete with input" : "Mark Complete") : "Start Task"}
+          {isGroup
+            ? "Start Group"
+            : untimed
+              ? needsInput
+                ? "Complete with input"
+                : "Mark Complete"
+              : "Start Task"}
         </Button>
       ) : null}
     </Box>
@@ -153,6 +169,7 @@ export default function CleaningTasksPinPage() {
   const [rejectReason, setRejectReason] = useState("");
   const [inputValues, setInputValues] = useState({});
   const [inputRemarks, setInputRemarks] = useState("");
+  const [checkoffCode, setCheckoffCode] = useState(null);
 
   const activeSchema = active?.input_schema || inputDraftTask?.input_schema || [];
 
@@ -349,6 +366,61 @@ export default function CleaningTasksPinPage() {
     }
   };
 
+  const checkoffGroupItem = async (item) => {
+    if (!active?.id || !item?.task_code) return;
+    const needs = item.completion_type === "input_required" || (item.input_schema || []).length > 0;
+    if (needs && checkoffCode !== item.task_code) {
+      setCheckoffCode(item.task_code);
+      resetInputs(item.input_schema || []);
+      setError("");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      let completion_input;
+      if (needs) {
+        completion_input = buildCompletionInput(item.input_schema || []);
+      }
+      const res = await attendancePinCleaningTasksGroupCheckoff(slug, hub.pin, {
+        hubToken: hub.token,
+        activity_id: active.id,
+        task_code: item.task_code,
+        completion_input,
+      });
+      const body = res?.data || {};
+      if (!body.ok) throw new Error(body.error || "Could not check off task");
+      setActive(body.activity);
+      setCheckoffCode(null);
+      resetInputs([]);
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || "Could not check off task");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const completeGroup = async () => {
+    if (!active?.id) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await attendancePinCleaningTasksCompleteGroup(slug, hub.pin, {
+        hubToken: hub.token,
+        activity_id: active.id,
+      });
+      const body = res?.data || {};
+      if (!body.ok) throw new Error(body.error || "Could not complete group");
+      setCompleted(body.activity);
+      setActive(null);
+      setCheckoffCode(null);
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || "Could not complete group");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const verifyChecklist = async (cl) => {
     setBusy(true);
     setError("");
@@ -462,25 +534,76 @@ export default function CleaningTasksPinPage() {
           <CircularProgress />
         </Box>
       ) : completed ? (
-        <Stack spacing={1.5}>
-          <Typography variant="h6" sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-            Task completed. What would you like to do next?
+        <Stack spacing={2} sx={{ pt: 1 }}>
+          <Typography
+            sx={{
+              fontWeight: 900,
+              fontSize: "1.75rem",
+              lineHeight: 1.2,
+              color: OPS_MOBILE.navy,
+              textAlign: "center",
+            }}
+          >
+            Task Completed!
           </Typography>
-          <Typography variant="body2" color="text.secondary">
-            {completed.role_label || completed.role}
-            {completed.verification_required || completed.status === "pending_approval"
-              ? " is pending verification. You can keep working."
-              : " is complete. You can keep working."}
+          <Box sx={{ textAlign: "center" }}>
+            <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy, fontSize: "1.1rem" }}>
+              {completed.group?.name || completed.role_label || completed.role}
+            </Typography>
+            <Typography variant="body1" color="text.secondary" sx={{ mt: 0.5 }}>
+              {completed.verification_required ||
+              completed.status === "pending_approval" ||
+              completed.status === "pending_verification" ||
+              (completed.group?.items || []).some(
+                (it) =>
+                  it.verification_required ||
+                  it.status === "pending_approval" ||
+                  it.status === "pending_verification",
+              )
+                ? "Waiting for verification"
+                : "All set"}
+            </Typography>
+          </Box>
+          <Typography
+            sx={{
+              fontWeight: 900,
+              fontSize: "1.25rem",
+              color: OPS_MOBILE.navy,
+              textAlign: "center",
+              pt: 1,
+            }}
+          >
+            What&apos;s Next?
           </Typography>
-          <Button variant="contained" disabled={busy} onClick={() => chooseNext("resume_work")} sx={{ fontWeight: 800, textTransform: "none" }}>
-            Resume Work
-          </Button>
-          <Button variant="outlined" disabled={busy} onClick={() => chooseNext("change_role")} sx={{ fontWeight: 800, textTransform: "none" }}>
-            Change Role
-          </Button>
-          <Button variant="outlined" disabled={busy} onClick={() => chooseNext("take_break")} sx={{ fontWeight: 800, textTransform: "none" }}>
-            Take Break
-          </Button>
+          <Stack spacing={1.5}>
+            <Button
+              fullWidth
+              variant="contained"
+              disabled={busy}
+              onClick={() => chooseNext("resume_work")}
+              sx={{ fontWeight: 800, textTransform: "none", py: 1.75, fontSize: "1.05rem" }}
+            >
+              Resume Work
+            </Button>
+            <Button
+              fullWidth
+              variant="outlined"
+              disabled={busy}
+              onClick={() => chooseNext("change_role")}
+              sx={{ fontWeight: 800, textTransform: "none", py: 1.75, fontSize: "1.05rem" }}
+            >
+              Switch Role
+            </Button>
+            <Button
+              fullWidth
+              variant="outlined"
+              disabled={busy}
+              onClick={() => chooseNext("take_break")}
+              sx={{ fontWeight: 800, textTransform: "none", py: 1.75, fontSize: "1.05rem" }}
+            >
+              Take Break
+            </Button>
+          </Stack>
         </Stack>
       ) : inputDraftTask ? (
         <Stack spacing={1.5}>
@@ -509,6 +632,75 @@ export default function CleaningTasksPinPage() {
           </Button>
           <Button disabled={busy} onClick={() => setInputDraftTask(null)} sx={{ textTransform: "none" }}>
             Cancel
+          </Button>
+        </Stack>
+      ) : active?.is_activity_group || active?.activity_kind === "group" ? (
+        <Stack spacing={1.5} alignItems="stretch">
+          <Typography variant="h6" sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
+            {active.group?.name || active.role_label || active.role}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Activity Group · shared timer
+          </Typography>
+          <Typography sx={{ fontSize: "2.4rem", fontWeight: 900, textAlign: "center", color: OPS_MOBILE.navy }}>
+            {formatElapsed(active.started_at, nowMs)}
+          </Typography>
+          <Stack spacing={1}>
+            {(active.group?.items || []).map((item) => {
+              const done = item.status === "completed";
+              const editing = checkoffCode === item.task_code;
+              return (
+                <Box
+                  key={item.task_code}
+                  sx={{
+                    p: 1.25,
+                    borderRadius: 2,
+                    border: `1px solid ${OPS_MOBILE.border}`,
+                    bgcolor: done ? "#f0fdf4" : "#fff",
+                  }}
+                >
+                  <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
+                    {item.task_name || item.task_code}
+                    {item.required ? "" : " (optional)"}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {done ? "Checked off" : "Pending"}
+                  </Typography>
+                  {!done ? (
+                    <>
+                      {editing ? (
+                        <TaskCompletionInputs
+                          schema={item.input_schema || []}
+                          values={inputValues}
+                          remarks={inputRemarks}
+                          onChangeValues={setInputValues}
+                          onChangeRemarks={setInputRemarks}
+                          disabled={busy}
+                        />
+                      ) : null}
+                      <Button
+                        fullWidth
+                        variant="outlined"
+                        disabled={busy}
+                        onClick={() => checkoffGroupItem(item)}
+                        sx={{ mt: 1, fontWeight: 800, textTransform: "none" }}
+                      >
+                        {editing ? "Save check-off" : "Check off"}
+                      </Button>
+                    </>
+                  ) : null}
+                </Box>
+              );
+            })}
+          </Stack>
+          <Button
+            variant="contained"
+            color="success"
+            disabled={busy || !active.group?.can_complete_group}
+            onClick={completeGroup}
+            sx={{ fontWeight: 800, textTransform: "none", py: 1.5 }}
+          >
+            Complete Group
           </Button>
         </Stack>
       ) : active ? (

@@ -18,6 +18,7 @@ import {
   getManagementTaskCatalog,
   upsertManagementTaskChecklist,
   upsertManagementTaskDefinition,
+  upsertManagementTaskActivityGroup,
   updateManagementTaskCategory,
 } from "../api";
 
@@ -63,6 +64,8 @@ export default function ManagementTaskConfigPage() {
   const [draft, setDraft] = useState(null);
   const [schemaText, setSchemaText] = useState("");
   const [checklistDraft, setChecklistDraft] = useState(null);
+  const [activityGroups, setActivityGroups] = useState([]);
+  const [groupDraft, setGroupDraft] = useState(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -73,6 +76,7 @@ export default function ManagementTaskConfigPage() {
       setCategories(res.data?.categories || []);
       setTasks(res.data?.tasks || []);
       setChecklists(res.data?.checklists || []);
+      setActivityGroups(res.data?.activity_groups || []);
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || "Could not load Task Management");
     } finally {
@@ -124,6 +128,38 @@ export default function ManagementTaskConfigPage() {
     }
   };
 
+  const saveGroup = async () => {
+    if (!groupDraft) return;
+    setBusy(true);
+    setError("");
+    try {
+      const items = String(groupDraft.itemsText || "")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((line, i) => {
+          const [code, req] = line.split("|").map((x) => (x || "").trim());
+          return { task_code: code, required: req !== "optional", display_order: i * 10 };
+        });
+      await upsertManagementTaskActivityGroup({
+        id: groupDraft.id,
+        code: groupDraft.code,
+        name: groupDraft.name,
+        category_code: groupDraft.category_code || "intra_day",
+        display_order: Number(groupDraft.display_order || 0),
+        active: groupDraft.active !== false,
+        items,
+      });
+      setGroupDraft(null);
+      setOkMsg("Activity group saved. Assign it from Weekly Schedule.");
+      await load();
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || "Activity group save failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const saveChecklist = async () => {
     if (!checklistDraft) return;
     setBusy(true);
@@ -167,7 +203,7 @@ export default function ManagementTaskConfigPage() {
             Task Management
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Configure categories, tasks, inputs, and checklists. Assign people on Weekly Schedule.
+            Configure categories, tasks, activity groups, inputs, and checklists. Assign on Weekly Schedule.
           </Typography>
         </Box>
         <Button component={RouterLink} to="/management/tasks" size="small" variant="outlined">
@@ -427,7 +463,126 @@ export default function ManagementTaskConfigPage() {
             </Paper>
           ) : null}
 
-          <Paper variant="outlined" sx={{ p: 1.5 }}>
+                    <Paper variant="outlined" sx={{ p: 1.5 }}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+              <Typography sx={{ fontWeight: 800 }}>Activity Groups</Typography>
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={busy}
+                onClick={() =>
+                  setGroupDraft({
+                    name: "",
+                    category_code: categories[0]?.code || "intra_day",
+                    display_order: 0,
+                    active: true,
+                    itemsText: "",
+                  })
+                }
+              >
+                Add group
+              </Button>
+            </Stack>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              One PIN timer for several related tasks. Not the same as shared employee assignments or verification checklists.
+            </Typography>
+            <Stack spacing={1}>
+              {activityGroups.length ? (
+                activityGroups.map((g) => (
+                  <Paper key={g.id} variant="outlined" sx={{ p: 1.25 }}>
+                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                      <Box>
+                        <Typography sx={{ fontWeight: 800 }}>{g.name}</Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          {g.category_code} · {(g.items || []).map((i) => i.task_name || i.task_code).join(", ")} · assign as {g.role_code}
+                          {!g.active ? " · inactive" : ""}
+                        </Typography>
+                      </Box>
+                      <Button
+                        size="small"
+                        onClick={() =>
+                          setGroupDraft({
+                            ...g,
+                            itemsText: (g.items || [])
+                              .map((i) => `${i.task_code}${i.required ? "" : "|optional"}`)
+                              .join("\n"),
+                          })
+                        }
+                      >
+                        Edit
+                      </Button>
+                    </Stack>
+                  </Paper>
+                ))
+              ) : (
+                <Typography variant="body2" color="text.secondary">
+                  No activity groups yet. Example: Routine Cleaning with Floor Brooming + Dryer Lint + Washer Wipe Down.
+                </Typography>
+              )}
+            </Stack>
+          </Paper>
+
+          {groupDraft ? (
+            <Paper variant="outlined" sx={{ p: 1.5 }}>
+              <Typography sx={{ fontWeight: 800, mb: 1 }}>Edit activity group</Typography>
+              <Stack spacing={1.25}>
+                <TextField
+                  label="Name"
+                  size="small"
+                  value={groupDraft.name || ""}
+                  onChange={(e) => setGroupDraft({ ...groupDraft, name: e.target.value })}
+                />
+                <TextField
+                  select
+                  label="Category"
+                  size="small"
+                  value={groupDraft.category_code || "intra_day"}
+                  onChange={(e) => setGroupDraft({ ...groupDraft, category_code: e.target.value })}
+                >
+                  {categories.map((c) => (
+                    <MenuItem key={c.code} value={c.code}>
+                      {c.name}
+                    </MenuItem>
+                  ))}
+                </TextField>
+                <TextField
+                  label="Display order"
+                  size="small"
+                  type="number"
+                  value={groupDraft.display_order ?? 0}
+                  onChange={(e) => setGroupDraft({ ...groupDraft, display_order: e.target.value })}
+                />
+                <TextField
+                  label="Member task codes (one per line; append |optional)"
+                  size="small"
+                  multiline
+                  minRows={3}
+                  value={groupDraft.itemsText || ""}
+                  onChange={(e) => setGroupDraft({ ...groupDraft, itemsText: e.target.value })}
+                  helperText="Use existing task codes only (not other activity groups)."
+                />
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={groupDraft.active !== false}
+                      onChange={(e) => setGroupDraft({ ...groupDraft, active: e.target.checked })}
+                    />
+                  }
+                  label="Active"
+                />
+                <Stack direction="row" spacing={1}>
+                  <Button variant="contained" disabled={busy} onClick={saveGroup}>
+                    Save activity group
+                  </Button>
+                  <Button disabled={busy} onClick={() => setGroupDraft(null)}>
+                    Cancel
+                  </Button>
+                </Stack>
+              </Stack>
+            </Paper>
+          ) : null}
+
+<Paper variant="outlined" sx={{ p: 1.5 }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
               <Typography sx={{ fontWeight: 800 }}>Checklists</Typography>
               <Button

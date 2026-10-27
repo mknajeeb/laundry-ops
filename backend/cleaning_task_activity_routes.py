@@ -26,6 +26,17 @@ from backend.cleaning_task_activity import (
     start_task,
     user_can_verify_activity,
 )
+from backend.cleaning_task_group_execution import (
+    checkoff_group_item,
+    complete_group_activity,
+    start_group_activity,
+)
+from backend.task_activity_groups import (
+    ActivityGroupError,
+    is_activity_group_code,
+    list_activity_groups,
+    upsert_activity_group,
+)
 from backend.task_catalog import (
     TaskCatalogError,
     list_categories,
@@ -224,7 +235,24 @@ def register_cleaning_task_activity_routes(
             except MobilePinAccessDeniedError as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 403
             session = ctx.get("session") or {}
-            activity = start_task(
+            # Dispatch activity groups to shared-timer start.
+            day = list_employee_day_tasks(
+                cursor, int(ctx["org_id"]), int(ctx["user_id"])
+            )
+            target = next(
+                (
+                    t
+                    for t in (day.get("tasks") or [])
+                    if int(t.get("responsibility_id") or 0) == int(responsibility_id)
+                ),
+                None,
+            )
+            start_fn = (
+                start_group_activity
+                if target and (target.get("is_activity_group") or is_activity_group_code(target.get("role")))
+                else start_task
+            )
+            activity = start_fn(
                 conn,
                 cursor,
                 organization_id=int(ctx["org_id"]),
@@ -246,6 +274,107 @@ def register_cleaning_task_activity_routes(
             except Exception:
                 pass
             return jsonify({"ok": False, "error": "Could not start cleaning task."}), 500
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @app.route("/api/public/attendance/pin-cleaning-tasks/group-checkoff", methods=["POST"])
+    def public_pin_cleaning_tasks_group_checkoff():
+        ctx, conn, err = _pin_gate("cleaning_group_checkoff", require_clocked_in=True)
+        if err:
+            body, status = err
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return jsonify(body), status
+        try:
+            data = request.json or {}
+            activity_id = data.get("activity_id")
+            task_code = data.get("task_code") or data.get("role")
+            if activity_id is None or not task_code:
+                return jsonify({"ok": False, "error": "activity_id and task_code are required"}), 400
+            cursor = conn.cursor(dictionary=True)
+            try:
+                assert_optional_pin_hub_module(
+                    cursor, int(ctx["org_id"]), int(ctx["user_id"]), "cleaning_tasks"
+                )
+            except MobilePinAccessDeniedError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 403
+            activity = checkoff_group_item(
+                conn,
+                cursor,
+                organization_id=int(ctx["org_id"]),
+                user_id=int(ctx["user_id"]),
+                activity_id=int(activity_id),
+                task_code=str(task_code),
+                completion_input=data.get("completion_input") or data.get("input"),
+            )
+            conn.commit()
+            return jsonify({"ok": True, "activity": activity})
+        except CleaningTaskError as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"ok": False, "error": exc.message, **exc.payload}), exc.status
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"ok": False, "error": "Could not check off group task."}), 500
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @app.route("/api/public/attendance/pin-cleaning-tasks/complete-group", methods=["POST"])
+    def public_pin_cleaning_tasks_complete_group():
+        ctx, conn, err = _pin_gate("cleaning_complete_group", require_clocked_in=True)
+        if err:
+            body, status = err
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return jsonify(body), status
+        try:
+            data = request.json or {}
+            activity_id = data.get("activity_id")
+            if activity_id is None:
+                return jsonify({"ok": False, "error": "activity_id is required"}), 400
+            cursor = conn.cursor(dictionary=True)
+            try:
+                assert_optional_pin_hub_module(
+                    cursor, int(ctx["org_id"]), int(ctx["user_id"]), "cleaning_tasks"
+                )
+            except MobilePinAccessDeniedError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 403
+            activity = complete_group_activity(
+                conn,
+                cursor,
+                organization_id=int(ctx["org_id"]),
+                user_id=int(ctx["user_id"]),
+                activity_id=int(activity_id),
+            )
+            conn.commit()
+            return jsonify({"ok": True, "activity": activity})
+        except CleaningTaskError as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"ok": False, "error": exc.message, **exc.payload}), exc.status
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"ok": False, "error": "Could not complete activity group."}), 500
         finally:
             try:
                 conn.close()
@@ -889,8 +1018,45 @@ def register_cleaning_task_activity_routes(
                     "categories": list_categories(cursor, int(org_id)),
                     "tasks": list_task_definitions(cursor, int(org_id)),
                     "checklists": list_checklists(cursor, int(org_id)),
+                    "activity_groups": list_activity_groups(
+                        cursor, int(org_id), include_inactive=True
+                    ),
                 }
             )
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @app.route("/api/management/task-catalog/activity-groups", methods=["POST"])
+    def management_task_catalog_activity_group_upsert():
+        conn, cursor, org_id, err = _mgmt_catalog_gate()
+        if err:
+            return err
+        try:
+            data = request.json or {}
+            gid = data.get("id")
+            row = upsert_activity_group(
+                cursor,
+                int(org_id),
+                data,
+                group_id=int(gid) if gid not in (None, "") else None,
+            )
+            conn.commit()
+            return jsonify({"ok": True, "activity_group": row})
+        except ActivityGroupError as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"error": exc.message}), exc.status
+        except TaskCatalogError as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"error": exc.message}), exc.status
         finally:
             try:
                 conn.close()
