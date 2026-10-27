@@ -312,6 +312,7 @@ export default function WeeklyScheduleBreaksByTimeView({
                                   {task.label}
                                 </Box>
                                 {` · ${task.name}`}
+                                {task.timingLabel ? ` · ${task.timingLabel}` : ""}
                                 <Box component="span" sx={{ color: task.remarks ? "text.secondary" : "text.disabled" }}>
                                   {task.remarks ? ` — ${task.remarks}` : " — no instructions"}
                                 </Box>

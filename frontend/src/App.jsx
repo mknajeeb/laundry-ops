@@ -64,7 +64,11 @@ import AttendancePinPage from "./pages/AttendancePinPage";
 import AttendanceRoleSwitchPage from "./pages/AttendanceRoleSwitchPage";
 import ChangeRolePreviewPage from "./pages/ChangeRolePreviewPage";
 import MaintenanceTaskListPinPage from "./pages/MaintenanceTaskListPinPage";
+import CleaningTasksPinPage from "./pages/CleaningTasksPinPage";
+import CleaningTaskReviewPinPage from "./pages/CleaningTaskReviewPinPage";
 import EmployeePinHubPage from "./pages/EmployeePinHubPage";
+import ManagementTasksPage from "./pages/ManagementTasksPage";
+import ManagementTaskConfigPage from "./pages/ManagementTaskConfigPage";
 import MaintenanceTaskListReportsPage from "./pages/MaintenanceTaskListReportsPage";
 import MaintenanceTaskSettingsPage from "./pages/MaintenanceTaskSettingsPage";
 import PartnerRosterPage from "./pages/PartnerRosterPage";
@@ -601,11 +605,15 @@ function AppShell() {
       return;
     }
     if (isRinsePartnerOnlyUser(user)) {
+      // Task Dashboard is read-only for Rinse (API sets read_only); config stays hub-only.
+      const path = String(pathname || "").replace(/\/+$/, "") || "/";
       const allowed =
-        pathname === "/rinse/performance" ||
-        pathname.startsWith("/rinse/performance/") ||
-        pathname === "/performance/weekly-schedule" ||
-        pathname.startsWith("/performance/weekly-schedule/");
+        path === "/rinse/performance" ||
+        path.startsWith("/rinse/performance/") ||
+        path === "/performance/weekly-schedule" ||
+        path.startsWith("/performance/weekly-schedule/") ||
+        path === "/management/tasks" ||
+        path.startsWith("/management/tasks/");
       if (!allowed) {
         navigate("/rinse/performance", { replace: true });
       }
@@ -755,6 +763,10 @@ function AppShell() {
         <Route path="/attendance/role" element={<AttendanceRoleSwitchPage />} />
         <Route path="/attendance/maintenance/:orgSlug" element={<MaintenanceTaskListPinPage />} />
         <Route path="/attendance/maintenance" element={<MaintenanceTaskListPinPage />} />
+        <Route path="/attendance/cleaning-tasks/review/:orgSlug" element={<CleaningTaskReviewPinPage />} />
+        <Route path="/attendance/cleaning-tasks/review" element={<CleaningTaskReviewPinPage />} />
+        <Route path="/attendance/cleaning-tasks/:orgSlug" element={<CleaningTasksPinPage />} />
+        <Route path="/attendance/cleaning-tasks" element={<CleaningTasksPinPage />} />
         <Route path="/attendance/:orgSlug" element={<AttendancePinPage />} />
         <Route path="/attendance" element={<AttendancePinPage />} />
       </Routes>
@@ -1307,6 +1319,26 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
                     <ManagementPerformancePage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/management/tasks"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER", "RINSE"]}>
+                    <ManagementTasksPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/management/task-management"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
+                    <ManagementTaskConfigPage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }

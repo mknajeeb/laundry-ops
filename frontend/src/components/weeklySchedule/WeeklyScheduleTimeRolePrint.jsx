@@ -156,21 +156,22 @@ function DayTasksPrint({ day }) {
     <table className="weekly-schedule-print-table weekly-schedule-print-hourly-tasks">
       <tbody>
         {day.responsibilities.map((group, index) => (
-          <tr key={group.role} className="weekly-schedule-print-tr-daily">
+          <tr key={group.key || group.role} className="weekly-schedule-print-tr-daily">
             {index === 0 ? (
               <td rowSpan={day.responsibilities.length} className="weekly-schedule-print-employee-name">
                 Tasks
-                <div className="weekly-schedule-print-employee-meta">Whole day · no times · no hours</div>
+                <div className="weekly-schedule-print-employee-meta">Not counted in hours</div>
               </td>
             ) : null}
             <td>{group.label}</td>
             <td>
-              {group.people.map((person) => (
-                <div key={person.key} className="weekly-schedule-print-shift-line">
-                  <strong>{person.name}</strong>
-                  {person.remarks ? `: ${person.remarks}` : ""}
-                </div>
-              ))}
+              <div className="weekly-schedule-print-shift-line">
+                <strong>{group.namesLabel}</strong>
+                {group.timingLabel ? ` · ${group.timingLabel}` : ""}
+                {group.people.some((person) => person.remarks)
+                  ? `: ${group.people.find((person) => person.remarks).remarks}`
+                  : ""}
+              </div>
             </td>
           </tr>
         ))}

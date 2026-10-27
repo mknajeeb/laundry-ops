@@ -446,7 +446,8 @@ export default function WeeklyScheduleManageRolesDialog({
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           <strong>Roles</strong> are timed production work inside a shift (weighing, sorting, washing, drying, folding,
           post-weighing) and count toward scheduled hours. <strong>Tasks</strong> (cleaning, Self Service, Drop Off
-          customer attendance) are assigned to an employee for a day with instructions only — no times, no hours. These
+          customer attendance) are assigned for a day with instructions. They add no hours. A task can be shared and can
+          say when to do it. These
           are separate from login permissions. Deactivating hides an item from new assignments; existing schedules keep
           showing it. Changing a role to a task converts this week&apos;s and later assignments into day tasks (with the
           previous time range kept in the instructions); the shifts themselves, their breaks, and hours stay as they are.

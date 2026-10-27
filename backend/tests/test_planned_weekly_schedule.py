@@ -100,15 +100,27 @@ class _FakeCursor:
 
     def _execute_responsibilities(self, sql_norm, params):
         if sql_norm.startswith("insert"):
-            org_id, week_start, user_id, dow, role, remarks = params
-            if "insert ignore" in sql_norm and any(
-                r["organization_id"] == org_id
-                and r["week_start"] == week_start
-                and r["user_id"] == user_id
-                and r["day_of_week"] == dow
-                and r["role"] == role
-                for r in self.responsibilities
-            ):
+            org_id, week_start, user_id, dow, role, remarks = params[:6]
+            group_id = params[6] if len(params) > 6 else None
+            timing_mode = params[7] if len(params) > 7 else "anytime"
+            start_time = params[8] if len(params) > 8 else None
+            existing = next(
+                (
+                    r
+                    for r in self.responsibilities
+                    if r["organization_id"] == org_id
+                    and r["week_start"] == week_start
+                    and r["user_id"] == user_id
+                    and r["day_of_week"] == dow
+                    and r["role"] == role
+                ),
+                None,
+            )
+            if existing and ("insert ignore" in sql_norm or "on duplicate key" in sql_norm):
+                if "on duplicate key" in sql_norm and "coalesce(remarks" not in sql_norm:
+                    existing["remarks"] = remarks
+                    existing["timing_mode"] = timing_mode
+                    existing["start_time"] = start_time
                 return
             self._resp_id += 1
             self.responsibilities.append(
@@ -120,15 +132,34 @@ class _FakeCursor:
                     "day_of_week": dow,
                     "role": role,
                     "remarks": remarks,
+                    "assignment_group_id": group_id,
+                    "timing_mode": timing_mode,
+                    "start_time": start_time,
                 }
             )
             self._id = self._resp_id
             return
-        if sql_norm.startswith("update") and "set remarks = %s" in sql_norm:
+        if sql_norm.startswith("update") and "set remarks = %s" in sql_norm and "timing_mode" not in sql_norm:
             remarks, org_id, rid = params
             for r in self.responsibilities:
                 if r["organization_id"] == org_id and r["id"] == rid:
                     r["remarks"] = remarks
+            return
+        if sql_norm.startswith("update") and "assignment_group_id=%s" in sql_norm:
+            user_id, dow, role, remarks, group_id, timing_mode, start_time, org_id, rid = params
+            for r in self.responsibilities:
+                if r["organization_id"] == org_id and r["id"] == rid:
+                    r.update(
+                        {
+                            "user_id": user_id,
+                            "day_of_week": dow,
+                            "role": role,
+                            "remarks": remarks,
+                            "assignment_group_id": group_id,
+                            "timing_mode": timing_mode,
+                            "start_time": start_time,
+                        }
+                    )
             return
         if sql_norm.startswith("update"):
             user_id, dow, role, remarks, org_id, rid = params
@@ -2691,3 +2722,132 @@ def test_create_update_and_copy_keep_break_slots_and_deletions():
         assert err is None, err
         assert updated["break_slots"] == [] and updated["break_minutes"] == 0 and updated["hours"] == 8.0
         assert json.loads(cursor.rows[0]["break_slots"] or "[]") == []
+
+
+def test_task_group_keeps_one_assignment_and_legacy_rows():
+    from backend.planned_weekly_schedule_responsibilities import delete_assignment, serialize_responsibility
+
+    legacy = serialize_responsibility(
+        {"id": 4, "organization_id": 1, "week_start": WEEK, "user_id": 10, "day_of_week": 2, "role": "lint_cleaning", "remarks": "Dryers"}
+    )
+    assert legacy["timing_mode"] == "anytime" and legacy["user_ids"] == [10] and legacy["assignment_group_id"] is None
+
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    _create(cursor, {"user_id": 10, "day_of_week": 1, "start_time": "08:00", "end_time": "16:00", "roles": ["fold"]})
+    _create(cursor, {"user_id": 20, "day_of_week": 1, "start_time": "08:00", "end_time": "16:00", "roles": ["wash"]})
+    p1, p2 = _patched()
+    with p1, p2:
+        item, err = create_responsibility(
+            conn,
+            cursor,
+            1,
+            week_start=WEEK,
+            data={
+                "user_ids": [10, 20],
+                "day_of_week": 1,
+                "role": "floor_cleaning",
+                "remarks": "Front",
+                "timing_mode": "specific_time",
+                "start_time": "08:00",
+            },
+        )
+        assert err is None, err
+        assert item["user_ids"] == [10, 20]
+        assert item["timing_mode"] == "specific_time" and item["start_time"] == "08:00"
+        assert item["timing_label"] == "8:00 AM"
+        group_id = item["assignment_group_id"]
+        rows = [r for r in cursor.responsibilities if r["role"] == "floor_cleaning"]
+        assert len(rows) == 2 and {r["assignment_group_id"] for r in rows} == {group_id}
+
+        other, err = create_responsibility(
+            conn, cursor, 1, week_start=WEEK, data={"user_id": 10, "day_of_week": 2, "role": "floor_cleaning"}
+        )
+        assert err is None and other["assignment_group_id"] != group_id and other["timing_mode"] == "anytime"
+
+        updated, err = update_responsibility(conn, cursor, 1, item["id"], {"user_ids": [20, 10], "remarks": "Both"})
+        assert err is None, err
+        assert updated["assignment_group_id"] == group_id
+        assert updated["user_ids"] == [10, 20]
+        assert updated["remarks"] == "Both" and updated["start_time"] == "08:00"
+
+        shrunk, err = update_responsibility(conn, cursor, 1, updated["id"], {"user_ids": [20]})
+        assert err is None, err
+        assert shrunk["assignment_group_id"] == group_id and shrunk["user_ids"] == [20]
+        assert delete_assignment(cursor, 1, shrunk["id"])
+        assert not [r for r in cursor.responsibilities if r.get("assignment_group_id") == group_id]
+
+
+def test_task_timing_blocks_impossible_specific_times_and_warns_on_relative_gaps():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    with patch("backend.planned_weekly_schedule._schedule_end_time_enabled", return_value=True):
+        _create(
+            cursor,
+            {
+                "user_id": 10,
+                "day_of_week": 1,
+                "start_time": "09:00",
+                "end_time": "17:00",
+                "roles": ["fold"],
+                "break_slots": [{"start_time": "12:00", "end_time": "12:30"}],
+                "break_minutes": 30,
+            },
+        )
+        _create(cursor, {"user_id": 20, "day_of_week": 1, "start_time": "12:00", "end_time": "18:00", "roles": ["wash"]})
+    p1, p2 = _patched()
+    with p1, p2:
+        blocked, err = create_responsibility(
+            conn,
+            cursor,
+            1,
+            week_start=WEEK,
+            data={"user_ids": [10, 20], "day_of_week": 1, "role": "floor_cleaning", "timing_mode": "specific_time", "start_time": "08:00"},
+        )
+        assert blocked is None and "Alice is not scheduled at 8:00 AM" in err and "Bob is not scheduled at 8:00 AM" in err
+
+        on_break, err = create_responsibility(
+            conn,
+            cursor,
+            1,
+            week_start=WEEK,
+            data={"user_id": 10, "day_of_week": 1, "role": "floor_cleaning", "timing_mode": "specific_time", "start_time": "12:15"},
+        )
+        assert on_break is None and "on a scheduled break" in err
+
+        warned, err = create_responsibility(
+            conn,
+            cursor,
+            1,
+            week_start=WEEK,
+            data={"user_ids": [10, 20], "day_of_week": 1, "role": "lint_cleaning", "timing_mode": "before_break"},
+        )
+        assert err is None, err
+        assert any("Bob has no scheduled break" in message for message in warned["timing_warnings"])
+        assert not any("Alice has no scheduled break" in message for message in warned["timing_warnings"])
+
+        entry, err = create_responsibility(
+            conn,
+            cursor,
+            1,
+            week_start=WEEK,
+            data={"user_ids": [10, 20], "day_of_week": 1, "role": "washer_cleaning", "timing_mode": "upon_entry"},
+        )
+        assert err is None, err
+        assert any("Upon Entry differs" in message for message in entry["timing_warnings"])
+
+        counts, sync_err = sync_day_tasks(
+            cursor,
+            1,
+            week_start=WEEK,
+            user_id=10,
+            day_of_week=1,
+            tasks=[{"role": "lint_cleaning", "remarks": "Dryers", "timing_mode": "after_break"}],
+            conn=conn,
+        )
+        assert sync_err is None, sync_err
+        assert counts["removed"] == 1 and counts["updated"] == 1
+        bob = next(r for r in cursor.responsibilities if r["user_id"] == 20 and r["role"] == "lint_cleaning")
+        alice = next(r for r in cursor.responsibilities if r["user_id"] == 10 and r["role"] == "lint_cleaning")
+        assert alice["assignment_group_id"] == bob["assignment_group_id"]
+        assert alice["timing_mode"] == "after_break" and bob["timing_mode"] == "after_break" and bob["remarks"] == "Dryers"

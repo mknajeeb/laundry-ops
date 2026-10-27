@@ -17,6 +17,7 @@ const PORTAL = [...TENANT_PORTAL_ROLES];
 export const RINSE_HUB_NAV_ITEMS = [
   { to: "/rinse/performance", labelKey: "nav.rinsePerformance", label: "Performance" },
   { to: "/performance/weekly-schedule", labelKey: "nav.weeklySchedule", label: "Weekly Schedule" },
+  { to: "/management/tasks", labelKey: "nav.taskDashboard", label: "Task Dashboard" },
 ];
 
 /** Future modules reserved in architecture — not shown in Phase 1 nav. */

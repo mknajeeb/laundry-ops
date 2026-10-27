@@ -14,6 +14,8 @@ import { getTaUserMobilePinAccess, putTaUserMobilePinAccess } from "../api";
 export const MOBILE_PIN_ACCESS_MODULES = [
   { key: "switch_role", label: "Role" },
   { key: "take_break", label: "Take a Break" },
+  { key: "cleaning_tasks", label: "Tasks" },
+  { key: "cleaning_task_review", label: "Task Review (supervisor)" },
   { key: "checklist", label: "End-of-Day Checklist" },
   { key: "inventory", label: "Inventory" },
   { key: "revenue_cost", label: "Revenue / Cash" },
@@ -24,6 +26,8 @@ export function normalizeMobilePinAccess(data = {}) {
   return {
     switch_role: !!data.switch_role,
     take_break: !!data.take_break,
+    cleaning_tasks: !!data.cleaning_tasks,
+    cleaning_task_review: !!data.cleaning_task_review,
     checklist: !!data.checklist,
     inventory: !!data.inventory,
     revenue_cost: !!data.revenue_cost,

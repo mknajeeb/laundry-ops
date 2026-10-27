@@ -5,6 +5,7 @@ import {
   timelineRoleBreakdown,
   UNALLOCATED_BREAK_NOTE,
 } from "./weeklyScheduleRoles";
+import { assignmentKey, taskGroupLabel, taskTimingIssues, taskTimingLabel } from "./weeklyScheduleTaskTiming";
 
 export const ASSIGNMENT_KIND = { SHIFT: "shift", RESPONSIBILITY: "responsibility" };
 
@@ -92,12 +93,24 @@ function byName(a, b) {
   return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
 }
 
-function dayTaskGroups(responsibilities, dow, employeesById) {
+function dayTaskGroups(responsibilities, dow, employeesById, entries = []) {
   const groups = new Map();
   for (const item of responsibilities || []) {
     if (Number(item.day_of_week) !== dow) continue;
-    if (!groups.has(item.role)) groups.set(item.role, { role: item.role, label: scheduleRoleLabel(item.role), people: [] });
-    groups.get(item.role).people.push({
+    const key = assignmentKey(item);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        role: item.role,
+        label: scheduleRoleLabel(item.role),
+        people: [],
+        item,
+        timingLabel: taskTimingLabel(item),
+        namesLabel: taskGroupLabel(item, employeesById),
+        warnings: taskTimingIssues(item, entries, employeesById).warnings,
+      });
+    }
+    groups.get(key).people.push({
       key: `r${item.id}`,
       item,
       userId: Number(item.user_id),
@@ -105,11 +118,18 @@ function dayTaskGroups(responsibilities, dow, employeesById) {
       remarks: item.remarks || null,
     });
   }
-  return sortRoles([...groups.keys()]).map((role) => {
-    const group = groups.get(role);
-    const people = [...group.people].sort(byName);
-    return { ...group, people, count: people.length };
-  });
+  const order = new Map(sortRoles([...new Set([...groups.values()].map((group) => group.role))]).map((role, index) => [role, index]));
+  return [...groups.values()]
+    .map((group) => {
+      const people = [...group.people].sort(byName);
+      const namesLabel = group.namesLabel || people.map((person) => person.name).join(" + ");
+      return { ...group, people, namesLabel: people.length > 1 ? namesLabel : people[0]?.name || "", count: people.length };
+    })
+    .sort(
+      (a, b) =>
+        (order.get(a.role) ?? 0) - (order.get(b.role) ?? 0) ||
+        a.namesLabel.localeCompare(b.namesLabel, undefined, { sensitivity: "base" }),
+    );
 }
 
 function finishPeople(peopleMap) {
@@ -152,7 +172,7 @@ function clockRangeLabel(start, end) {
  */
 export function buildHourlyCoverage(
   entries,
-  { dayIndices = [0, 1, 2, 3, 4, 5, 6], employeesById = {}, responsibilities = [], roles = null } = {},
+  { dayIndices = [0, 1, 2, 3, 4, 5, 6], employeesById = {}, responsibilities = [], roles = null, timingEntries = null } = {},
 ) {
   const roleFilter = Array.isArray(roles) ? new Set(roles) : null;
   const timelines = [...scheduleDayTimelines(entries).values()];
@@ -355,7 +375,7 @@ export function buildHourlyCoverage(
       breakRanges,
       unscheduledBreaks,
       unscheduledBreakTotal: { count: new Set(unscheduledBreaks.map((b) => b.userId)).size, hours: unscheduledHours },
-      responsibilities: dayTaskGroups(responsibilities, dow, employeesById),
+      responsibilities: dayTaskGroups(responsibilities, dow, employeesById, timingEntries || entries),
     };
   });
 }

@@ -44,7 +44,26 @@ export default defineConfig(({ mode }) => {
     `http://127.0.0.1:${env.PORT || '8000'}`
 
   const proxy = Object.fromEntries(
-    API_PREFIXES.map((p) => [`/${p}`, { target: backend, changeOrigin: true }])
+    API_PREFIXES.map((p) => {
+      const rule = { target: backend, changeOrigin: true }
+      // Frontend PIN / attendance shell routes must not be swallowed by the API proxy.
+      if (p === 'attendance') {
+        rule.bypass = (req) => {
+          const path = String(req.url || '').split('?')[0]
+          if (
+            path === '/attendance' ||
+            path.startsWith('/attendance/role') ||
+            path.startsWith('/attendance/maintenance') ||
+            path.startsWith('/attendance/cleaning-tasks') ||
+            /^\/attendance\/[a-z0-9-]+$/i.test(path)
+          ) {
+            return '/index.html'
+          }
+          return null
+        }
+      }
+      return [`/${p}`, rule]
+    })
   )
 
   return {

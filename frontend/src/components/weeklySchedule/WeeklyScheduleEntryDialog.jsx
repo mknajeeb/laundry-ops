@@ -3,6 +3,7 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Dialog,
   DialogActions,
   DialogContent,
@@ -11,6 +12,7 @@ import {
   FormControlLabel,
   IconButton,
   InputLabel,
+  ListItemText,
   MenuItem,
   Select,
   Stack,
@@ -35,13 +37,31 @@ import {
 } from "./weeklyScheduleRoles";
 import { ASSIGNMENT_KIND } from "./weeklyScheduleTimeBlocks";
 import WeeklyScheduleBreakFields from "./WeeklyScheduleBreakFields";
+import {
+  TASK_TIMING,
+  TASK_TIMING_OPTIONS,
+  scheduleEmployeeName,
+  taskMemberIds,
+  taskTimingIssues,
+} from "./weeklyScheduleTaskTiming";
 
 const NO_TASKS = [];
 
 let rowSeq = 0;
 function makeRow(partial = {}) {
   rowSeq += 1;
-  return { id: rowSeq, role: "", fullShift: true, start: "", end: "", remarks: "", ...partial };
+  return {
+    id: rowSeq,
+    role: "",
+    fullShift: true,
+    start: "",
+    end: "",
+    remarks: "",
+    timingMode: TASK_TIMING.ANYTIME,
+    taskStart: "08:00",
+    memberIds: [],
+    ...partial,
+  };
 }
 
 function rowsFromEntry(entry) {
@@ -87,6 +107,9 @@ export default function WeeklyScheduleEntryDialog({
   defaultStartTime = null,
   defaultEndTime = null,
   employees = null,
+  taskEmployees = null,
+  scheduleEntries = [],
+  employeesById = {},
   scheduleEndTimeEnabled = true,
   shiftCategoryChoices = null,
   categoryLabel = (value) => value,
@@ -112,6 +135,9 @@ export default function WeeklyScheduleEntryDialog({
   const [unscheduledBreak, setUnscheduledBreak] = useState(0);
   const [respRole, setRespRole] = useState("");
   const [respRemarks, setRespRemarks] = useState("");
+  const [userIds, setUserIds] = useState([]);
+  const [timingMode, setTimingMode] = useState(TASK_TIMING.ANYTIME);
+  const [taskStart, setTaskStart] = useState("08:00");
   const [taskRows, setTaskRows] = useState([]);
   const [tasksTouched, setTasksTouched] = useState(false);
 
@@ -136,9 +162,12 @@ export default function WeeklyScheduleEntryDialog({
     if (responsibility) {
       setKind(ASSIGNMENT_KIND.RESPONSIBILITY);
       setUserId(responsibility.user_id);
+      setUserIds(taskMemberIds(responsibility));
       setDayOfWeek(responsibility.day_of_week);
       setRespRole(responsibility.role);
       setRespRemarks(responsibility.remarks || "");
+      setTimingMode(responsibility.timing_mode || TASK_TIMING.ANYTIME);
+      setTaskStart(responsibility.start_time || "08:00");
       return;
     }
     if (entry) {
@@ -175,6 +204,9 @@ export default function WeeklyScheduleEntryDialog({
     setUnscheduledBreak(0);
     setRespRole(kindForRole === ASSIGNMENT_KIND.RESPONSIBILITY && defaultRole ? defaultRole : untimedOptions[0]?.value || "");
     setRespRemarks("");
+    setUserIds(defaultUserId ? [Number(defaultUserId)] : []);
+    setTimingMode(TASK_TIMING.ANYTIME);
+    setTaskStart(defaultStartTime || "08:00");
   }, [open, entry, responsibility, defaultUserId, defaultDay, defaultKind, defaultRole, defaultStartTime, defaultEndTime]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The day's saved tasks for the chosen employee; reloaded whenever the employee or day changes so a
@@ -189,13 +221,69 @@ export default function WeeklyScheduleEntryDialog({
   useEffect(() => {
     if (!open) return;
     setTaskRows(
-      savedDayTasks.map((item) => makeRow({ role: item.role, savedRole: item.role, remarks: item.remarks || "" })),
+      savedDayTasks.map((item) =>
+        makeRow({
+          role: item.role,
+          savedRole: item.role,
+          remarks: item.remarks || "",
+          timingMode: item.timing_mode || TASK_TIMING.ANYTIME,
+          taskStart: item.start_time || "08:00",
+          memberIds: taskMemberIds(item),
+        }),
+      ),
     );
     setTasksTouched(false);
   }, [open, savedDayTasks]);
 
   const isShift = kind === ASSIGNMENT_KIND.SHIFT;
   const canSplit = scheduleEndTimeEnabled;
+  const taskEmployeeOptions = useMemo(() => {
+    const list = Array.isArray(taskEmployees) ? taskEmployees : [];
+    const byId = new Map(list.map((employee) => [Number(employee.user_id), employee]));
+    for (const id of userIds) {
+      if (!byId.has(Number(id))) {
+        byId.set(Number(id), employeesById?.[id] || employeesById?.[String(id)] || { user_id: Number(id), display_name: `User #${id}` });
+      }
+    }
+    return [...byId.values()].sort((a, b) =>
+      String(a.display_name || "").localeCompare(String(b.display_name || ""), undefined, { sensitivity: "base" }),
+    );
+  }, [taskEmployees, userIds, employeesById]);
+
+  const previewEntries = useMemo(() => {
+    const saved = scheduleEntries || [];
+    if (!isShift || !userId) return saved;
+    const others = saved.filter(
+      (entry) => !(Number(entry.user_id) === Number(userId) && Number(entry.day_of_week) === Number(dayOfWeek)),
+    );
+    const slots = breakSlots.map((slot) => ({ start_time: slot.start_time, end_time: slot.end_time }));
+    return [
+      ...others,
+      {
+        user_id: Number(userId),
+        day_of_week: Number(dayOfWeek),
+        start_time: startTime,
+        end_time: endTime,
+        break_slots: slots,
+        unscheduled_break_minutes: Math.max(0, Math.round(Number(unscheduledBreak || 0))),
+      },
+    ];
+  }, [scheduleEntries, isShift, userId, dayOfWeek, startTime, endTime, breakSlots, unscheduledBreak]);
+
+  const taskPreview = useMemo(() => {
+    if (isShift) return { errors: [], warnings: [] };
+    return taskTimingIssues(
+      {
+        user_id: userIds[0],
+        user_ids: userIds,
+        day_of_week: dayOfWeek,
+        timing_mode: timingMode,
+        start_time: timingMode === TASK_TIMING.SPECIFIC ? taskStart : null,
+      },
+      previewEntries,
+      employeesById,
+    );
+  }, [isShift, userIds, dayOfWeek, timingMode, taskStart, previewEntries, employeesById]);
 
   const updateRow = (id, patch) => setRows((prev) => prev.map((row) => (row.id === id ? { ...row, ...patch } : row)));
   const removeRow = (id) => setRows((prev) => prev.filter((row) => row.id !== id));
@@ -214,14 +302,54 @@ export default function WeeklyScheduleEntryDialog({
   };
 
   const canSave = useMemo(() => {
-    if (!userId) return false;
-    if (!isShift) return Boolean(respRole);
-    if (!startTime || (scheduleEndTimeEnabled && !endTime)) return false;
-    if (scheduleEndTimeEnabled && validateBreakSlots(startTime, endTime, breakSlots)) return false;
-    if (taskRows.some((row) => !row.role)) return false;
-    if (new Set(taskRows.map((row) => row.role)).size !== taskRows.length) return false;
-    return rows.every((row) => row.role && (row.fullShift || !canSplit || (row.start && row.end)));
-  }, [userId, isShift, respRole, startTime, endTime, breakSlots, rows, taskRows, scheduleEndTimeEnabled, canSplit]);
+    if (isShift) {
+      if (!userId) return false;
+      if (!startTime || (scheduleEndTimeEnabled && !endTime)) return false;
+      if (scheduleEndTimeEnabled && validateBreakSlots(startTime, endTime, breakSlots)) return false;
+      if (taskRows.some((row) => !row.role || (row.timingMode === TASK_TIMING.SPECIFIC && !row.taskStart))) return false;
+      if (
+        taskRows.some(
+          (row) =>
+            taskTimingIssues(
+              {
+                user_id: Number(userId),
+                user_ids: row.memberIds?.length ? row.memberIds : [Number(userId)],
+                day_of_week: dayOfWeek,
+                timing_mode: row.timingMode,
+                start_time: row.timingMode === TASK_TIMING.SPECIFIC ? row.taskStart : null,
+              },
+              previewEntries,
+              employeesById,
+            ).errors.length,
+        )
+      ) {
+        return false;
+      }
+      if (new Set(taskRows.map((row) => row.role)).size !== taskRows.length) return false;
+      return rows.every((row) => row.role && (row.fullShift || !canSplit || (row.start && row.end)));
+    }
+    if (!userIds.length || !respRole) return false;
+    if (timingMode === TASK_TIMING.SPECIFIC && !taskStart) return false;
+    return taskPreview.errors.length === 0;
+  }, [
+    userId,
+    userIds,
+    isShift,
+    respRole,
+    timingMode,
+    taskStart,
+    taskPreview.errors.length,
+    startTime,
+    endTime,
+    breakSlots,
+    rows,
+    taskRows,
+    scheduleEndTimeEnabled,
+    canSplit,
+    previewEntries,
+    employeesById,
+    dayOfWeek,
+  ]);
 
   // break_minutes is the total so a server without break slots still deducts the right hours.
   const breakPayload = () => {
@@ -241,10 +369,13 @@ export default function WeeklyScheduleEntryDialog({
     if (!isShift) {
       onSave({
         kind: ASSIGNMENT_KIND.RESPONSIBILITY,
-        user_id: Number(userId),
+        user_id: Number(userIds[0]),
+        user_ids: userIds.map(Number),
         day_of_week: Number(dayOfWeek),
         role: respRole,
         remarks: respRemarks.trim() || null,
+        timing_mode: timingMode,
+        start_time: timingMode === TASK_TIMING.SPECIFIC ? taskStart : null,
       });
       return;
     }
@@ -266,7 +397,14 @@ export default function WeeklyScheduleEntryDialog({
         };
       }),
       ...(tasksTouched
-        ? { tasks: taskRows.map((row) => ({ role: row.role, remarks: row.remarks.trim() || null })) }
+        ? {
+            tasks: taskRows.map((row) => ({
+              role: row.role,
+              remarks: row.remarks.trim() || null,
+              timing_mode: row.timingMode || TASK_TIMING.ANYTIME,
+              start_time: row.timingMode === TASK_TIMING.SPECIFIC ? row.taskStart : null,
+            })),
+          }
         : {}),
     });
   };
@@ -290,7 +428,7 @@ export default function WeeklyScheduleEntryDialog({
               sx={{ "& .MuiToggleButton-root": { textTransform: "none", fontWeight: 700, px: 1.5 } }}
             >
               <ToggleButton value={ASSIGNMENT_KIND.SHIFT}>Shift (timed roles)</ToggleButton>
-              <ToggleButton value={ASSIGNMENT_KIND.RESPONSIBILITY}>Task (no times)</ToggleButton>
+              <ToggleButton value={ASSIGNMENT_KIND.RESPONSIBILITY}>Task</ToggleButton>
             </ToggleButtonGroup>
           ) : null}
 
@@ -454,12 +592,22 @@ export default function WeeklyScheduleEntryDialog({
                   Tasks / Instructions
                 </Typography>
                 <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-                  Tasks for this employee on this day. No times, no hours — the shift, break, and hours above stay
-                  the same.
+                  Tasks for this employee on this day. They add no hours, and they do not change the shift or the break above.
                 </Typography>
                 <Stack spacing={1}>
                   {taskRows.map((row) => {
                     const options = taskRowOptions(row);
+                    const issues = taskTimingIssues(
+                      {
+                        user_id: Number(userId),
+                        user_ids: row.memberIds?.length ? row.memberIds : [Number(userId)],
+                        day_of_week: dayOfWeek,
+                        timing_mode: row.timingMode,
+                        start_time: row.timingMode === TASK_TIMING.SPECIFIC ? row.taskStart : null,
+                      },
+                      previewEntries,
+                      employeesById,
+                    );
                     return (
                       <Box key={row.id} sx={{ border: "1px solid #e2e8f0", borderRadius: 1.5, p: 1, bgcolor: "#fff" }}>
                         <Stack direction="row" spacing={1} alignItems="center">
@@ -505,6 +653,53 @@ export default function WeeklyScheduleEntryDialog({
                           inputProps={{ maxLength: 255 }}
                           sx={{ mt: 1 }}
                         />
+                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1 }}>
+                          <FormControl size="small" sx={{ flex: 1, minWidth: 0 }}>
+                            <InputLabel>Timing</InputLabel>
+                            <Select
+                              label="Timing"
+                              value={row.timingMode || TASK_TIMING.ANYTIME}
+                              onChange={(e) =>
+                                editTasks((prev) =>
+                                  prev.map((r) => (r.id === row.id ? { ...r, timingMode: e.target.value } : r)),
+                                )
+                              }
+                            >
+                              {TASK_TIMING_OPTIONS.map((option) => (
+                                <MenuItem key={option.value} value={option.value}>
+                                  {option.label}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                          {row.timingMode === TASK_TIMING.SPECIFIC ? (
+                            <PlanningTimePicker
+                              label="Start time"
+                              value={row.taskStart}
+                              onChange={(value) =>
+                                editTasks((prev) => prev.map((r) => (r.id === row.id ? { ...r, taskStart: value } : r)))
+                              }
+                            />
+                          ) : null}
+                        </Stack>
+                        {(row.memberIds || []).length > 1 ? (
+                          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.75 }}>
+                            {`Shared with ${(row.memberIds || [])
+                              .filter((id) => Number(id) !== Number(userId))
+                              .map((id) => scheduleEmployeeName(employeesById, id))
+                              .join(", ")}. Timing applies to the whole group.`}
+                          </Typography>
+                        ) : null}
+                        {issues.errors.map((message) => (
+                          <Typography key={message} variant="caption" display="block" sx={{ mt: 0.5, color: "error.main", fontWeight: 700 }}>
+                            {message}
+                          </Typography>
+                        ))}
+                        {issues.warnings.map((warning) => (
+                          <Typography key={warning} variant="caption" display="block" sx={{ mt: 0.5, color: "#b45309", fontWeight: 700 }}>
+                            {warning}
+                          </Typography>
+                        ))}
                       </Box>
                     );
                   })}
@@ -528,6 +723,33 @@ export default function WeeklyScheduleEntryDialog({
           ) : (
             <>
               <FormControl size="small" fullWidth>
+                <InputLabel>Employees</InputLabel>
+                <Select
+                  multiple
+                  label="Employees"
+                  value={userIds}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setUserIds((Array.isArray(next) ? next : [next]).map(Number));
+                  }}
+                  renderValue={(selected) =>
+                    (selected || [])
+                      .map((id) => {
+                        const fromList = taskEmployeeOptions.find((employee) => Number(employee.user_id) === Number(id));
+                        return fromList?.display_name || scheduleEmployeeName(employeesById, id);
+                      })
+                      .join(", ")
+                  }
+                >
+                  {taskEmployeeOptions.map((employee) => (
+                    <MenuItem key={employee.user_id} value={Number(employee.user_id)}>
+                      <Checkbox size="small" checked={userIds.includes(Number(employee.user_id))} sx={{ p: 0.5, mr: 1 }} />
+                      <ListItemText primary={employee.display_name || `User #${employee.user_id}`} />
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl size="small" fullWidth>
                 <InputLabel>Task</InputLabel>
                 <Select label="Task" value={respRole} onChange={(e) => setRespRole(e.target.value)}>
                   {untimedOptions.map((option) => (
@@ -537,6 +759,19 @@ export default function WeeklyScheduleEntryDialog({
                   ))}
                 </Select>
               </FormControl>
+              <FormControl size="small" fullWidth>
+                <InputLabel>Timing</InputLabel>
+                <Select label="Timing" value={timingMode} onChange={(e) => setTimingMode(e.target.value)}>
+                  {TASK_TIMING_OPTIONS.map((option) => (
+                    <MenuItem key={option.value} value={option.value}>
+                      {option.label}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              {timingMode === TASK_TIMING.SPECIFIC ? (
+                <PlanningTimePicker label="Start time" value={taskStart} onChange={setTaskStart} />
+              ) : null}
               <TextField
                 size="small"
                 fullWidth
@@ -548,10 +783,16 @@ export default function WeeklyScheduleEntryDialog({
                 onChange={(e) => setRespRemarks(e.target.value)}
                 inputProps={{ maxLength: 255 }}
               />
+              {taskPreview.errors.map((message) => (
+                <Alert key={message} severity="error">{message}</Alert>
+              ))}
+              {taskPreview.warnings.map((message) => (
+                <Alert key={message} severity="warning">{message}</Alert>
+              ))}
               <Typography variant="caption" color="text.secondary">
-                {scheduleRoleLabel(respRole) || "This task"} is assigned to the employee for the whole day. Tasks have
-                no start or end time, add no scheduled hours, and create no attendance window. They can sit alongside
-                a shift.
+                {scheduleRoleLabel(respRole) || "This task"} is one assignment for the selected employees. It adds no
+                scheduled hours. Anytime keeps the task on the day. The other timing options follow each employee&apos;s
+                shift and scheduled break, and they do not move that break.
               </Typography>
             </>
           )}

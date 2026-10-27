@@ -29,11 +29,39 @@ CREATE TABLE IF NOT EXISTS planned_weekly_schedule_responsibilities (
   day_of_week TINYINT NOT NULL COMMENT '0=Sun … 6=Sat',
   role VARCHAR(40) NOT NULL,
   remarks VARCHAR(255) NULL DEFAULT NULL,
+  assignment_group_id VARCHAR(36) NULL DEFAULT NULL COMMENT 'Shared by employees on one task assignment',
+  timing_mode VARCHAR(20) NOT NULL DEFAULT 'anytime' COMMENT 'anytime|specific_time|upon_entry|before_break|after_break|before_exit',
+  start_time TIME NULL DEFAULT NULL COMMENT 'Set only when timing_mode is specific_time',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NULL ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uq_pwsr_assignment (organization_id, week_start, user_id, day_of_week, role),
-  INDEX idx_pwsr_org_week (organization_id, week_start)
+  INDEX idx_pwsr_org_week (organization_id, week_start),
+  INDEX idx_pwsr_group (organization_id, week_start, assignment_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Existing databases: add group and timing columns without rewriting assignment rows.
+SET @has_resp := (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'planned_weekly_schedule_responsibilities'
+);
+SET @has_group := (
+  SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'planned_weekly_schedule_responsibilities'
+    AND COLUMN_NAME = 'assignment_group_id'
+);
+SET @ddl := IF(
+  @has_resp = 1 AND @has_group = 0,
+  'ALTER TABLE planned_weekly_schedule_responsibilities
+     ADD COLUMN assignment_group_id VARCHAR(36) NULL DEFAULT NULL AFTER remarks,
+     ADD COLUMN timing_mode VARCHAR(20) NOT NULL DEFAULT ''anytime'' AFTER assignment_group_id,
+     ADD COLUMN start_time TIME NULL DEFAULT NULL AFTER timing_mode,
+     ADD INDEX idx_pwsr_group (organization_id, week_start, assignment_group_id)',
+  'SELECT 1'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 -- Fresh databases: planned_weekly_schedule_entries is created at runtime with role_assignments.
 SET @has_table := (

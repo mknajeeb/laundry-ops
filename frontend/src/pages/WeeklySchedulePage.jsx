@@ -196,6 +196,8 @@ function ScheduleDayCell({
   compact = false,
   cellResponsibilities = [],
   openEditResponsibility,
+  employeesById = {},
+  scheduleEntries = [],
 }) {
   const cellKey = `${employee.user_id}:${dow}`;
   const isDropTarget = dropTarget === cellKey;
@@ -280,6 +282,8 @@ function ScheduleDayCell({
         <WeeklyScheduleResponsibilityChip
           key={`r${item.id}`}
           item={item}
+          employeesById={employeesById}
+          scheduleEntries={scheduleEntries}
           onClick={canEdit && !excluded ? openEditResponsibility : undefined}
         />
       ))}
@@ -677,10 +681,11 @@ export default function WeeklySchedulePage() {
         employeesById,
         responsibilities: timeViewResponsibilities,
         roles: roleFilter,
+        timingEntries: tabEntries,
       }),
     // roleCatalog + roleGroups: column order and labels come from the registered catalog.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [timeViewEntries, visibleDayColumns, employeesById, timeViewResponsibilities, roleFilter, roleCatalog, roleGroups],
+    [timeViewEntries, tabEntries, visibleDayColumns, employeesById, timeViewResponsibilities, roleFilter, roleCatalog, roleGroups],
   );
   const coverageMatrixColumns = useMemo(
     () => (roleFilter ? sortRoles(roleFilter) : coverageColumns(coverageAllHours)),
@@ -740,6 +745,7 @@ export default function WeeklySchedulePage() {
       days: includeBreaks ? coverageAllHours : [],
       dayIndices: visibleDayColumns,
       shiftEntries: includeBreaks ? viewEntries.filter((entry) => visibleUserIds.has(Number(entry.user_id))) : [],
+      timingEntries: tabEntries.filter((entry) => visibleUserIds.has(Number(entry.user_id))),
       responsibilities: gridResponsibilities,
       employeesById,
       includeBreaks,
@@ -750,6 +756,7 @@ export default function WeeklySchedulePage() {
     coverageAllHours,
     visibleDayColumns,
     viewEntries,
+    tabEntries,
     visibleUserIds,
     gridResponsibilities,
     employeesById,
@@ -871,7 +878,8 @@ export default function WeeklySchedulePage() {
 
   const handleDialogDelete = async () => {
     if (editingResponsibility?.id) {
-      if (!window.confirm("Remove this task?")) return;
+      const shared = (editingResponsibility.user_ids || []).length > 1;
+      if (!window.confirm(shared ? "Remove this task for everyone assigned to it?" : "Remove this task?")) return;
       setSaving(true);
       setDialogError("");
       try {
@@ -1113,6 +1121,8 @@ export default function WeeklySchedulePage() {
     handleSetEmployer,
     organizationSlug,
     openEditResponsibility,
+    employeesById,
+    scheduleEntries: data?.entries || [],
   };
 
   return (
@@ -1904,6 +1914,9 @@ export default function WeeklySchedulePage() {
         defaultStartTime={dialogDefaults.startTime}
         defaultEndTime={dialogDefaults.endTime}
         employees={dialogDefaults.pickEmployee ? pickerEmployees : undefined}
+        taskEmployees={pickerEmployees}
+        scheduleEntries={data?.entries || []}
+        employeesById={employeesById}
         scheduleEndTimeEnabled={scheduleEndTimeEnabled}
         shiftCategoryChoices={shiftCategoryChoices}
         categoryLabel={entityLabel}

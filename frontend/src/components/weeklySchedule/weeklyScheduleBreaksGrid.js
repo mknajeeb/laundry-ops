@@ -1,4 +1,5 @@
 import { scheduleRoleCatalog, scheduleRoleLabel, sortRoles } from "./weeklyScheduleRoles";
+import { assignmentKey, taskGroupLabel, taskTimingIssues, taskTimingLabel } from "./weeklyScheduleTaskTiming";
 
 function employeeName(employeesById, userId) {
   const employee = employeesById?.[userId] || employeesById?.[String(userId)];
@@ -38,6 +39,7 @@ export function buildBreaksTasksGrid({
   days = [],
   dayIndices = [0, 1, 2, 3, 4, 5, 6],
   shiftEntries = [],
+  timingEntries = null,
   responsibilities = [],
   employeesById = {},
   includeBreaks = true,
@@ -84,20 +86,29 @@ export function buildBreaksTasksGrid({
   }
 
   const assignedByDay = new Map();
+  const assignmentsByDay = new Map();
   for (const item of responsibilities || []) {
     const dow = Number(item.day_of_week);
     if (!shown.has(dow)) continue;
+    const key = assignmentKey(item);
+    const namesLabel = taskGroupLabel(item, employeesById);
     const row = rowFor(item.user_id);
     cellFor(row, dow).tasks.push({
       key: `r${item.id}`,
+      assignmentKey: key,
       item,
       role: item.role,
       label: scheduleRoleLabel(item.role),
       remarks: item.remarks || null,
+      namesLabel,
+      timingLabel: taskTimingLabel(item),
+      warnings: taskTimingIssues(item, timingEntries || shiftEntries, employeesById).warnings,
     });
     row.taskCount += 1;
     if (!assignedByDay.has(dow)) assignedByDay.set(dow, new Set());
     assignedByDay.get(dow).add(item.role);
+    if (!assignmentsByDay.has(dow)) assignmentsByDay.set(dow, new Set());
+    assignmentsByDay.get(dow).add(key);
   }
   const order = new Map(sortRoles([...new Set((responsibilities || []).map((item) => item.role))]).map((role, i) => [role, i]));
   for (const row of rows.values()) {
@@ -122,7 +133,7 @@ export function buildBreaksTasksGrid({
       untimedBreakHours,
       breakHours: timedBreakHours + untimedBreakHours,
       breakCount: includeBreaks ? (day?.breakRanges?.length || 0) + (day?.unscheduledBreaks?.length || 0) : 0,
-      taskCount: (responsibilities || []).filter((item) => Number(item.day_of_week) === dow).length,
+      taskCount: assignmentsByDay.get(dow)?.size || 0,
       unassignedTasks: sortRoles(catalogTasks.filter((code) => !assigned.has(code))),
     };
   });
@@ -143,8 +154,14 @@ export function gridTasksByDay(grid) {
   return Object.fromEntries(
     (grid?.columns || []).map((column) => {
       const tasks = [];
+      const seen = new Set();
       for (const row of grid?.rows || []) {
-        for (const task of row.cells[column.dow]?.tasks || []) tasks.push({ ...task, userId: row.userId, name: row.name });
+        for (const task of row.cells[column.dow]?.tasks || []) {
+          const key = task.assignmentKey || task.key;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          tasks.push({ ...task, key, userId: row.userId, name: task.namesLabel || row.name });
+        }
       }
       tasks.sort(
         (a, b) =>

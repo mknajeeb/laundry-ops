@@ -126,6 +126,8 @@ class FakeCursor:
                     "allow_inventory": 1 if a.get("inventory") else 0,
                     "allow_revenue_cost": 1 if a.get("revenue_cost") else 0,
                     "allow_team_status": 1 if a.get("team_status") else 0,
+                    "allow_cleaning_tasks": 1 if a.get("cleaning_tasks") else 0,
+                    "allow_cleaning_task_review": 1 if a.get("cleaning_task_review") else 0,
                     "updated_by_user_id": a.get("updated_by_user_id"),
                 })
             return
@@ -138,6 +140,12 @@ class FakeCursor:
         if "ALTER TABLE employee_mobile_pin_access" in sql_n and "allow_take_break" in sql_n:
             self._has_take_break = True
             return
+        if "ALTER TABLE employee_mobile_pin_access" in sql_n and "allow_cleaning_tasks" in sql_n:
+            self._has_cleaning_tasks = True
+            return
+        if "ALTER TABLE employee_mobile_pin_access" in sql_n and "allow_cleaning_task_review" in sql_n:
+            self._has_cleaning_task_review = True
+            return
         if "INFORMATION_SCHEMA.COLUMNS" in sql_n:
             # table_has_column(cursor, table, col)
             col = params[1] if len(params) > 1 else ""
@@ -146,6 +154,10 @@ class FakeCursor:
             elif col == "allow_team_status" and getattr(self, "_has_team_status", True):
                 self._result = {"ok": 1}
             elif col == "allow_take_break" and getattr(self, "_has_take_break", True):
+                self._result = {"ok": 1}
+            elif col == "allow_cleaning_tasks" and getattr(self, "_has_cleaning_tasks", True):
+                self._result = {"ok": 1}
+            elif col == "allow_cleaning_task_review" and getattr(self, "_has_cleaning_task_review", True):
                 self._result = {"ok": 1}
             else:
                 self._result = None
@@ -219,9 +231,10 @@ class FakeCursor:
             and "INSERT IGNORE" not in sql_n
             and "allow_clock, allow_switch_role" in sql_n
         ):
-            # Multi-row Role+Take Break defaults first (9 params/user)
-            if len(params) >= 18 and len(params) % 9 == 0:
-                for i in range(0, len(params), 9):
+            # Multi-row Role+Take Break defaults (11 params/user with cleaning modules)
+            stride = 11 if (len(params) >= 22 and len(params) % 11 == 0) else 9
+            if len(params) >= stride * 2 and len(params) % stride == 0 and int(params[2]) in (0, 1):
+                for i in range(0, len(params), stride):
                     org, uid = int(params[i]), int(params[i + 1])
                     if uid in self.fail_insert_user_ids:
                         raise MobilePinAccessBackfillError("simulated insert failure")
@@ -235,8 +248,10 @@ class FakeCursor:
                         "inventory": bool(params[i + 6]),
                         "revenue_cost": bool(params[i + 7]),
                         "team_status": bool(params[i + 8]),
+                        "cleaning_tasks": bool(params[i + 9]) if stride >= 11 else False,
+                        "cleaning_task_review": bool(params[i + 10]) if stride >= 11 else False,
                     }
-                self.rowcount = len(params) // 9
+                self.rowcount = len(params) // stride
                 return
             # Single-row insert with explicit module flags
             if (
@@ -254,6 +269,8 @@ class FakeCursor:
                     "inventory": bool(params[6]),
                     "revenue_cost": bool(params[7]),
                     "team_status": bool(params[8]) if len(params) >= 9 else False,
+                    "cleaning_tasks": bool(params[9]) if len(params) >= 11 else False,
+                    "cleaning_task_review": bool(params[10]) if len(params) >= 12 else False,
                 }
                 self.rowcount = 1
                 return
@@ -272,6 +289,8 @@ class FakeCursor:
                     "inventory": False,
                     "revenue_cost": False,
                     "team_status": False,
+                    "cleaning_tasks": False,
+                    "cleaning_task_review": False,
                 }
             self.rowcount = len(params) // 2
             return
@@ -325,6 +344,8 @@ class FakeCursor:
                     "allow_inventory": 1 if a["inventory"] else 0,
                     "allow_revenue_cost": 1 if a["revenue_cost"] else 0,
                     "allow_team_status": 1 if a.get("team_status") else 0,
+                    "allow_cleaning_tasks": 1 if a.get("cleaning_tasks") else 0,
+                    "allow_cleaning_task_review": 1 if a.get("cleaning_task_review") else 0,
                     "updated_at": None,
                     "updated_by_user_id": None,
                     "created_at": None,
@@ -348,7 +369,7 @@ class FakeCursor:
         ):
             org, uid = int(params[0]), int(params[1])
             if (org, uid) not in self.access:
-                if len(params) >= 9:
+                if len(params) >= 11:
                     self.access[(org, uid)] = {
                         "clock": bool(params[2]),
                         "switch_role": bool(params[3]),
@@ -357,6 +378,20 @@ class FakeCursor:
                         "inventory": bool(params[6]),
                         "revenue_cost": bool(params[7]),
                         "team_status": bool(params[8]),
+                        "cleaning_tasks": bool(params[9]),
+                        "cleaning_task_review": bool(params[10]),
+                    }
+                elif len(params) >= 9:
+                    self.access[(org, uid)] = {
+                        "clock": bool(params[2]),
+                        "switch_role": bool(params[3]),
+                        "take_break": bool(params[4]),
+                        "checklist": bool(params[5]),
+                        "inventory": bool(params[6]),
+                        "revenue_cost": bool(params[7]),
+                        "team_status": bool(params[8]),
+                        "cleaning_tasks": False,
+                        "cleaning_task_review": False,
                     }
                 else:
                     self.access[(org, uid)] = {
@@ -367,6 +402,8 @@ class FakeCursor:
                         "inventory": False,
                         "revenue_cost": False,
                         "team_status": False,
+                        "cleaning_tasks": False,
+                        "cleaning_task_review": False,
                     }
             return
         if (
@@ -412,6 +449,8 @@ class FakeCursor:
                 "inventory": bool(params[6]),
                 "revenue_cost": bool(params[7]),
                 "team_status": bool(params[8]) if len(params) >= 9 else False,
+                "cleaning_tasks": bool(params[9]) if len(params) >= 11 else False,
+                "cleaning_task_review": bool(params[10]) if len(params) >= 12 else False,
             }
             return
         self._result = None
@@ -476,6 +515,8 @@ def test_migration_pin_employee_gets_all_true():
         "inventory": False,
         "revenue_cost": False,
         "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
     }
     # Idempotent
     report2 = _legacy_backfill(cur, 3)
@@ -537,6 +578,8 @@ def test_new_org_marker_then_new_employee_role_default_on():
         "inventory": False,
         "revenue_cost": False,
         "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
     }
 
 
@@ -553,6 +596,8 @@ def test_new_employee_after_backfill_gets_role_default_on():
         "inventory": False,
         "revenue_cost": False,
         "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
     }
 
 
@@ -571,6 +616,8 @@ def test_enable_switch_role_for_org_active_users_preserves_other_modules():
         "inventory": False,
         "revenue_cost": True,
         "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
     }
     cur.access[(3, 11)] = {
         "clock": False,
@@ -580,6 +627,8 @@ def test_enable_switch_role_for_org_active_users_preserves_other_modules():
         "inventory": True,
         "revenue_cost": False,
         "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
     }
     # user 12 has no row yet
     conn = FakeConn(cur)
@@ -598,6 +647,8 @@ def test_enable_switch_role_for_org_active_users_preserves_other_modules():
         "inventory": False,
         "revenue_cost": True,
         "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
     }
     assert resolve_employee_mobile_pin_access(cur, 3, 11)["inventory"] is True
     assert resolve_employee_mobile_pin_access(cur, 3, 12) == {
@@ -608,6 +659,8 @@ def test_enable_switch_role_for_org_active_users_preserves_other_modules():
         "inventory": False,
         "revenue_cost": False,
         "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
     }
 
 
@@ -664,6 +717,8 @@ def test_save_and_audit_only_changed():
             "checklist": True,
             "inventory": True,
             "revenue_cost": False,
+            "cleaning_tasks": False,
+            "cleaning_task_review": False,
             "team_status": False,
         },
         actor_user_id=5,
@@ -688,6 +743,8 @@ def test_save_and_audit_only_changed():
             "checklist": True,
             "inventory": True,
             "revenue_cost": False,
+            "cleaning_tasks": False,
+            "cleaning_task_review": False,
             "team_status": False,
         },
         actor_user_id=5,
@@ -710,6 +767,8 @@ def test_team_status_save_reload_roundtrip():
         "inventory": False,
         "revenue_cost": True,
         "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
     }
 
     assert "team_status" in MODULE_KEYS
@@ -726,6 +785,8 @@ def test_team_status_save_reload_roundtrip():
             "checklist": False,
             "inventory": False,
             "revenue_cost": True,
+            "cleaning_tasks": False,
+            "cleaning_task_review": False,
             "team_status": True,
         },
         actor_user_id=1,
@@ -748,6 +809,8 @@ def test_team_status_save_reload_roundtrip():
             "checklist": False,
             "inventory": False,
             "revenue_cost": True,
+            "cleaning_tasks": False,
+            "cleaning_task_review": False,
             "team_status": False,
         },
         actor_user_id=1,
@@ -773,6 +836,8 @@ def test_take_break_save_reload_roundtrip():
         "inventory": False,
         "revenue_cost": False,
         "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
     }
 
     assert "take_break" in MODULE_KEYS
@@ -789,6 +854,8 @@ def test_take_break_save_reload_roundtrip():
             "checklist": False,
             "inventory": False,
             "revenue_cost": False,
+            "cleaning_tasks": False,
+            "cleaning_task_review": False,
             "team_status": False,
         },
         actor_user_id=1,
@@ -810,6 +877,8 @@ def test_take_break_save_reload_roundtrip():
             "checklist": False,
             "inventory": False,
             "revenue_cost": False,
+            "cleaning_tasks": False,
+            "cleaning_task_review": False,
             "team_status": False,
         },
         actor_user_id=1,
@@ -835,6 +904,8 @@ def test_role_take_break_defaults_migration_preserves_deliberate_grants():
         "checklist": True,
         "inventory": True,
         "revenue_cost": True,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
         "team_status": False,
         "updated_by_user_id": None,
     }
@@ -845,6 +916,8 @@ def test_role_take_break_defaults_migration_preserves_deliberate_grants():
         "checklist": False,
         "inventory": False,
         "revenue_cost": True,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
         "team_status": True,
         "updated_by_user_id": 15,
     }
@@ -855,6 +928,8 @@ def test_role_take_break_defaults_migration_preserves_deliberate_grants():
         "checklist": True,
         "inventory": True,
         "revenue_cost": True,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
         "team_status": False,
         "updated_by_user_id": None,
     }
@@ -902,6 +977,8 @@ def test_assert_denies_module():
             "inventory",
             "revenue_cost",
             "team_status",
+            "cleaning_tasks",
+            "cleaning_task_review",
         }
     )
     cur = FakeCursor()
@@ -914,6 +991,8 @@ def test_assert_denies_module():
         "inventory": False,
         "revenue_cost": False,
         "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
     }
     with pytest.raises(MobilePinAccessDeniedError):
         assert_employee_allows_module(cur, 3, 10, "switch_role")
@@ -947,6 +1026,8 @@ def test_resolve_hub_features_enforces_role_checklist_inventory_and_revenue_cost
         "inventory": False,
         "revenue_cost": False,
         "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
     }
     with patch(
         "backend.employee_pin_hub.load_pin_menu_settings",
@@ -996,6 +1077,8 @@ def test_resolve_hub_features_role_allowed_when_employee_grants():
         "inventory": False,
         "revenue_cost": False,
         "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
     }
     with patch(
         "backend.employee_pin_hub.load_pin_menu_settings",
@@ -1041,6 +1124,8 @@ def test_resolve_hub_features_inventory_off_hides_tile():
         "inventory": False,
         "revenue_cost": False,
         "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
     }
     with patch(
         "backend.employee_pin_hub.load_pin_menu_settings",
@@ -1150,6 +1235,8 @@ def test_role_switch_open_denied_without_employee_access():
         "inventory": False,
         "revenue_cost": False,
         "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
     }
     conn.cursor.return_value = access_cur
 
@@ -1196,6 +1283,8 @@ def test_role_change_mutation_denied_without_employee_access():
         "inventory": True,
         "revenue_cost": True,
         "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
     }
     conn.cursor.return_value = access_cur
 
@@ -1253,6 +1342,8 @@ def test_role_mutation_revoked_mid_session_blocks_next_call():
         "inventory": True,
         "revenue_cost": True,
         "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
     }
     conn.cursor.return_value = access_cur
 
@@ -1346,6 +1437,8 @@ def test_role_allowed_returns_unfiltered_selection_tree():
         "inventory": True,
         "revenue_cost": True,
         "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
     }
     conn.cursor.return_value = access_cur
     tree = {

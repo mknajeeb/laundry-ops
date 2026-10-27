@@ -120,6 +120,7 @@ export default function WeeklyScheduleBreaksByTimePrint({ byTime, grid, tasksByD
                     ? tasks.map((task) => (
                         <div key={task.key} className="weekly-schedule-print-shift-line">
                           <strong>{task.label}</strong> · {task.name}
+                          {task.timingLabel ? ` · ${task.timingLabel}` : ""}
                           {task.remarks ? `: ${task.remarks}` : " — no instructions"}
                         </div>
                       ))
@@ -140,7 +141,7 @@ export default function WeeklyScheduleBreaksByTimePrint({ byTime, grid, tasksByD
       </table>
       <div className="weekly-schedule-print-employee-meta">
         Break-hours in a row count only the part of each break inside that interval. Max at once is shown when not
-        everyone listed is on break together. Tasks are whole-day assignments; they have no times and add no hours.
+        everyone listed is on break together. Tasks add no hours. Timing follows the assignment and stays linked to each employee&apos;s shift and break.
       </div>
     </>
   );

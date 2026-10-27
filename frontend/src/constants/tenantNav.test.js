@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TENANT_NAV_ITEMS, tenantNavItemVisible } from "./tenantNav";
+import { RINSE_HUB_NAV_ITEMS, TENANT_NAV_ITEMS, tenantNavItemVisible } from "./tenantNav";
 import {
   isAccountantOnlyUser,
   isFinanceOnlyUser,
@@ -104,12 +104,17 @@ describe("rinse schedule-only navigation", () => {
     expect(isRinseScheduleOnlyUser({ roles: ["OPS"] })).toBe(false);
   });
 
-  it("uses weekly schedule as default route for rinse-only users", () => {
-    expect(tenantDefaultRoute(rinseOnly)).toBe("/performance/weekly-schedule");
+  it("uses rinse performance as default route for rinse-only users", () => {
+    expect(tenantDefaultRoute(rinseOnly)).toBe("/rinse/performance");
     expect(tenantDefaultRoute(adminRinse)).toBe("/management");
   });
 
-  it("shows only weekly schedule in sidebar nav", () => {
+  it("shows rinse hub nav items including task dashboard", () => {
+    expect(RINSE_HUB_NAV_ITEMS.map((item) => item.to)).toEqual([
+      "/rinse/performance",
+      "/performance/weekly-schedule",
+      "/management/tasks",
+    ]);
     const visible = TENANT_NAV_ITEMS.filter((item) => tenantNavItemVisible(rinseOnly, item));
     expect(visible.map((item) => item.to)).toEqual(["/performance/weekly-schedule"]);
   });

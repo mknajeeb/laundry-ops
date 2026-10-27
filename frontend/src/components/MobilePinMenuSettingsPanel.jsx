@@ -16,6 +16,8 @@ export const DEFAULT_PIN_MENU = {
   allow_clock_from_hub: true,
   features: {
     switch_role: true,
+    cleaning_tasks: true,
+    cleaning_task_review: true,
     revenue_cost: true,
     checklist: true,
     inventory: true,
@@ -29,6 +31,16 @@ export const PIN_MENU_FEATURE_OPTIONS = [
     id: "switch_role",
     label: "Role",
     help: "Change category & role while clocked in (needs Categories & Roles tracking on).",
+  },
+  {
+    id: "cleaning_tasks",
+    label: "Tasks",
+    help: "Start and complete assigned cleaning / operational tasks while clocked in.",
+  },
+  {
+    id: "cleaning_task_review",
+    label: "Task Review",
+    help: "Supervisor verify / reject completed tasks (requires Task Review Mobile PIN Access or manager role).",
   },
   {
     id: "revenue_cost",

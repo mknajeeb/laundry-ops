@@ -162,18 +162,25 @@ function UntimedBreak({ item, canEdit, onEditEntry }) {
 
 function TaskLine({ task, canEdit, onEditResponsibility }) {
   const edit = canEdit ? () => onEditResponsibility?.(task.item) : undefined;
+  const detail = [task.namesLabel, task.timingLabel].filter(Boolean).join(" · ");
   return (
     <Box data-grid-task={task.role} {...activate(edit)} sx={{ ...clickableSx(Boolean(edit)), borderLeft: `3px solid ${roleStyle(task.role).accent}`, pl: 0.5, mt: 0.25 }}>
       <Typography sx={{ fontSize: "0.74rem", lineHeight: 1.3 }}>
         <Box component="span" sx={{ fontWeight: 800, color: roleStyle(task.role).accent }}>
           {task.label}
         </Box>
+        {detail ? <Box component="span">{` · ${detail}`}</Box> : null}
         {task.remarks ? (
           <Box component="span" sx={{ color: "text.secondary" }}>{` — ${task.remarks}`}</Box>
         ) : (
           <Box component="span" sx={{ color: "text.disabled" }}>{" — no instructions"}</Box>
         )}
       </Typography>
+      {(task.warnings || []).map((warning) => (
+        <Typography key={warning} sx={{ fontSize: "0.66rem", lineHeight: 1.25, color: "#b45309", fontWeight: 700 }}>
+          {warning}
+        </Typography>
+      ))}
     </Box>
   );
 }
@@ -346,7 +353,7 @@ export default function WeeklyScheduleBreaksTasksView({
         </TableContainer>
       </Paper>
       <Typography variant="caption" color="text.secondary" sx={{ px: 0.25 }}>
-        Click a break to change it in the shift. Tasks are whole-day assignments with instructions; they have no times and add no hours.
+        Click a break to change it in the shift. Tasks add no hours. Timing follows the assignment and stays linked to each employee&apos;s shift and break.
       </Typography>
     </Stack>
   );

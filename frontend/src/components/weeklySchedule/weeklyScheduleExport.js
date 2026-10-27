@@ -19,6 +19,7 @@ import {
   UNALLOCATED_BREAK_NOTE,
 } from "./weeklyScheduleRoles";
 import { DAY_LABELS } from "./weeklyScheduleDates";
+import { taskGroupLabel, taskTimingLabel } from "./weeklyScheduleTaskTiming";
 import {
   compactClock,
   coverageTotalIsGross,
@@ -61,8 +62,11 @@ export function formatAssignmentDetails(entry, { scheduleEndTimeEnabled = true }
     .join(" | ");
 }
 
-export function formatResponsibilityText(item, { forExport = false } = {}) {
-  const text = `${scheduleRoleLabel(item.role)} (task)${item.remarks ? `: ${item.remarks}` : ""}`;
+export function formatResponsibilityText(item, { forExport = false, employeesById = null } = {}) {
+  const who = employeesById ? taskGroupLabel(item, employeesById) : "";
+  const timing = taskTimingLabel(item);
+  const detail = [who, timing].filter(Boolean).join(" · ");
+  const text = `${scheduleRoleLabel(item.role)}${detail ? ` · ${detail}` : ""} (task)${item.remarks ? `: ${item.remarks}` : ""}`;
   return forExport ? exportAsciiText(text) : text;
 }
 
@@ -506,7 +510,14 @@ export function buildHourlyCoverageCsvRows({ days, weekStart, columns, hoursSumm
           String(group.count),
           "",
           "",
-          csvCell(group.people.map((person) => (person.remarks ? `${person.name}: ${person.remarks}` : person.name)).join("; ")),
+          csvCell(
+            [
+              group.people.map((person) => (person.remarks ? `${person.name}: ${person.remarks}` : person.name)).join("; "),
+              group.timingLabel || "",
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          ),
         ].join(","),
       );
     }
@@ -527,7 +538,10 @@ function gridCellText(cell, showBreaks) {
     ...cell.untimed.map(
       (item) => `Not scheduled ${Math.round(item.hours * 60)} min${item.unallocated ? " (not allocated to a role)" : ""}`,
     ),
-    ...cell.tasks.map((task) => `${task.label}: ${task.remarks || "no instructions"}`),
+    ...cell.tasks.map((task) => {
+      const detail = [task.namesLabel, task.timingLabel].filter(Boolean).join(" · ");
+      return `${task.label}${detail ? ` · ${detail}` : ""}: ${task.remarks || "no instructions"}`;
+    }),
   ];
   if (!parts.length && cell.hasShift && showBreaks) return "No break planned";
   return parts.join("; ");
@@ -559,7 +573,7 @@ export function buildBreaksTasksCsvRows({ grid, weekStart, summaryLines = [], sh
       [csvCell("Unassigned tasks"), ...columns.map((c) => csvCell(c.unassignedTasks.map(scheduleRoleLabel).join(" / ")))].join(","),
     );
   }
-  lines.push("", csvCell("Tasks are whole-day assignments with instructions; they have no times and add no hours."));
+  lines.push("", csvCell("Tasks add no hours. Timing follows the assignment and stays linked to each employee's shift and break."));
   return lines;
 }
 
@@ -616,7 +630,9 @@ export function buildBreaksByTimeCsvRows({ byTime, grid, tasksByDay = {}, weekSt
       csvCell("Assigned"),
       ...columns.map((c) =>
         csvCell(
-          (tasksByDay[c.dow] || []).map((task) => `${task.label} - ${task.name}: ${task.remarks || "no instructions"}`).join("; "),
+          (tasksByDay[c.dow] || [])
+            .map((task) => `${task.label} - ${task.name}${task.timingLabel ? ` · ${task.timingLabel}` : ""}: ${task.remarks || "no instructions"}`)
+            .join("; "),
         ),
       ),
     ].join(","),

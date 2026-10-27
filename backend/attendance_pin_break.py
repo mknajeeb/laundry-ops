@@ -178,6 +178,13 @@ def perform_pin_break_start(
     access_c = conn.cursor(dictionary=True)
     try:
         assert_employee_allows_module(access_c, org_id, user_id, "take_break")
+        from backend.cleaning_task_activity import get_open_activity
+
+        if get_open_activity(access_c, org_id, user_id):
+            return {
+                "ok": False,
+                "error": "Finish your cleaning task before taking a break.",
+            }, 400
     except MobilePinAccessDeniedError:
         record_pin_attempt(
             conn,

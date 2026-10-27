@@ -63,12 +63,19 @@ export default function WeeklyScheduleBreaksTasksPrint({ grid, weekStart, showBr
                         {item.unallocated ? " · not allocated to a role" : ""}
                       </div>
                     ))}
-                    {cell?.tasks.map((task) => (
-                      <div key={task.key} className="weekly-schedule-print-shift-line">
-                        <strong>{task.label}</strong>
-                        {task.remarks ? `: ${task.remarks}` : " — no instructions"}
-                      </div>
-                    ))}
+                    {cell?.tasks.map((task) => {
+                      const detail = [task.namesLabel, task.timingLabel].filter(Boolean).join(" · ");
+                      return (
+                        <div key={task.key} className="weekly-schedule-print-shift-line">
+                          <strong>{task.label}</strong>
+                          {detail ? ` · ${detail}` : ""}
+                          {task.remarks ? `: ${task.remarks}` : " — no instructions"}
+                          {(task.warnings || []).map((warning) => (
+                            <div key={warning}>{warning}</div>
+                          ))}
+                        </div>
+                      );
+                    })}
                   </td>
                 );
               })}
@@ -85,7 +92,7 @@ export default function WeeklyScheduleBreaksTasksPrint({ grid, weekStart, showBr
         </tbody>
       </table>
       <div className="weekly-schedule-print-employee-meta">
-        Tasks are whole-day assignments with instructions; they have no times and add no hours.
+        Tasks add no hours. Timing follows the assignment and stays linked to each employee&apos;s shift and break.
       </div>
     </>
   );

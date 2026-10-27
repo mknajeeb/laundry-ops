@@ -49,6 +49,16 @@ export const PIN_LAUNCHER_META = {
     color: "#1d4ed8",
     iconKey: "team",
   },
+  cleaning_tasks: {
+    label: "Tasks",
+    color: "#047857",
+    iconKey: "tasks",
+  },
+  cleaning_task_review: {
+    label: "Task Review",
+    color: "#a16207",
+    iconKey: "tasks",
+  },
 };
 
 /** Preferred PIN Home order; Clock is appended last by buildPinLauncherTiles. */
@@ -56,6 +66,8 @@ export const PIN_HOME_FEATURE_ORDER = [
   "resume_work",
   "switch_role",
   "take_break",
+  "cleaning_tasks",
+  "cleaning_task_review",
   "team_status",
   "revenue_cost",
   "checklist",
@@ -74,6 +86,8 @@ export const PIN_LAUNCHER_I18N = {
   switch_role: "mobileOps.tile.role",
   take_break: "mobileOps.tile.takeBreak",
   resume_work: "mobileOps.tile.resumeWork",
+  cleaning_tasks: "mobileOps.tile.cleaningTasks",
+  cleaning_task_review: "mobileOps.tile.taskReview",
   team_status: "mobileOps.tile.teamStatus",
   revenue_cost: "mobileOps.tile.revenueCash",
   checklist: "mobileOps.tile.checklist",

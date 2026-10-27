@@ -55,6 +55,16 @@ PIN_HUB_FEATURE_DEFS = (
         "path": "/attendance/role",
     },
     {
+        "id": "cleaning_tasks",
+        "label": "Tasks",
+        "path": "/attendance/cleaning-tasks",
+    },
+    {
+        "id": "cleaning_task_review",
+        "label": "Task Review",
+        "path": "/attendance/cleaning-tasks/review",
+    },
+    {
         "id": "revenue_cost",
         "label": "Revenue / Cash",
         "path": "/revenue-cash",
@@ -223,6 +233,25 @@ def attendance_snapshot_for_hub(
         if not current_display_label:
             label = (open_seg.get("display_label") or "").strip()
             current_display_label = label or None
+    cleaning = {
+        "on_cleaning_task": False,
+        "cleaning_task_started_at": None,
+        "cleaning_task_label": None,
+        "cleaning_activity_id": None,
+    }
+    try:
+        from backend.cleaning_task_activity import attendance_cleaning_snapshot
+
+        c = conn.cursor(dictionary=True)
+        try:
+            cleaning = attendance_cleaning_snapshot(c, int(org_id), int(user_id))
+        finally:
+            try:
+                c.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
     return {
         "shared_device_enabled": shared,
         "allow_clock_from_hub": allow_clock,
@@ -233,6 +262,7 @@ def attendance_snapshot_for_hub(
         "current_display_label": current_display_label,
         "current_category_id": open_seg.get("category_id"),
         "current_role_id": open_seg.get("role_id"),
+        **cleaning,
     }
 
 
@@ -285,7 +315,15 @@ def apply_attendance_gates_to_features(
             "resume_from_break": True,
         }
         # Persistent Break Mode: hide ordinary Mobile Ops working actions.
-        for fid in ("revenue_cost", "checklist", "inventory", "team_status", "clock"):
+        for fid in (
+            "revenue_cost",
+            "checklist",
+            "inventory",
+            "team_status",
+            "cleaning_tasks",
+            "cleaning_task_review",
+            "clock",
+        ):
             feat = out.get(fid)
             if isinstance(feat, dict) and feat.get("allowed"):
                 blocked = dict(feat)
@@ -295,6 +333,35 @@ def apply_attendance_gates_to_features(
                 out[fid] = blocked
     else:
         out.pop("resume_work", None)
+
+    on_cleaning = bool(attendance.get("on_cleaning_task"))
+    if on_cleaning:
+        # Active task timer: only Tasks (active screen) + Lock remain useful.
+        for fid in (
+            "switch_role",
+            "take_break",
+            "resume_work",
+            "revenue_cost",
+            "checklist",
+            "inventory",
+            "team_status",
+            "cleaning_task_review",
+            "clock",
+        ):
+            feat = out.get(fid)
+            if isinstance(feat, dict) and feat.get("allowed"):
+                blocked = dict(feat)
+                blocked["allowed"] = False
+                blocked["hidden"] = True
+                blocked["blocked_reason"] = "on_cleaning_task"
+                out[fid] = blocked
+        cleaning = out.get("cleaning_tasks")
+        if isinstance(cleaning, dict):
+            cleaning = dict(cleaning)
+            cleaning["allowed"] = True
+            cleaning["hidden"] = False
+            cleaning["active_task"] = True
+            out["cleaning_tasks"] = cleaning
 
     return out
 
@@ -374,6 +441,9 @@ def _user_may_use_feature(
 
     if feature_id == "team_status":
         # Manager/supervisor roster — gated only by Mobile PIN Access grant.
+        return True
+
+    if feature_id in ("cleaning_tasks", "cleaning_task_review"):
         return True
 
     return False

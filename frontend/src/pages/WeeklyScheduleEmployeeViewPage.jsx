@@ -91,6 +91,10 @@ export default function WeeklyScheduleEmployeeViewPage() {
 
   useMemo(() => setScheduleRoleCatalog(data?.role_catalog), [data?.role_catalog]);
 
+  const employeesById = useMemo(
+    () => Object.fromEntries((data?.employees || []).map((person) => [person.user_id, person])),
+    [data?.employees],
+  );
   const scheduleRoles = employeeScheduleRoles(employee?.user_id, data?.entries);
   const responsibilityRoles = sortRoles([
     ...new Set(Object.values(responsibilitiesByDay).flat().map((item) => item.role)),
@@ -266,7 +270,12 @@ export default function WeeklyScheduleEmployeeViewPage() {
                           TASKS
                         </Typography>
                         {cellResponsibilities.map((item) => (
-                          <WeeklyScheduleResponsibilityChip key={`r${item.id}`} item={item} />
+                          <WeeklyScheduleResponsibilityChip
+                            key={`r${item.id}`}
+                            item={item}
+                            employeesById={employeesById}
+                            scheduleEntries={data?.entries || []}
+                          />
                         ))}
                       </Box>
                     ) : null}

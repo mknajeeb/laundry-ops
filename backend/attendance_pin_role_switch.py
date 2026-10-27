@@ -203,6 +203,21 @@ def perform_pin_role_switch(
         conn.commit()
         return {"ok": False, "error": ON_BREAK_MESSAGE}, 400
 
+    from backend.cleaning_task_activity import get_open_activity
+
+    c_clean = conn.cursor(dictionary=True)
+    try:
+        if get_open_activity(c_clean, org_id, user_id):
+            return {
+                "ok": False,
+                "error": "Finish your cleaning task before changing role.",
+            }, 400
+    finally:
+        try:
+            c_clean.close()
+        except Exception:
+            pass
+
     if not is_category_role_tracking_enabled(conn, org_id):
         record_pin_attempt(
             conn,

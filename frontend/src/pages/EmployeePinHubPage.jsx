@@ -426,6 +426,24 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         setBreakConfirmOpen(true);
         return;
       }
+      if (featureId === "cleaning_tasks") {
+        if (tile?.disabled || hub?.features?.cleaning_tasks?.disabled) {
+          return;
+        }
+        if (hub?.attendance?.clocked_in !== true) {
+          setError(t("mobileOps.clockInFirst"));
+          return;
+        }
+        navigate(`/attendance/cleaning-tasks/${encodeURIComponent(slug)}?from=hub`);
+        return;
+      }
+      if (featureId === "cleaning_task_review") {
+        if (tile?.disabled || hub?.features?.cleaning_task_review?.disabled) {
+          return;
+        }
+        navigate(`/attendance/cleaning-tasks/review/${encodeURIComponent(slug)}?from=hub`);
+        return;
+      }
       if (featureId === "checklist") {
         if (tile?.disabled || hub?.features?.checklist?.disabled) {
           return;

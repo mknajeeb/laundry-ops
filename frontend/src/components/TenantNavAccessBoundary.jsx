@@ -38,11 +38,14 @@ export default function TenantNavAccessBoundary({ user, payrollNavVisible = true
   }
 
   if (isRinseScheduleOnlyUser(user)) {
+    const path = String(p || "").replace(/\/+$/, "") || "/";
     const onRinseHub =
-      p === "/rinse/performance" ||
-      p.startsWith("/rinse/performance/") ||
-      p === "/performance/weekly-schedule" ||
-      p.startsWith("/performance/weekly-schedule/");
+      path === "/rinse/performance" ||
+      path.startsWith("/rinse/performance/") ||
+      path === "/performance/weekly-schedule" ||
+      path.startsWith("/performance/weekly-schedule/") ||
+      path === "/management/tasks" ||
+      path.startsWith("/management/tasks/");
     if (!onRinseHub) {
       return <Navigate to="/rinse/performance" replace />;
     }

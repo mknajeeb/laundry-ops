@@ -47,6 +47,8 @@ MODULE_KEYS = (
     "inventory",
     "revenue_cost",
     "team_status",
+    "cleaning_tasks",
+    "cleaning_task_review",
 )
 
 # People → Mobile PIN Access checkboxes (and required PUT body fields).
@@ -57,6 +59,8 @@ PEOPLE_MOBILE_PIN_ACCESS_KEYS = (
     "inventory",
     "revenue_cost",
     "team_status",
+    "cleaning_tasks",
+    "cleaning_task_review",
 )
 
 # Hub / PIN enforcement AND-gates. Clock is never employee-enforced.
@@ -69,6 +73,8 @@ ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES = frozenset(
         "inventory",
         "revenue_cost",
         "team_status",
+        "cleaning_tasks",
+        "cleaning_task_review",
     }
 )
 
@@ -81,6 +87,8 @@ COLUMN_BY_KEY = {
     "inventory": "allow_inventory",
     "revenue_cost": "allow_revenue_cost",
     "team_status": "allow_team_status",
+    "cleaning_tasks": "allow_cleaning_tasks",
+    "cleaning_task_review": "allow_cleaning_task_review",
 }
 
 KEY_BY_COLUMN = {v: k for k, v in COLUMN_BY_KEY.items()}
@@ -151,6 +159,8 @@ def ensure_employee_mobile_pin_access_tables(cursor) -> None:
           allow_inventory TINYINT(1) NOT NULL DEFAULT 0,
           allow_revenue_cost TINYINT(1) NOT NULL DEFAULT 0,
           allow_team_status TINYINT(1) NOT NULL DEFAULT 0,
+          allow_cleaning_tasks TINYINT(1) NOT NULL DEFAULT 0,
+          allow_cleaning_task_review TINYINT(1) NOT NULL DEFAULT 0,
           updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
           updated_by_user_id INT NULL,
           created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -188,6 +198,28 @@ def ensure_employee_mobile_pin_access_tables(cursor) -> None:
             ALTER TABLE {ACCESS_TABLE}
               ADD COLUMN allow_team_status TINYINT(1) NOT NULL DEFAULT 0
               AFTER allow_revenue_cost
+            """
+        )
+        invalidate_schema_cache()
+    if table_exists(cursor, ACCESS_TABLE) and not table_has_column(
+        cursor, ACCESS_TABLE, "allow_cleaning_tasks"
+    ):
+        cursor.execute(
+            f"""
+            ALTER TABLE {ACCESS_TABLE}
+              ADD COLUMN allow_cleaning_tasks TINYINT(1) NOT NULL DEFAULT 0
+              AFTER allow_team_status
+            """
+        )
+        invalidate_schema_cache()
+    if table_exists(cursor, ACCESS_TABLE) and not table_has_column(
+        cursor, ACCESS_TABLE, "allow_cleaning_task_review"
+    ):
+        cursor.execute(
+            f"""
+            ALTER TABLE {ACCESS_TABLE}
+              ADD COLUMN allow_cleaning_task_review TINYINT(1) NOT NULL DEFAULT 0
+              AFTER allow_cleaning_tasks
             """
         )
         invalidate_schema_cache()
@@ -350,7 +382,7 @@ def _insert_all_true_rows(
         return 0
     defaults = _new_employee_default_grants()
     values_sql = ", ".join(
-        ["(%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"] * len(user_ids)
+        ["(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"] * len(user_ids)
     )
     params: list[Any] = []
     for uid in user_ids:
@@ -365,6 +397,8 @@ def _insert_all_true_rows(
                 1 if defaults["inventory"] else 0,
                 1 if defaults["revenue_cost"] else 0,
                 1 if defaults["team_status"] else 0,
+                1 if defaults.get("cleaning_tasks") else 0,
+                1 if defaults.get("cleaning_task_review") else 0,
             ]
         )
     cursor.execute(
@@ -372,7 +406,8 @@ def _insert_all_true_rows(
         INSERT INTO {ACCESS_TABLE}
           (organization_id, user_id,
            allow_clock, allow_switch_role, allow_take_break, allow_checklist,
-           allow_inventory, allow_revenue_cost, allow_team_status, created_at)
+           allow_inventory, allow_revenue_cost, allow_team_status,
+           allow_cleaning_tasks, allow_cleaning_task_review, created_at)
         VALUES {values_sql}
         """,
         tuple(params),
@@ -594,6 +629,7 @@ def get_access_row(cursor, organization_id: int, user_id: int) -> Optional[dict]
         SELECT organization_id, user_id,
                allow_clock, allow_switch_role, allow_take_break, allow_checklist,
                allow_inventory, allow_revenue_cost, allow_team_status,
+               allow_cleaning_tasks, allow_cleaning_task_review,
                updated_at, updated_by_user_id, created_at
         FROM {ACCESS_TABLE}
         WHERE organization_id = %s AND user_id = %s
@@ -945,8 +981,9 @@ def save_employee_mobile_pin_access(
           (organization_id, user_id,
            allow_clock, allow_switch_role, allow_take_break, allow_checklist,
            allow_inventory, allow_revenue_cost, allow_team_status,
+           allow_cleaning_tasks, allow_cleaning_task_review,
            updated_by_user_id, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         ON DUPLICATE KEY UPDATE
           allow_clock = VALUES(allow_clock),
           allow_switch_role = VALUES(allow_switch_role),
@@ -955,6 +992,8 @@ def save_employee_mobile_pin_access(
           allow_inventory = VALUES(allow_inventory),
           allow_revenue_cost = VALUES(allow_revenue_cost),
           allow_team_status = VALUES(allow_team_status),
+          allow_cleaning_tasks = VALUES(allow_cleaning_tasks),
+          allow_cleaning_task_review = VALUES(allow_cleaning_task_review),
           updated_by_user_id = VALUES(updated_by_user_id),
           updated_at = NOW()
         """,
@@ -968,6 +1007,8 @@ def save_employee_mobile_pin_access(
             1 if after["inventory"] else 0,
             1 if after["revenue_cost"] else 0,
             1 if after["team_status"] else 0,
+            1 if after["cleaning_tasks"] else 0,
+            1 if after["cleaning_task_review"] else 0,
             int(actor_user_id) if actor_user_id is not None else None,
         ),
     )

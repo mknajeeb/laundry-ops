@@ -419,14 +419,15 @@ function DayTasks({ day, canEdit, onAdd, onEditResponsibility }) {
           Tasks
         </Typography>
         <Typography variant="caption" color="text.disabled">
-          whole day · no times · not counted in hours
+          not counted in hours
         </Typography>
       </Stack>
       {day.responsibilities.map((group) => {
         const style = roleStyle(group.role);
+        const remarks = group.people.find((person) => person.remarks)?.remarks;
         return (
           <Stack
-            key={group.role}
+            key={group.key || group.role}
             direction={{ xs: "column", sm: "row" }}
             spacing={{ xs: 0.25, sm: 1 }}
             sx={{ py: 0.5, "&:not(:last-of-type)": { borderBottom: "1px dashed #e8eef2" } }}
@@ -436,7 +437,6 @@ function DayTasks({ day, canEdit, onAdd, onEditResponsibility }) {
               <Typography variant="body2" fontWeight={800} sx={{ color: style.accent, fontSize: "0.8rem" }} noWrap>
                 {group.label}
               </Typography>
-              <Chip size="small" label={group.count} sx={{ height: 18, fontSize: "0.65rem", fontWeight: 800 }} />
               {canEdit ? (
                 <Button
                   size="small"
@@ -447,33 +447,27 @@ function DayTasks({ day, canEdit, onAdd, onEditResponsibility }) {
                 </Button>
               ) : null}
             </Stack>
-            <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
-              {group.people.map((person) => (
-                <Box
-                  key={person.key}
-                  role={canEdit ? "button" : undefined}
-                  tabIndex={canEdit ? 0 : undefined}
-                  onClick={canEdit ? () => onEditResponsibility?.(person.item) : undefined}
-                  sx={{
-                    px: 0.85,
-                    py: 0.35,
-                    borderRadius: 1.25,
-                    border: "1px solid #e2e8f0",
-                    bgcolor: "#fff",
-                    cursor: canEdit ? "pointer" : "default",
-                  }}
-                >
-                  <Typography variant="body2" fontWeight={700} sx={{ fontSize: "0.78rem", lineHeight: 1.3 }}>
-                    {person.name}
-                  </Typography>
-                  {person.remarks ? (
-                    <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.25, whiteSpace: "normal" }}>
-                      {person.remarks}
-                    </Typography>
-                  ) : null}
-                </Box>
+            <Box
+              role={canEdit ? "button" : undefined}
+              tabIndex={canEdit ? 0 : undefined}
+              onClick={canEdit ? () => onEditResponsibility?.(group.item) : undefined}
+              sx={{ cursor: canEdit ? "pointer" : "default", minWidth: 0 }}
+            >
+              <Typography variant="body2" fontWeight={700} sx={{ fontSize: "0.78rem", lineHeight: 1.3 }}>
+                {group.namesLabel}
+                {group.timingLabel ? ` · ${group.timingLabel}` : ""}
+              </Typography>
+              {remarks ? (
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.25, whiteSpace: "normal" }}>
+                  {remarks}
+                </Typography>
+              ) : null}
+              {(group.warnings || []).map((warning) => (
+                <Typography key={warning} variant="caption" sx={{ display: "block", lineHeight: 1.25, color: "#b45309", fontWeight: 700 }}>
+                  {warning}
+                </Typography>
               ))}
-            </Stack>
+            </Box>
           </Stack>
         );
       })}

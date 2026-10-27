@@ -76,6 +76,7 @@ from backend.management_issues_routes import register_management_issues_routes
 from backend.team_status_routes import register_team_status_routes
 from backend.inventory_routes import register_inventory_routes
 from backend.maintenance_task_list_routes import register_maintenance_task_list_routes
+from backend.cleaning_task_activity_routes import register_cleaning_task_activity_routes
 from backend.machine_configuration_routes import register_machine_configuration_routes
 from backend.ta_routes import (
     _build_permission_hierarchy,
@@ -10934,6 +10935,14 @@ register_maintenance_task_list_routes(
     get_request_ip=get_request_ip,
     effective_washpro_permission_keys=effective_washpro_permission_keys,
     write_audit=write_audit,
+)
+register_cleaning_task_activity_routes(
+    app,
+    require_user=require_user,
+    user_org_id=user_org_id,
+    fetch_user_roles=fetch_user_roles,
+    get_request_ip=get_request_ip,
+    parse_date_value=parse_date_value,
 )
 register_rinse_presence_routes(
     app,

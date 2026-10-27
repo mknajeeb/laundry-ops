@@ -78,6 +78,7 @@ axios.interceptors.request.use((config) => {
     url.includes("/api/public/attendance/pin-punch") ||
     url.includes("/api/public/attendance/pin-switch-role") ||
     url.includes("/api/public/attendance/pin-break/") ||
+    url.includes("/api/public/attendance/pin-cleaning-tasks") ||
     url.includes("/api/public/attendance/pin-maintenance-tasks") ||
     url.includes("/api/public/attendance/pin-hub")
   ) {
@@ -326,6 +327,158 @@ export const attendancePinHub = (organization_slug, pin) =>
       validateStatus: (status) => status >= 200 && status < 600,
     },
   );
+
+function _pinCleaningBody(organization_slug, pin, options = {}, extra = {}) {
+  const hubToken = options.hubToken ? String(options.hubToken) : "";
+  return {
+    organization_slug: String(organization_slug || "").trim().toLowerCase(),
+    ...(hubToken ? { hub_token: hubToken } : { pin: String(pin || "").trim() }),
+    ...extra,
+  };
+}
+
+const _pinCleaningOpts = {
+  timeout: ATTENDANCE_PIN_PUNCH_TIMEOUT_MS,
+  validateStatus: (status) => status >= 200 && status < 600,
+};
+
+/** PIN Tasks — list today's assigned tasks (My Tasks). */
+export const attendancePinCleaningTasksList = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-cleaning-tasks`,
+    _pinCleaningBody(organization_slug, pin, options, {
+      ...(options.business_date ? { business_date: options.business_date } : {}),
+    }),
+    _pinCleaningOpts,
+  );
+
+export const attendancePinCleaningTasksStart = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-cleaning-tasks/start`,
+    _pinCleaningBody(organization_slug, pin, options, {
+      responsibility_id: options.responsibility_id,
+    }),
+    _pinCleaningOpts,
+  );
+
+export const attendancePinCleaningTasksComplete = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-cleaning-tasks/complete`,
+    _pinCleaningBody(organization_slug, pin, options, {
+      activity_id: options.activity_id,
+      ...(options.completion_input != null ? { completion_input: options.completion_input } : {}),
+    }),
+    _pinCleaningOpts,
+  );
+
+export const attendancePinCleaningTasksCompleteUntimed = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-cleaning-tasks/complete-untimed`,
+    _pinCleaningBody(organization_slug, pin, options, {
+      responsibility_id: options.responsibility_id,
+      ...(options.completion_input != null ? { completion_input: options.completion_input } : {}),
+    }),
+    _pinCleaningOpts,
+  );
+
+export const attendancePinCleaningTasksVerifyQueue = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-cleaning-tasks/verify-queue`,
+    _pinCleaningBody(organization_slug, pin, options, {
+      ...(options.business_date ? { business_date: options.business_date } : {}),
+    }),
+    _pinCleaningOpts,
+  );
+
+export const attendancePinCleaningTasksChecklistVerify = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-cleaning-tasks/checklist-verify`,
+    _pinCleaningBody(organization_slug, pin, options, {
+      checklist_id: options.checklist_id,
+      business_date: options.business_date,
+    }),
+    _pinCleaningOpts,
+  );
+
+export const attendancePinCleaningTasksChecklistRejectItem = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-cleaning-tasks/checklist-reject-item`,
+    _pinCleaningBody(organization_slug, pin, options, {
+      activity_id: options.activity_id,
+      reason: options.reason,
+    }),
+    _pinCleaningOpts,
+  );
+
+export const attendancePinCleaningTasksNext = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-cleaning-tasks/next`,
+    _pinCleaningBody(organization_slug, pin, options, {
+      activity_id: options.activity_id,
+      choice: options.choice,
+    }),
+    _pinCleaningOpts,
+  );
+
+export const attendancePinCleaningTasksReview = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-cleaning-tasks/review`,
+    _pinCleaningBody(organization_slug, pin, options, {
+      ...(options.business_date ? { business_date: options.business_date } : {}),
+      ...(options.status ? { status: options.status } : {}),
+      ...(options.user_id != null ? { user_id: options.user_id } : {}),
+      ...(options.role ? { role: options.role } : {}),
+    }),
+    _pinCleaningOpts,
+  );
+
+export const attendancePinCleaningTasksApprove = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-cleaning-tasks/approve`,
+    _pinCleaningBody(organization_slug, pin, options, {
+      ...(options.activity_ids
+        ? { activity_ids: options.activity_ids }
+        : { activity_id: options.activity_id }),
+    }),
+    _pinCleaningOpts,
+  );
+
+export const attendancePinCleaningTasksReject = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-cleaning-tasks/reject`,
+    _pinCleaningBody(organization_slug, pin, options, {
+      activity_id: options.activity_id,
+      reason: options.reason,
+    }),
+    _pinCleaningOpts,
+  );
+
+export const getManagementTaskDashboard = (params = {}) =>
+  axios.get(`${API_BASE}/api/management/task-dashboard`, { params });
+
+export const approveManagementTaskDashboard = (body) =>
+  axios.post(`${API_BASE}/api/management/task-dashboard/approve`, body);
+
+export const rejectManagementTaskDashboard = (body) =>
+  axios.post(`${API_BASE}/api/management/task-dashboard/reject`, body);
+
+export const getManagementTaskCatalog = () =>
+  axios.get(`${API_BASE}/api/management/task-catalog`);
+
+export const createManagementTaskCategory = (body) =>
+  axios.post(`${API_BASE}/api/management/task-catalog/categories`, body);
+
+export const updateManagementTaskCategory = (categoryId, body) =>
+  axios.put(`${API_BASE}/api/management/task-catalog/categories/${categoryId}`, body);
+
+export const reorderManagementTaskCategories = (ordered_codes) =>
+  axios.post(`${API_BASE}/api/management/task-catalog/categories/reorder`, { ordered_codes });
+
+export const upsertManagementTaskDefinition = (body) =>
+  axios.post(`${API_BASE}/api/management/task-catalog/tasks`, body);
+
+export const upsertManagementTaskChecklist = (body) =>
+  axios.post(`${API_BASE}/api/management/task-catalog/checklists`, body);
 
 function mtlPinHeaders(sessionToken) {
   const token = String(sessionToken || "").trim();

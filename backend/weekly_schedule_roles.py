@@ -336,7 +336,10 @@ def list_role_catalog(cursor, organization_id: int) -> list[dict[str, Any]]:
         if not code or not is_schedule_role_code(code):
             continue
         builtin = code in BUILTIN_ROLE_CODES
-        if not builtin and not code.startswith(CUSTOM_ROLE_PREFIX):
+        # Timed custom roles require custom_ prefix; untimed task definitions may use any
+        # valid code (Task Management upserts) and must remain assignable/listable.
+        uses_time_slots = bool(row.get("uses_time_slots", True))
+        if not builtin and not code.startswith(CUSTOM_ROLE_PREFIX) and uses_time_slots:
             continue
         by_code[code] = _role_record({**row, "code": code}, builtin=builtin)
     return sorted(by_code.values(), key=lambda r: (r["display_order"], r["name"].casefold()))

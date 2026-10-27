@@ -9,6 +9,7 @@ export const HUB_DESTINATIONS = [
   { to: "/management/rinse-hd", id: "rinse_hd", label: "Rinse HD", enabled: true },
   { to: "/management/performance", id: "performance", label: "Performance", enabled: true },
   { to: "/management/labor", id: "labor", label: "Labor", enabled: false },
+  { to: "/management/tasks", id: "tasks", label: "Tasks", enabled: true },
   { to: "/management/revenue", id: "revenue", label: "Revenue", enabled: true },
   { to: "/management/issues", id: "issues", label: "Issues", enabled: true },
   { to: "/management/rinse-flow", id: "rinse_flow", label: "Rinse Flow", enabled: false },

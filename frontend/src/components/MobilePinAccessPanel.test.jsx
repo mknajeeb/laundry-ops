@@ -10,6 +10,8 @@ describe("MobilePinAccessPanel contracts", () => {
     expect(MOBILE_PIN_ACCESS_MODULES.map((m) => m.key)).toEqual([
       "switch_role",
       "take_break",
+      "cleaning_tasks",
+      "cleaning_task_review",
       "checklist",
       "inventory",
       "revenue_cost",
@@ -18,6 +20,8 @@ describe("MobilePinAccessPanel contracts", () => {
     expect(MOBILE_PIN_ACCESS_MODULES.map((m) => m.label)).toEqual([
       "Role",
       "Take a Break",
+      "Tasks",
+      "Task Review (supervisor)",
       "End-of-Day Checklist",
       "Inventory",
       "Revenue / Cash",
@@ -31,6 +35,8 @@ describe("MobilePinAccessPanel contracts", () => {
         clock: 1,
         switch_role: 0,
         take_break: 1,
+        cleaning_tasks: 1,
+        cleaning_task_review: 0,
         checklist: true,
         inventory: false,
         revenue_cost: "1",
@@ -41,6 +47,8 @@ describe("MobilePinAccessPanel contracts", () => {
     ).toEqual({
       switch_role: false,
       take_break: true,
+      cleaning_tasks: true,
+      cleaning_task_review: false,
       checklist: true,
       inventory: false,
       revenue_cost: true,
@@ -58,6 +66,8 @@ describe("MobilePinAccessPanel contracts", () => {
     ).toEqual({
       switch_role: false,
       take_break: false,
+      cleaning_tasks: false,
+      cleaning_task_review: false,
       checklist: false,
       inventory: true,
       revenue_cost: false,
