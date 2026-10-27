@@ -165,14 +165,20 @@ export default function ManagementTaskConfigPage() {
     setBusy(true);
     setError("");
     try {
-      const items = String(checklistDraft.itemsText || "")
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean)
-        .map((line) => {
-          const [code, req] = line.split("|").map((x) => (x || "").trim());
-          return { task_code: code, required: req !== "optional" };
-        });
+      const groups = (checklistDraft.groups || [])
+        .map((g, idx) => ({
+          id: g.id,
+          name: String(g.name || `Group ${idx + 1}`).trim() || `Group ${idx + 1}`,
+          display_order: idx * 10,
+          items: (g.items || [])
+            .filter((it) => it && it.task_code)
+            .map((it, iidx) => ({
+              task_code: it.task_code,
+              required: it.required !== false,
+              display_order: iidx * 10,
+            })),
+        }))
+        .filter((g) => g.items.length);
       await upsertManagementTaskChecklist({
         id: checklistDraft.id,
         code: checklistDraft.code,
@@ -182,7 +188,7 @@ export default function ManagementTaskConfigPage() {
         verification_timing: checklistDraft.verification_timing || "next_day",
         verification_required: true,
         active: checklistDraft.active !== false,
-        items,
+        groups,
       });
       setChecklistDraft(null);
       setOkMsg("Checklist saved.");
@@ -192,6 +198,40 @@ export default function ManagementTaskConfigPage() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const openChecklistEditor = (cl) => {
+    const groups =
+      Array.isArray(cl?.groups) && cl.groups.length
+        ? cl.groups.map((g) => ({
+            id: g.id,
+            name: g.name || "General",
+            collapsed: false,
+            items: (g.items || []).map((it) => ({
+              task_code: it.task_code,
+              required: it.required !== false,
+            })),
+          }))
+        : [
+            {
+              name: "General",
+              collapsed: false,
+              items: (cl?.items || []).map((it) => ({
+                task_code: it.task_code,
+                required: it.required !== false,
+              })),
+            },
+          ];
+    setChecklistDraft({ ...cl, groups, addTaskCode: "" });
+  };
+
+  const updateChecklistGroup = (gIdx, patch) => {
+    setChecklistDraft((prev) => {
+      if (!prev) return prev;
+      const groups = [...(prev.groups || [])];
+      groups[gIdx] = { ...groups[gIdx], ...patch };
+      return { ...prev, groups };
+    });
   };
 
   return (
@@ -589,17 +629,22 @@ export default function ManagementTaskConfigPage() {
                 size="small"
                 variant="outlined"
                 onClick={() =>
-                  setChecklistDraft({
+                  openChecklistEditor({
                     name: "End of Day Checklist",
                     code: `eod_${Date.now().toString(36).slice(-4)}`,
                     category_id: categories.find((c) => c.code === "end_of_day")?.id || null,
                     verification_method: "employee",
                     verification_timing: "next_day",
                     active: true,
-                    itemsText: tasks
-                      .filter((t) => t.category_code === "end_of_day")
-                      .map((t) => t.code)
-                      .join("\n"),
+                    groups: [
+                      {
+                        name: "General",
+                        collapsed: false,
+                        items: tasks
+                          .filter((t) => t.category_code === "end_of_day")
+                          .map((t) => ({ task_code: t.code, required: true })),
+                      },
+                    ],
                   })
                 }
               >
@@ -614,21 +659,13 @@ export default function ManagementTaskConfigPage() {
                       <Box>
                         <Typography sx={{ fontWeight: 800 }}>{cl.name}</Typography>
                         <Typography variant="body2" color="text.secondary">
-                          {(cl.items || []).map((i) => i.task_code).join(", ") || "No items"} ·{" "}
-                          {cl.verification_method}/{cl.verification_timing}
+                          {(cl.groups || []).length
+                            ? `${(cl.groups || []).length} groups · ${(cl.items || []).length} tasks`
+                            : (cl.items || []).map((i) => i.task_code).join(", ") || "No items"}{" "}
+                          · {cl.verification_method}/{cl.verification_timing}
                         </Typography>
                       </Box>
-                      <Button
-                        size="small"
-                        onClick={() =>
-                          setChecklistDraft({
-                            ...cl,
-                            itemsText: (cl.items || [])
-                              .map((i) => `${i.task_code}${i.required ? "" : "|optional"}`)
-                              .join("\n"),
-                          })
-                        }
-                      >
+                      <Button size="small" onClick={() => openChecklistEditor(cl)}>
                         Edit
                       </Button>
                     </Stack>
@@ -696,15 +733,161 @@ export default function ManagementTaskConfigPage() {
                   <MenuItem value="later_shift">Later shift</MenuItem>
                   <MenuItem value="next_day">Next day</MenuItem>
                 </TextField>
-                <TextField
-                  label="Task codes (one per line; append |optional)"
-                  size="small"
-                  multiline
-                  minRows={3}
-                  value={checklistDraft.itemsText || ""}
-                  onChange={(e) => setChecklistDraft({ ...checklistDraft, itemsText: e.target.value })}
-                  helperText="Example: floor_cleaning or custom_fold_stations|optional"
-                />
+                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                    Checklist groups
+                  </Typography>
+                  <Button
+                    size="small"
+                    onClick={() =>
+                      setChecklistDraft({
+                        ...checklistDraft,
+                        groups: [
+                          ...(checklistDraft.groups || []),
+                          { name: `Group ${(checklistDraft.groups || []).length + 1}`, collapsed: false, items: [] },
+                        ],
+                      })
+                    }
+                  >
+                    Add group
+                  </Button>
+                </Stack>
+                <Typography variant="caption" color="text.secondary">
+                  Named groups organize verification (not Activity Groups / shared assignments). Use task names from
+                  the catalog.
+                </Typography>
+                <Stack spacing={1.25}>
+                  {(checklistDraft.groups || []).map((group, gIdx) => (
+                    <Paper key={`g-${gIdx}-${group.id || group.name}`} variant="outlined" sx={{ p: 1.25 }}>
+                      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                        <TextField
+                          label="Group name"
+                          size="small"
+                          fullWidth
+                          value={group.name || ""}
+                          onChange={(e) => updateChecklistGroup(gIdx, { name: e.target.value })}
+                        />
+                        <Button
+                          size="small"
+                          disabled={gIdx === 0}
+                          onClick={() => {
+                            const groups = [...(checklistDraft.groups || [])];
+                            const tmp = groups[gIdx - 1];
+                            groups[gIdx - 1] = groups[gIdx];
+                            groups[gIdx] = tmp;
+                            setChecklistDraft({ ...checklistDraft, groups });
+                          }}
+                        >
+                          Up
+                        </Button>
+                        <Button
+                          size="small"
+                          disabled={gIdx >= (checklistDraft.groups || []).length - 1}
+                          onClick={() => {
+                            const groups = [...(checklistDraft.groups || [])];
+                            const tmp = groups[gIdx + 1];
+                            groups[gIdx + 1] = groups[gIdx];
+                            groups[gIdx] = tmp;
+                            setChecklistDraft({ ...checklistDraft, groups });
+                          }}
+                        >
+                          Down
+                        </Button>
+                        <Button
+                          size="small"
+                          color="warning"
+                          onClick={() =>
+                            setChecklistDraft({
+                              ...checklistDraft,
+                              groups: (checklistDraft.groups || []).filter((_, i) => i !== gIdx),
+                            })
+                          }
+                        >
+                          Remove
+                        </Button>
+                      </Stack>
+                      <Stack spacing={0.75}>
+                        {(group.items || []).map((item, iIdx) => {
+                          const task = tasks.find((t) => t.code === item.task_code);
+                          return (
+                            <Stack
+                              key={`${item.task_code}-${iIdx}`}
+                              direction="row"
+                              spacing={1}
+                              alignItems="center"
+                            >
+                              <Typography sx={{ flex: 1, fontWeight: 600 }}>
+                                {task?.name || item.task_code}
+                              </Typography>
+                              <FormControlLabel
+                                control={
+                                  <Switch
+                                    size="small"
+                                    checked={item.required !== false}
+                                    onChange={(e) => {
+                                      const items = [...(group.items || [])];
+                                      items[iIdx] = { ...items[iIdx], required: e.target.checked };
+                                      updateChecklistGroup(gIdx, { items });
+                                    }}
+                                  />
+                                }
+                                label="Required"
+                              />
+                              <Button
+                                size="small"
+                                onClick={() => {
+                                  const items = [...(group.items || [])];
+                                  items.splice(iIdx, 1);
+                                  updateChecklistGroup(gIdx, { items });
+                                }}
+                              >
+                                Remove
+                              </Button>
+                            </Stack>
+                          );
+                        })}
+                      </Stack>
+                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1 }}>
+                        <TextField
+                          select
+                          size="small"
+                          label="Add task"
+                          fullWidth
+                          value={group._addCode || ""}
+                          onChange={(e) => updateChecklistGroup(gIdx, { _addCode: e.target.value })}
+                        >
+                          <MenuItem value="">Select task…</MenuItem>
+                          {tasks
+                            .filter(
+                              (t) => !(group.items || []).some((it) => it.task_code === t.code),
+                            )
+                            .map((t) => (
+                              <MenuItem key={t.code} value={t.code}>
+                                {t.name} ({t.code})
+                              </MenuItem>
+                            ))}
+                        </TextField>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          disabled={!group._addCode}
+                          onClick={() => {
+                            if (!group._addCode) return;
+                            updateChecklistGroup(gIdx, {
+                              items: [
+                                ...(group.items || []),
+                                { task_code: group._addCode, required: true },
+                              ],
+                              _addCode: "",
+                            });
+                          }}
+                        >
+                          Add task
+                        </Button>
+                      </Stack>
+                    </Paper>
+                  ))}
+                </Stack>
                 <FormControlLabel
                   control={
                     <Switch

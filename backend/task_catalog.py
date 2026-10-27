@@ -25,7 +25,9 @@ from backend.weekly_schedule_roles import (
 CATEGORIES_TABLE = "task_categories"
 CHECKLISTS_TABLE = "task_checklists"
 CHECKLIST_ITEMS_TABLE = "task_checklist_items"
+CHECKLIST_GROUPS_TABLE = "task_checklist_groups"
 CHECKLIST_VERIFICATIONS_TABLE = "task_checklist_verifications"
+DEFAULT_CHECKLIST_GROUP_NAME = "General"
 
 COMPLETION_SIMPLE = "simple"
 COMPLETION_INPUT = "input_required"
@@ -130,14 +132,43 @@ def ensure_task_catalog_tables(cursor) -> None:
               id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
               organization_id INT NOT NULL,
               checklist_id INT NOT NULL,
+              group_id INT NULL,
               task_code VARCHAR(64) NOT NULL,
               display_order INT NOT NULL DEFAULT 0,
               required TINYINT(1) NOT NULL DEFAULT 1,
               UNIQUE KEY uq_task_cli (checklist_id, task_code),
-              INDEX idx_task_cli_org (organization_id, checklist_id)
+              INDEX idx_task_cli_org (organization_id, checklist_id),
+              INDEX idx_task_cli_group (checklist_id, group_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+    if not table_exists(cursor, CHECKLIST_GROUPS_TABLE):
+        cursor.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {CHECKLIST_GROUPS_TABLE} (
+              id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+              organization_id INT NOT NULL,
+              checklist_id INT NOT NULL,
+              name VARCHAR(80) NOT NULL,
+              display_order INT NOT NULL DEFAULT 0,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+              INDEX idx_tclg_checklist (organization_id, checklist_id, display_order)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+    if table_exists(cursor, CHECKLIST_ITEMS_TABLE) and not table_has_column(
+        cursor, CHECKLIST_ITEMS_TABLE, "group_id"
+    ):
+        cursor.execute(
+            f"ALTER TABLE {CHECKLIST_ITEMS_TABLE} ADD COLUMN group_id INT NULL"
+        )
+        try:
+            cursor.execute(
+                f"ALTER TABLE {CHECKLIST_ITEMS_TABLE} ADD INDEX idx_task_cli_group (checklist_id, group_id)"
+            )
+        except Exception:
+            pass
     if not table_exists(cursor, CHECKLIST_VERIFICATIONS_TABLE):
         cursor.execute(
             f"""

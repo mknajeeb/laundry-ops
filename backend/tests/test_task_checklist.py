@@ -77,6 +77,17 @@ def test_checklist_cannot_verify_when_incomplete():
             {"task_code": "floor_cleaning", "required": True},
             {"task_code": "lint_cleaning", "required": True},
         ],
+        "groups": [
+            {
+                "id": 1,
+                "name": "Floor & General",
+                "display_order": 0,
+                "items": [
+                    {"task_code": "floor_cleaning", "required": True},
+                    {"task_code": "lint_cleaning", "required": True},
+                ],
+            }
+        ],
     }
     with mock.patch("backend.task_checklist._role_catalog", return_value={}), mock.patch(
         "backend.task_checklist.ensure_cleaning_task_activity_tables"
@@ -84,6 +95,8 @@ def test_checklist_cannot_verify_when_incomplete():
         status = build_checklist_day_status(cursor, 3, checklist, date(2026, 10, 27))
     assert status["can_verify_all"] is False
     assert status["required_incomplete"] >= 1
+    assert status["groups"][0]["group_name"] == "Floor & General"
+    assert status["groups"][0]["can_verify_group"] is False
 
 
 def test_checklist_pending_when_all_required_complete():
@@ -112,6 +125,14 @@ def test_checklist_pending_when_all_required_complete():
         "code": "eod",
         "name": "End of Day",
         "items": [{"task_code": "floor_cleaning", "required": True}],
+        "groups": [
+            {
+                "id": 1,
+                "name": "Closing",
+                "display_order": 0,
+                "items": [{"task_code": "floor_cleaning", "required": True}],
+            }
+        ],
     }
     with mock.patch("backend.task_checklist._role_catalog", return_value={}), mock.patch(
         "backend.task_checklist.ensure_cleaning_task_activity_tables"
@@ -119,3 +140,5 @@ def test_checklist_pending_when_all_required_complete():
         status = build_checklist_day_status(cursor, 3, checklist, date(2026, 10, 27))
     assert status["status"] == CHECKLIST_PENDING
     assert status["can_verify_all"] is True
+    assert status["groups"][0]["can_verify_group"] is True
+    assert status["groups"][0]["completion_pct"] == 100.0

@@ -23,9 +23,11 @@ from backend.cleaning_task_activity import (
 )
 from backend.payroll_identity import eastern_now_naive
 from backend.task_catalog import (
+    CHECKLIST_GROUPS_TABLE,
     CHECKLIST_ITEMS_TABLE,
     CHECKLIST_VERIFICATIONS_TABLE,
     CHECKLISTS_TABLE,
+    DEFAULT_CHECKLIST_GROUP_NAME,
     VERIFY_EMPLOYEE,
     VERIFY_SUPERVISOR,
     VERIFY_TIMING_NEXT_DAY,
@@ -33,11 +35,110 @@ from backend.task_catalog import (
     list_categories,
     TaskCatalogError,
 )
+from backend.ta_helpers import table_has_column
 
 CHECKLIST_PENDING = "pending_verification"
 CHECKLIST_VERIFIED = "verified"
 CHECKLIST_PARTIAL = "partial"
 CHECKLIST_INCOMPLETE = "incomplete"
+
+
+def _items_have_group_id(cursor) -> bool:
+    return table_has_column(cursor, CHECKLIST_ITEMS_TABLE, "group_id")
+
+
+def ensure_default_checklist_groups(cursor, organization_id: int, checklist_id: int) -> None:
+    """Migrate flat checklist items into a default named group (additive, idempotent)."""
+    ensure_task_catalog_tables(cursor)
+    oid = int(organization_id)
+    cid = int(checklist_id)
+    if not _items_have_group_id(cursor):
+        return
+    cursor.execute(
+        f"""
+        SELECT COUNT(*) AS c FROM {CHECKLIST_GROUPS_TABLE}
+        WHERE organization_id=%s AND checklist_id=%s
+        """,
+        (oid, cid),
+    )
+    row = cursor.fetchone() or {}
+    group_count = int(row.get("c") or 0) if isinstance(row, dict) else int(row[0] if row else 0)
+    if group_count == 0:
+        cursor.execute(
+            f"""
+            INSERT INTO {CHECKLIST_GROUPS_TABLE}
+              (organization_id, checklist_id, name, display_order)
+            VALUES (%s,%s,%s,%s)
+            """,
+            (oid, cid, DEFAULT_CHECKLIST_GROUP_NAME, 0),
+        )
+    cursor.execute(
+        f"""
+        SELECT id FROM {CHECKLIST_GROUPS_TABLE}
+        WHERE organization_id=%s AND checklist_id=%s
+        ORDER BY display_order ASC, id ASC
+        LIMIT 1
+        """,
+        (oid, cid),
+    )
+    g = cursor.fetchone() or {}
+    default_gid = int(g["id"]) if isinstance(g, dict) and g.get("id") is not None else None
+    if default_gid is None:
+        return
+    cursor.execute(
+        f"""
+        UPDATE {CHECKLIST_ITEMS_TABLE}
+        SET group_id=%s
+        WHERE organization_id=%s AND checklist_id=%s AND (group_id IS NULL OR group_id=0)
+        """,
+        (default_gid, oid, cid),
+    )
+
+
+def list_checklist_groups(cursor, organization_id: int, checklist_id: int) -> list[dict[str, Any]]:
+    ensure_task_catalog_tables(cursor)
+    ensure_default_checklist_groups(cursor, int(organization_id), int(checklist_id))
+    cursor.execute(
+        f"""
+        SELECT id, checklist_id, name, display_order
+        FROM {CHECKLIST_GROUPS_TABLE}
+        WHERE organization_id=%s AND checklist_id=%s
+        ORDER BY display_order ASC, id ASC
+        """,
+        (int(organization_id), int(checklist_id)),
+    )
+    groups = [
+        {
+            "id": int(r["id"]),
+            "checklist_id": int(r["checklist_id"]),
+            "name": str(r.get("name") or DEFAULT_CHECKLIST_GROUP_NAME),
+            "display_order": int(r.get("display_order") or 0),
+            "items": [],
+        }
+        for r in (cursor.fetchall() or [])
+        if isinstance(r, dict)
+    ]
+    items = list_checklist_items(cursor, int(organization_id), int(checklist_id))
+    by_gid: dict[int | None, list[dict[str, Any]]] = {}
+    for item in items:
+        by_gid.setdefault(item.get("group_id"), []).append(item)
+    if not groups and items:
+        # Should not happen after ensure_default, but keep a virtual group for safety.
+        return [
+            {
+                "id": None,
+                "checklist_id": int(checklist_id),
+                "name": DEFAULT_CHECKLIST_GROUP_NAME,
+                "display_order": 0,
+                "items": items,
+            }
+        ]
+    for group in groups:
+        group["items"] = by_gid.get(group["id"]) or []
+    orphan = by_gid.get(None) or []
+    if orphan and groups:
+        groups[0]["items"] = list(groups[0]["items"]) + orphan
+    return groups
 
 
 def list_checklists(cursor, organization_id: int, *, include_inactive: bool = True) -> list[dict[str, Any]]:
@@ -57,7 +158,8 @@ def list_checklists(cursor, organization_id: int, *, include_inactive: bool = Tr
         if not isinstance(row, dict):
             continue
         cid = int(row["id"])
-        items = list_checklist_items(cursor, int(organization_id), cid)
+        groups = list_checklist_groups(cursor, int(organization_id), cid)
+        items = [item for g in groups for item in (g.get("items") or [])]
         cat = cats.get(int(row["category_id"])) if row.get("category_id") is not None else None
         out.append(
             {
@@ -73,6 +175,7 @@ def list_checklists(cursor, organization_id: int, *, include_inactive: bool = Tr
                 "verification_timing": str(row.get("verification_timing") or VERIFY_TIMING_NEXT_DAY),
                 "verifier_config": _parse_json(row.get("verifier_config_json"), {}),
                 "active": bool(row.get("active", True)),
+                "groups": groups,
                 "items": items,
             }
         )
@@ -80,26 +183,35 @@ def list_checklists(cursor, organization_id: int, *, include_inactive: bool = Tr
 
 
 def list_checklist_items(cursor, organization_id: int, checklist_id: int) -> list[dict[str, Any]]:
+    has_group = _items_have_group_id(cursor)
+    cols = "id, checklist_id, task_code, display_order, required"
+    if has_group:
+        cols = "id, checklist_id, group_id, task_code, display_order, required"
     cursor.execute(
         f"""
-        SELECT id, checklist_id, task_code, display_order, required
+        SELECT {cols}
         FROM {CHECKLIST_ITEMS_TABLE}
         WHERE organization_id = %s AND checklist_id = %s
         ORDER BY display_order ASC, id ASC
         """,
         (int(organization_id), int(checklist_id)),
     )
-    return [
-        {
-            "id": int(r["id"]),
-            "checklist_id": int(r["checklist_id"]),
-            "task_code": str(r["task_code"]),
-            "display_order": int(r.get("display_order") or 0),
-            "required": bool(r.get("required", True)),
-        }
-        for r in (cursor.fetchall() or [])
-        if isinstance(r, dict)
-    ]
+    out = []
+    for r in cursor.fetchall() or []:
+        if not isinstance(r, dict):
+            continue
+        gid = r.get("group_id") if has_group else None
+        out.append(
+            {
+                "id": int(r["id"]),
+                "checklist_id": int(r["checklist_id"]),
+                "group_id": int(gid) if gid not in (None, "") else None,
+                "task_code": str(r["task_code"]),
+                "display_order": int(r.get("display_order") or 0),
+                "required": bool(r.get("required", True)),
+            }
+        )
+    return out
 
 
 def _parse_json(raw: Any, default: Any) -> Any:
@@ -181,30 +293,71 @@ def upsert_checklist(cursor, organization_id: int, data: Mapping[str, Any], *, c
         row = cursor.fetchone() or {}
         cid = int(row["id"])
 
+    groups_payload = data.get("groups")
     items = data.get("items")
-    if isinstance(items, list):
+    if isinstance(groups_payload, list) or isinstance(items, list):
         cursor.execute(
             f"DELETE FROM {CHECKLIST_ITEMS_TABLE} WHERE organization_id=%s AND checklist_id=%s",
             (oid, cid),
         )
-        for idx, item in enumerate(items):
-            if isinstance(item, str):
-                task_code, required = item, True
-            elif isinstance(item, dict):
-                task_code = str(item.get("task_code") or item.get("code") or "").strip()
-                required = bool(item.get("required", True))
-            else:
-                continue
-            if not task_code:
-                continue
+        cursor.execute(
+            f"DELETE FROM {CHECKLIST_GROUPS_TABLE} WHERE organization_id=%s AND checklist_id=%s",
+            (oid, cid),
+        )
+        normalized_groups: list[tuple[str, list[Any]]] = []
+        if isinstance(groups_payload, list) and groups_payload:
+            for g in groups_payload:
+                if not isinstance(g, Mapping):
+                    continue
+                gname = " ".join(str(g.get("name") or DEFAULT_CHECKLIST_GROUP_NAME).split()) or DEFAULT_CHECKLIST_GROUP_NAME
+                normalized_groups.append((gname[:80], list(g.get("items") or [])))
+        else:
+            # Flat items → single default group (backward compatible).
+            normalized_groups.append((DEFAULT_CHECKLIST_GROUP_NAME, list(items or [])))
+
+        has_group = _items_have_group_id(cursor)
+        global_idx = 0
+        for g_idx, (gname, g_items) in enumerate(normalized_groups):
             cursor.execute(
                 f"""
-                INSERT INTO {CHECKLIST_ITEMS_TABLE}
-                  (organization_id, checklist_id, task_code, display_order, required)
-                VALUES (%s,%s,%s,%s,%s)
+                INSERT INTO {CHECKLIST_GROUPS_TABLE}
+                  (organization_id, checklist_id, name, display_order)
+                VALUES (%s,%s,%s,%s)
                 """,
-                (oid, cid, task_code, idx * 10, 1 if required else 0),
+                (oid, cid, gname, g_idx * 10),
             )
+            cursor.execute("SELECT LAST_INSERT_ID() AS id")
+            grow = cursor.fetchone() or {}
+            gid = int(grow.get("id") or 0) if isinstance(grow, dict) else int(grow[0] if grow else 0)
+            for item in g_items:
+                if isinstance(item, str):
+                    task_code, required = item, True
+                elif isinstance(item, dict):
+                    task_code = str(item.get("task_code") or item.get("code") or "").strip()
+                    required = bool(item.get("required", True))
+                else:
+                    continue
+                if not task_code:
+                    continue
+                if has_group:
+                    cursor.execute(
+                        f"""
+                        INSERT INTO {CHECKLIST_ITEMS_TABLE}
+                          (organization_id, checklist_id, group_id, task_code, display_order, required)
+                        VALUES (%s,%s,%s,%s,%s,%s)
+                        """,
+                        (oid, cid, gid or None, task_code, global_idx * 10, 1 if required else 0),
+                    )
+                else:
+                    cursor.execute(
+                        f"""
+                        INSERT INTO {CHECKLIST_ITEMS_TABLE}
+                          (organization_id, checklist_id, task_code, display_order, required)
+                        VALUES (%s,%s,%s,%s,%s)
+                        """,
+                        (oid, cid, task_code, global_idx * 10, 1 if required else 0),
+                    )
+                global_idx += 1
         # Link task definitions to this checklist
         for item in list_checklist_items(cursor, oid, cid):
             cursor.execute(
@@ -357,6 +510,80 @@ def build_checklist_day_status(
     else:
         overall = CHECKLIST_INCOMPLETE
 
+    # Nest items under configured groups for PIN + dashboard reporting.
+    groups_cfg = checklist.get("groups")
+    if not isinstance(groups_cfg, list):
+        groups_cfg = list_checklist_groups(cursor, int(organization_id), int(checklist["id"]))
+    items_by_code = {str(row["task_code"]): row for row in member_rows}
+    grouped_rows: list[dict[str, Any]] = []
+    used_codes: set[str] = set()
+    for g in groups_cfg or []:
+        if not isinstance(g, Mapping):
+            continue
+        g_items = []
+        for raw in g.get("items") or []:
+            code = str(raw.get("task_code") if isinstance(raw, Mapping) else raw or "").strip()
+            if not code or code not in items_by_code:
+                continue
+            g_items.append(items_by_code[code])
+            used_codes.add(code)
+        g_req = [i for i in g_items if i.get("required")]
+        g_done = sum(
+            1
+            for i in g_req
+            if i.get("status") in ("completed", "pending_verification", CHECKLIST_VERIFIED, "verified")
+        )
+        g_rejected = sum(1 for i in g_req if i.get("status") == "rejected")
+        g_incomplete = sum(1 for i in g_req if i.get("status") in ("not_started", "in_progress"))
+        if g_rejected:
+            g_status = "rejected"
+        elif g_incomplete:
+            g_status = CHECKLIST_INCOMPLETE
+        elif g_req and g_done >= len(g_req):
+            g_status = (
+                CHECKLIST_PENDING
+                if any(i.get("status") == "pending_verification" for i in g_items)
+                else "completed"
+            )
+        else:
+            g_status = CHECKLIST_INCOMPLETE
+        pct = round((g_done / len(g_req)) * 100, 1) if g_req else None
+        grouped_rows.append(
+            {
+                "group_id": g.get("id"),
+                "group_name": g.get("name") or DEFAULT_CHECKLIST_GROUP_NAME,
+                "display_order": int(g.get("display_order") or 0),
+                "status": g_status,
+                "required_total": len(g_req),
+                "required_done": g_done,
+                "required_incomplete": g_incomplete,
+                "required_rejected": g_rejected,
+                "completion_pct": pct,
+                "can_verify_group": g_status in (CHECKLIST_PENDING, "completed")
+                and g_incomplete == 0
+                and g_rejected == 0
+                and bool(g_req),
+                "items": g_items,
+            }
+        )
+    leftovers = [row for code, row in items_by_code.items() if code not in used_codes]
+    if leftovers:
+        grouped_rows.append(
+            {
+                "group_id": None,
+                "group_name": DEFAULT_CHECKLIST_GROUP_NAME,
+                "display_order": 9999,
+                "status": CHECKLIST_INCOMPLETE,
+                "required_total": sum(1 for i in leftovers if i.get("required")),
+                "required_done": 0,
+                "required_incomplete": sum(1 for i in leftovers if i.get("required")),
+                "required_rejected": 0,
+                "completion_pct": None,
+                "can_verify_group": False,
+                "items": leftovers,
+            }
+        )
+
     return {
         "checklist_id": int(checklist["id"]),
         "checklist_code": checklist.get("code"),
@@ -367,8 +594,10 @@ def build_checklist_day_status(
         "required_done": required_done,
         "required_incomplete": required_incomplete,
         "required_rejected": required_rejected,
+        "completion_pct": round((required_done / required_total) * 100, 1) if required_total else None,
         "can_verify_all": overall == CHECKLIST_PENDING and required_incomplete == 0 and required_rejected == 0,
         "items": member_rows,
+        "groups": grouped_rows,
         "verification": (
             {
                 "status": ver.get("status"),
@@ -425,6 +654,75 @@ def list_checklists_to_verify(
     }
 
 
+def _approve_pending_items(
+    cursor,
+    *,
+    organization_id: int,
+    items: Sequence[Mapping[str, Any]],
+    verifier_user_id: int,
+) -> int:
+    approved = 0
+    for item in items or []:
+        for act in item.get("activities") or []:
+            if act.get("status") != STATUS_PENDING_APPROVAL:
+                continue
+            if int(act.get("user_id") or 0) == int(verifier_user_id):
+                raise CleaningTaskError(
+                    "You cannot verify a checklist that includes your own completion.",
+                    status=403,
+                )
+            approve_activity(
+                cursor,
+                organization_id=int(organization_id),
+                activity_id=int(act["id"]),
+                supervisor_user_id=int(verifier_user_id),
+            )
+            approved += 1
+    return approved
+
+
+def verify_checklist_group(
+    cursor,
+    *,
+    organization_id: int,
+    checklist_id: int,
+    group_id: int,
+    business_date: date,
+    verifier_user_id: int,
+    has_supervisor_review: bool = False,
+) -> dict[str, Any]:
+    """Verify all pending contributions in one named checklist group."""
+    del has_supervisor_review  # reserved for future method-specific gates
+    ensure_task_catalog_tables(cursor)
+    checklists = {c["id"]: c for c in list_checklists(cursor, int(organization_id))}
+    cl = checklists.get(int(checklist_id))
+    if not cl:
+        raise CleaningTaskError("Checklist not found.", status=404)
+    status = build_checklist_day_status(cursor, int(organization_id), cl, business_date)
+    group = next(
+        (
+            g
+            for g in (status.get("groups") or [])
+            if g.get("group_id") is not None and int(g["group_id"]) == int(group_id)
+        ),
+        None,
+    )
+    if not group:
+        raise CleaningTaskError("Checklist group not found.", status=404)
+    if not group.get("can_verify_group"):
+        raise CleaningTaskError(
+            "Cannot verify group until all required items are completed and none are rejected.",
+            status=400,
+        )
+    _approve_pending_items(
+        cursor,
+        organization_id=int(organization_id),
+        items=group.get("items") or [],
+        verifier_user_id=int(verifier_user_id),
+    )
+    return build_checklist_day_status(cursor, int(organization_id), cl, business_date)
+
+
 def verify_checklist(
     cursor,
     *,
@@ -445,21 +743,12 @@ def verify_checklist(
             "Cannot verify checklist until all required items are completed and none are rejected.",
             status=400,
         )
-    # Verify each pending contribution (not already verified)
-    for item in status["items"]:
-        for act in item.get("activities") or []:
-            if act.get("status") == STATUS_PENDING_APPROVAL:
-                if int(act.get("user_id") or 0) == int(verifier_user_id):
-                    raise CleaningTaskError(
-                        "You cannot verify a checklist that includes your own completion.",
-                        status=403,
-                    )
-                approve_activity(
-                    cursor,
-                    organization_id=int(organization_id),
-                    activity_id=int(act["id"]),
-                    supervisor_user_id=int(verifier_user_id),
-                )
+    _approve_pending_items(
+        cursor,
+        organization_id=int(organization_id),
+        items=status.get("items") or [],
+        verifier_user_id=int(verifier_user_id),
+    )
     at = eastern_now_naive()
     cursor.execute(
         f"""
@@ -481,9 +770,54 @@ def verify_checklist(
             CHECKLIST_VERIFIED,
             int(verifier_user_id),
             at,
-            json.dumps({"item_count": len(status["items"])}),
+            json.dumps({"item_count": len(status["items"]), "groups": len(status.get("groups") or [])}),
         ),
     )
+    return build_checklist_day_status(cursor, int(organization_id), cl, business_date)
+
+
+def verify_checklist_group(
+    cursor,
+    *,
+    organization_id: int,
+    checklist_id: int,
+    group_id: int,
+    business_date: date,
+    verifier_user_id: int,
+    has_supervisor_review: bool = False,
+) -> dict[str, Any]:
+    """Verify all pending contributions inside one checklist group."""
+    ensure_task_catalog_tables(cursor)
+    checklists = {c["id"]: c for c in list_checklists(cursor, int(organization_id))}
+    cl = checklists.get(int(checklist_id))
+    if not cl:
+        raise CleaningTaskError("Checklist not found.", status=404)
+    status = build_checklist_day_status(cursor, int(organization_id), cl, business_date)
+    group = next(
+        (g for g in (status.get("groups") or []) if g.get("group_id") is not None and int(g["group_id"]) == int(group_id)),
+        None,
+    )
+    if not group:
+        raise CleaningTaskError("Checklist group not found.", status=404)
+    if not group.get("can_verify_group"):
+        raise CleaningTaskError(
+            "Cannot verify group until all required items are completed and none are rejected.",
+            status=400,
+        )
+    for item in group.get("items") or []:
+        for act in item.get("activities") or []:
+            if act.get("status") == STATUS_PENDING_APPROVAL:
+                if int(act.get("user_id") or 0) == int(verifier_user_id):
+                    raise CleaningTaskError(
+                        "You cannot verify a checklist group that includes your own completion.",
+                        status=403,
+                    )
+                approve_activity(
+                    cursor,
+                    organization_id=int(organization_id),
+                    activity_id=int(act["id"]),
+                    supervisor_user_id=int(verifier_user_id),
+                )
     return build_checklist_day_status(cursor, int(organization_id), cl, business_date)
 
 

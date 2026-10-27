@@ -12,8 +12,8 @@ export function peopleText(count) {
 }
 
 /** "8 people · 42.5 hours" — distinct employees and net hours for one role ("… 43 gross hours" while unresolved). */
-export function roleSummaryValue(row, daysOnly = false) {
-  if (daysOnly) return peopleText(row.employees);
+export function roleSummaryValue(row, daysOnly = false, hideLaborHours = false) {
+  if (daysOnly || hideLaborHours) return peopleText(row.employees);
   const hours = Math.round(Number(row.hours || 0) * 100) / 100;
   return `${peopleText(row.employees)} · ${formatRoleHoursValue(hours, row.unallocatedBreakHours)} ${hours === 1 ? "hour" : "hours"}`;
 }
@@ -22,7 +22,7 @@ export function roleSummaryValue(row, daysOnly = false) {
  * First summary line: employees, gross, break, and net hours. While a break without a time on a
  * multi-role shift cannot be allocated to the selected roles, the total is labeled gross of it.
  */
-export function summaryTotalsMetrics(summary, { showBreaks = true, compact = false } = {}) {
+export function summaryTotalsMetrics(summary, { showBreaks = true, compact = false, hideLaborHours = false } = {}) {
   if (!summary) return [];
   const daysOnly = summary.daysOnly === true;
   const filtered = Array.isArray(summary.roleFilter);
@@ -34,8 +34,10 @@ export function summaryTotalsMetrics(summary, { showBreaks = true, compact = fal
       value: filtered ? peopleText(summary.employeesScheduled) : String(summary.employeesScheduled ?? 0),
     },
   ];
-  if (daysOnly) {
-    metrics.push({ key: "days", label: compact ? "Days" : "Total Days", value: String(summary.totalDays ?? 0) });
+  if (daysOnly || hideLaborHours) {
+    if (daysOnly) {
+      metrics.push({ key: "days", label: compact ? "Days" : "Total Days", value: String(summary.totalDays ?? 0) });
+    }
     return metrics;
   }
   if (showBreaks) {
@@ -68,7 +70,7 @@ export function summaryTotalsMetrics(summary, { showBreaks = true, compact = fal
 }
 
 /** One line per role category (Rinse WF, Rinse HD, Drop Off, …) with every role in it. */
-export function summaryRoleLines(summary) {
+export function summaryRoleLines(summary, { hideLaborHours = false } = {}) {
   if (!summary) return [];
   const daysOnly = summary.daysOnly === true;
   const byRole = new Map((summary.roles || []).map((row) => [row.role, row]));
@@ -77,14 +79,14 @@ export function summaryRoleLines(summary) {
     label: group.label,
     items: group.roles.map((role) => {
       const row = byRole.get(role);
-      return { role, label: row.label, value: roleSummaryValue(row, daysOnly) };
+      return { role, label: row.label, value: roleSummaryValue(row, daysOnly, hideLaborHours) };
     }),
   }));
 }
 
 /** Unallocated break line for role filters ("" when there is none). */
-export function summaryUnallocatedText(summary, { showBreaks = true } = {}) {
-  if (!summary || summary.daysOnly) return "";
+export function summaryUnallocatedText(summary, { showBreaks = true, hideLaborHours = false } = {}) {
+  if (!summary || summary.daysOnly || hideLaborHours) return "";
   const hours = Number(summary.roleUnallocatedBreakHours || 0);
   if (hours <= 0.0001) return "";
   return showBreaks ? `${formatUnallocatedBreak(hours)} · ${UNALLOCATED_BREAK_NOTE}` : UNALLOCATED_BREAK_NOTE;
@@ -96,15 +98,20 @@ export function noRolesSelectedText(selection) {
 }
 
 /** Plain-text summary lines for print and CSV: totals, then one line per role category. */
-export function summaryTextLines(summary, { showBreaks = true, showCost = false, estimatedCostText = "" } = {}) {
+export function summaryTextLines(
+  summary,
+  { showBreaks = true, showCost = false, estimatedCostText = "", hideLaborHours = false } = {},
+) {
   if (!summary) return [];
-  const totals = summaryTotalsMetrics(summary, { showBreaks, compact: true }).map((m) => `${m.label}: ${m.value}`);
-  if (showCost && estimatedCostText) totals.push(`Estimated labor cost: ${estimatedCostText}`);
+  const totals = summaryTotalsMetrics(summary, { showBreaks, compact: true, hideLaborHours }).map(
+    (m) => `${m.label}: ${m.value}`,
+  );
+  if (showCost && !hideLaborHours && estimatedCostText) totals.push(`Estimated labor cost: ${estimatedCostText}`);
   const lines = [totals.join(" | ")];
-  for (const line of summaryRoleLines(summary)) {
+  for (const line of summaryRoleLines(summary, { hideLaborHours })) {
     lines.push(`${line.label}: ${line.items.map((item) => `${item.label} ${item.value}`).join(" | ")}`);
   }
-  const unallocated = summaryUnallocatedText(summary, { showBreaks });
+  const unallocated = summaryUnallocatedText(summary, { showBreaks, hideLaborHours });
   if (unallocated) lines.push(`Unallocated break: ${unallocated}`);
   return lines;
 }

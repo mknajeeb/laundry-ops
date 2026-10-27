@@ -409,21 +409,50 @@ def _latest_activity_by_resp(activities: Sequence[Mapping[str, Any]]) -> dict[in
     return best
 
 
+def _coerce_business_date(value: Any) -> date | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value).strip()[:10])
+    except (TypeError, ValueError):
+        return None
+
+
 def _is_overdue(
     *,
     timing_mode: str,
     planned_start_time: Any,
     now: datetime,
+    business_date: date | None = None,
     shift_start: Any = None,
     shift_end: Any = None,
     break_start: Any = None,
     break_end: Any = None,
 ) -> bool:
-    """Conservative overdue: specific time past, or relative anchors clearly past."""
+    """Overdue vs America/New_York business calendar.
+
+    - Future business dates are never overdue (clock time alone must not mark them).
+    - Past incomplete assignments are overdue once the business day has ended.
+    - Anytime tasks are not overdue on the current business day.
+    - Timed / relative modes on the current day use ET wall-clock vs anchors.
+    Callers must only invoke this for incomplete (not pending-verification) work.
+    """
     mode = str(timing_mode or "anytime")
-    now_m = now.hour * 60 + now.minute
+    today = business_today()
+    day = _coerce_business_date(business_date)
+    if day is not None:
+        if day > today:
+            return False
+        if day < today:
+            return True
+    # Current ET business day (or unknown date → treat as current).
     if mode == "anytime":
         return False
+    now_m = int(getattr(now, "hour", 0) or 0) * 60 + int(getattr(now, "minute", 0) or 0)
     if mode == "specific_time":
         point = _minutes(planned_start_time)
         return point is not None and now_m > point + 15
@@ -624,6 +653,7 @@ def list_employee_day_tasks(
                 timing_mode=str(item.get("timing_mode") or "anytime"),
                 planned_start_time=item.get("start_time"),
                 now=now,
+                business_date=day,
                 **anchors,
             )
             status = DISPLAY_OVERDUE if overdue else DISPLAY_PENDING
@@ -1222,6 +1252,7 @@ def list_supervisor_queue(
                 timing_mode=str(item.get("timing_mode") or "anytime"),
                 planned_start_time=item.get("start_time"),
                 now=now,
+                business_date=day,
                 **anchors,
             )
             if overdue:
@@ -1327,6 +1358,7 @@ def _group_shared_assignments(
                     timing_mode=str(member.get("timing_mode") or "anytime"),
                     planned_start_time=member.get("start_time"),
                     now=now,
+                    business_date=business_date,
                     **anchors,
                 )
                 st = DISPLAY_OVERDUE if overdue else DISPLAY_PENDING
@@ -1583,6 +1615,19 @@ def dashboard_summary(
         if item.get("duration_seconds") is not None
     ]
 
+    checklist_reports: list[dict[str, Any]] = []
+    try:
+        from backend.task_checklist import build_checklist_day_status, list_checklists
+
+        for cl in list_checklists(cursor, int(organization_id), include_inactive=False):
+            if not cl.get("active"):
+                continue
+            checklist_reports.append(
+                build_checklist_day_status(cursor, int(organization_id), cl, day)
+            )
+    except Exception:
+        checklist_reports = []
+
     return {
         "business_date": str(day),
         "approval_policy": queue.get("approval_policy"),
@@ -1594,6 +1639,7 @@ def dashboard_summary(
         "activity_log": log,
         "queue": queue,
         "shift_end": queue.get("shift_end"),
+        "checklists": checklist_reports,
     }
 
 
@@ -1720,3 +1766,56 @@ def attendance_cleaning_snapshot(cursor, organization_id: int, user_id: int) -> 
         "cleaning_task_label": ser.get("role_label") or ser.get("role"),
         "cleaning_activity_id": ser.get("id"),
     }
+
+
+_RINSE_TASK_DURATION_KEYS = (
+    "duration_seconds",
+    "group_duration_seconds",
+    "time_spent_seconds",
+)
+
+
+def _strip_task_duration_fields(row: Any) -> Any:
+    """Remove labor/duration fields from nested dashboard structures (Rinse viewers)."""
+    if isinstance(row, list):
+        return [_strip_task_duration_fields(item) for item in row]
+    if not isinstance(row, Mapping):
+        return row
+    out = dict(row)
+    for key in _RINSE_TASK_DURATION_KEYS:
+        out.pop(key, None)
+    activity = out.get("activity")
+    if isinstance(activity, Mapping):
+        out["activity"] = _strip_task_duration_fields(activity)
+    for key in ("contributions", "group_items", "activities", "items", "groups", "checklists"):
+        if key in out and isinstance(out[key], list):
+            out[key] = _strip_task_duration_fields(out[key])
+    return out
+
+
+def apply_rinse_task_dashboard_scope(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """API-level filter: keep compliance/verification; strip durations and labor hours."""
+    out = dict(payload)
+    metrics = dict(out.get("metrics") or {})
+    metrics.pop("time_spent_seconds", None)
+    out["metrics"] = metrics
+    out["durations"] = []
+    out["shared_assignments"] = _strip_task_duration_fields(out.get("shared_assignments") or [])
+    out["activity_log"] = _strip_task_duration_fields(out.get("activity_log") or [])
+    queue = out.get("queue")
+    if isinstance(queue, Mapping):
+        out["queue"] = {
+            key: _strip_task_duration_fields(value) if isinstance(value, list) else value
+            for key, value in queue.items()
+        }
+    shift_end = out.get("shift_end")
+    if isinstance(shift_end, Mapping):
+        out["shift_end"] = {
+            key: _strip_task_duration_fields(value) if isinstance(value, list) else value
+            for key, value in shift_end.items()
+        }
+    if "checklists" in out:
+        out["checklists"] = _strip_task_duration_fields(out.get("checklists") or [])
+    out["hide_labor_metrics"] = True
+    out["labor_fields_hidden"] = True
+    return out

@@ -16,6 +16,7 @@ from backend.cleaning_task_activity import (
     attendance_cleaning_snapshot,
     complete_task,
     complete_untimed_task,
+    apply_rinse_task_dashboard_scope,
     dashboard_summary,
     ensure_cleaning_task_activity_tables,
     list_employee_day_tasks,
@@ -52,6 +53,7 @@ from backend.task_checklist import (
     reject_checklist_item,
     upsert_checklist,
     verify_checklist,
+    verify_checklist_group,
 )
 from backend.employee_mobile_pin_access import (
     MobilePinAccessDeniedError,
@@ -553,14 +555,26 @@ def register_cleaning_task_activity_routes(
             biz = _parse_date(data.get("business_date"))
             if not biz:
                 return jsonify({"ok": False, "error": "business_date is required"}), 400
-            result = verify_checklist(
-                cursor,
-                organization_id=int(ctx["org_id"]),
-                checklist_id=int(data.get("checklist_id") or 0),
-                business_date=biz,
-                verifier_user_id=int(ctx["user_id"]),
-                has_supervisor_review=can_sup,
-            )
+            group_id = data.get("group_id")
+            if group_id not in (None, ""):
+                result = verify_checklist_group(
+                    cursor,
+                    organization_id=int(ctx["org_id"]),
+                    checklist_id=int(data.get("checklist_id") or 0),
+                    group_id=int(group_id),
+                    business_date=biz,
+                    verifier_user_id=int(ctx["user_id"]),
+                    has_supervisor_review=can_sup,
+                )
+            else:
+                result = verify_checklist(
+                    cursor,
+                    organization_id=int(ctx["org_id"]),
+                    checklist_id=int(data.get("checklist_id") or 0),
+                    business_date=biz,
+                    verifier_user_id=int(ctx["user_id"]),
+                    has_supervisor_review=can_sup,
+                )
             conn.commit()
             return jsonify({"ok": True, "checklist": result})
         except CleaningTaskError as exc:
@@ -873,6 +887,8 @@ def register_cleaning_task_activity_routes(
             )
             payload["read_only"] = bool(rinse_only)
             payload["can_approve"] = not rinse_only
+            if rinse_only:
+                payload = apply_rinse_task_dashboard_scope(payload)
             return jsonify(payload)
         finally:
             try:

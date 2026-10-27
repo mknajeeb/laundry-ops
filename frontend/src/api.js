@@ -416,6 +416,7 @@ export const attendancePinCleaningTasksChecklistVerify = (organization_slug, pin
     _pinCleaningBody(organization_slug, pin, options, {
       checklist_id: options.checklist_id,
       business_date: options.business_date,
+      group_id: options.group_id,
     }),
     _pinCleaningOpts,
   );

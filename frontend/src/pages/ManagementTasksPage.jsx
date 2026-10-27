@@ -97,6 +97,7 @@ export default function ManagementTasksPage() {
 
   const metrics = data?.metrics || {};
   const readOnly = data?.read_only === true;
+  const hideLabor = data?.hide_labor_metrics === true || data?.labor_fields_hidden === true;
   const shiftEnd = data?.shift_end || {};
   const blocking = shiftEnd.blocking_close || [];
 
@@ -213,7 +214,9 @@ export default function ManagementTasksPage() {
               label="Verification %"
               value={metrics.verification_rate != null ? `${metrics.verification_rate}%` : "—"}
             />
-            <Metric label="Time on Tasks" value={formatDuration(metrics.time_spent_seconds)} />
+            {hideLabor ? null : (
+              <Metric label="Time on Tasks" value={formatDuration(metrics.time_spent_seconds)} />
+            )}
           </Stack>
 
           {(data?.category_breakdown || []).length ? (
@@ -290,7 +293,7 @@ export default function ManagementTasksPage() {
                           <TableRow>
                             <TableCell>Employee</TableCell>
                             <TableCell>Status</TableCell>
-                            <TableCell>Duration</TableCell>
+                            {hideLabor ? null : <TableCell>Duration</TableCell>}
                             <TableCell />
                           </TableRow>
                         </TableHead>
@@ -311,11 +314,13 @@ export default function ManagementTasksPage() {
                                 ) : null}
                               </TableCell>
                               <TableCell>{statusChip(c.status)}</TableCell>
-                              <TableCell>
-                                {formatDuration(
-                                  c.group_duration_seconds ?? c.activity?.duration_seconds
-                                )}
-                              </TableCell>
+                              {hideLabor ? null : (
+                                <TableCell>
+                                  {formatDuration(
+                                    c.group_duration_seconds ?? c.activity?.duration_seconds
+                                  )}
+                                </TableCell>
+                              )}
                               <TableCell align="right">
                                 {!readOnly && c.status === "pending_approval" && c.activity?.id ? (
                                   <Stack direction="row" spacing={0.5} justifyContent="flex-end">
@@ -367,46 +372,99 @@ export default function ManagementTasksPage() {
             )}
           </Stack>
 
-          <Typography variant="h6" sx={{ fontWeight: 800, mb: 1 }}>
-            Duration by employee / task
-          </Typography>
-          <Paper variant="outlined" sx={{ overflow: "auto", mb: 2.5 }}>
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Employee</TableCell>
-                  <TableCell>Task</TableCell>
-                  <TableCell>Duration</TableCell>
-                  <TableCell>Status</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {(data?.durations || []).length ? (
-                  (data.durations || []).map((row) => (
-                    <TableRow key={row.activity_id}>
-                      <TableCell>{row.employee_name}</TableCell>
-                      <TableCell>{row.role_label || row.role}</TableCell>
-                      <TableCell>{formatDuration(row.duration_seconds)}</TableCell>
-                      <TableCell>
-                        {statusChip(row.status)}
-                        {row.verified ? (
-                          <Chip size="small" label="Verified" color="success" sx={{ ml: 1 }} />
-                        ) : null}
-                      </TableCell>
+          {hideLabor ? null : (
+            <>
+              <Typography variant="h6" sx={{ fontWeight: 800, mb: 1 }}>
+                Duration by employee / task
+              </Typography>
+              <Paper variant="outlined" sx={{ overflow: "auto", mb: 2.5 }}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Employee</TableCell>
+                      <TableCell>Task</TableCell>
+                      <TableCell>Duration</TableCell>
+                      <TableCell>Status</TableCell>
                     </TableRow>
-                  ))
-                ) : (
-                  <TableRow>
-                    <TableCell colSpan={4}>
-                      <Typography variant="body2" color="text.secondary">
-                        No recorded durations yet.
-                      </Typography>
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </Paper>
+                  </TableHead>
+                  <TableBody>
+                    {(data?.durations || []).length ? (
+                      (data.durations || []).map((row) => (
+                        <TableRow key={row.activity_id}>
+                          <TableCell>{row.employee_name}</TableCell>
+                          <TableCell>{row.role_label || row.role}</TableCell>
+                          <TableCell>{formatDuration(row.duration_seconds)}</TableCell>
+                          <TableCell>
+                            {statusChip(row.status)}
+                            {row.verified ? (
+                              <Chip size="small" label="Verified" color="success" sx={{ ml: 1 }} />
+                            ) : null}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={4}>
+                          <Typography variant="body2" color="text.secondary">
+                            No recorded durations yet.
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </Paper>
+            </>
+          )}
+
+          {(data?.checklists || []).length ? (
+            <>
+              <Typography variant="h6" sx={{ fontWeight: 800, mb: 1 }}>
+                Checklists
+              </Typography>
+              <Stack spacing={1} sx={{ mb: 2.5 }}>
+                {(data.checklists || []).map((cl) => (
+                  <Paper key={`${cl.checklist_id}-${cl.business_date}`} variant="outlined" sx={{ p: 1.25 }}>
+                    <Typography sx={{ fontWeight: 800 }}>
+                      {cl.checklist_name} · {cl.status}
+                      {cl.completion_pct != null ? ` · ${cl.completion_pct}%` : ""}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 0.75 }}>
+                      {cl.required_done}/{cl.required_total} required · verified{" "}
+                      {cl.verification?.verified_at || "—"}
+                    </Typography>
+                    <Stack spacing={0.75}>
+                      {(cl.groups || []).map((g) => (
+                        <Box key={`g-${g.group_id || g.group_name}`}>
+                          <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                            {g.group_name}: {g.required_done}/{g.required_total}
+                            {g.completion_pct != null ? ` (${g.completion_pct}%)` : ""} · {g.status}
+                          </Typography>
+                          {(g.items || []).map((item) => (
+                            <Typography
+                              key={item.task_code}
+                              variant="caption"
+                              display="block"
+                              color="text.secondary"
+                              sx={{ pl: 1 }}
+                            >
+                              {item.task_label}: {item.status}
+                              {(item.activities || [])
+                                .map((a) => a.employee_name)
+                                .filter(Boolean)
+                                .join(", ")
+                                ? ` · ${(item.activities || []).map((a) => a.employee_name).join(", ")}`
+                                : ""}
+                            </Typography>
+                          ))}
+                        </Box>
+                      ))}
+                    </Stack>
+                  </Paper>
+                ))}
+              </Stack>
+            </>
+          ) : null}
 
           <Typography variant="h6" sx={{ fontWeight: 800, mb: 1 }}>
             Activity log
@@ -419,7 +477,7 @@ export default function ManagementTasksPage() {
                   <TableCell>Task</TableCell>
                   <TableCell>Start</TableCell>
                   <TableCell>End</TableCell>
-                  <TableCell>Duration</TableCell>
+                  {hideLabor ? null : <TableCell>Duration</TableCell>}
                   <TableCell>Input</TableCell>
                   <TableCell>Status</TableCell>
                   <TableCell>Verified by</TableCell>
@@ -443,7 +501,7 @@ export default function ManagementTasksPage() {
                       </TableCell>
                       <TableCell>{row.started_at || "—"}</TableCell>
                       <TableCell>{row.ended_at || "—"}</TableCell>
-                      <TableCell>{formatDuration(row.duration_seconds)}</TableCell>
+                      {hideLabor ? null : <TableCell>{formatDuration(row.duration_seconds)}</TableCell>}
                       <TableCell>
                         <Typography variant="caption">
                           {formatCompletionInput(row.completion_input) || "—"}
@@ -455,7 +513,7 @@ export default function ManagementTasksPage() {
                   ))
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={8}>
+                    <TableCell colSpan={hideLabor ? 7 : 8}>
                       <Typography variant="body2" color="text.secondary">
                         No task activity for this date.
                       </Typography>

@@ -375,9 +375,10 @@ export default function WeeklySchedulePage() {
   const canEdit = display.can_edit_schedule !== false;
   const canManageExclusions = display.can_manage_exclusions !== false;
   const showRoleLabels = display.show_role_labels !== false;
-  const showBreakMinutes = display.show_break_minutes !== false;
-  const showEmployeeRates = display.show_employee_rates !== false;
-  const costAllowed = display.show_estimated_cost !== false;
+  const hideLaborHours = display.hide_labor_hours === true || data?.hide_labor_hours === true;
+  const showBreakMinutes = !hideLaborHours && display.show_break_minutes !== false;
+  const showEmployeeRates = !hideLaborHours && display.show_employee_rates !== false;
+  const costAllowed = !hideLaborHours && display.show_estimated_cost !== false;
   const canConfigureSharing = display.can_configure_sharing !== false;
   const lockEmployerTab = display.lock_employer_tab === true;
   const hideEmployerTabs = display.hide_employer_tabs === true;
@@ -997,7 +998,9 @@ export default function WeeklySchedulePage() {
         tasksByDay: breaksTasksByDay,
         weekStart,
         tabLabel: `${ENTITY_TAB_LABELS[employerTab]}${viewSuffix}`,
-        summaryLines: noRolesSelected ? [noRolesText] : summaryTextLines(weekSummary, { showBreaks: showBreakMinutes }),
+        summaryLines: noRolesSelected
+          ? [noRolesText]
+          : summaryTextLines(weekSummary, { showBreaks: showBreakMinutes, hideLaborHours }),
         showBreaks: showBreakMinutes && scheduleEndTimeEnabled && !noRolesSelected,
       });
       return;
@@ -1007,7 +1010,9 @@ export default function WeeklySchedulePage() {
         grid: breaksTasksGrid,
         weekStart,
         tabLabel: `${ENTITY_TAB_LABELS[employerTab]}${viewSuffix}`,
-        summaryLines: noRolesSelected ? [noRolesText] : summaryTextLines(weekSummary, { showBreaks: showBreakMinutes }),
+        summaryLines: noRolesSelected
+          ? [noRolesText]
+          : summaryTextLines(weekSummary, { showBreaks: showBreakMinutes, hideLaborHours }),
         showBreaks: showBreakMinutes && scheduleEndTimeEnabled && !noRolesSelected,
       });
       return;
@@ -1546,6 +1551,7 @@ export default function WeeklySchedulePage() {
                   summary={weekSummary}
                   showCost={showCost && costAllowed}
                   showBreaks={showBreakMinutes}
+                  hideLaborHours={hideLaborHours}
                   compact
                   noRolesSelected={noRolesSelected}
                   noRolesText={noRolesText}
@@ -1853,7 +1859,12 @@ export default function WeeklySchedulePage() {
               {scheduleViewLabel ? ` — ${scheduleViewLabel}` : ""}
             </div>
             <div className="weekly-schedule-print-doc-subtitle">{formatWeekRange(weekStart)}</div>
-            <WeeklyScheduleSummaryPrint summary={weekSummary} showBreaks={showBreakMinutes} noRolesText={noRolesText} />
+            <WeeklyScheduleSummaryPrint
+              summary={weekSummary}
+              showBreaks={showBreakMinutes}
+              hideLaborHours={hideLaborHours}
+              noRolesText={noRolesText}
+            />
           </div>
           {viewMode === VIEW_MODE.BREAKS_TASKS && breaksView === BREAKS_VIEW.TIME ? (
             <WeeklyScheduleBreaksByTimePrint

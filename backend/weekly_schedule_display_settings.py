@@ -192,12 +192,149 @@ def validate_schedule_week_access(
     return None
 
 
+_ENTRY_LABOR_KEYS = (
+    "hours",
+    "gross_hours",
+    "break_hours",
+    "break_minutes",
+    "timed_break_minutes",
+    "unscheduled_break_minutes",
+    "break_slots",
+    "end_time",
+    "estimated_cost",
+    "ot_hours",
+    "overtime_hours",
+    "overtime",
+)
+
+_EMPLOYEE_LABOR_KEYS = (
+    "total_hours",
+    "gross_hours",
+    "break_hours",
+    "timed_break_hours",
+    "unscheduled_break_hours",
+    "estimated_cost",
+    "default_hourly_rate",
+    "ot_hours",
+    "overtime_hours",
+    "overtime",
+)
+
+_TOTALS_HOUR_SUFFIXES = ("_hours",)
+_TOTALS_DROP_KEYS = (
+    "total_hours",
+    "gross_hours",
+    "break_hours",
+    "timed_break_hours",
+    "unscheduled_break_hours",
+    "unallocated_break_hours",
+    "estimated_cost",
+    "total_estimated_cost",
+    "ot_hours",
+    "overtime_hours",
+)
+
+
+def _strip_role_assignment_labor(assignments: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for raw in assignments or []:
+        if not isinstance(raw, Mapping):
+            continue
+        item = dict(raw)
+        item.pop("end_time", None)
+        item.pop("hours", None)
+        item.pop("duration_minutes", None)
+        out.append(item)
+    return out
+
+
+def _strip_schedule_entry_labor(entry: Mapping[str, Any]) -> dict[str, Any]:
+    row = dict(entry)
+    for key in _ENTRY_LABOR_KEYS:
+        row.pop(key, None)
+    if "assignments" in row:
+        row["assignments"] = _strip_role_assignment_labor(row.get("assignments"))
+    return row
+
+
+def _strip_schedule_employee_labor(row: Mapping[str, Any]) -> dict[str, Any]:
+    out = dict(row)
+    for key in _EMPLOYEE_LABOR_KEYS:
+        out.pop(key, None)
+    return out
+
+
+def _strip_day_or_role_labor(row: Mapping[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in row.items():
+        if key in _TOTALS_DROP_KEYS:
+            continue
+        if any(key.endswith(suf) for suf in _TOTALS_HOUR_SUFFIXES):
+            continue
+        if key == "roles" and isinstance(value, list):
+            cleaned_roles = []
+            for role_row in value:
+                if not isinstance(role_row, Mapping):
+                    continue
+                cleaned = {
+                    "role": role_row.get("role"),
+                    "employees": role_row.get("employees"),
+                }
+                cleaned_roles.append(cleaned)
+            out[key] = cleaned_roles
+            continue
+        out[key] = value
+    return out
+
+
+def _strip_schedule_totals_labor(totals: Mapping[str, Any] | None) -> dict[str, Any]:
+    raw = dict(totals or {})
+    out: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key in _TOTALS_DROP_KEYS:
+            continue
+        if key == "employee_totals" and isinstance(value, Mapping):
+            out[key] = {
+                uid: {
+                    "user_id": (row or {}).get("user_id", uid),
+                    "scheduled_days": (row or {}).get("scheduled_days"),
+                }
+                for uid, row in value.items()
+                if isinstance(row, Mapping) or row is None
+            }
+            continue
+        if key == "day_totals" and isinstance(value, (list, tuple)):
+            out[key] = [
+                _strip_day_or_role_labor(day) if isinstance(day, Mapping) else day for day in value
+            ]
+            continue
+        if key == "day_totals" and isinstance(value, Mapping):
+            out[key] = {
+                dow: _strip_day_or_role_labor(day) if isinstance(day, Mapping) else day
+                for dow, day in value.items()
+            }
+            continue
+        if isinstance(value, Mapping) and any(
+            k in value or any(str(k).endswith("_hours") for k in value)
+            for k in _TOTALS_DROP_KEYS
+        ):
+            out[key] = _strip_day_or_role_labor(value)
+            continue
+        out[key] = value
+    out["labor_fields_hidden"] = True
+    return out
+
+
 def apply_rinse_viewer_scope(
     payload: Mapping[str, Any],
     *,
     hidden_roles: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Limit weekly schedule payload to Rinse Exclusive shifts for RINSE role viewers."""
+    """Limit weekly schedule payload to Rinse Exclusive shifts for RINSE role viewers.
+
+    Also strips labor-hour, break-duration, overtime, and wage fields from the API
+    response so Rinse cannot recover them from the network payload.
+    """
     from backend.planned_weekly_schedule import compute_schedule_totals
     from backend.payroll_employer_affiliation import EMPLOYER_AFFILIATION_RINSE
 
@@ -230,19 +367,29 @@ def apply_rinse_viewer_scope(
     }
     from backend.planned_weekly_schedule_responsibilities import filter_responsibilities_for_view
 
-    out["employees"] = employees
-    out["entries"] = entries
+    totals = compute_schedule_totals(
+        entries,
+        workers_by_uid,
+        excluded_user_ids=excluded_user_ids,
+    )
+    out["employees"] = [_strip_schedule_employee_labor(row) for row in employees]
+    out["entries"] = [_strip_schedule_entry_labor(entry) for entry in entries]
     out["daily_responsibilities"] = filter_responsibilities_for_view(
         out.get("daily_responsibilities") or [],
         allowed_user_ids=allowed_user_ids,
         hidden_roles=hidden,
     )
     out["excluded_user_ids"] = excluded_user_ids
-    out["totals"] = compute_schedule_totals(
-        entries,
-        workers_by_uid,
-        excluded_user_ids=excluded_user_ids,
-    )
+    out["totals"] = _strip_schedule_totals_labor(totals)
+    display = dict(out.get("display") or {})
+    display["show_estimated_cost"] = False
+    display["show_employee_rates"] = False
+    display["show_break_minutes"] = False
+    display["hide_labor_hours"] = True
+    display["can_edit_schedule"] = False
+    out["display"] = display
+    out["hide_labor_hours"] = True
+    out["labor_fields_hidden"] = True
     return out
 
 
@@ -267,6 +414,7 @@ def effective_weekly_schedule_view(
             "show_employee_rates": settings["show_employee_rates_default"],
             "schedule_end_time_enabled": settings["schedule_end_time_enabled"],
             "show_break_minutes": True,
+            "hide_labor_hours": False,
             "can_edit_schedule": True,
             "can_manage_exclusions": True,
             "can_configure_sharing": True,
@@ -278,6 +426,33 @@ def effective_weekly_schedule_view(
             "hidden_schedule_roles": [],
             "org_settings": settings,
         }
+    if rinse_viewer:
+        # Rinse partner: operational schedule only — no labor/hours/wage sharing toggles.
+        return {
+            "is_privileged": False,
+            "show_estimated_cost": False,
+            "show_role_labels": settings["share_role_labels_with_external"],
+            "show_employee_rates": False,
+            "schedule_end_time_enabled": settings["schedule_end_time_enabled"],
+            "show_break_minutes": False,
+            "hide_labor_hours": True,
+            "can_edit_schedule": False,
+            "can_manage_exclusions": False,
+            "can_configure_sharing": False,
+            "employer_tab": EMPLOYER_AFFILIATION_RINSE,
+            "lock_employer_tab": True,
+            "hide_employer_tabs": True,
+            "min_week_start": min_week,
+            "can_view_past_weeks": False,
+            "hidden_schedule_roles": hidden_for_rinse,
+            "org_settings": {
+                "share_cost_with_external": False,
+                "share_role_labels_with_external": settings["share_role_labels_with_external"],
+                "share_break_minutes_with_external": False,
+                "share_rates_with_external": False,
+                "hidden_roles_for_rinse_viewers": settings["hidden_roles_for_rinse_viewers"],
+            },
+        }
     external_view = {
         "is_privileged": False,
         "show_estimated_cost": settings["share_cost_with_external"],
@@ -285,15 +460,16 @@ def effective_weekly_schedule_view(
         "show_employee_rates": settings["share_rates_with_external"],
         "schedule_end_time_enabled": settings["schedule_end_time_enabled"],
         "show_break_minutes": settings["share_break_minutes_with_external"],
+        "hide_labor_hours": False,
         "can_edit_schedule": False,
         "can_manage_exclusions": False,
         "can_configure_sharing": False,
-        "employer_tab": EMPLOYER_AFFILIATION_RINSE if rinse_viewer else None,
-        "lock_employer_tab": rinse_viewer,
-        "hide_employer_tabs": rinse_viewer,
+        "employer_tab": None,
+        "lock_employer_tab": False,
+        "hide_employer_tabs": False,
         "min_week_start": min_week,
-        "can_view_past_weeks": not rinse_viewer,
-        "hidden_schedule_roles": hidden_for_rinse if rinse_viewer else [],
+        "can_view_past_weeks": True,
+        "hidden_schedule_roles": [],
         "org_settings": {
             k: settings[k]
             for k in (

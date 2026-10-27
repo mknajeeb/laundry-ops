@@ -98,6 +98,7 @@ export default function WeeklyScheduleSummaryBar({
   showCost,
   compact = false,
   showBreaks = true,
+  hideLaborHours = false,
   noRolesSelected = false,
   noRolesText = "No roles selected",
   onSelectAllRoles,
@@ -129,10 +130,12 @@ export default function WeeklyScheduleSummaryBar({
     );
   }
 
-  const totals = summaryTotalsMetrics(summary, { showBreaks, compact });
-  if (showCost) totals.push({ key: "cost", label: "Estimated Labor Cost", value: formatCurrency(summary.estimatedCost) });
-  const roleLines = summaryRoleLines(summary);
-  const unallocated = summaryUnallocatedText(summary, { showBreaks });
+  const totals = summaryTotalsMetrics(summary, { showBreaks, compact, hideLaborHours });
+  if (showCost && !hideLaborHours) {
+    totals.push({ key: "cost", label: "Estimated Labor Cost", value: formatCurrency(summary.estimatedCost) });
+  }
+  const roleLines = summaryRoleLines(summary, { hideLaborHours });
+  const unallocated = summaryUnallocatedText(summary, { showBreaks, hideLaborHours });
 
   return (
     <Box className="weekly-schedule-print-summary" sx={frame}>

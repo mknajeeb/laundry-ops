@@ -173,4 +173,12 @@ def test_apply_rinse_viewer_scope_filters_employees_and_entries():
     assert {row["user_id"] for row in scoped["employees"]} == {1, 3}
     assert {entry["user_id"] for entry in scoped["entries"]} == {1, 3}
     assert scoped["excluded_user_ids"] == [1]
-    assert scoped["totals"]["employee_totals"][3]["total_hours"] == 6.0
+    # Labor / duration fields must be stripped at the API layer for Rinse.
+    assert "total_hours" not in (scoped["totals"].get("employee_totals") or {}).get(3, {})
+    assert "default_hourly_rate" not in scoped["employees"][0]
+    assert "hours" not in scoped["entries"][0]
+    assert "gross_hours" not in scoped["entries"][0]
+    assert "end_time" not in scoped["entries"][0]
+    assert scoped["hide_labor_hours"] is True
+    assert scoped["display"]["hide_labor_hours"] is True
+    assert scoped["display"]["show_break_minutes"] is False

@@ -421,7 +421,7 @@ export default function CleaningTasksPinPage() {
     }
   };
 
-  const verifyChecklist = async (cl) => {
+  const verifyChecklist = async (cl, groupId = null) => {
     setBusy(true);
     setError("");
     try {
@@ -429,6 +429,7 @@ export default function CleaningTasksPinPage() {
         hubToken: hub.token,
         checklist_id: cl.checklist_id,
         business_date: cl.business_date,
+        group_id: groupId,
       });
       const body = res?.data || {};
       if (!body.ok) throw new Error(body.error || "Could not verify checklist");
@@ -868,61 +869,108 @@ export default function CleaningTasksPinPage() {
                     <Typography variant="body2" color="text.secondary">
                       Original date {cl.business_date} · {statusLabel(cl.status)} ·{" "}
                       {cl.required_done}/{cl.required_total} required done
+                      {cl.completion_pct != null ? ` · ${cl.completion_pct}%` : ""}
                     </Typography>
-                    <Stack spacing={0.75} sx={{ mt: 1 }}>
-                      {(cl.items || []).map((item) => (
-                        <Box key={item.task_code} sx={{ pl: 0.5 }}>
-                          <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                            {item.task_label} · {statusLabel(item.status)}
-                            {item.required ? "" : " (optional)"}
-                          </Typography>
-                          {(item.activities || []).map((act) => (
-                            <Box key={act.id} sx={{ ml: 1, mb: 0.5 }}>
-                              <Typography variant="caption" display="block" color="text.secondary">
-                                {act.employee_name} · {statusLabel(act.display_status || act.status)}
-                                {formatCompletionInput(act.completion_input)
-                                  ? ` · ${formatCompletionInput(act.completion_input)}`
-                                  : ""}
+                    <Stack spacing={1} sx={{ mt: 1 }}>
+                      {(cl.groups || []).length
+                        ? (cl.groups || []).map((group) => (
+                            <Box
+                              key={`g-${group.group_id || group.group_name}`}
+                              sx={{
+                                p: 1,
+                                borderRadius: 1.5,
+                                border: `1px solid ${OPS_MOBILE.border}`,
+                                bgcolor: "#f8fafc",
+                              }}
+                            >
+                              <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                                {group.group_name} · {statusLabel(group.status)} ·{" "}
+                                {group.required_done}/{group.required_total}
+                                {group.completion_pct != null ? ` · ${group.completion_pct}%` : ""}
                               </Typography>
-                              {act.status === "pending_approval" || act.status === "pending_verification" ? (
-                                rejectId === `cl-${act.id}` ? (
-                                  <Stack spacing={0.5} sx={{ mt: 0.5 }}>
-                                    <input
-                                      value={rejectReason}
-                                      onChange={(e) => setRejectReason(e.target.value)}
-                                      placeholder="Rejection reason"
-                                      style={{ padding: 6, borderRadius: 6, border: "1px solid #cbd5e1" }}
-                                    />
-                                    <Stack direction="row" spacing={1}>
-                                      <Button
-                                        size="small"
-                                        color="warning"
-                                        disabled={busy}
-                                        onClick={() => rejectChecklistActivity(act.id)}
-                                      >
-                                        Reject item
-                                      </Button>
-                                      <Button size="small" onClick={() => setRejectId(null)}>
-                                        Cancel
-                                      </Button>
-                                    </Stack>
-                                  </Stack>
-                                ) : (
-                                  <Button
-                                    size="small"
-                                    color="warning"
-                                    disabled={busy}
-                                    onClick={() => setRejectId(`cl-${act.id}`)}
-                                    sx={{ textTransform: "none" }}
-                                  >
-                                    Flag item
-                                  </Button>
-                                )
+                              <Stack spacing={0.5} sx={{ mt: 0.75 }}>
+                                {(group.items || []).map((item) => (
+                                  <Box key={item.task_code} sx={{ pl: 0.5 }}>
+                                    <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                                      {item.task_label} · {statusLabel(item.status)}
+                                      {item.required ? "" : " (optional)"}
+                                    </Typography>
+                                    {(item.activities || []).map((act) => (
+                                      <Box key={act.id} sx={{ ml: 1, mb: 0.5 }}>
+                                        <Typography variant="caption" display="block" color="text.secondary">
+                                          {act.employee_name} ·{" "}
+                                          {statusLabel(act.display_status || act.status)}
+                                          {formatCompletionInput(act.completion_input)
+                                            ? ` · ${formatCompletionInput(act.completion_input)}`
+                                            : ""}
+                                        </Typography>
+                                        {act.status === "pending_approval" ||
+                                        act.status === "pending_verification" ? (
+                                          rejectId === `cl-${act.id}` ? (
+                                            <Stack spacing={0.5} sx={{ mt: 0.5 }}>
+                                              <input
+                                                value={rejectReason}
+                                                onChange={(e) => setRejectReason(e.target.value)}
+                                                placeholder="Rejection reason"
+                                                style={{
+                                                  padding: 6,
+                                                  borderRadius: 6,
+                                                  border: "1px solid #cbd5e1",
+                                                }}
+                                              />
+                                              <Stack direction="row" spacing={1}>
+                                                <Button
+                                                  size="small"
+                                                  color="warning"
+                                                  disabled={busy}
+                                                  onClick={() => rejectChecklistActivity(act.id)}
+                                                >
+                                                  Reject item
+                                                </Button>
+                                                <Button size="small" onClick={() => setRejectId(null)}>
+                                                  Cancel
+                                                </Button>
+                                              </Stack>
+                                            </Stack>
+                                          ) : (
+                                            <Button
+                                              size="small"
+                                              color="warning"
+                                              disabled={busy}
+                                              onClick={() => setRejectId(`cl-${act.id}`)}
+                                              sx={{ textTransform: "none" }}
+                                            >
+                                              Flag item
+                                            </Button>
+                                          )
+                                        ) : null}
+                                      </Box>
+                                    ))}
+                                  </Box>
+                                ))}
+                              </Stack>
+                              {group.can_verify_group && group.group_id != null ? (
+                                <Button
+                                  fullWidth
+                                  size="small"
+                                  variant="outlined"
+                                  disabled={busy}
+                                  onClick={() => verifyChecklist(cl, group.group_id)}
+                                  sx={{ mt: 1, fontWeight: 700, textTransform: "none" }}
+                                >
+                                  Verify group
+                                </Button>
                               ) : null}
                             </Box>
+                          ))
+                        : (cl.items || []).map((item) => (
+                            <Box key={item.task_code} sx={{ pl: 0.5 }}>
+                              <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                                {item.task_label} · {statusLabel(item.status)}
+                                {item.required ? "" : " (optional)"}
+                              </Typography>
+                            </Box>
                           ))}
-                        </Box>
-                      ))}
                     </Stack>
                     {cl.can_verify_all ? (
                       <Button
