@@ -269,3 +269,115 @@ describe("employeeSessionsPayload", () => {
     expect(rows[0].employee).toBe("Maria");
   });
 });
+
+describe("Guiling / Evelin consecutive edit patches", () => {
+  function guilingDay(overrides = {}) {
+    const sessions = ["7101", "7102", "7103"].map((sid, i) => ({
+      session_id: sid,
+      session_code: `WF-G${i + 1}`,
+      publication_status: "APPROVED",
+      publication: { status: "APPROVED", ...(overrides[sid] || {}) },
+      total_pre_lbs: 100,
+      performance_hours: 2,
+      orders_completed: 5,
+    }));
+    return {
+      employee: "Guiling",
+      user_id: 41,
+      sessions,
+      day_publication_status: "APPROVED",
+      dashboard_rankable: true,
+      orders_completed: 15,
+      total_pre_lbs: 300,
+      performance_hours: 6,
+      lbs_per_hour: 50,
+      ...overrides.day,
+    };
+  }
+
+  it("keeps all three Guiling sessions across consecutive Edit Session patches", () => {
+    let data = {
+      employees: [guilingDay()],
+      summary: {},
+      summary_approved: {},
+    };
+    for (const sid of ["7101", "7102", "7103"]) {
+      const prior = data.employees[0];
+      const sessions = prior.sessions.map((s) =>
+        s.session_id === sid
+          ? {
+              ...s,
+              publication: {
+                status: "APPROVED",
+                is_rate_override: true,
+                published_metric_value: 70,
+                published_numerator: 140,
+              },
+            }
+          : s
+      );
+      data = applyEmployeeDayPatch(data, {
+        ...prior,
+        sessions,
+        lbs_per_hour: 55,
+        credited_weight_basis: "SESSION_RATE_OVERRIDE",
+      });
+      expect(data.employees).toHaveLength(1);
+      expect(data.employees[0].sessions).toHaveLength(3);
+      expect(data.employees[0].sessions.map((s) => s.session_id).sort()).toEqual([
+        "7101",
+        "7102",
+        "7103",
+      ]);
+    }
+    const payload = employeeSessionsPayload(data.employees[0]);
+    expect(payload).toHaveLength(3);
+    expect(payload.filter((s) => s.publication?.is_rate_override).length).toBe(3);
+  });
+
+  it("moves Evelin from published graph to live awaiting-approval after partial unapprove", () => {
+    let data = {
+      employees: [
+        {
+          employee: "Evelin",
+          user_id: 55,
+          day_publication_status: "APPROVED",
+          dashboard_rankable: true,
+          orders_completed: 13,
+          total_pre_lbs: 260,
+          performance_hours: 4.5,
+          lbs_per_hour: 57.78,
+          sessions: [
+            { session_id: "8201", publication_status: "APPROVED" },
+            { session_id: "8202", publication_status: "APPROVED" },
+          ],
+        },
+      ],
+      summary: {},
+      summary_approved: {},
+    };
+    expect(partitionPublishedLiveExcluded(data.employees).published).toHaveLength(1);
+
+    data = applyEmployeeDayPatch(data, {
+      employee: "Evelin",
+      user_id: 55,
+      day_publication_status: "PARTIALLY_APPROVED",
+      dashboard_rankable: false,
+      orders_completed: 7,
+      total_pre_lbs: 140,
+      performance_hours: 2.5,
+      lbs_per_hour: 56,
+      sessions: [
+        { session_id: "8201", publication_status: "APPROVED" },
+        { session_id: "8202", publication_status: "UNAPPROVED" },
+      ],
+    });
+    const { published, live } = partitionPublishedLiveExcluded(data.employees);
+    expect(published).toHaveLength(0);
+    expect(live).toHaveLength(1);
+    expect(live[0].day_publication_status).toBe("PARTIALLY_APPROVED");
+    expect(data.summary_approved.employee_day_count).toBe(0);
+    // Stale published rate must not remain in approved summary after patch.
+    expect(data.summary_approved.lbs_per_hour).toBeNull();
+  });
+});

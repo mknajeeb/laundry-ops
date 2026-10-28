@@ -5,6 +5,7 @@ from __future__ import annotations
 from backend.rinse_performance_approvals import derive_employee_day_publication_status
 from backend.rinse_performance_employee_day import (
     pick_final_included_session,
+    pick_final_visible_session,
     recompute_employee_day_metrics,
 )
 
@@ -316,6 +317,47 @@ def test_pick_final_uses_chronology_not_session_id_or_array_order():
     assert final["session_code"] == "WF-B"
 
 
+def test_pick_final_visible_includes_pending_for_edit_day_end_time():
+    """Edit Day end-time targets last non-excluded session, even if pending."""
+    sessions = [
+        _sess(
+            sid="11",
+            code="WF-A",
+            status="APPROVED",
+            bags=1,
+            lbs=10,
+            hours=2.0,
+            start="2026-09-10T08:00:00",
+            end="2026-09-10T10:00:00",
+            segment_id=1,
+        ),
+        _sess(
+            sid="22",
+            code="WF-B",
+            status="UNAPPROVED",
+            bags=1,
+            lbs=10,
+            hours=3.5,
+            start="2026-09-10T10:30:00",
+            end="2026-09-10T14:00:00",
+            segment_id=2,
+        ),
+        _sess(
+            sid="33",
+            code="WF-C",
+            status="EXCLUDED",
+            bags=1,
+            lbs=10,
+            hours=2.0,
+            start="2026-09-10T14:00:00",
+            end="2026-09-10T16:00:00",
+            segment_id=3,
+        ),
+    ]
+    assert pick_final_included_session(sessions)["session_id"] == "11"
+    assert pick_final_visible_session(sessions)["session_id"] == "22"
+
+
 def test_edit_day_end_time_targets_final_included_only(monkeypatch):
     from datetime import date
     from unittest.mock import MagicMock
@@ -416,6 +458,150 @@ def test_edit_day_end_time_targets_final_included_only(monkeypatch):
     assert calls["session_id"] == 22
     assert calls["segment_id"] == 202
     assert "14:30" in str(calls["ended_at"])
+    assert out.get("approval_reset") is True
+
+
+def test_edit_day_end_time_uses_client_sessions_without_day_rebuild(monkeypatch):
+    """Edit Day end-time fast path: Review session cards → no Folder day rebuild."""
+    from datetime import date
+    from unittest.mock import MagicMock
+    import backend.rinse_performance_employee_day as mod
+
+    sessions = [
+        _sess(
+            sid="11",
+            code="WF-A",
+            status="APPROVED",
+            bags=1,
+            lbs=10,
+            hours=2.0,
+            start="2026-09-10T08:00:00",
+            end="2026-09-10T10:00:00",
+            segment_id=101,
+        ),
+        _sess(
+            sid="22",
+            code="WF-B",
+            status="APPROVED",
+            bags=1,
+            lbs=10,
+            hours=3.5,
+            start="2026-09-10T10:30:00",
+            end="2026-09-10T14:00:00",
+            segment_id=202,
+        ),
+    ]
+    calls = {}
+    rebuilt = {"n": 0}
+
+    def fake_update(conn, org, session_id, segment_id, **kwargs):
+        calls["session_id"] = session_id
+        calls["segment_id"] = segment_id
+        return {"ok": True}
+
+    def fake_build(*a, **k):
+        rebuilt["n"] += 1
+        raise AssertionError("full day rebuild must not run when sessions provided")
+
+    monkeypatch.setattr(
+        "backend.management_wf_folder_performance.build_day_folder_performance",
+        fake_build,
+    )
+    monkeypatch.setattr(
+        "backend.payroll_operations.update_time_record_segment",
+        fake_update,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_performance_approvals.invalidate_approvals",
+        lambda *a, **k: {"ok": True, "invalidated": 1},
+    )
+    monkeypatch.setattr(
+        "backend.rinse_performance_approvals.approval_status_map",
+        lambda *a, **k: {
+            "11": {"status": "APPROVED"},
+            "22": {"status": "APPROVED"},
+        },
+    )
+    monkeypatch.setattr(mod, "ensure_employee_day_override_tables", lambda cur: None)
+
+    conn = MagicMock()
+    conn.cursor.return_value = MagicMock()
+    out = mod.apply_employee_day_end_time(
+        conn,
+        3,
+        selected_date_et=date(2026, 9, 10),
+        employee_name="Worker",
+        employee_user_id=7,
+        end_time_et="2026-09-10T14:30:00",
+        sessions=sessions,
+    )
+    assert out["ok"] is True
+    assert rebuilt["n"] == 0
+    assert calls["session_id"] == 22
+    assert calls["segment_id"] == 202
+    assert out.get("approval_reset") is True
+
+
+def test_edit_day_end_time_unchanged_skips_invalidate(monkeypatch):
+    """Prefill-only end time must not wipe approvals (Average Weight-only saves)."""
+    from datetime import date
+    from unittest.mock import MagicMock
+    import backend.rinse_performance_employee_day as mod
+
+    sessions = [
+        _sess(
+            sid="22",
+            code="WF-B",
+            status="APPROVED",
+            bags=1,
+            lbs=10,
+            hours=3.5,
+            start="2026-09-10T10:30:00",
+            end="2026-09-10T14:00:00",
+            segment_id=202,
+        ),
+    ]
+    updated = {"n": 0}
+    invalidated = {"n": 0}
+
+    def fake_update(*a, **k):
+        updated["n"] += 1
+        return {"ok": True}
+
+    def fake_invalidate(*a, **k):
+        invalidated["n"] += 1
+        return {"ok": True, "invalidated": 1}
+
+    monkeypatch.setattr(
+        "backend.payroll_operations.update_time_record_segment",
+        fake_update,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_performance_approvals.invalidate_approvals",
+        fake_invalidate,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_performance_approvals.approval_status_map",
+        lambda *a, **k: {"22": {"status": "APPROVED"}},
+    )
+    monkeypatch.setattr(mod, "ensure_employee_day_override_tables", lambda cur: None)
+
+    conn = MagicMock()
+    conn.cursor.return_value = MagicMock()
+    out = mod.apply_employee_day_end_time(
+        conn,
+        3,
+        selected_date_et=date(2026, 9, 10),
+        employee_name="Worker",
+        employee_user_id=7,
+        end_time_et="2026-09-10T14:00:00",
+        sessions=sessions,
+    )
+    assert out["ok"] is True
+    assert out.get("unchanged") is True
+    assert out.get("approval_reset") is False
+    assert updated["n"] == 0
+    assert invalidated["n"] == 0
 
 
 def test_edit_day_end_time_rejects_overlap(monkeypatch):

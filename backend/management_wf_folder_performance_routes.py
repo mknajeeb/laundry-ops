@@ -333,7 +333,6 @@ def register_management_wf_folder_performance_routes(
                 actor_name=actor_name,
                 session=session_card,
             )
-            conn.commit()
             sessions = body.get("employee_sessions") or body.get("sessions")
             if out.get("ok") and (sessions or session_card):
                 # Prefer top-level body user_id/employee — session cards often omit user_id,
@@ -355,6 +354,10 @@ def register_management_wf_folder_performance_routes(
                     publication=out.get("publication") or {"status": "APPROVED"},
                     mark_status="APPROVED",
                 )
+            if out.get("ok"):
+                conn.commit()
+            else:
+                conn.rollback()
             status = 200 if out.get("ok") else 400
             return jsonify(json_safe_rinse(out)), status
         except ValueError as exc:
@@ -442,7 +445,6 @@ def register_management_wf_folder_performance_routes(
                 actor_name=actor_name,
                 reason="manual_unapprove",
             )
-            conn.commit()
             sessions = body.get("employee_sessions") or body.get("sessions")
             session_card = body.get("session") if isinstance(body.get("session"), dict) else None
             if out.get("ok") and (sessions or session_card):
@@ -460,6 +462,10 @@ def register_management_wf_folder_performance_routes(
                     publication={"status": "UNAPPROVED"},
                     mark_status="UNAPPROVED",
                 )
+            if out.get("ok"):
+                conn.commit()
+            else:
+                conn.rollback()
             return jsonify(json_safe_rinse(out))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
@@ -531,9 +537,37 @@ def register_management_wf_folder_performance_routes(
                 approve_if_needed=bool(body.get("approve_if_needed")),
                 snapshot=snap,
             )
-            conn.commit()
-            # Keep employee-day publication cache current when session card is provided.
-            if out.get("ok") and isinstance(body.get("sessions"), list):
+            # Attach before commit so employee_day + Hub publication cache persist.
+            # Require the full employee session list — a lone session_card would
+            # compose a one-session day and wipe sibling sessions in the UI patch.
+            sessions = body.get("employee_sessions") or body.get("sessions")
+            if out.get("ok") and isinstance(sessions, list) and sessions:
+                pub = dict(out.get("publication") or {})
+                pub.setdefault("status", "APPROVED")
+                pub["published_metric_value"] = out.get(
+                    "published_metric_value", pub.get("published_metric_value")
+                )
+                pub["is_rate_override"] = True
+                if out.get("calculated_metric_value") is not None:
+                    pub["calculated_metric_value"] = out.get("calculated_metric_value")
+                # Derive published_numerator for day aggregation when hours known.
+                hours = None
+                src = session_card or {}
+                try:
+                    hours = float(
+                        src.get("performance_hours")
+                        if src.get("performance_hours") is not None
+                        else (snap or {}).get("calculated_denominator")
+                        or (snap or {}).get("published_denominator")
+                        or 0
+                    )
+                except (TypeError, ValueError):
+                    hours = None
+                if hours and hours > 0 and out.get("published_metric_value") is not None:
+                    pub["published_numerator"] = round(
+                        float(out["published_metric_value"]) * hours, 4
+                    )
+                    pub["published_denominator"] = hours
                 _attach_mutation_employee_day(
                     cursor,
                     oid,
@@ -544,9 +578,17 @@ def register_management_wf_folder_performance_routes(
                     or (session_card or {}).get("employee"),
                     employee_user_id=body.get("user_id")
                     or body.get("employee_user_id")
-                    or (session_card or {}).get("user_id"),
-                    sessions=body.get("sessions"),
+                    or (session_card or {}).get("user_id")
+                    or (session_card or {}).get("employee_user_id"),
+                    sessions=sessions,
+                    session_id=str(session_id),
+                    publication=pub,
+                    mark_status="APPROVED",
                 )
+            if out.get("ok"):
+                conn.commit()
+            else:
+                conn.rollback()
             status = 200 if out.get("ok") else 400
             return jsonify(json_safe_rinse(out)), status
         except ValueError as exc:
@@ -876,6 +918,8 @@ def register_management_wf_folder_performance_routes(
                 if not avg_out.get("ok"):
                     results["ok"] = False
 
+            sessions = body.get("sessions") if isinstance(body.get("sessions"), list) else None
+
             if has_end:
                 from backend.rinse_performance_employee_day import apply_employee_day_end_time
 
@@ -889,15 +933,59 @@ def register_management_wf_folder_performance_routes(
                     reason=reason,
                     actor_user_id=actor_id,
                     actor_name=actor_name,
+                    # Client Review sessions avoid a full Folder day rebuild.
+                    sessions=sessions,
                 )
                 results["end_time"] = end_out
                 if not end_out.get("ok"):
                     results["ok"] = False
+                elif end_out.get("approval_reset"):
+                    results["approval_reset"] = True
+                    results["approval_reset_session_id"] = end_out.get("session_id")
+                    results["approval_reset_reason"] = end_out.get(
+                        "approval_reset_reason"
+                    )
 
             if results.get("ok"):
-                conn.commit()
-                sessions = body.get("sessions") if isinstance(body.get("sessions"), list) else None
                 if sessions:
+                    from backend.rinse_performance_employee_day import (
+                        apply_session_publication_patch,
+                    )
+
+                    patch_sessions = list(sessions)
+                    end_out = (
+                        results.get("end_time")
+                        if isinstance(results.get("end_time"), dict)
+                        else None
+                    )
+                    if (
+                        end_out
+                        and end_out.get("ok")
+                        and end_out.get("session_id")
+                        and end_out.get("approval_reset")
+                    ):
+                        # Reflect new end time + cleared approval in the patch.
+                        end_sid = str(end_out["session_id"])
+                        end_et = end_out.get("end_time_et")
+                        patched = []
+                        for raw in patch_sessions:
+                            sess = dict(raw)
+                            if str(sess.get("session_id") or "") == end_sid:
+                                if end_et:
+                                    sess["end_time"] = end_et
+                                    sess["performance_end"] = end_et
+                                # Hours will be authoritative on next silent reconcile;
+                                # keep prior hours until then so rates don't go null.
+                            patched.append(sess)
+                        patch_sessions = apply_session_publication_patch(
+                            patched,
+                            session_id=end_sid,
+                            status="UNAPPROVED",
+                            publication={
+                                "status": "UNAPPROVED",
+                                "is_rate_override": False,
+                            },
+                        )
                     _attach_mutation_employee_day(
                         cursor,
                         oid,
@@ -905,8 +993,9 @@ def register_management_wf_folder_performance_routes(
                         selected=selected,
                         employee_name=str(emp_name or "").strip(),
                         employee_user_id=int(emp_uid) if emp_uid is not None else None,
-                        sessions=sessions,
+                        sessions=patch_sessions,
                     )
+                conn.commit()
             else:
                 conn.rollback()
             status = 200 if results.get("ok") else 400

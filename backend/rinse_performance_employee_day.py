@@ -385,6 +385,43 @@ def upsert_day_average_weight(
     }
 
 
+def session_effective_performance_lbs(session: Mapping[str, Any] | None) -> float:
+    """Pounds credited for one approved session in employee-day Performance.
+
+    Manager rate overrides (Edit Session) publish lb/hr directly. Convert via
+    published_numerator or rate × hours so day/graph totals match the Pub rate.
+    Without an override, use evidence PRE pounds on the session card.
+    """
+    if not session:
+        return 0.0
+    pub = session.get("publication") if isinstance(session.get("publication"), Mapping) else {}
+    is_rate_ovr = bool(
+        (pub or {}).get("is_rate_override") or session.get("is_rate_override")
+    )
+    if is_rate_ovr:
+        num = (pub or {}).get("published_numerator")
+        if num is None:
+            num = session.get("published_numerator")
+        if num is not None:
+            try:
+                return round(float(num), 2)
+            except (TypeError, ValueError):
+                pass
+        rate = (pub or {}).get("published_metric_value")
+        if rate is None:
+            rate = session.get("published_metric_value")
+        hours = session.get("performance_hours")
+        try:
+            if rate is not None and hours is not None and float(hours) > 0:
+                return round(float(rate) * float(hours), 2)
+        except (TypeError, ValueError):
+            pass
+    try:
+        return round(float(session.get("total_pre_lbs") or 0), 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def recompute_employee_day_metrics(
     emp: dict[str, Any],
     *,
@@ -413,7 +450,14 @@ def recompute_employee_day_metrics(
             pending.append(sess)
 
     calc_orders = sum(int(s.get("orders_completed") or 0) for s in included)
+    # Evidence PRE sum (ignores session rate overrides) — kept for audit fields.
     calc_lbs = round(sum(float(s.get("total_pre_lbs") or 0) for s in included), 2)
+    # Performance pounds honor manager session rate overrides when present.
+    perf_lbs = round(sum(session_effective_performance_lbs(s) for s in included), 2)
+    rate_override_applied = any(
+        bool((s.get("publication") or {}).get("is_rate_override") or s.get("is_rate_override"))
+        for s in included
+    )
     hours_vals = [
         float(s["performance_hours"])
         for s in included
@@ -441,13 +485,18 @@ def recompute_employee_day_metrics(
             override = None
 
     if override is not None and calc_orders > 0:
+        # Edit Day average weight is day-authoritative over session rate overrides.
         effective_lbs = round(override * calc_orders, 2)
         avg_weight = override
         is_override = True
+        credited_basis = "DAY_AVERAGE_WEIGHT_OVERRIDE"
     else:
-        effective_lbs = calc_lbs
+        effective_lbs = perf_lbs
         avg_weight = round(calc_lbs / calc_orders, 4) if calc_orders > 0 else None
         is_override = False
+        credited_basis = (
+            "SESSION_RATE_OVERRIDE" if rate_override_applied else "EVIDENCE_PRE"
+        )
 
     rates = weighted_aggregate_rates(
         total_orders=calc_orders,
@@ -483,9 +532,7 @@ def recompute_employee_day_metrics(
     emp["day_average_weight"] = avg_weight
     emp["day_average_weight_override"] = override if is_override else None
     emp["day_average_weight_is_override"] = is_override
-    emp["credited_weight_basis"] = (
-        "DAY_AVERAGE_WEIGHT_OVERRIDE" if is_override else "EVIDENCE_PRE"
-    )
+    emp["credited_weight_basis"] = credited_basis
     emp["aggregate_method"] = "weighted_totals_approved_non_excluded"
     emp["metrics_basis"] = DASHBOARD_ELIGIBILITY
     emp["duration_label"] = _fmt_duration_hours(calc_hours)
@@ -542,19 +589,16 @@ def apply_publication_and_day_metrics(
     return day
 
 
-def pick_final_included_session(
+def _pick_final_session_by(
     sessions: Sequence[Mapping[str, Any]],
+    *,
+    accept,
 ) -> dict[str, Any] | None:
-    """Last included Folder session by effective chronological end.
-
-    Sort key is performance_end / end_time (not session_id, not array order).
-    Excluded sessions are ignored even if they end later. Folder Performance
-    payloads only contain Folder sessions, so non-Folder roles never appear.
-    """
+    """Last Folder session by chronological end among those accepted by ``accept``."""
     candidates: list[tuple[datetime, int, dict[str, Any]]] = []
     for raw in sessions:
         sess = dict(raw)
-        if not session_is_included_for_metrics(sess):
+        if not accept(sess):
             continue
         end = _parse_dt(sess.get("performance_end") or sess.get("end_time"))
         start = _parse_dt(sess.get("start_time"))
@@ -573,6 +617,44 @@ def pick_final_included_session(
     return candidates[-1][2]
 
 
+def pick_final_included_session(
+    sessions: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Last APPROVED non-excluded Folder session by effective chronological end.
+
+    Sort key is performance_end / end_time (not session_id, not array order).
+    Excluded sessions are ignored even if they end later. Folder Performance
+    payloads only contain Folder sessions, so non-Folder roles never appear.
+    """
+    return _pick_final_session_by(sessions, accept=session_is_included_for_metrics)
+
+
+def pick_final_visible_session(
+    sessions: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Last non-excluded Folder session — matches Edit Day UI end-time seeding.
+
+    End-time edits target operational day closeout, including pending sessions.
+    Approvals are invalidated afterward when the clock actually changes.
+    """
+    return _pick_final_session_by(sessions, accept=session_is_visible_non_excluded)
+
+
+def _end_times_same_minute(a: Any, b: Any) -> bool:
+    """True when both values resolve to the same ET wall minute (seconds ignored)."""
+    da = _parse_dt(a)
+    db = _parse_dt(b)
+    if da is None or db is None:
+        return False
+    return (da.year, da.month, da.day, da.hour, da.minute) == (
+        db.year,
+        db.month,
+        db.day,
+        db.hour,
+        db.minute,
+    )
+
+
 def apply_employee_day_end_time(
     conn,
     organization_id: int,
@@ -585,40 +667,76 @@ def apply_employee_day_end_time(
     actor_user_id: int | None = None,
     actor_name: str | None = None,
     day: Mapping[str, Any] | None = None,
+    sessions: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Set ended_at on the final included Folder segment for the employee-day."""
+    """Set ended_at on the final included Folder segment for the employee-day.
+
+    Prefer ``sessions`` (already-rendered Review cards) so Edit Day does not
+    rebuild the entire Folder day. Fall back to ``day`` or a full day rebuild.
+    """
     from backend.management_wf_folder_performance import build_day_folder_performance
     from backend.payroll_operations import update_time_record_segment
-    from backend.rinse_performance_approvals import invalidate_approvals
+    from backend.rinse_performance_approvals import (
+        approval_status_map,
+        invalidate_approvals,
+    )
     from backend.rinse_performance_folder_publisher import attach_publication_status_to_day
 
     cursor = conn.cursor(dictionary=True)
     ensure_employee_day_override_tables(cursor)
 
-    day_payload = dict(day) if day else build_day_folder_performance(
-        cursor,
-        int(organization_id),
-        selected_date_et=selected_date_et,
-        attach_customers=False,
-    )
-    attach_publication_status_to_day(cursor, organization_id, day_payload)
-    # Metrics filter excluded before picking final included session.
-    apply_publication_and_day_metrics(cursor, organization_id, day_payload)
-
-    target_emp = None
+    target_emp: dict[str, Any] | None = None
     name_cf = str(employee_name or "").strip().casefold()
-    for emp in day_payload.get("employees") or []:
-        if employee_user_id is not None and emp.get("user_id") is not None:
-            if int(emp["user_id"]) == int(employee_user_id):
+
+    if sessions is not None:
+        # Fast path: stamp publication on the client session cards and pick final.
+        sess_list = [dict(s) for s in sessions]
+        sids = [str(s.get("session_id") or "") for s in sess_list if s.get("session_id")]
+        status = approval_status_map(
+            cursor, organization_id, role_key=ROLE_FOLDER, session_ids=sids
+        )
+        for sess in sess_list:
+            sid = str(sess.get("session_id") or "")
+            pub = status.get(sid) or {"status": "UNAPPROVED"}
+            # Prefer live stamps from Review when the client already has them.
+            if not sess.get("publication_status") and not (sess.get("publication") or {}).get(
+                "status"
+            ):
+                sess["publication_status"] = pub["status"]
+                sess["publication"] = pub
+            elif not sess.get("publication_status"):
+                sess["publication_status"] = (sess.get("publication") or {}).get(
+                    "status"
+                ) or pub["status"]
+        target_emp = {
+            "employee": employee_name,
+            "user_id": employee_user_id,
+            "sessions": sess_list,
+        }
+    else:
+        day_payload = dict(day) if day else build_day_folder_performance(
+            cursor,
+            int(organization_id),
+            selected_date_et=selected_date_et,
+            attach_customers=False,
+        )
+        attach_publication_status_to_day(cursor, organization_id, day_payload)
+        # Metrics filter excluded before picking final included session.
+        apply_publication_and_day_metrics(cursor, organization_id, day_payload)
+
+        for emp in day_payload.get("employees") or []:
+            if employee_user_id is not None and emp.get("user_id") is not None:
+                if int(emp["user_id"]) == int(employee_user_id):
+                    target_emp = emp
+                    break
+            if str(emp.get("employee") or "").strip().casefold() == name_cf:
                 target_emp = emp
                 break
-        if str(emp.get("employee") or "").strip().casefold() == name_cf:
-            target_emp = emp
-            break
     if not target_emp:
         return {"ok": False, "status": "employee_not_found"}
 
-    final_sess = pick_final_included_session(target_emp.get("sessions") or [])
+    # Match Edit Day UI: last non-excluded session (approved or pending).
+    final_sess = pick_final_visible_session(target_emp.get("sessions") or [])
     if not final_sess:
         return {"ok": False, "status": "no_included_session"}
 
@@ -633,6 +751,20 @@ def apply_employee_day_end_time(
             "status": "invalid_session_segment",
             "session_id": sid_raw,
             "segment_id": seg_raw,
+        }
+
+    current_end = final_sess.get("performance_end") or final_sess.get("end_time")
+    if _end_times_same_minute(current_end, end_time_et):
+        # Prefill-only save (e.g. Average Weight edit) must not wipe approvals.
+        return {
+            "ok": True,
+            "unchanged": True,
+            "approval_reset": False,
+            "employee": target_emp.get("employee"),
+            "session_id": str(sid),
+            "segment_id": seg_id,
+            "end_time_et": end_time_et,
+            "business_date_et": selected_date_et.isoformat(),
         }
 
     try:
@@ -688,6 +820,9 @@ def apply_employee_day_end_time(
         "segment_id": seg_id,
         "end_time_et": end_time_et,
         "business_date_et": selected_date_et.isoformat(),
+        # End-time edit changes hours/fingerprint — session must be re-approved.
+        "approval_reset": True,
+        "approval_reset_reason": "day_end_time_edit",
     }
 
 

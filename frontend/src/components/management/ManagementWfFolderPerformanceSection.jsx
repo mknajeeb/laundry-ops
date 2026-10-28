@@ -573,6 +573,7 @@ export default function ManagementWfFolderPerformanceSection({
   const [editDayOpen, setEditDayOpen] = useState(false);
   const [editDayAvgWeight, setEditDayAvgWeight] = useState("");
   const [editDayEndTime, setEditDayEndTime] = useState("");
+  const [editDayEndTimeBaseline, setEditDayEndTimeBaseline] = useState("");
   const [editDayReason, setEditDayReason] = useState("");
   const [showExcluded, setShowExcluded] = useState(true); // Excluded remain visible
   const [roleKey, setRoleKey] = useState("FOLDER");
@@ -985,6 +986,16 @@ export default function ManagementWfFolderPerformanceSection({
     }
   };
 
+  const normalizeEditDayEnd = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    // Compare to the minute: "YYYY-MM-DD HH:MM" or "YYYY-MM-DDTHH:MM…"
+    const compact = raw.replace("T", " ").replace(/\//g, "-");
+    const m = compact.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}):(\d{2})/);
+    if (!m) return compact.slice(0, 16);
+    return `${m[1]} ${m[2].padStart(2, "0")}:${m[3]}`;
+  };
+
   const openEditDay = (employee) => {
     if (!employee) return;
     const seed =
@@ -1008,7 +1019,9 @@ export default function ManagementWfFolderPerformanceSection({
     const endRaw = last.length
       ? last[last.length - 1].performance_end || last[last.length - 1].end_time
       : "";
-    setEditDayEndTime(endRaw ? String(endRaw).slice(0, 16).replace("T", " ") : "");
+    const endDisplay = endRaw ? String(endRaw).slice(0, 16).replace("T", " ") : "";
+    setEditDayEndTime(endDisplay);
+    setEditDayEndTimeBaseline(normalizeEditDayEnd(endDisplay));
     setEditDayReason("");
     setEditDayOpen(true);
   };
@@ -1032,26 +1045,48 @@ export default function ManagementWfFolderPerformanceSection({
       payload.average_weight_lbs = n;
     }
     const end = editDayEndTime.trim();
-    if (end) {
+    const endChanged =
+      Boolean(end) && normalizeEditDayEnd(end) !== editDayEndTimeBaseline;
+    if (endChanged) {
+      // Only post end time when the manager actually changed it. Prefill-only
+      // saves must not invalidate the final session's approval.
       payload.end_time_et = end.includes("T") ? end : end.replace(" ", "T");
     }
     if (payload.average_weight_lbs == null && !payload.end_time_et) {
-      setError("Enter Average Weight and/or End Time");
+      setError(
+        end && !endChanged
+          ? "No changes to save — update Average Weight or End Time"
+          : "Enter Average Weight and/or End Time"
+      );
       return;
     }
     setApproveBusy(true);
+    setPubMessage("");
     setError("");
     try {
       const res = await postManagementPerformanceEditEmployeeDay("FOLDER", payload);
       const body = res.data || {};
       if (!body.ok) {
-        setError(body.error || body.status || "Edit Day failed");
+        setError(
+          body.error ||
+            body.end_time?.error ||
+            body.end_time?.status ||
+            body.average_weight?.status ||
+            body.status ||
+            "Edit Day failed"
+        );
         return;
       }
-      setPubMessage(`Updated day for ${reviewEmployee.employee}`);
+      let msg = `Updated day for ${reviewEmployee.employee}`;
+      if (body.approval_reset) {
+        msg +=
+          " · Final session reopened for approval (end time changed hours)";
+      }
+      setPubMessage(msg);
       setEditDayOpen(false);
-      applyMutationResult(body);
-      void refreshAfterMutation();
+      const patched = applyMutationResult(body);
+      // Full reconcile only when the patch is missing or hours must recompute.
+      if (!patched || body.approval_reset) void refreshAfterMutation();
     } catch (err) {
       setError(apiErr(err, "Edit Day failed"));
     } finally {
@@ -1067,25 +1102,50 @@ export default function ManagementWfFolderPerformanceSection({
       return;
     }
     setApproveBusy(true);
+    setPubMessage("");
     setError("");
     try {
       const day = editSession.selected_date_et || dateEt;
+      const emp = reviewEmployee;
+      const sessions = employeeSessionsPayload(emp);
       const res = await postManagementPerformanceOverrideSession("FOLDER", editSession.session_id, {
         date_et: day,
         published_metric_value: rate,
         reason: editReason || undefined,
         approve_if_needed: true,
-        session: sessionPublishPayload(editSession, reviewEmployee),
+        session: sessionPublishPayload(editSession, emp),
+        employee: emp?.employee || editSession.employee,
+        user_id: emp?.user_id ?? editSession.user_id,
+        employee_sessions: sessions,
+        sessions,
       });
       const body = res.data || {};
       if (!body.ok) {
         setError(body.error || body.status || "Save failed");
         return;
       }
-      setPubMessage(`Saved manager value for ${editSession.session_code || editSession.session_id}`);
+      const savedSid = editSession.session_id;
+      const savedLabel = editSession.session_code || editSession.session_id;
+      // Only close the dialog after the backend confirms persistence.
       setEditSession(null);
-      applyMutationResult(body);
-      void refreshAfterMutation();
+      const patched = applyMutationResult(body);
+      if (!patched && body.publication) {
+        // Fallback: at least stamp the session Pub rate locally.
+        patchSessionPublication(savedSid, {
+          ...body.publication,
+          status: body.publication.status || "APPROVED",
+          published_metric_value: body.published_metric_value ?? rate,
+          is_rate_override: true,
+        });
+      }
+      const dayStatus = body.employee_day?.day_publication_status;
+      let msg = `Saved manager value for ${savedLabel}`;
+      if (dayStatus && dayStatus !== "APPROVED") {
+        msg += ` · Day ${dayStatus === "PARTIALLY_APPROVED" ? "partially approved" : "needs approval"} — graph uses approved sessions only`;
+      }
+      setPubMessage(msg);
+      // Targeted employee_day patch is authoritative; skip full-day rebuild.
+      if (!patched) void refreshAfterMutation();
     } catch (err) {
       setError(apiErr(err, "Save failed"));
     } finally {
@@ -1739,6 +1799,25 @@ export default function ManagementWfFolderPerformanceSection({
             </Box>
           ) : null}
 
+          {employeeFilter === "all" && liveOnlyEmployees.length > 0 && !graphRows.length ? (
+            <Box
+              sx={{
+                mb: 1.25,
+                px: 1,
+                py: 1,
+                borderRadius: 1.25,
+                bgcolor: "rgba(245, 158, 11, 0.08)",
+                border: "1px solid rgba(245, 158, 11, 0.28)",
+              }}
+            >
+              <Typography sx={{ ...PERF_TYPE.meta, fontWeight: 700, color: "#92400e" }}>
+                Graph waiting on approval · {liveOnlyEmployees.length} employee-day
+                {liveOnlyEmployees.length === 1 ? "" : "s"} edited or pending — not shown
+                until Approve Day
+              </Typography>
+            </Box>
+          ) : null}
+
           {employeeFilter === "all" && graphRows.length ? (
             <Box
               sx={{
@@ -1754,6 +1833,9 @@ export default function ManagementWfFolderPerformanceSection({
               <Typography sx={{ ...PERF_TYPE.meta, px: 1, mb: 0.5, fontWeight: 700 }}>
                 Approved employee-days ·{" "}
                 {GRAPH_METRICS.find((m) => m.value === graphMetric)?.label || "Lb/hr"}
+                {liveOnlyEmployees.length
+                  ? ` · ${liveOnlyEmployees.length} awaiting approval`
+                  : ""}
               </Typography>
               <ResponsiveContainer width="100%" height="90%">
                 <BarChart
@@ -2141,13 +2223,20 @@ export default function ManagementWfFolderPerformanceSection({
         </DialogActions>
       </Dialog>
 
-      <Dialog open={editDayOpen} onClose={() => setEditDayOpen(false)} fullWidth maxWidth="xs">
+      <Dialog
+        open={editDayOpen}
+        onClose={() => {
+          if (!controlsLocked) setEditDayOpen(false);
+        }}
+        fullWidth
+        maxWidth="xs"
+      >
         <DialogTitle>Edit Day</DialogTitle>
         <DialogContent>
           <Stack spacing={1.5} sx={{ pt: 1 }}>
             <Typography sx={{ fontSize: 13, color: "#64748b" }}>
               Average Weight applies once to included bags. End Time updates only the final
-              included Folder session.
+              non-excluded Folder session — changing it reopens that session for approval.
             </Typography>
             <TextField
               label="Average Weight (lb/bag)"
@@ -2181,12 +2270,19 @@ export default function ManagementWfFolderPerformanceSection({
             Cancel
           </Button>
           <Button onClick={() => saveEditDay()} disabled={controlsLocked} variant="contained">
-            Save Day
+            {approveBusy ? "Saving…" : "Save Day"}
           </Button>
         </DialogActions>
       </Dialog>
 
-      <Dialog open={!!editSession} onClose={() => setEditSession(null)} fullWidth maxWidth="xs">
+      <Dialog
+        open={!!editSession}
+        onClose={() => {
+          if (!controlsLocked) setEditSession(null);
+        }}
+        fullWidth
+        maxWidth="xs"
+      >
         <DialogTitle>Edit Session · Manager approved rate</DialogTitle>
         <DialogContent>
           <Stack spacing={1.5} sx={{ pt: 1 }}>
@@ -2195,7 +2291,7 @@ export default function ManagementWfFolderPerformanceSection({
             </Typography>
             <Typography sx={{ fontSize: 13 }}>
               Session lb/hr override — not Average Weight. Use Edit Day for day-level average bag
-              weight.
+              weight. Graph and published ranking use this rate for approved sessions.
             </Typography>
             <Typography sx={{ fontSize: 13 }}>
               Calculated: {fmtRate(editSession?.lbs_per_hour)} lb/hr
@@ -2207,6 +2303,7 @@ export default function ManagementWfFolderPerformanceSection({
               size="small"
               type="number"
               inputProps={{ min: 0, step: 0.1 }}
+              disabled={controlsLocked}
             />
             <TextField
               label="Reason / note (optional)"
@@ -2215,6 +2312,7 @@ export default function ManagementWfFolderPerformanceSection({
               size="small"
               multiline
               minRows={2}
+              disabled={controlsLocked}
             />
           </Stack>
         </DialogContent>
@@ -2223,7 +2321,7 @@ export default function ManagementWfFolderPerformanceSection({
             Cancel
           </Button>
           <Button onClick={() => saveEdit()} disabled={controlsLocked} variant="contained">
-            Save & Approve
+            {approveBusy ? "Saving…" : "Save & Approve"}
           </Button>
         </DialogActions>
       </Dialog>

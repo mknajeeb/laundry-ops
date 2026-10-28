@@ -743,6 +743,16 @@ def approval_status_map(
                 if r.get("calculated_metric_value") is not None
                 else None
             ),
+            "published_numerator": (
+                float(r["published_numerator"])
+                if r.get("published_numerator") is not None
+                else None
+            ),
+            "published_denominator": (
+                float(r["published_denominator"])
+                if r.get("published_denominator") is not None
+                else None
+            ),
             "is_rate_override": bool(r.get("is_rate_override")),
             "override_reason": r.get("override_reason"),
             "excluded": r.get("excluded_at") is not None,

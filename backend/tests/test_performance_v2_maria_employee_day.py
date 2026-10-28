@@ -167,6 +167,35 @@ def test_maria_acceptance_sequence_approved_subset():
     assert emp["total_pre_lbs"] == 648.0
 
 
+def test_session_rate_override_feeds_employee_day_graph_rate():
+    """Edit Session manager lb/hr must change approved employee-day / graph rate."""
+    sessions = _maria_two_sessions()
+    # Override WF-01 from 160lb/3h=53.33 → 60 lb/hr ⇒ effective 180 lbs
+    sessions = apply_session_publication_patch(
+        sessions,
+        session_id="2001",
+        status="APPROVED",
+        publication={
+            "status": "APPROVED",
+            "is_rate_override": True,
+            "published_metric_value": 60.0,
+            "published_numerator": 180.0,
+            "published_denominator": 3.0,
+        },
+    )
+    emp = _compose(sessions)
+    # (180 + 80) / (3 + 2) = 52 lb/hr
+    assert abs(float(emp["lbs_per_hour"]) - 52.0) < 0.01
+    assert emp["total_pre_lbs"] == 260.0
+    assert emp["credited_weight_basis"] == "SESSION_RATE_OVERRIDE"
+    assert emp["dashboard_rankable"] is True
+
+    # Day average-weight override remains authoritative over session rate overrides.
+    emp = _compose(sessions, average_weight_override=50.0)
+    assert emp["total_pre_lbs"] == 600.0  # 50 * 12 bags
+    assert emp["credited_weight_basis"] == "DAY_AVERAGE_WEIGHT_OVERRIDE"
+
+
 def test_maria_exclude_one_recalculates_and_stays_visible():
     sessions = _maria_two_sessions()
     patched = apply_session_publication_patch(
