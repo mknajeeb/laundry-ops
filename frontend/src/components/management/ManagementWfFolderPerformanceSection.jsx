@@ -88,6 +88,21 @@ function apiErr(err, fallback = "Request failed") {
   return d.error || d.message || d.status || err?.message || fallback;
 }
 
+function saveError(err, fallback = "Request failed") {
+  const d = err?.response?.data;
+  if (d && typeof d === "object") {
+    return (
+      d.error ||
+      d.end_time?.error ||
+      d.average_weight?.error ||
+      d.message ||
+      d.status ||
+      apiErr(err, fallback)
+    );
+  }
+  return apiErr(err, fallback);
+}
+
 function dayStatusLabel(status) {
   switch (String(status || "").toUpperCase()) {
     case "APPROVED":
@@ -1066,11 +1081,12 @@ export default function ManagementWfFolderPerformanceSection({
     try {
       const res = await postManagementPerformanceEditEmployeeDay("FOLDER", payload);
       const body = res.data || {};
-      if (!body.ok) {
+        if (!body.ok) {
         setError(
           body.error ||
             body.end_time?.error ||
             body.end_time?.status ||
+            body.average_weight?.error ||
             body.average_weight?.status ||
             body.status ||
             "Edit Day failed"
@@ -1088,7 +1104,7 @@ export default function ManagementWfFolderPerformanceSection({
       // Full reconcile only when the patch is missing or hours must recompute.
       if (!patched || body.approval_reset) void refreshAfterMutation();
     } catch (err) {
-      setError(apiErr(err, "Edit Day failed"));
+      setError(saveError(err, "Edit Day failed"));
     } finally {
       setApproveBusy(false);
     }
@@ -1147,7 +1163,7 @@ export default function ManagementWfFolderPerformanceSection({
       // Targeted employee_day patch is authoritative; skip full-day rebuild.
       if (!patched) void refreshAfterMutation();
     } catch (err) {
-      setError(apiErr(err, "Save failed"));
+      setError(saveError(err, "Save failed"));
     } finally {
       setApproveBusy(false);
     }

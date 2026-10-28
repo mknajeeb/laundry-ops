@@ -676,3 +676,317 @@ def test_recompute_preserves_all_session_attachments_after_mixed_states():
     assert emp["pending_session_count"] == 1
     assert emp["approved_session_count"] == 1
     assert emp["orders_completed"] == 4  # WF-G3 only
+
+
+def test_evelin_oct27_approved_day_rate_is_preserved():
+    """Production 2026-10-27: WF-2418 override 50.15 and day rate 47.9966."""
+    sessions = [
+        _sess(
+            sid="WF-2403",
+            code="WF-01",
+            status="APPROVED",
+            bags=2,
+            lbs=44.70,
+            hours=1.1764,
+            start="2026-10-27T04:59:18",
+            end="2026-10-27T06:09:53",
+            employee="Evelin (VeeWash)",
+            segment_id=2403,
+        ),
+        _sess(
+            sid="WF-2418",
+            code="WF-02",
+            status="APPROVED",
+            bags=11,
+            lbs=208.50,
+            hours=5.4647,
+            start="2026-10-27T08:38:00",
+            end="2026-10-27T14:05:53",
+            employee="Evelin (VeeWash)",
+            segment_id=2418,
+            rate_override=50.15,
+        ),
+    ]
+    # Stored numerator is rate × hours, not the evidence PRE on the card.
+    sessions[1]["publication"]["published_numerator"] = 274.0547
+    sessions[1]["publication"]["published_denominator"] = 5.4647
+    emp = _compose("Evelin (VeeWash)", 30, sessions)
+    assert sessions[1]["publication"]["published_metric_value"] == 50.15
+    assert emp["dashboard_rankable"] is True
+    assert emp["included_session_count"] == 2
+    assert emp["total_pre_lbs"] == 318.75
+    assert emp["performance_hours"] == 6.6411
+    assert emp["lbs_per_hour"] == 47.9966
+
+
+def test_evelin_oct28_unapproved_stays_off_approved_graph():
+    pending = _sess(
+        sid="WF-2456",
+        code="WF-01",
+        status="UNAPPROVED",
+        bags=8,
+        lbs=237.4,
+        hours=5.0494,
+        start="2026-10-28T06:54:31",
+        end="2026-10-28T11:57:29",
+        employee="Evelin (VeeWash)",
+        segment_id=2456,
+    )
+    emp = _compose("Evelin (VeeWash)", 30, [pending])
+    assert emp["dashboard_rankable"] is False
+    assert emp["day_publication_status"] != "APPROVED"
+    assert emp["orders_completed"] == 0
+    assert emp["lbs_per_hour"] is None
+    _day, published, live, graph_rows = _graph_and_rank([emp])
+    assert published == []
+    assert graph_rows == []
+    assert live == [emp]
+
+
+def _patch_end_time(monkeypatch, sessions, invalidated):
+    import backend.rinse_performance_employee_day as mod
+
+    calls = {}
+
+    def fake_update(conn, org, session_id, segment_id, **kwargs):
+        calls["session_id"] = session_id
+        calls["segment_id"] = segment_id
+        calls["ended_at"] = kwargs.get("ended_at")
+        return {"ok": True}
+
+    def fake_invalidate(cursor, org, **kwargs):
+        invalidated.append(list(kwargs.get("session_ids") or []))
+        return {"ok": True, "invalidated": 1}
+
+    monkeypatch.setattr("backend.payroll_operations.update_time_record_segment", fake_update)
+    monkeypatch.setattr("backend.rinse_performance_approvals.invalidate_approvals", fake_invalidate)
+    monkeypatch.setattr(
+        "backend.rinse_performance_approvals.approval_status_map",
+        lambda *a, **k: {str(s["session_id"]): {"status": "APPROVED"} for s in sessions},
+    )
+    monkeypatch.setattr(mod, "ensure_employee_day_override_tables", lambda cur: None)
+    return calls
+
+
+def test_edit_day_wf_prefixed_session_id_updates_payroll_segment(monkeypatch):
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    sessions = [
+        _sess(
+            sid="WF-2403",
+            code="WF-01",
+            status="APPROVED",
+            bags=2,
+            lbs=44.7,
+            hours=1.1764,
+            start="2026-10-27T04:59:18",
+            end="2026-10-27T06:09:53",
+            employee="Evelin (VeeWash)",
+            segment_id=2403,
+        ),
+        _sess(
+            sid="WF-2418",
+            code="WF-02",
+            status="APPROVED",
+            bags=11,
+            lbs=208.5,
+            hours=5.4647,
+            start="2026-10-27T08:38:00",
+            end="2026-10-27T14:05:53",
+            employee="Evelin (VeeWash)",
+            segment_id=2418,
+        ),
+    ]
+    sessions[1]["shift_session_id"] = 2010
+    invalidated = []
+    calls = _patch_end_time(monkeypatch, sessions, invalidated)
+    conn = MagicMock()
+    conn.cursor.return_value = MagicMock()
+    out = apply_employee_day_end_time(
+        conn,
+        3,
+        selected_date_et=date(2026, 10, 27),
+        employee_name="Evelin (VeeWash)",
+        employee_user_id=30,
+        end_time_et="2026-10-27T14:30:00",
+        sessions=sessions,
+    )
+    assert out["ok"] is True
+    assert out["session_id"] == "WF-2418"
+    assert out["approval_reset"] is True
+    assert calls["session_id"] == 2010
+    assert calls["segment_id"] == 2418
+    assert invalidated == [["WF-2418"]]
+
+
+def test_edit_day_wf_id_looks_up_shift_session_when_card_omits_it(monkeypatch):
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    sessions = [
+        _sess(
+            sid="WF-2418",
+            code="WF-02",
+            status="APPROVED",
+            bags=1,
+            lbs=10,
+            hours=1,
+            end="2026-10-27T14:05:53",
+            employee="Evelin (VeeWash)",
+            segment_id=2418,
+        )
+    ]
+    invalidated = []
+    calls = _patch_end_time(monkeypatch, sessions, invalidated)
+    cur = MagicMock()
+    cur.fetchone.return_value = {"shift_session_id": 2010}
+    conn = MagicMock()
+    conn.cursor.return_value = cur
+    out = apply_employee_day_end_time(
+        conn,
+        3,
+        selected_date_et=date(2026, 10, 27),
+        employee_name="Evelin (VeeWash)",
+        employee_user_id=30,
+        end_time_et="2026-10-27T15:00:00",
+        sessions=sessions,
+    )
+    assert out["ok"] is True
+    assert calls["session_id"] == 2010
+    assert calls["segment_id"] == 2418
+    sqls = [" ".join(str(call.args[0]).split()) for call in cur.execute.call_args_list]
+    assert any("shift_job_segments" in sql for sql in sqls)
+    assert invalidated == [["WF-2418"]]
+
+
+def test_edit_day_unchanged_wf_end_time_keeps_approval(monkeypatch):
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    sessions = [
+        _sess(
+            sid="WF-2418",
+            code="WF-02",
+            status="APPROVED",
+            bags=1,
+            lbs=10,
+            hours=1,
+            end="2026-10-27T14:05:53",
+            employee="Evelin (VeeWash)",
+            segment_id=2418,
+        )
+    ]
+    invalidated = []
+    calls = _patch_end_time(monkeypatch, sessions, invalidated)
+    conn = MagicMock()
+    conn.cursor.return_value = MagicMock()
+    out = apply_employee_day_end_time(
+        conn,
+        3,
+        selected_date_et=date(2026, 10, 27),
+        employee_name="Evelin (VeeWash)",
+        employee_user_id=30,
+        end_time_et="2026-10-27T14:05:00",
+        sessions=sessions,
+    )
+    assert out["ok"] is True
+    assert out["unchanged"] is True
+    assert out["approval_reset"] is False
+    assert out["session_id"] == "WF-2418"
+    assert "session_id" not in calls
+    assert invalidated == []
+
+
+def test_edit_day_unknown_session_id_reports_a_clear_error(monkeypatch):
+    from datetime import date
+    from unittest.mock import MagicMock
+    import backend.rinse_performance_employee_day as mod
+
+    sessions = [
+        {
+            "session_id": "not-a-session",
+            "session_code": "WF-02",
+            "segment_id": None,
+            "publication_status": "APPROVED",
+            "publication": {"status": "APPROVED"},
+            "orders_completed": 1,
+            "total_pre_lbs": 10,
+            "performance_hours": 1,
+            "role_status": "closed",
+            "end_time": "2026-10-27T14:05:53",
+            "performance_end": "2026-10-27T14:05:53",
+            "employee": "Evelin (VeeWash)",
+            "user_id": 30,
+        }
+    ]
+    monkeypatch.setattr(mod, "ensure_employee_day_override_tables", lambda cur: None)
+    monkeypatch.setattr(
+        "backend.rinse_performance_approvals.approval_status_map",
+        lambda *a, **k: {},
+    )
+    conn = MagicMock()
+    conn.cursor.return_value = MagicMock()
+    out = apply_employee_day_end_time(
+        conn,
+        3,
+        selected_date_et=date(2026, 10, 27),
+        employee_name="Evelin (VeeWash)",
+        employee_user_id=30,
+        end_time_et="2026-10-27T16:00:00",
+        sessions=sessions,
+    )
+    assert out["ok"] is False
+    assert out["status"] == "invalid_session_segment"
+    assert "Could not save End Time" in out["error"]
+
+
+def test_consecutive_wf_end_time_edits_keep_the_same_segment(monkeypatch):
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    sessions = [
+        _sess(
+            sid="WF-2418",
+            code="WF-02",
+            status="APPROVED",
+            bags=1,
+            lbs=10,
+            hours=1,
+            end="2026-10-27T14:05:53",
+            employee="Evelin (VeeWash)",
+            segment_id=2418,
+        )
+    ]
+    sessions[0]["shift_session_id"] = 2010
+    invalidated = []
+    calls = _patch_end_time(monkeypatch, sessions, invalidated)
+    conn = MagicMock()
+    conn.cursor.return_value = MagicMock()
+    first = apply_employee_day_end_time(
+        conn,
+        3,
+        selected_date_et=date(2026, 10, 27),
+        employee_name="Evelin (VeeWash)",
+        employee_user_id=30,
+        end_time_et="2026-10-27T14:30:00",
+        sessions=sessions,
+    )
+    sessions[0]["end_time"] = "2026-10-27T14:30:00"
+    sessions[0]["performance_end"] = "2026-10-27T14:30:00"
+    sessions[0]["publication_status"] = "UNAPPROVED"
+    second = apply_employee_day_end_time(
+        conn,
+        3,
+        selected_date_et=date(2026, 10, 27),
+        employee_name="Evelin (VeeWash)",
+        employee_user_id=30,
+        end_time_et="2026-10-27T15:10:00",
+        sessions=sessions,
+    )
+    assert first["ok"] and second["ok"]
+    assert first["session_id"] == second["session_id"] == "WF-2418"
+    assert calls["segment_id"] == 2418
+    assert calls["session_id"] == 2010
+    assert invalidated == [["WF-2418"], ["WF-2418"]]
+

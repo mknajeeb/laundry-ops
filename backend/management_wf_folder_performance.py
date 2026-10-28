@@ -753,6 +753,7 @@ def _public_session_card(sess: Mapping[str, Any], orders: Sequence[Mapping[str, 
         "session_id": sess.get("session_id"),
         "session_code": sess.get("session_code"),
         "segment_id": sess.get("segment_id"),
+        "shift_session_id": sess.get("shift_session_id"),
         "employee": sess.get("employee"),
         "user_id": sess.get("user_id"),
         "start_time": _iso(start),
@@ -1539,7 +1540,10 @@ def build_folder_performance_dashboard(
                 except Exception:
                     pass
 
-        workers = min(8, len(dates))
+        from backend.db import configured_pool_size
+
+        # Parent request already holds one pooled connection.
+        workers = parallel_day_workers(len(dates), configured_pool_size())
         by_date: dict[date, dict[str, Any]] = {}
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futs = {pool.submit(_one, d): d for d in dates}
@@ -1575,6 +1579,7 @@ def build_folder_performance_dashboard(
 
     deltas = None
     baseline_window = None
+    base_day = None
     if include_baseline_delta and window["compare"] == COMPARE_TODAY:
         # Compact delta vs same weekday last week
         baseline_window = resolve_comparison_window(
@@ -1600,7 +1605,7 @@ def build_folder_performance_dashboard(
             ),
         }
 
-    return {
+    payload = {
         "compartment": "performance",
         "surface": "wf_folder",
         "anchor_date_et": anchor.isoformat(),
@@ -1645,6 +1650,31 @@ def build_folder_performance_dashboard(
             {"key": COMPARE_LAST_N, "label": "Last N"},
         ],
     }
+    if base_day is not None:
+        # Annotate recomputes publication-aware deltas from this same day.
+        # Keeping it avoids a second full Folder rebuild on the baseline request.
+        payload[_BASELINE_DAY_STASH] = base_day
+    return payload
+
+
+def parallel_day_workers(date_count: int, pool_size: int) -> int:
+    """How many day builds may run beside the request that already holds a connection."""
+    spare = max(1, int(pool_size) - 1)
+    return max(1, min(8, int(date_count), spare))
+
+
+_BASELINE_DAY_STASH = "_baseline_day_payload"
+
+
+def pop_stashed_baseline_day(payload: dict[str, Any], baseline_date: date) -> dict[str, Any] | None:
+    """Remove the private baseline day so it is never serialized to the client."""
+    day = payload.pop(_BASELINE_DAY_STASH, None)
+    if not isinstance(day, dict):
+        return None
+    got = str(day.get("selected_date_et") or "")[:10]
+    if got != baseline_date.isoformat():
+        return None
+    return day
 
 
 def get_session_orders(

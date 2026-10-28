@@ -254,3 +254,34 @@ def test_row_flag_and_exclusion_reason_are_durable_gates():
     overr = project_productivity_override_for_settled_bulk_only(base)
     assert overr["productivity_weight_lbs"] == 0.0
     assert overr["productivity_credit_eligible"] == 0
+
+
+def test_latest_portal_observations_stop_after_limit_per_bag(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from backend.rinse_settled_bulk_only_weight import load_latest_portal_observations
+
+    monkeypatch.setattr("backend.ta_helpers.table_exists", lambda *_a, **_k: True)
+    cursor = MagicMock()
+    cursor.fetchall.return_value = [
+        {
+            "bag_id": "A1",
+            "observed_at": "t3",
+            "weight_num": 0,
+            "wf_lbs_num": 3,
+            "portal_status": "at_vendor",
+        },
+        {
+            "bag_id": "A1",
+            "observed_at": "t2",
+            "weight_num": 0,
+            "wf_lbs_num": 2,
+            "portal_status": "at_vendor",
+        },
+    ]
+    out = load_latest_portal_observations(cursor, 3, ["A1"], limit_per_bag=12)
+    sql = " ".join(str(cursor.execute.call_args[0][0]).split())
+    assert "LATERAL" in sql
+    assert "LIMIT" in sql
+    assert [row["observed_at"] for row in out["A1"]] == ["t2", "t3"]
+    assert final_portal_wf_lbs_from_observations(out["A1"]) == 3.0

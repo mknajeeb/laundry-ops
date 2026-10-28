@@ -136,11 +136,15 @@ def _annotate_dashboard(cursor, oid: int, payload: dict, selected: date) -> dict
     """
     from backend.rinse_performance_employee_day import ensure_employee_day_override_tables
     from backend.management_wf_folder_performance import (
+        _BASELINE_DAY_STASH,
         build_day_folder_performance,
         _pct_delta,
     )
 
     ensure_employee_day_override_tables(cursor)
+    stashed_baseline = (
+        payload.pop(_BASELINE_DAY_STASH, None) if isinstance(payload, dict) else None
+    )
     attach_publication_status_to_day(cursor, oid, payload)
     partition_employees_by_exclusion(payload)
 
@@ -163,12 +167,18 @@ def _annotate_dashboard(cursor, oid: int, payload: dict, selected: date) -> dict
         except ValueError:
             base_et = None
         if base_et is not None:
-            base_day = build_day_folder_performance(
-                cursor,
-                oid,
-                selected_date_et=base_et,
-                attach_customers=False,
-            )
+            base_day = None
+            if isinstance(stashed_baseline, dict):
+                got = str(stashed_baseline.get("selected_date_et") or "")[:10]
+                if got == base_et.isoformat():
+                    base_day = stashed_baseline
+            if base_day is None:
+                base_day = build_day_folder_performance(
+                    cursor,
+                    oid,
+                    selected_date_et=base_et,
+                    attach_customers=False,
+                )
             attach_publication_status_to_day(cursor, oid, base_day)
             partition_employees_by_exclusion(base_day)
             cur_summary = payload.get("summary") or {}
@@ -998,6 +1008,19 @@ def register_management_wf_folder_performance_routes(
                 conn.commit()
             else:
                 conn.rollback()
+                end_out = results.get("end_time") if isinstance(results.get("end_time"), dict) else {}
+                avg_out = (
+                    results.get("average_weight")
+                    if isinstance(results.get("average_weight"), dict)
+                    else {}
+                )
+                results["error"] = (
+                    end_out.get("error")
+                    or avg_out.get("error")
+                    or end_out.get("status")
+                    or avg_out.get("status")
+                    or "Edit Day could not be saved"
+                )
             status = 200 if results.get("ok") else 400
             return jsonify(json_safe_rinse(results)), status
         except ValueError as exc:

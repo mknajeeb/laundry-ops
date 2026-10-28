@@ -272,6 +272,18 @@ describe("employeeSessionsPayload", () => {
     expect(rows[0].segment_id).toBe(2418);
     expect(rows[0].shift_session_id).toBe(8802);
     expect(rows[0].employee).toBe("Maria");
+    expect(rows[0].shift_session_id).toBeUndefined();
+  });
+
+  it("passes shift_session_id through for Edit Day", () => {
+    const rows = employeeSessionsPayload({
+      employee: "Evelin",
+      user_id: 30,
+      sessions: [{ session_id: "WF-2418", segment_id: 2418, shift_session_id: 2010 }],
+    });
+    expect(rows[0].session_id).toBe("WF-2418");
+    expect(rows[0].segment_id).toBe(2418);
+    expect(rows[0].shift_session_id).toBe(2010);
   });
 });
 

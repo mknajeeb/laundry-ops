@@ -190,29 +190,38 @@ def load_latest_portal_observations(
     out: dict[str, list[dict[str, Any]]] = {b: [] for b in ids}
     if not ids or not table_exists(cursor, "rinse_cleaner_ticket_presence_run_rows"):
         return out
-    placeholders = ",".join(["%s"] * len(ids))
-    # Fetch a window of recent rows, then keep last N per bag in chronological order.
-    cursor.execute(
-        f"""
-        SELECT bag_id, observed_at, weight_num, wf_lbs_num, portal_status
-        FROM rinse_cleaner_ticket_presence_run_rows
-        WHERE organization_id = %s
-          AND bag_id IN ({placeholders})
-        ORDER BY observed_at DESC, id DESC
-        """,
-        (int(organization_id), *ids),
-    )
-    counts: dict[str, int] = {b: 0 for b in ids}
+    # Same last-N set as a full-history scan, but each bag stops after N rows
+    # on (organization_id, bag_id, observed_at). A day of ~270 bags otherwise
+    # pulls tens of thousands of presence rows and discards all but 12.
+    limit_n = max(1, int(limit_per_bag))
     tmp: dict[str, list[dict[str, Any]]] = {b: [] for b in ids}
-    for row in cursor.fetchall() or []:
-        bid = _norm_bag(row.get("bag_id"))
-        if bid not in tmp:
-            continue
-        if counts[bid] >= int(limit_per_bag):
-            continue
-        tmp[bid].append(dict(row))
-        counts[bid] += 1
+    chunk = 80
+    org = int(organization_id)
+    for i in range(0, len(ids), chunk):
+        part = ids[i : i + chunk]
+        unions = " UNION ALL ".join(["SELECT %s AS bag_id"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT r.bag_id, r.observed_at, r.weight_num, r.wf_lbs_num, r.portal_status
+            FROM ({unions}) bags
+            JOIN LATERAL (
+              SELECT bag_id, observed_at, weight_num, wf_lbs_num, portal_status
+              FROM rinse_cleaner_ticket_presence_run_rows
+              WHERE organization_id = %s
+                AND bag_id = bags.bag_id
+              ORDER BY observed_at DESC, id DESC
+              LIMIT %s
+            ) r ON TRUE
+            """,
+            (*part, org, limit_n),
+        )
+        for row in cursor.fetchall() or []:
+            bid = _norm_bag(row.get("bag_id"))
+            if bid not in tmp or len(tmp[bid]) >= limit_n:
+                continue
+            tmp[bid].append(dict(row))
     for bid, rows in tmp.items():
+        # Newest-first from SQL → chronological, matching the previous scan.
         out[bid] = list(reversed(rows))
     return out
 

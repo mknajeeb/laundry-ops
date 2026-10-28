@@ -124,6 +124,15 @@ def _connection_kwargs() -> dict[str, Any]:
     return kwargs
 
 
+def configured_pool_size() -> int:
+    """Pool slots per process. Does not open connections.
+
+    Alias of the production resolver so Folder day builds share the same
+    default (8), floor (4), and ceiling as the API pool.
+    """
+    return resolve_pool_size()
+
+
 def _ensure_pool() -> pooling.MySQLConnectionPool:
     global _pool, _pool_size_resolved
     with _pool_lock:
