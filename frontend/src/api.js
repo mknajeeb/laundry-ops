@@ -477,11 +477,20 @@ export const attendancePinCleaningTasksReject = (organization_slug, pin, options
 export const getManagementTaskDashboard = (params = {}) =>
   axios.get(`${API_BASE}/api/management/task-dashboard`, { params });
 
+export const getManagementTaskDashboardMonthly = (params = {}) =>
+  axios.get(`${API_BASE}/api/management/task-dashboard/monthly`, { params });
+
 export const approveManagementTaskDashboard = (body) =>
   axios.post(`${API_BASE}/api/management/task-dashboard/approve`, body);
 
 export const rejectManagementTaskDashboard = (body) =>
   axios.post(`${API_BASE}/api/management/task-dashboard/reject`, body);
+
+export const manualCompleteManagementTask = (body) =>
+  axios.post(`${API_BASE}/api/management/task-dashboard/manual-complete`, body);
+
+export const correctManagementTaskCompletion = (body) =>
+  axios.post(`${API_BASE}/api/management/task-dashboard/correct-completion`, body);
 
 export const getManagementTaskCatalog = () =>
   axios.get(`${API_BASE}/api/management/task-catalog`);

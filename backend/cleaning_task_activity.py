@@ -101,6 +101,11 @@ _ACTIVITY_EXTRA_COLUMNS: tuple[tuple[str, str], ...] = (
     ("checklist_id", "INT NULL"),
     ("parent_activity_id", "BIGINT NULL"),
     ("activity_kind", "VARCHAR(20) NULL"),
+    ("completion_source", "VARCHAR(32) NOT NULL DEFAULT 'pin'"),
+    ("recorded_by_user_id", "INT NULL"),
+    ("manual_reason", "VARCHAR(500) NULL"),
+    ("manual_remarks", "VARCHAR(1000) NULL"),
+    ("times_manual", "TINYINT(1) NOT NULL DEFAULT 0"),
 )
 
 
@@ -227,6 +232,25 @@ def _display_status(status: str) -> str:
     }.get(str(status or ""), str(status or ""))
 
 
+def friendly_status_label(status: str | None, *, overdue: bool = False) -> str:
+    """Management-facing status wording (never expose raw codes in UI)."""
+    if overdue or str(status or "") == DISPLAY_OVERDUE:
+        return "Overdue"
+    key = _display_status(str(status or ""))
+    return {
+        "pending": "Not Started",
+        "not_started": "Not Started",
+        DISPLAY_IN_PROGRESS: "In Progress",
+        "pending_verification": "Waiting for Verification",
+        DISPLAY_PENDING_APPROVAL: "Waiting for Verification",
+        "verified": "Verified",
+        DISPLAY_APPROVED: "Verified",
+        DISPLAY_COMPLETED: "Completed",
+        DISPLAY_REJECTED: "Needs Correction",
+        DISPLAY_OVERDUE: "Overdue",
+    }.get(key, "Not Started")
+
+
 def serialize_activity(row: Mapping[str, Any], *, catalog: Mapping[str, Any] | None = None) -> dict[str, Any]:
     mode = str(row.get("timing_mode") or "anytime")
     start = _serialize_time(row.get("planned_start_time"))
@@ -252,9 +276,31 @@ def serialize_activity(row: Mapping[str, Any], *, catalog: Mapping[str, Any] | N
         "planned_start_time": start,
         "status": status,
         "display_status": _display_status(status),
+        "status_label": friendly_status_label(status),
         "started_at": _serialize_dt(row.get("started_at")),
         "ended_at": _serialize_dt(row.get("ended_at")),
-        "duration_seconds": int(row["duration_seconds"]) if row.get("duration_seconds") is not None else None,
+        "duration_seconds": (
+            None
+            if (
+                row.get("times_manual") in (1, True)
+                and row.get("duration_seconds") is None
+            )
+            else (int(row["duration_seconds"]) if row.get("duration_seconds") is not None else None)
+        ),
+        "completion_source": str(row.get("completion_source") or "pin"),
+        "completion_source_label": {
+            "pin": "Completed via PIN",
+            "manual": "Recorded by Supervisor",
+            "corrected": "Corrected by Management",
+        }.get(str(row.get("completion_source") or "pin").lower(), "Completed via PIN"),
+        "recorded_by_user_id": int(row["recorded_by_user_id"])
+        if row.get("recorded_by_user_id") is not None
+        else None,
+        "manual_reason": (str(row.get("manual_reason") or "").strip() or None),
+        "manual_remarks": (str(row.get("manual_remarks") or "").strip() or None),
+        "times_manual": bool(row.get("times_manual")),
+        "is_manual_completion": str(row.get("completion_source") or "pin").lower()
+        in {"manual", "corrected"},
         "paused_category_id": int(row["paused_category_id"]) if row.get("paused_category_id") is not None else None,
         "paused_role_id": int(row["paused_role_id"]) if row.get("paused_role_id") is not None else None,
         "approved_by_user_id": int(row["approved_by_user_id"])
@@ -710,18 +756,29 @@ def start_task(
     user_id: int,
     responsibility_id: int,
     shift_session_id: int | None,
+    business_date: date | None = None,
 ) -> dict[str, Any]:
-    """Start a cleaning task. Closes open production role; blocks if on break or already on a task."""
+    """Start a cleaning task. Closes open production role; blocks if on break or already on a task.
+
+    Optional ``business_date`` supports supervisor historical backfill (manual completion).
+    """
     from backend.shift_job_tracking import close_open_job_segment, get_open_job_segment
     from backend.ta_routes import get_open_break
 
     ensure_cleaning_task_activity_tables(cursor)
     oid = int(organization_id)
     uid = int(user_id)
-    day = business_today()
+    today = business_today()
+    day = business_date or today
     catalog = _role_catalog(cursor, oid)
+    historical = day != today
+    # Historical supervisor backfill must never attach to a live shift or pause
+    # production-role job segments.
+    if historical:
+        shift_session_id = None
 
-    if get_open_activity(cursor, oid, uid):
+    # Live PIN starts must not stack; historical supervisor backfill may proceed.
+    if not historical and get_open_activity(cursor, oid, uid):
         raise CleaningTaskError("Finish your current task first.", status=400)
 
     if shift_session_id and get_open_break(conn, int(shift_session_id)):
@@ -730,7 +787,12 @@ def start_task(
     assignments = _day_responsibilities(cursor, oid, business_date=day, user_id=uid)
     target = next((a for a in assignments if int(a["id"]) == int(responsibility_id)), None)
     if not target:
-        raise CleaningTaskError("That task is not assigned to you today.", status=404)
+        raise CleaningTaskError(
+            "That task is not assigned to you today."
+            if not historical
+            else "That task is not assigned on the selected date.",
+            status=404,
+        )
 
     from backend.task_activity_groups import is_activity_group_code
 
@@ -1180,7 +1242,11 @@ def _contribution_entry(
             names.get(int(x), f"User #{x}") for x in (item.get("user_ids") or [item["user_id"]])
         ],
         "status": status,
+        "status_label": friendly_status_label(status, overdue=status == DISPLAY_OVERDUE),
         "activity": serialize_activity(act, catalog=catalog) if act else None,
+        "can_record_manual": status in {DISPLAY_PENDING, DISPLAY_OVERDUE, DISPLAY_REJECTED}
+        or (act is None),
+        "can_correct": bool(act) and str((act or {}).get("status") or "") in COMPLETED_STATUSES,
     }
 
 
@@ -1245,6 +1311,11 @@ def list_supervisor_queue(
         elif act and str(act.get("status")) == STATUS_APPROVED:
             buckets["approved"].append(
                 _contribution_entry(item, act, catalog=catalog, names=names, status=DISPLAY_APPROVED)
+            )
+        elif act and str(act.get("status")) == STATUS_COMPLETED:
+            # Completed without verification — still a finished contribution.
+            buckets["approved"].append(
+                _contribution_entry(item, act, catalog=catalog, names=names, status=DISPLAY_COMPLETED)
             )
         elif act and str(act.get("status")) == STATUS_REJECTED:
             buckets["rejected"].append(
@@ -1354,6 +1425,8 @@ def _group_shared_assignments(
                 st = DISPLAY_PENDING_APPROVAL
             elif act and str(act.get("status")) == STATUS_APPROVED:
                 st = DISPLAY_APPROVED
+            elif act and str(act.get("status")) == STATUS_COMPLETED:
+                st = DISPLAY_COMPLETED
             elif act and str(act.get("status")) == STATUS_REJECTED:
                 st = DISPLAY_REJECTED
             else:
@@ -1433,10 +1506,18 @@ def _group_shared_assignments(
             rollup = DISPLAY_REJECTED
         elif all(s == DISPLAY_APPROVED for s in member_statuses):
             rollup = DISPLAY_APPROVED
+        elif all(s in (DISPLAY_APPROVED, DISPLAY_COMPLETED) for s in member_statuses):
+            rollup = (
+                DISPLAY_APPROVED
+                if all(s == DISPLAY_APPROVED for s in member_statuses)
+                else DISPLAY_COMPLETED
+            )
         elif any(s == DISPLAY_APPROVED for s in member_statuses) or any(
             s == DISPLAY_PENDING_APPROVAL for s in member_statuses
         ):
             rollup = DISPLAY_PENDING_APPROVAL if DISPLAY_PENDING_APPROVAL in member_statuses else "partial"
+        elif any(s == DISPLAY_COMPLETED for s in member_statuses):
+            rollup = "partial" if any(s == DISPLAY_PENDING for s in member_statuses) else DISPLAY_COMPLETED
         else:
             rollup = DISPLAY_PENDING
 
@@ -1466,12 +1547,57 @@ def _group_shared_assignments(
                     key=lambda s: s.lower(),
                 ),
                 "status": rollup,
+                "status_label": friendly_status_label(rollup, overdue=rollup == DISPLAY_OVERDUE),
+                "category_code": (
+                    _task_meta_for_role(cursor, int(organization_id), str(sample.get("role") or "")).get(
+                        "category_code"
+                    )
+                    or "intra_day"
+                ),
                 "contributions": contributions,
                 "shared_session_id": shared_session_id,
                 "shared_checklist_items": shared_checklist,
+                "has_manual_completion": any(
+                    (c.get("activity") or {}).get("is_manual_completion") for c in contributions
+                ),
+                "activity_group_items": _activity_group_item_templates(
+                    cursor, int(organization_id), str(sample.get("role") or "")
+                ),
+                "members": [
+                    {
+                        "employee_id": int(m["user_id"]),
+                        "employee_name": names.get(int(m["user_id"]), f"User #{m['user_id']}"),
+                        "responsibility_id": int(m["id"]),
+                    }
+                    for m in members
+                ],
             }
         )
     return out
+
+
+def _activity_group_item_templates(cursor, organization_id: int, role: str) -> list[dict[str, Any]]:
+    """Catalog items for an activity-group role (for manual shared attribution UI)."""
+    try:
+        from backend.task_activity_groups import get_activity_group, is_activity_group_code
+
+        if not is_activity_group_code(role):
+            return []
+        group = get_activity_group(cursor, int(organization_id), role_code=str(role))
+        if not group:
+            return []
+        return [
+            {
+                "task_code": str(it.get("task_code") or ""),
+                "task_name": str(it.get("task_name") or it.get("name") or it.get("task_code") or ""),
+                "required": bool(it.get("required", True)),
+                "display_order": int(it.get("display_order") or 0),
+            }
+            for it in (group.get("items") or [])
+            if it.get("task_code")
+        ]
+    except Exception:
+        return []
 
 
 def dashboard_summary(
@@ -1483,6 +1609,13 @@ def dashboard_summary(
     role: str | None = None,
     status: str | None = None,
 ) -> dict[str, Any]:
+    ensure_cleaning_task_activity_tables(cursor)
+    try:
+        from backend.cleaning_task_manual_completion import ensure_manual_completion_schema
+
+        ensure_manual_completion_schema(cursor)
+    except Exception:
+        pass
     day = business_date or business_today()
     queue = list_supervisor_queue(
         cursor,

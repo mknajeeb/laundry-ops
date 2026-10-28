@@ -120,6 +120,57 @@ class _FakeCursor:
         return []
 
 
+def test_historical_start_does_not_close_production_role():
+    """Supervisor backfill for a prior business date must not pause production roles."""
+    cursor = _FakeCursor()
+    ensure_cleaning_task_activity_tables(cursor)
+    conn = mock.Mock()
+    assignment = {
+        "id": 10,
+        "role": "lint_cleaning",
+        "timing_mode": "anytime",
+        "start_time": None,
+        "assignment_group_id": "abc",
+        "user_ids": [5],
+        "user_id": 5,
+    }
+    with mock.patch(
+        "backend.cleaning_task_activity._day_responsibilities", return_value=[assignment]
+    ), mock.patch(
+        "backend.cleaning_task_activity._activities_for_day", return_value=[]
+    ), mock.patch(
+        "backend.cleaning_task_activity._role_catalog",
+        return_value={"lint_cleaning": {"name": "Lint Cleaning"}},
+    ), mock.patch(
+        "backend.cleaning_task_activity.business_today", return_value=date(2026, 10, 28)
+    ), mock.patch(
+        "backend.cleaning_task_activity.eastern_now_naive",
+        return_value=datetime(2026, 10, 28, 15, 0, 0),
+    ), mock.patch(
+        "backend.ta_routes.get_open_break", return_value=None
+    ), mock.patch(
+        "backend.shift_job_tracking.get_open_job_segment",
+        return_value={"category_id": 1, "role_id": 2},
+    ) as get_seg, mock.patch(
+        "backend.shift_job_tracking.close_open_job_segment"
+    ) as close_seg:
+        started = start_task(
+            conn,
+            cursor,
+            organization_id=3,
+            user_id=5,
+            responsibility_id=10,
+            shift_session_id=99,  # must be ignored for historical day
+            business_date=date(2026, 10, 26),
+        )
+    assert started["status"] == STATUS_IN_PROGRESS
+    assert started.get("shift_session_id") is None
+    assert started.get("paused_role_id") is None
+    assert str(started.get("business_date"))[:10] == "2026-10-26"
+    get_seg.assert_not_called()
+    close_seg.assert_not_called()
+
+
 def test_start_complete_and_supervisor_approve_flow():
     cursor = _FakeCursor()
     ensure_cleaning_task_activity_tables(cursor)

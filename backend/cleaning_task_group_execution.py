@@ -10,7 +10,7 @@ are not double-counted).
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Mapping, Optional
 
 from backend.business_time import business_today
@@ -196,6 +196,7 @@ def start_group_activity(
     user_id: int,
     responsibility_id: int,
     shift_session_id: int | None,
+    business_date: date | None = None,
 ) -> dict[str, Any]:
     from backend.shift_job_tracking import close_open_job_segment, get_open_job_segment
     from backend.ta_routes import get_open_break
@@ -203,10 +204,15 @@ def start_group_activity(
     ensure_group_activity_schema(cursor)
     oid = int(organization_id)
     uid = int(user_id)
-    day = business_today()
+    today = business_today()
+    day = business_date or today
     catalog = _role_catalog(cursor, oid)
+    historical = day != today
+    # Historical supervisor backfill must never pause production-role segments.
+    if historical:
+        shift_session_id = None
 
-    if get_open_activity(cursor, oid, uid):
+    if not historical and get_open_activity(cursor, oid, uid):
         raise CleaningTaskError("Finish your current task first.", status=400)
     if shift_session_id and get_open_break(conn, int(shift_session_id)):
         raise CleaningTaskError("Finish your break before starting a task.", status=400)
@@ -214,7 +220,12 @@ def start_group_activity(
     assignments = _day_responsibilities(cursor, oid, business_date=day, user_id=uid)
     target = next((a for a in assignments if int(a["id"]) == int(responsibility_id)), None)
     if not target:
-        raise CleaningTaskError("That activity is not assigned to you today.", status=404)
+        raise CleaningTaskError(
+            "That activity is not assigned to you today."
+            if not historical
+            else "That activity is not assigned on the selected date.",
+            status=404,
+        )
     role = str(target.get("role") or "")
     if not is_activity_group_code(role):
         raise CleaningTaskError("That assignment is not an activity group.", status=400)

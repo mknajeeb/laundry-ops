@@ -887,7 +887,16 @@ def register_cleaning_task_activity_routes(
             )
             payload["read_only"] = bool(rinse_only)
             payload["can_approve"] = not rinse_only
+            payload["can_manual_complete"] = (not rinse_only) and bool(
+                (roles & HUB_ROLES)
+                or employee_allows_module(
+                    cursor, int(org_id), int(me.get("user_id") or me.get("id") or 0), "cleaning_task_review"
+                )
+            )
+            payload["can_manage_tasks"] = (not rinse_only) and bool(roles & HUB_ROLES)
+            # Hide Rinse-facing policy banners; keep fields for managers who want them.
             if rinse_only:
+                payload["approval_policy_label"] = None
                 payload = apply_rinse_task_dashboard_scope(payload)
             return jsonify(payload)
         finally:
@@ -985,6 +994,177 @@ def register_cleaning_task_activity_routes(
             except Exception:
                 pass
             return jsonify({"error": exc.message}), exc.status
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _mgmt_write_gate(*, require_hub: bool = False):
+        """Shared gate for supervisor write actions. Rinse always 403."""
+        from backend.db import get_db
+        from backend.weekly_schedule_display_settings import is_rinse_schedule_viewer
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return None, None, None, None, (err_resp, err_code)
+        org_id = user_org_id(me)
+        roles = role_set(me)
+        uid = int(me.get("user_id") or me.get("id") or 0)
+        if is_rinse_schedule_viewer(roles) and not (roles & HUB_ROLES):
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return None, None, None, None, (
+                jsonify({"error": "Rinse access is read-only for the Task Dashboard."}),
+                403,
+            )
+        if require_hub and not (roles & HUB_ROLES):
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return None, None, None, None, (jsonify({"error": "Forbidden"}), 403)
+        if not (roles & HUB_ROLES) and not employee_allows_module(
+            cursor, int(org_id), uid, "cleaning_task_review"
+        ):
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return None, None, None, None, (jsonify({"error": "Forbidden"}), 403)
+        return conn, cursor, org_id, me, None
+
+    @app.route("/api/management/task-dashboard/monthly", methods=["GET"])
+    def management_task_dashboard_monthly():
+        from backend.cleaning_task_dashboard_analytics import monthly_task_performance
+        from backend.db import get_db
+        from backend.weekly_schedule_display_settings import is_rinse_schedule_viewer
+
+        conn = get_db()
+        try:
+            cursor = conn.cursor(dictionary=True)
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            org_id = user_org_id(me)
+            if not org_id:
+                return jsonify({"error": "Organization required"}), 400
+            roles = role_set(me)
+            rinse_only = is_rinse_schedule_viewer(roles) and not (roles & HUB_ROLES)
+            if not (roles & HUB_ROLES) and not rinse_only:
+                uid = int(me.get("user_id") or me.get("id") or 0)
+                if not employee_allows_module(cursor, int(org_id), uid, "cleaning_task_review"):
+                    return jsonify({"error": "Forbidden"}), 403
+            year = request.args.get("year")
+            month = request.args.get("month")
+            payload = monthly_task_performance(
+                cursor,
+                int(org_id),
+                year=int(year) if year not in (None, "") else None,
+                month=int(month) if month not in (None, "") else None,
+                category_code=(request.args.get("category") or request.args.get("category_code") or "").strip()
+                or None,
+            )
+            payload["read_only"] = bool(rinse_only)
+            if rinse_only:
+                # Monthly chart has no labor fields; still flag for clients.
+                payload["hide_labor_metrics"] = True
+            return jsonify(payload)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @app.route("/api/management/task-dashboard/manual-complete", methods=["POST"])
+    def management_task_dashboard_manual_complete():
+        from backend.cleaning_task_manual_completion import (
+            parse_manual_payload,
+            record_manual_completion,
+        )
+
+        conn, cursor, org_id, me, err = _mgmt_write_gate(require_hub=False)
+        if err:
+            return err
+        try:
+            data = request.json or {}
+            parsed = parse_manual_payload(data)
+            if not parsed.get("responsibility_id") or not parsed.get("employee_user_id"):
+                return jsonify({"error": "responsibility_id and employee_user_id are required"}), 400
+            activity = record_manual_completion(
+                conn,
+                cursor,
+                organization_id=int(org_id),
+                supervisor_user_id=int(me.get("user_id") or me.get("id") or 0),
+                responsibility_id=int(parsed["responsibility_id"]),
+                employee_user_id=int(parsed["employee_user_id"]),
+                completed_at=parsed["completed_at"],
+                started_at=parsed.get("started_at"),
+                reason=parsed["reason"],
+                remarks=parsed.get("remarks"),
+                group_item_codes=parsed.get("group_item_codes") or [],
+                shared_item_completions=parsed.get("shared_item_completions") or [],
+                business_date=parsed.get("business_date"),
+            )
+            conn.commit()
+            return jsonify({"ok": True, "activity": activity})
+        except CleaningTaskError as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"error": exc.message, **exc.payload}), exc.status
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @app.route("/api/management/task-dashboard/correct-completion", methods=["POST"])
+    def management_task_dashboard_correct_completion():
+        from backend.cleaning_task_manual_completion import (
+            correct_completion_record,
+            parse_manual_payload,
+        )
+
+        conn, cursor, org_id, me, err = _mgmt_write_gate(require_hub=False)
+        if err:
+            return err
+        try:
+            data = request.json or {}
+            parsed = parse_manual_payload(data, require_completed_at=False)
+            activity_id = parsed.get("activity_id")
+            if not activity_id:
+                return jsonify({"error": "activity_id is required"}), 400
+            if len(parsed.get("reason") or "") < 3:
+                return jsonify({"error": "A correction reason is required"}), 400
+            activity = correct_completion_record(
+                cursor,
+                organization_id=int(org_id),
+                supervisor_user_id=int(me.get("user_id") or me.get("id") or 0),
+                activity_id=int(activity_id),
+                reason=parsed["reason"],
+                remarks=parsed.get("remarks"),
+                completed_at=parsed.get("completed_at"),
+                started_at=parsed.get("started_at"),
+                employee_user_id=parsed.get("employee_user_id"),
+            )
+            conn.commit()
+            return jsonify({"ok": True, "activity": activity})
+        except CleaningTaskError as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"error": exc.message, **exc.payload}), exc.status
         finally:
             try:
                 conn.close()
