@@ -113,7 +113,9 @@ def serialize_responsibility(row: Mapping[str, Any]) -> dict[str, Any]:
         start = _time_to_str(row.get("start_time"))
     group_id = str(row.get("assignment_group_id") or "").strip() or None
     user_id = int(row.get("user_id") or 0)
-    execution_mode = normalize_execution_mode(row.get("execution_mode"), member_count=1)
+    # Preserve stored mode; annotate_assignment_members applies the 2+ member guard.
+    raw_mode = str(row.get("execution_mode") or EXECUTION_INDIVIDUAL).strip().lower()
+    execution_mode = raw_mode if raw_mode in EXECUTION_MODES else EXECUTION_INDIVIDUAL
     return {
         "id": int(row.get("id") or 0),
         "organization_id": int(row.get("organization_id") or 0),
