@@ -145,6 +145,7 @@ export default function WeeklyScheduleEntryDialog({
   const [userIds, setUserIds] = useState([]);
   const [timingMode, setTimingMode] = useState(TASK_TIMING.ANYTIME);
   const [taskStart, setTaskStart] = useState("08:00");
+  const [executionMode, setExecutionMode] = useState("individual");
   const [taskRows, setTaskRows] = useState([]);
   const [tasksTouched, setTasksTouched] = useState(false);
 
@@ -175,6 +176,7 @@ export default function WeeklyScheduleEntryDialog({
       setRespRemarks(responsibility.remarks || "");
       setTimingMode(responsibility.timing_mode || TASK_TIMING.ANYTIME);
       setTaskStart(responsibility.start_time || "08:00");
+      setExecutionMode(responsibility.execution_mode === "shared" ? "shared" : "individual");
       return;
     }
     if (entry) {
@@ -214,6 +216,7 @@ export default function WeeklyScheduleEntryDialog({
     setUserIds(defaultUserId ? [Number(defaultUserId)] : []);
     setTimingMode(TASK_TIMING.ANYTIME);
     setTaskStart(defaultStartTime || "08:00");
+    setExecutionMode("individual");
   }, [open, entry, responsibility, defaultUserId, defaultDay, defaultKind, defaultRole, defaultStartTime, defaultEndTime]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The day's saved tasks for the chosen employee; reloaded whenever the employee or day changes so a
@@ -243,6 +246,13 @@ export default function WeeklyScheduleEntryDialog({
   }, [open, savedDayTasks]);
 
   const isShift = kind === ASSIGNMENT_KIND.SHIFT;
+  const respIsActivityGroup = String(respRole || "").startsWith("agroup_");
+  const canChooseSharedExecution = !isShift && respIsActivityGroup && userIds.length >= 2;
+  useEffect(() => {
+    if (!canChooseSharedExecution && executionMode === "shared") {
+      setExecutionMode("individual");
+    }
+  }, [canChooseSharedExecution, executionMode]);
   const canSplit = scheduleEndTimeEnabled;
   const taskEmployeeOptions = useMemo(() => {
     const list = Array.isArray(taskEmployees) ? taskEmployees : [];
@@ -383,6 +393,7 @@ export default function WeeklyScheduleEntryDialog({
         remarks: respRemarks.trim() || null,
         timing_mode: timingMode,
         start_time: timingMode === TASK_TIMING.SPECIFIC ? taskStart : null,
+        execution_mode: canChooseSharedExecution && executionMode === "shared" ? "shared" : "individual",
       });
       return;
     }
@@ -779,6 +790,19 @@ export default function WeeklyScheduleEntryDialog({
               {timingMode === TASK_TIMING.SPECIFIC ? (
                 <PlanningTimePicker label="Start time" value={taskStart} onChange={setTaskStart} />
               ) : null}
+              {canChooseSharedExecution ? (
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Activity execution</InputLabel>
+                  <Select
+                    label="Activity execution"
+                    value={executionMode}
+                    onChange={(e) => setExecutionMode(e.target.value)}
+                  >
+                    <MenuItem value="individual">Individual — each person completes their own checklist</MenuItem>
+                    <MenuItem value="shared">Shared — one collaborative checklist</MenuItem>
+                  </Select>
+                </FormControl>
+              ) : null}
               <TextField
                 size="small"
                 fullWidth
@@ -800,6 +824,9 @@ export default function WeeklyScheduleEntryDialog({
                 {scheduleRoleLabel(respRole) || "This task"} is one assignment for the selected employees. It adds no
                 scheduled hours. Anytime keeps the task on the day. The other timing options follow each employee&apos;s
                 shift and scheduled break, and they do not move that break.
+                {canChooseSharedExecution && executionMode === "shared"
+                  ? " Shared execution: one checklist any assignee can check off; each person keeps their own timer."
+                  : ""}
               </Typography>
             </>
           )}

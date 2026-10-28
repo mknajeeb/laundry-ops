@@ -280,6 +280,7 @@ export default function ManagementTasksPage() {
                         <Typography sx={{ fontWeight: 800 }}>
                           {row.role_label || row.role}
                           {row.shared ? " (shared)" : ""}
+                          {row.execution_mode === "shared" ? " · collaborative checklist" : ""}
                         </Typography>
                         <Typography variant="body2" color="text.secondary">
                           {(row.assigned_employees || []).join(" + ")} · {row.timing_label || "Anytime"}
@@ -288,6 +289,20 @@ export default function ManagementTasksPage() {
                       {statusChip(row.status)}
                     </Stack>
                     <Collapse in={open}>
+                      {(row.shared_checklist_items || []).length ? (
+                        <Box sx={{ mt: 1, mb: 1, pl: 5 }}>
+                          <Typography variant="caption" sx={{ fontWeight: 800, display: "block", mb: 0.5 }}>
+                            Shared checklist
+                          </Typography>
+                          {(row.shared_checklist_items || []).map((it) => (
+                            <Typography key={it.id || it.task_code} variant="caption" display="block" color="text.secondary">
+                              {it.task_name || it.task_code}: {it.status}
+                              {it.completed_by_name ? ` · ${it.completed_by_name}` : ""}
+                              {it.completed_at ? ` · ${String(it.completed_at).replace("T", " ").slice(0, 16)}` : ""}
+                            </Typography>
+                          ))}
+                        </Box>
+                      ) : null}
                       <Table size="small" sx={{ mt: 1 }}>
                         <TableHead>
                           <TableRow>

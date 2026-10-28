@@ -229,6 +229,52 @@ export default function CleaningTasksPinPage() {
     return () => window.clearInterval(id);
   }, [active?.started_at]);
 
+  // Shared Activity Groups: poll open activity so collaborator checkoffs appear without a manual refresh.
+  useEffect(() => {
+    const shared =
+      active?.execution_mode === "shared" ||
+      active?.group?.execution_mode === "shared" ||
+      active?.shared_session_id != null;
+    if (!shared || !active?.id || !hub?.pin || completed) return undefined;
+    let cancelled = false;
+    const sync = async () => {
+      try {
+        const res = await attendancePinCleaningTasksList(slug, hub.pin, { hubToken: hub.token });
+        const body = res?.data || {};
+        if (cancelled || !body.ok || !body.open_activity) return;
+        const next = body.open_activity;
+        if (Number(next.id) !== Number(active.id)) return;
+        setActive((prev) => {
+          if (!prev || Number(prev.id) !== Number(next.id)) return prev;
+          return {
+            ...prev,
+            ...next,
+            group: next.group || prev.group,
+            shared_checklist_complete: next.shared_checklist_complete,
+            shared_session_status: next.shared_session_status,
+          };
+        });
+      } catch {
+        /* keep last known checklist; next tick retries */
+      }
+    };
+    const id = window.setInterval(sync, 2500);
+    void sync();
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [
+    active?.id,
+    active?.execution_mode,
+    active?.group?.execution_mode,
+    active?.shared_session_id,
+    completed,
+    hub?.pin,
+    hub?.token,
+    slug,
+  ]);
+
   const buildCompletionInput = (schema) => {
     const err = validateInputClient(schema, inputValues, inputRemarks);
     if (err) throw new Error(err);
@@ -641,8 +687,16 @@ export default function CleaningTasksPinPage() {
             {active.group?.name || active.role_label || active.role}
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Activity Group · shared timer
+            {active.execution_mode === "shared" || active.group?.execution_mode === "shared"
+              ? "Shared Activity · your timer · one checklist"
+              : "Activity Group · your timer"}
           </Typography>
+          {active.group?.checklist_complete || active.shared_checklist_complete ? (
+            <Typography variant="body2" sx={{ fontWeight: 700, color: "#166534" }}>
+              Shared checklist complete
+              {active.status === "in_progress" ? " — finish your timer when ready" : ""}
+            </Typography>
+          ) : null}
           <Typography sx={{ fontSize: "2.4rem", fontWeight: 900, textAlign: "center", color: OPS_MOBILE.navy }}>
             {formatElapsed(active.started_at, nowMs)}
           </Typography>
@@ -665,7 +719,11 @@ export default function CleaningTasksPinPage() {
                     {item.required ? "" : " (optional)"}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    {done ? "Checked off" : "Pending"}
+                    {done
+                      ? item.completed_by_name
+                        ? `Checked off by ${item.completed_by_name}`
+                        : "Checked off"
+                      : "Pending"}
                   </Typography>
                   {!done ? (
                     <>
@@ -701,7 +759,9 @@ export default function CleaningTasksPinPage() {
             onClick={completeGroup}
             sx={{ fontWeight: 800, textTransform: "none", py: 1.5 }}
           >
-            Complete Group
+            {active.execution_mode === "shared" || active.group?.execution_mode === "shared"
+              ? "Finish My Participation"
+              : "Complete Group"}
           </Button>
         </Stack>
       ) : active ? (

@@ -27,16 +27,32 @@ from backend.planned_weekly_schedule_task_timing import (
 from backend.ta_helpers import invalidate_schema_cache, table_exists
 
 TABLE = "planned_weekly_schedule_responsibilities"
+
+EXECUTION_INDIVIDUAL = "individual"
+EXECUTION_SHARED = "shared"
+EXECUTION_MODES = frozenset({EXECUTION_INDIVIDUAL, EXECUTION_SHARED})
+
 _COLUMNS = (
     "id, organization_id, week_start, user_id, day_of_week, role, remarks, "
-    "assignment_group_id, timing_mode, start_time"
+    "assignment_group_id, timing_mode, start_time, execution_mode"
 )
 
 _GROUP_COLUMNS = (
     ("assignment_group_id", "VARCHAR(36) NULL DEFAULT NULL"),
     ("timing_mode", "VARCHAR(20) NOT NULL DEFAULT 'anytime'"),
     ("start_time", "TIME NULL DEFAULT NULL"),
+    ("execution_mode", "VARCHAR(20) NOT NULL DEFAULT 'individual'"),
 )
+
+
+def normalize_execution_mode(raw: Any, *, member_count: int = 1) -> str:
+    mode = str(raw or EXECUTION_INDIVIDUAL).strip().lower()
+    if mode not in EXECUTION_MODES:
+        mode = EXECUTION_INDIVIDUAL
+    # Shared only applies when 2+ employees collaborate.
+    if mode == EXECUTION_SHARED and int(member_count or 0) < 2:
+        return EXECUTION_INDIVIDUAL
+    return mode
 
 
 def _column_present(cursor, column: str) -> bool:
@@ -75,6 +91,7 @@ def ensure_responsibilities_table(cursor) -> None:
           assignment_group_id VARCHAR(36) NULL DEFAULT NULL,
           timing_mode VARCHAR(20) NOT NULL DEFAULT 'anytime',
           start_time TIME NULL DEFAULT NULL,
+          execution_mode VARCHAR(20) NOT NULL DEFAULT 'individual',
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP NULL ON UPDATE CURRENT_TIMESTAMP,
           UNIQUE KEY uq_pwsr_assignment (organization_id, week_start, user_id, day_of_week, role),
@@ -96,6 +113,7 @@ def serialize_responsibility(row: Mapping[str, Any]) -> dict[str, Any]:
         start = _time_to_str(row.get("start_time"))
     group_id = str(row.get("assignment_group_id") or "").strip() or None
     user_id = int(row.get("user_id") or 0)
+    execution_mode = normalize_execution_mode(row.get("execution_mode"), member_count=1)
     return {
         "id": int(row.get("id") or 0),
         "organization_id": int(row.get("organization_id") or 0),
@@ -110,6 +128,7 @@ def serialize_responsibility(row: Mapping[str, Any]) -> dict[str, Any]:
         "timing_mode": mode,
         "start_time": start,
         "timing_label": timing_display(mode, start),
+        "execution_mode": execution_mode,
         "members": [{"id": int(row.get("id") or 0), "user_id": user_id}] if user_id else [],
     }
 
@@ -130,9 +149,17 @@ def annotate_assignment_members(items: Sequence[Mapping[str, Any]]) -> list[dict
     for members in grouped.values():
         user_ids = [int(member["user_id"]) for member in members]
         member_rows = [{"id": int(member["id"]), "user_id": int(member["user_id"])} for member in members]
+        # Prefer shared when any member row was saved as shared (2+ people).
+        raw_modes = [str(m.get("execution_mode") or EXECUTION_INDIVIDUAL) for m in members]
+        mode = (
+            EXECUTION_SHARED
+            if EXECUTION_SHARED in raw_modes and len(user_ids) >= 2
+            else EXECUTION_INDIVIDUAL
+        )
         for member in members:
             member["user_ids"] = user_ids
             member["members"] = member_rows
+            member["execution_mode"] = mode
     return out
 
 
@@ -373,11 +400,17 @@ def _validate_assignment(
     )
     if timing_err or timing is None:
         return None, timing_err
+    execution_raw = data.get(
+        "execution_mode",
+        existing.get("execution_mode") if existing else EXECUTION_INDIVIDUAL,
+    )
+    execution_mode = normalize_execution_mode(execution_raw, member_count=len(user_ids))
     return {
         "user_ids": user_ids,
         "day_of_week": dow,
         "role": role,
         "remarks": remarks,
+        "execution_mode": execution_mode,
         **timing,
     }, None
 
@@ -394,14 +427,16 @@ def _insert_member(
     assignment_group_id: str,
     timing_mode: str,
     start_time: str | None,
+    execution_mode: str = EXECUTION_INDIVIDUAL,
 ) -> int:
+    ensure_responsibilities_table(cursor)
     cursor.execute(
         f"""
         INSERT INTO {TABLE} (
           organization_id, week_start, user_id, day_of_week, role, remarks,
-          assignment_group_id, timing_mode, start_time
+          assignment_group_id, timing_mode, start_time, execution_mode
         )
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             int(organization_id),
@@ -413,6 +448,7 @@ def _insert_member(
             assignment_group_id,
             timing_mode,
             start_time,
+            str(execution_mode or EXECUTION_INDIVIDUAL),
         ),
     )
     return int(cursor.lastrowid or 0)
@@ -430,12 +466,14 @@ def _update_member_row(
     assignment_group_id: str | None,
     timing_mode: str,
     start_time: str | None,
+    execution_mode: str = EXECUTION_INDIVIDUAL,
 ) -> None:
+    ensure_responsibilities_table(cursor)
     cursor.execute(
         f"""
         UPDATE {TABLE}
         SET user_id=%s, day_of_week=%s, role=%s, remarks=%s,
-            assignment_group_id=%s, timing_mode=%s, start_time=%s
+            assignment_group_id=%s, timing_mode=%s, start_time=%s, execution_mode=%s
         WHERE organization_id=%s AND id=%s
         """,
         (
@@ -446,6 +484,7 @@ def _update_member_row(
             assignment_group_id,
             timing_mode,
             start_time,
+            str(execution_mode or EXECUTION_INDIVIDUAL),
             int(organization_id),
             int(responsibility_id),
         ),
@@ -508,6 +547,7 @@ def create_responsibility(
             assignment_group_id=group_id,
             timing_mode=payload["timing_mode"],
             start_time=payload["start_time"],
+            execution_mode=payload["execution_mode"],
         )
         if first_id is None:
             first_id = rid
@@ -585,6 +625,7 @@ def update_responsibility(
                 assignment_group_id=group_id,
                 timing_mode=payload["timing_mode"],
                 start_time=payload["start_time"],
+                execution_mode=payload["execution_mode"],
             )
             if kept_id is None:
                 kept_id = by_user[uid]
@@ -600,6 +641,7 @@ def update_responsibility(
                 assignment_group_id=group_id,
                 timing_mode=payload["timing_mode"],
                 start_time=payload["start_time"],
+                execution_mode=payload["execution_mode"],
             )
             if kept_id is None:
                 kept_id = rid

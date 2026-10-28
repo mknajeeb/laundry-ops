@@ -279,8 +279,12 @@ def serialize_activity(row: Mapping[str, Any], *, catalog: Mapping[str, Any] | N
         if row.get("parent_activity_id") is not None
         else None,
         "activity_kind": (str(row.get("activity_kind") or "").strip() or None),
+        "shared_session_id": int(row["shared_session_id"])
+        if row.get("shared_session_id") is not None
+        else None,
         "is_activity_group": str(row.get("activity_kind") or "") == "group"
         or str(row.get("role") or "").startswith("agroup_"),
+        "execution_mode": "shared" if row.get("shared_session_id") is not None else "individual",
     }
 
 
@@ -630,6 +634,7 @@ def list_employee_day_tasks(
             "user_ids": member_ids,
             "assigned_employees": member_names_sorted,
             "shared": len(member_ids) > 1,
+            "execution_mode": str(item.get("execution_mode") or "individual"),
             "is_activity_group": is_group,
             "activity_kind": "group" if is_group else "standalone",
             "group_items": (group_cfg or {}).get("items") if is_group else None,
@@ -1378,9 +1383,44 @@ def _group_shared_assignments(
                 ]
                 entry["group_items"] = children
                 entry["is_activity_group"] = True
+                entry["execution_mode"] = (
+                    "shared" if act.get("shared_session_id") is not None else "individual"
+                )
                 if act.get("duration_seconds") is not None:
                     entry["group_duration_seconds"] = int(act.get("duration_seconds") or 0)
+                # Shared checklist once per assignment (who completed each item).
+                if act.get("shared_session_id") is not None:
+                    try:
+                        from backend.cleaning_task_shared_execution import (
+                            list_shared_session_items,
+                            serialize_shared_item,
+                        )
+
+                        shared_items = list_shared_session_items(
+                            cursor, int(organization_id), int(act["shared_session_id"])
+                        )
+                        name_ids = {
+                            int(it["completed_by_user_id"])
+                            for it in shared_items
+                            if it.get("completed_by_user_id") is not None
+                        }
+                        item_names = _employee_names(cursor, int(organization_id), sorted(name_ids))
+                        entry["shared_checklist_items"] = [
+                            serialize_shared_item(
+                                it,
+                                catalog=catalog,
+                                meta=_task_meta_for_role(
+                                    cursor, int(organization_id), str(it.get("task_code") or "")
+                                ),
+                                names=item_names,
+                            )
+                            for it in shared_items
+                        ]
+                        entry["shared_session_id"] = int(act["shared_session_id"])
+                    except Exception:
+                        pass
             contributions.append(entry)
+            # Only attach shared checklist once on the assignment row (after loop).
 
         # Assignment-level rollup for display (worst outstanding state first).
         if DISPLAY_OVERDUE in member_statuses:
@@ -1400,11 +1440,20 @@ def _group_shared_assignments(
         else:
             rollup = DISPLAY_PENDING
 
+        execution_mode = str(sample.get("execution_mode") or "individual")
+        shared_checklist = None
+        shared_session_id = None
+        for contrib in contributions:
+            if contrib.get("shared_checklist_items"):
+                shared_checklist = contrib.get("shared_checklist_items")
+                shared_session_id = contrib.get("shared_session_id")
+                break
         out.append(
             {
                 "assignment_key": key,
                 "assignment_group_id": sample.get("assignment_group_id"),
                 "shared": len(members) > 1,
+                "execution_mode": execution_mode,
                 "role": sample.get("role"),
                 "role_label": _role_label(sample.get("role"), catalog),
                 "timing_label": sample.get("timing_label")
@@ -1418,6 +1467,8 @@ def _group_shared_assignments(
                 ),
                 "status": rollup,
                 "contributions": contributions,
+                "shared_session_id": shared_session_id,
+                "shared_checklist_items": shared_checklist,
             }
         )
     return out
@@ -1787,7 +1838,15 @@ def _strip_task_duration_fields(row: Any) -> Any:
     activity = out.get("activity")
     if isinstance(activity, Mapping):
         out["activity"] = _strip_task_duration_fields(activity)
-    for key in ("contributions", "group_items", "activities", "items", "groups", "checklists"):
+    for key in (
+        "contributions",
+        "group_items",
+        "shared_checklist_items",
+        "activities",
+        "items",
+        "groups",
+        "checklists",
+    ):
         if key in out and isinstance(out[key], list):
             out[key] = _strip_task_duration_fields(out[key])
     return out

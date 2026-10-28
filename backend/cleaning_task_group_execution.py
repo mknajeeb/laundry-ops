@@ -65,6 +65,7 @@ def ensure_group_activity_schema(cursor) -> None:
     for col, ddl in (
         ("parent_activity_id", "BIGINT NULL"),
         ("activity_kind", "VARCHAR(20) NULL"),
+        ("shared_session_id", "BIGINT NULL"),
     ):
         if not table_has_column(cursor, TABLE, col):
             cursor.execute(f"ALTER TABLE {TABLE} ADD COLUMN {col} {ddl}")
@@ -89,6 +90,9 @@ def ensure_group_activity_schema(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+    from backend.cleaning_task_shared_execution import ensure_shared_activity_schema
+
+    ensure_shared_activity_schema(cursor)
     invalidate_schema_cache()
 
 
@@ -146,6 +150,17 @@ def enrich_open_group_activity(cursor, organization_id: int, activity: dict[str,
     role = str(activity.get("role") or "")
     if kind != KIND_GROUP and not is_activity_group_code(role):
         return activity
+    # Shared execution: collaborative checklist keyed by shared_session_id.
+    session_id = activity.get("shared_session_id")
+    if session_id is None and activity.get("id"):
+        row = get_activity(cursor, oid, int(activity["id"]))
+        session_id = row.get("shared_session_id") if row else None
+    if session_id is not None:
+        from backend.cleaning_task_shared_execution import enrich_shared_group_activity
+
+        activity = dict(activity)
+        activity["shared_session_id"] = int(session_id)
+        return enrich_shared_group_activity(cursor, oid, activity)
     catalog = _role_catalog(cursor, oid)
     group = get_activity_group(cursor, oid, role_code=role)
     items = list_activity_items(cursor, oid, int(activity["id"]))
@@ -158,14 +173,17 @@ def enrich_open_group_activity(cursor, organization_id: int, activity: dict[str,
     activity = dict(activity)
     activity["activity_kind"] = KIND_GROUP
     activity["is_activity_group"] = True
+    activity["execution_mode"] = "individual"
     activity["group"] = {
         "code": (group or {}).get("code"),
         "name": (group or {}).get("name") or activity.get("role_label"),
         "category_code": (group or {}).get("category_code") or activity.get("category_code"),
+        "execution_mode": "individual",
         "items": serialized,
         "required_count": len(required),
         "completed_required_count": len(done_req),
         "can_complete_group": len(required) > 0 and len(done_req) == len(required),
+        "checklist_complete": len(required) > 0 and len(done_req) == len(required),
     }
     return activity
 
@@ -206,6 +224,13 @@ def start_group_activity(
     if not group.get("items"):
         raise CleaningTaskError("Activity group has no tasks configured.", status=400)
 
+    from backend.cleaning_task_shared_execution import (
+        ensure_shared_session,
+        is_shared_execution,
+    )
+
+    shared = is_shared_execution(target)
+
     # Already completed?
     cursor.execute(
         f"""
@@ -235,6 +260,18 @@ def start_group_activity(
             paused_role = open_seg.get("role_id")
             close_open_job_segment(conn, int(shift_session_id), at, close_source="cleaning_task_group_start")
 
+    shared_session_id = None
+    if shared:
+        session = ensure_shared_session(
+            cursor,
+            organization_id=oid,
+            assignment_group_id=str(target.get("assignment_group_id")),
+            business_date=day,
+            role=role,
+            group_items=group.get("items") or [],
+        )
+        shared_session_id = int(session["id"])
+
     cursor.execute(
         f"""
         INSERT INTO {TABLE} (
@@ -243,8 +280,8 @@ def start_group_activity(
           status, started_at, paused_category_id, paused_role_id,
           category_code, completion_type, timer_enabled, verification_required,
           verification_method, verification_timing, checklist_id,
-          parent_activity_id, activity_kind
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+          parent_activity_id, activity_kind, shared_session_id
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             oid,
@@ -269,35 +306,44 @@ def start_group_activity(
             None,
             None,
             KIND_GROUP,
+            shared_session_id,
         ),
     )
     activity_id = int(cursor.lastrowid)
-    for item in group["items"]:
-        cursor.execute(
-            f"""
-            INSERT INTO {ITEMS_TABLE}
-              (organization_id, activity_id, task_code, display_order, required, status)
-            VALUES (%s,%s,%s,%s,%s,%s)
-            """,
-            (
-                oid,
-                activity_id,
-                item["task_code"],
-                int(item.get("display_order") or 0),
-                1 if item.get("required", True) else 0,
-                ITEM_PENDING,
-            ),
-        )
+    if not shared:
+        for item in group["items"]:
+            cursor.execute(
+                f"""
+                INSERT INTO {ITEMS_TABLE}
+                  (organization_id, activity_id, task_code, display_order, required, status)
+                VALUES (%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    oid,
+                    activity_id,
+                    item["task_code"],
+                    int(item.get("display_order") or 0),
+                    1 if item.get("required", True) else 0,
+                    ITEM_PENDING,
+                ),
+            )
     _record_event(
         cursor,
         organization_id=oid,
         activity_id=activity_id,
         event_type="group_started",
         actor_user_id=uid,
-        payload={"role": role, "item_count": len(group["items"])},
+        payload={
+            "role": role,
+            "item_count": len(group["items"]),
+            "execution_mode": "shared" if shared else "individual",
+            "shared_session_id": shared_session_id,
+        },
     )
     row = get_activity(cursor, oid, activity_id)
     ser = serialize_activity(row, catalog=catalog)
+    if shared_session_id is not None:
+        ser["shared_session_id"] = shared_session_id
     return enrich_open_group_activity(cursor, oid, ser)
 
 
@@ -321,6 +367,19 @@ def checkoff_group_item(
         raise CleaningTaskError("That activity group is not in progress.", status=400)
     if str(row.get("activity_kind") or "") != KIND_GROUP and not is_activity_group_code(row.get("role")):
         raise CleaningTaskError("Not an activity group session.", status=400)
+
+    if row.get("shared_session_id") is not None:
+        from backend.cleaning_task_shared_execution import checkoff_shared_item
+
+        return checkoff_shared_item(
+            conn,
+            cursor,
+            organization_id=oid,
+            user_id=uid,
+            activity_id=int(activity_id),
+            task_code=task_code,
+            completion_input=completion_input,
+        )
 
     code = str(task_code or "").strip()
     cursor.execute(
@@ -348,10 +407,12 @@ def checkoff_group_item(
         f"""
         UPDATE {ITEMS_TABLE}
         SET status=%s, completed_at=%s, completion_input_json=%s
-        WHERE id=%s
+        WHERE id=%s AND status=%s
         """,
-        (ITEM_COMPLETED, at, json.dumps(validated, default=str), int(item["id"])),
+        (ITEM_COMPLETED, at, json.dumps(validated, default=str), int(item["id"]), ITEM_PENDING),
     )
+    if int(getattr(cursor, "rowcount", 0) or 0) == 0:
+        raise CleaningTaskError("That task was already checked off.", status=409)
     _record_event(
         cursor,
         organization_id=oid,
@@ -380,6 +441,17 @@ def complete_group_activity(
         raise CleaningTaskError("Active activity group not found.", status=404)
     if str(row.get("status")) != STATUS_IN_PROGRESS:
         raise CleaningTaskError("That activity group is not in progress.", status=400)
+
+    if row.get("shared_session_id") is not None:
+        from backend.cleaning_task_shared_execution import finish_shared_participation
+
+        return finish_shared_participation(
+            conn,
+            cursor,
+            organization_id=oid,
+            user_id=uid,
+            activity_id=int(activity_id),
+        )
 
     items = list_activity_items(cursor, oid, int(activity_id))
     missing = [

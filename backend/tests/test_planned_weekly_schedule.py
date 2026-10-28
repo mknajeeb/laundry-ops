@@ -123,6 +123,7 @@ class _FakeCursor:
                     existing["start_time"] = start_time
                 return
             self._resp_id += 1
+            execution_mode = params[9] if len(params) > 9 else "individual"
             self.responsibilities.append(
                 {
                     "id": self._resp_id,
@@ -135,6 +136,7 @@ class _FakeCursor:
                     "assignment_group_id": group_id,
                     "timing_mode": timing_mode,
                     "start_time": start_time,
+                    "execution_mode": execution_mode,
                 }
             )
             self._id = self._resp_id
@@ -146,7 +148,11 @@ class _FakeCursor:
                     r["remarks"] = remarks
             return
         if sql_norm.startswith("update") and "assignment_group_id=%s" in sql_norm:
-            user_id, dow, role, remarks, group_id, timing_mode, start_time, org_id, rid = params
+            user_id, dow, role, remarks, group_id, timing_mode, start_time = params[:7]
+            if len(params) >= 10:
+                execution_mode, org_id, rid = params[7], params[8], params[9]
+            else:
+                execution_mode, org_id, rid = "individual", params[7], params[8]
             for r in self.responsibilities:
                 if r["organization_id"] == org_id and r["id"] == rid:
                     r.update(
@@ -158,6 +164,7 @@ class _FakeCursor:
                             "assignment_group_id": group_id,
                             "timing_mode": timing_mode,
                             "start_time": start_time,
+                            "execution_mode": execution_mode,
                         }
                     )
             return
