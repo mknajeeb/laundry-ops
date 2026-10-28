@@ -1832,23 +1832,11 @@ def _strip_task_duration_fields(row: Any) -> Any:
         return [_strip_task_duration_fields(item) for item in row]
     if not isinstance(row, Mapping):
         return row
-    out = dict(row)
-    for key in _RINSE_TASK_DURATION_KEYS:
-        out.pop(key, None)
-    activity = out.get("activity")
-    if isinstance(activity, Mapping):
-        out["activity"] = _strip_task_duration_fields(activity)
-    for key in (
-        "contributions",
-        "group_items",
-        "shared_checklist_items",
-        "activities",
-        "items",
-        "groups",
-        "checklists",
-    ):
-        if key in out and isinstance(out[key], list):
-            out[key] = _strip_task_duration_fields(out[key])
+    out: dict[str, Any] = {}
+    for key, value in row.items():
+        if key in _RINSE_TASK_DURATION_KEYS:
+            continue
+        out[key] = _strip_task_duration_fields(value)
     return out
 
 
@@ -1863,16 +1851,10 @@ def apply_rinse_task_dashboard_scope(payload: Mapping[str, Any]) -> dict[str, An
     out["activity_log"] = _strip_task_duration_fields(out.get("activity_log") or [])
     queue = out.get("queue")
     if isinstance(queue, Mapping):
-        out["queue"] = {
-            key: _strip_task_duration_fields(value) if isinstance(value, list) else value
-            for key, value in queue.items()
-        }
+        out["queue"] = _strip_task_duration_fields(queue)
     shift_end = out.get("shift_end")
     if isinstance(shift_end, Mapping):
-        out["shift_end"] = {
-            key: _strip_task_duration_fields(value) if isinstance(value, list) else value
-            for key, value in shift_end.items()
-        }
+        out["shift_end"] = _strip_task_duration_fields(shift_end)
     if "checklists" in out:
         out["checklists"] = _strip_task_duration_fields(out.get("checklists") or [])
     out["hide_labor_metrics"] = True

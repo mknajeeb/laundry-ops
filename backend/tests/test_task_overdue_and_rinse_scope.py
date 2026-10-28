@@ -103,7 +103,13 @@ def test_rinse_dashboard_strips_duration_fields():
                 ],
             }
         ],
-        "queue": {"pending_approval": [{"activity": {"duration_seconds": 12}}]},
+        "queue": {
+            "pending_approval": [{"activity": {"duration_seconds": 12}}],
+            "shift_end": {
+                "blocking_close": [{"activity": {"id": 1, "duration_seconds": 38}}],
+                "incomplete": [{"activity": {"id": 2, "duration_seconds": 40}}],
+            },
+        },
         "shift_end": {"blocking_close": [{"activity": {"duration_seconds": 12}}]},
     }
     out = apply_rinse_task_dashboard_scope(payload)
@@ -116,3 +122,7 @@ def test_rinse_dashboard_strips_duration_fields():
     assert "duration_seconds" not in out["activity_log"][0]
     nested = out["checklists"][0]["groups"][0]["items"][0]["activities"][0]
     assert "duration_seconds" not in nested
+    assert "duration_seconds" not in out["queue"]["pending_approval"][0]["activity"]
+    assert "duration_seconds" not in out["queue"]["shift_end"]["blocking_close"][0]["activity"]
+    assert "duration_seconds" not in out["queue"]["shift_end"]["incomplete"][0]["activity"]
+    assert "duration_seconds" not in out["shift_end"]["blocking_close"][0]["activity"]
