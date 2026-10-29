@@ -399,6 +399,150 @@ def test_shared_pair_counts_once_and_keeps_both_timers():
     assert {row["employee_name"] for row in out["durations"]} == {"Francis", "Yesenia"}
 
 
+def test_group_verification_follows_required_items_not_the_parent():
+    """A finished activity group is completed, but not verified, while a required item waits."""
+    from backend.cleaning_task_activity import STATUS_COMPLETED, STATUS_REJECTED
+
+    day = date(2026, 10, 29)
+    assignments = [
+        _solo(201, 38, "agroup_floor_washer", "amna-floor"),
+        _solo(202, 53, "agroup_floor_washer", "florentina-floor"),
+        _solo(203, 19, "lint_cleaning", "jennifer-lint"),
+        _solo(204, 30, "lint_cleaning", "evelin-lint"),
+    ]
+    activities = [
+        {
+            "id": 301,
+            "responsibility_id": 201,
+            "user_id": 38,
+            "status": STATUS_COMPLETED,
+            "role": "agroup_floor_washer",
+            "verification_required": 0,
+            "verification_method": "none",
+            "duration_seconds": 600,
+            "parent_activity_id": None,
+            "activity_kind": "group",
+            "business_date": day,
+        },
+        {
+            "id": 311,
+            "responsibility_id": 201,
+            "user_id": 38,
+            "status": STATUS_PENDING_APPROVAL,
+            "role": "washer_residue",
+            "verification_required": 1,
+            "verification_method": "supervisor",
+            "parent_activity_id": 301,
+            "activity_kind": "group_item",
+            "business_date": day,
+        },
+        {
+            "id": 312,
+            "responsibility_id": 201,
+            "user_id": 38,
+            "status": STATUS_PENDING_APPROVAL,
+            "role": "floor_brooming",
+            "verification_required": 1,
+            "verification_method": "supervisor",
+            "parent_activity_id": 301,
+            "activity_kind": "group_item",
+            "business_date": day,
+        },
+        {
+            "id": 302,
+            "responsibility_id": 202,
+            "user_id": 53,
+            "status": STATUS_COMPLETED,
+            "role": "agroup_floor_washer",
+            "verification_required": 0,
+            "verification_method": "none",
+            "duration_seconds": 600,
+            "parent_activity_id": None,
+            "activity_kind": "group",
+            "business_date": day,
+        },
+        {
+            "id": 321,
+            "responsibility_id": 202,
+            "user_id": 53,
+            "status": STATUS_APPROVED,
+            "role": "washer_residue",
+            "verification_required": 1,
+            "verification_method": "supervisor",
+            "parent_activity_id": 302,
+            "activity_kind": "group_item",
+            "business_date": day,
+        },
+        {
+            "id": 322,
+            "responsibility_id": 202,
+            "user_id": 53,
+            "status": STATUS_PENDING_APPROVAL,
+            "role": "floor_brooming",
+            "verification_required": 1,
+            "verification_method": "supervisor",
+            "parent_activity_id": 302,
+            "activity_kind": "group_item",
+            "business_date": day,
+        },
+        {
+            "id": 303,
+            "responsibility_id": 203,
+            "user_id": 19,
+            "status": STATUS_PENDING_APPROVAL,
+            "role": "lint_cleaning",
+            "verification_required": 1,
+            "verification_method": "supervisor",
+            "duration_seconds": 400,
+            "parent_activity_id": None,
+            "activity_kind": "standalone",
+            "business_date": day,
+        },
+        {
+            "id": 304,
+            "responsibility_id": 204,
+            "user_id": 30,
+            "status": STATUS_REJECTED,
+            "role": "lint_cleaning",
+            "verification_required": 1,
+            "verification_method": "supervisor",
+            "duration_seconds": 400,
+            "parent_activity_id": None,
+            "activity_kind": "standalone",
+            "business_date": day,
+        },
+    ]
+    out = _summary(
+        assignments,
+        activities,
+        {38: "Amna", 53: "Florentina", 19: "Jennifer Farfan", 30: "Evelin"},
+    )
+    by_name = {row["assigned_employees"][0]: row for row in out["shared_assignments"]}
+    amna = by_name["Amna"]
+    florentina = by_name["Florentina"]
+    jennifer = by_name["Jennifer Farfan"]
+    evelin = by_name["Evelin"]
+    assert amna["completion_status"] == "completed"
+    assert amna["verification_status"] == "waiting"
+    assert florentina["completion_status"] == "completed"
+    assert florentina["verification_status"] == "partial"
+    assert jennifer["completion_status"] == "completed"
+    assert jennifer["verification_status"] == "waiting"
+    assert evelin["completion_status"] == "completed"
+    assert evelin["verification_status"] == "needs_correction"
+    metrics = out["metrics"]
+    assert metrics["total_assigned"] == 4
+    assert metrics["completed"] == 4
+    assert metrics["verified"] == 0
+    assert metrics["pending_verification"] == 3
+    assert metrics["rejected"] == 1
+    waiting_names = {row["employee_name"] for row in out["shift_end"]["pending_approval"]}
+    assert waiting_names == {"Amna", "Florentina", "Jennifer Farfan"}
+    assert {row["employee_name"] for row in out["shift_end"]["blocking_close"]} >= waiting_names
+    assert amna["contributions"][0]["verification_status"] == "waiting"
+    assert jennifer["contributions"][0]["verification_status"] == "waiting"
+
+
 def test_partner_states_distinguish_working_from_not_started():
     from backend.cleaning_task_activity import partner_participation_state
 

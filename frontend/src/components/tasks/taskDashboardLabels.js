@@ -28,6 +28,45 @@ export function statusChipColor(status) {
   return "default";
 }
 
+export const COMPLETION_LABELS = {
+  not_started: "Not Started",
+  in_progress: "In Progress",
+  completed: "Completed",
+};
+
+export const VERIFICATION_LABELS = {
+  not_required: "Not Required",
+  waiting: "Waiting for Verification",
+  partial: "Partially Verified",
+  verified: "Verified",
+  needs_correction: "Needs Correction",
+};
+
+export function completionLabel(status) {
+  const key = String(status || "").trim().toLowerCase();
+  return COMPLETION_LABELS[key] || "Not Started";
+}
+
+export function verificationLabel(status) {
+  const key = String(status || "").trim().toLowerCase();
+  return VERIFICATION_LABELS[key] || "Not Required";
+}
+
+export function completionChipColor(status) {
+  const key = String(status || "").trim().toLowerCase();
+  if (key === "completed") return "success";
+  if (key === "in_progress") return "info";
+  return "default";
+}
+
+export function verificationChipColor(status) {
+  const key = String(status || "").trim().toLowerCase();
+  if (key === "verified") return "success";
+  if (key === "waiting" || key === "partial") return "warning";
+  if (key === "needs_correction") return "error";
+  return "default";
+}
+
 export const DEFAULT_CATEGORY_TABS = [
   { code: "start_of_day", name: "Start of Day" },
   { code: "intra_day", name: "Intra-Day" },

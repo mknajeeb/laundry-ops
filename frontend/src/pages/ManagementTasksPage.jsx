@@ -29,9 +29,13 @@ import TaskManualCompletionDialog from "../components/tasks/TaskManualCompletion
 import TaskManageDialog from "../components/tasks/TaskManageDialog";
 import {
   DEFAULT_CATEGORY_TABS,
+  completionChipColor,
+  completionLabel,
   formatEtWall,
   friendlyStatusLabel,
   statusChipColor,
+  verificationChipColor,
+  verificationLabel,
 } from "../components/tasks/taskDashboardLabels";
 import {
   approveManagementTaskDashboard,
@@ -73,6 +77,29 @@ function StatusChip({ status }) {
       color={statusChipColor(status)}
     />
   );
+}
+
+function DualStatusChips({ completionStatus, verificationStatus }) {
+  return (
+    <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap justifyContent="flex-end">
+      <Chip
+        size="small"
+        label={`Completion: ${completionLabel(completionStatus)}`}
+        color={completionChipColor(completionStatus)}
+      />
+      <Chip
+        size="small"
+        variant="outlined"
+        label={`Verification: ${verificationLabel(verificationStatus)}`}
+        color={verificationChipColor(verificationStatus)}
+      />
+    </Stack>
+  );
+}
+
+function itemNeedsVerification(item) {
+  const status = String(item?.display_status || item?.status || "");
+  return status === "pending_verification" || status === "pending_approval";
 }
 
 /**
@@ -447,7 +474,10 @@ export default function ManagementTasksPage() {
                           {(row.assigned_employees || []).join(" + ")} · {row.timing_label || "Anytime"}
                         </Typography>
                       </Box>
-                      <StatusChip status={row.status} />
+                      <DualStatusChips
+                        completionStatus={row.completion_status}
+                        verificationStatus={row.verification_status}
+                      />
                     </Stack>
                     <Collapse in={open} className="print-expand">
                       {(row.shared_checklist_items || []).length ? (
@@ -473,7 +503,7 @@ export default function ManagementTasksPage() {
                         <TableHead>
                           <TableRow>
                             <TableCell>Employee</TableCell>
-                            <TableCell>Status</TableCell>
+                            <TableCell>Completion / Verification</TableCell>
                             <TableCell>Start</TableCell>
                             <TableCell>Completed</TableCell>
                             {hideLabor ? null : <TableCell>Duration</TableCell>}
@@ -491,21 +521,44 @@ export default function ManagementTasksPage() {
                                   {(c.group_items || []).length ? (
                                     <Box sx={{ mt: 0.5 }}>
                                       {(c.group_items || []).map((gi) => (
-                                        <Typography
+                                        <Stack
                                           key={gi.id}
-                                          variant="caption"
-                                          display="block"
-                                          color="text.secondary"
+                                          direction="row"
+                                          spacing={0.5}
+                                          alignItems="center"
+                                          flexWrap="wrap"
+                                          useFlexGap
+                                          sx={{ mb: 0.25 }}
                                         >
-                                          {gi.role_label || gi.role}:{" "}
-                                          {friendlyStatusLabel(gi.display_status || gi.status)}
-                                        </Typography>
+                                          <Typography variant="caption" color="text.secondary">
+                                            {gi.role_label || gi.role}:{" "}
+                                            {friendlyStatusLabel(gi.display_status || gi.status)}
+                                          </Typography>
+                                          {!readOnly && itemNeedsVerification(gi) && gi.id ? (
+                                            <>
+                                              <Button size="small" disabled={busy} onClick={() => approve(gi.id)}>
+                                                Verify
+                                              </Button>
+                                              <Button
+                                                size="small"
+                                                color="warning"
+                                                disabled={busy}
+                                                onClick={() => setRejectId(gi.id)}
+                                              >
+                                                Needs correction
+                                              </Button>
+                                            </>
+                                          ) : null}
+                                        </Stack>
                                       ))}
                                     </Box>
                                   ) : null}
                                 </TableCell>
                                 <TableCell>
-                                  <StatusChip status={c.status} />
+                                  <DualStatusChips
+                                    completionStatus={c.completion_status}
+                                    verificationStatus={c.verification_status}
+                                  />
                                 </TableCell>
                                 <TableCell>{formatEtWall(act.started_at)}</TableCell>
                                 <TableCell>{formatEtWall(act.ended_at)}</TableCell>

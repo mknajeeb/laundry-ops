@@ -1324,11 +1324,32 @@ def list_supervisor_queue(
                 _contribution_entry(item, act, catalog=catalog, names=names, status=DISPLAY_APPROVED)
             )
         elif act and str(act.get("status")) == STATUS_COMPLETED:
-            # Finished with no verification step. Keep it out of the verified bucket
-            # so one completion cannot be counted again as an approval.
-            buckets["completed_without_verification"].append(
-                _contribution_entry(item, act, catalog=catalog, names=names, status=DISPLAY_COMPLETED)
+            # The parent timer closes as completed. Required group items still carry
+            # verification, so a finished group can still be waiting or need correction.
+            child_verification = verification_status_from_subjects(
+                [
+                    child
+                    for child in activities
+                    if child.get("parent_activity_id") is not None
+                    and int(child.get("parent_activity_id") or 0) == int(act.get("id") or 0)
+                ]
             )
+            if child_verification in {VERIFICATION_WAITING, VERIFICATION_PARTIAL}:
+                buckets["pending_approval"].append(
+                    _contribution_entry(
+                        item, act, catalog=catalog, names=names, status=DISPLAY_PENDING_APPROVAL
+                    )
+                )
+            elif child_verification == VERIFICATION_NEEDS_CORRECTION:
+                buckets["rejected"].append(
+                    _contribution_entry(item, act, catalog=catalog, names=names, status=DISPLAY_REJECTED)
+                )
+            else:
+                # Finished with no verification step. Keep it out of the verified bucket
+                # so one completion cannot be counted again as an approval.
+                buckets["completed_without_verification"].append(
+                    _contribution_entry(item, act, catalog=catalog, names=names, status=DISPLAY_COMPLETED)
+                )
         elif act and str(act.get("status")) == STATUS_REJECTED:
             buckets["rejected"].append(
                 _contribution_entry(item, act, catalog=catalog, names=names, status=DISPLAY_REJECTED)
@@ -1504,6 +1525,11 @@ def _group_shared_assignments(
                         entry["shared_session_id"] = int(act["shared_session_id"])
                     except Exception:
                         pass
+            subjects = verification_subjects_for_contribution(entry)
+            entry["verification_status"] = verification_status_from_subjects(subjects)
+            entry["verification_label"] = _VERIFICATION_LABELS[entry["verification_status"]]
+            entry["completion_status"] = completion_status_from_members([st])
+            entry["completion_label"] = _COMPLETION_LABELS[entry["completion_status"]]
             contributions.append(entry)
             # Only attach shared checklist once on the assignment row (after loop).
 
@@ -1533,6 +1559,14 @@ def _group_shared_assignments(
         else:
             rollup = DISPLAY_PENDING
 
+        completion_status = completion_status_from_members(member_statuses)
+        verification_status = verification_status_from_subjects(
+            [
+                subject
+                for contrib in contributions
+                for subject in verification_subjects_for_contribution(contrib)
+            ]
+        )
         execution_mode = str(sample.get("execution_mode") or "individual")
         shared_checklist = None
         shared_session_id = None
@@ -1560,6 +1594,10 @@ def _group_shared_assignments(
                 ),
                 "status": rollup,
                 "status_label": friendly_status_label(rollup, overdue=rollup == DISPLAY_OVERDUE),
+                "completion_status": completion_status,
+                "completion_label": _COMPLETION_LABELS[completion_status],
+                "verification_status": verification_status,
+                "verification_label": _VERIFICATION_LABELS[verification_status],
                 "category_code": (
                     _task_meta_for_role(cursor, int(organization_id), str(sample.get("role") or "")).get(
                         "category_code"
@@ -1688,16 +1726,121 @@ def partners_for_activity(cursor, organization_id: int, activity: Mapping[str, A
     return _shared_partner_rows(sample, int(activity.get("user_id") or 0), names, by_resp)
 
 
+COMPLETION_NOT_STARTED = "not_started"
+COMPLETION_IN_PROGRESS = "in_progress"
+COMPLETION_COMPLETED = "completed"
+VERIFICATION_NOT_REQUIRED = "not_required"
+VERIFICATION_WAITING = "waiting"
+VERIFICATION_PARTIAL = "partial"
+VERIFICATION_VERIFIED = "verified"
+VERIFICATION_NEEDS_CORRECTION = "needs_correction"
+
+_COMPLETION_LABELS = {
+    COMPLETION_NOT_STARTED: "Not Started",
+    COMPLETION_IN_PROGRESS: "In Progress",
+    COMPLETION_COMPLETED: "Completed",
+}
+_VERIFICATION_LABELS = {
+    VERIFICATION_NOT_REQUIRED: "Not Required",
+    VERIFICATION_WAITING: "Waiting for Verification",
+    VERIFICATION_PARTIAL: "Partially Verified",
+    VERIFICATION_VERIFIED: "Verified",
+    VERIFICATION_NEEDS_CORRECTION: "Needs Correction",
+}
+_FINISHED_WORK_DISPLAY = frozenset(
+    {DISPLAY_COMPLETED, DISPLAY_APPROVED, DISPLAY_PENDING_APPROVAL, DISPLAY_REJECTED}
+)
+
+
+def _subject_requires_verification(item: Mapping[str, Any] | None) -> bool:
+    if not item:
+        return False
+    required = item.get("verification_required")
+    method = str(item.get("verification_method") or "").strip().lower()
+    if required in (0, False, "0") or method == "none":
+        return False
+    if required in (1, True, "1"):
+        return True
+    return method in {"supervisor", "employee", "role"}
+
+
+def _subject_verification_state(item: Mapping[str, Any]) -> str:
+    status = str(item.get("display_status") or item.get("status") or "").strip().lower()
+    if status in {STATUS_PENDING_APPROVAL, DISPLAY_PENDING_APPROVAL, "pending_verification"}:
+        return VERIFICATION_WAITING
+    if status in {STATUS_APPROVED, DISPLAY_APPROVED, "verified"}:
+        return VERIFICATION_VERIFIED
+    if status in {STATUS_REJECTED, DISPLAY_REJECTED}:
+        return VERIFICATION_NEEDS_CORRECTION
+    return "other"
+
+
+def verification_status_from_subjects(subjects: Sequence[Mapping[str, Any]]) -> str:
+    """Roll verification up from the items that actually require it.
+
+    Activity-group parents are stored as completed with verification not required.
+    The required task items carry the verification state.
+    """
+    required = [item for item in subjects or [] if _subject_requires_verification(item)]
+    if not required:
+        return VERIFICATION_NOT_REQUIRED
+    states = [_subject_verification_state(item) for item in required]
+    if any(state == VERIFICATION_NEEDS_CORRECTION for state in states):
+        return VERIFICATION_NEEDS_CORRECTION
+    verified = sum(state == VERIFICATION_VERIFIED for state in states)
+    if verified == len(states):
+        return VERIFICATION_VERIFIED
+    if verified:
+        return VERIFICATION_PARTIAL
+    return VERIFICATION_WAITING
+
+
+def verification_subjects_for_contribution(contrib: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    items = [item for item in (contrib.get("group_items") or []) if isinstance(item, Mapping)]
+    if items:
+        return items
+    activity = contrib.get("activity") or {}
+    if activity:
+        return [activity]
+    return []
+
+
+def completion_status_from_members(statuses: Sequence[str]) -> str:
+    values = [str(status or "") for status in statuses]
+    if values and all(status in _FINISHED_WORK_DISPLAY for status in values):
+        return COMPLETION_COMPLETED
+    if any(status in _STARTED_DISPLAY or status in _FINISHED_WORK_DISPLAY for status in values):
+        return COMPLETION_IN_PROGRESS
+    return COMPLETION_NOT_STARTED
+
+
+def assignment_completion_status(row: Mapping[str, Any]) -> str:
+    return completion_status_from_members(
+        [str(contrib.get("status") or "") for contrib in (row.get("contributions") or [])]
+    )
+
+
+def assignment_verification_status(row: Mapping[str, Any]) -> str:
+    subjects: list[Mapping[str, Any]] = []
+    for contrib in row.get("contributions") or []:
+        subjects.extend(verification_subjects_for_contribution(contrib))
+    return verification_status_from_subjects(subjects)
+
+
 def assignment_is_started(row: Mapping[str, Any]) -> bool:
     return any(str(c.get("status") or "") in _STARTED_DISPLAY for c in (row.get("contributions") or []))
 
 
 def assignment_is_completed(row: Mapping[str, Any]) -> bool:
-    """One required assignment is complete when every member's work is successfully finished.
+    """One required assignment is complete when every member has finished the work.
 
     Shared Execution is still one assignment: two finished timers do not make two completions.
-    A partner who has not finished keeps the assignment incomplete.
+    A partner who has not finished keeps the assignment incomplete. A finished submission
+    that needs correction is still complete; it is not verified.
     """
+    recorded = str(row.get("completion_status") or "")
+    if recorded:
+        return recorded == COMPLETION_COMPLETED
     contribs = list(row.get("contributions") or [])
     if not contribs:
         return False
@@ -1708,12 +1851,8 @@ def _contribution_verification_satisfied(contrib: Mapping[str, Any]) -> bool:
     status = str(contrib.get("status") or "")
     if status not in _SUCCESS_DISPLAY:
         return False
-    act = contrib.get("activity") or {}
-    required = act.get("verification_required")
-    method = str(act.get("verification_method") or "").strip().lower()
-    if required in (0, False) or method == "none":
-        return True
-    return status == DISPLAY_APPROVED
+    rolled = verification_status_from_subjects(verification_subjects_for_contribution(contrib))
+    return rolled in {VERIFICATION_NOT_REQUIRED, VERIFICATION_VERIFIED}
 
 
 def assignment_is_verified(row: Mapping[str, Any]) -> bool:
@@ -1721,6 +1860,14 @@ def assignment_is_verified(row: Mapping[str, Any]) -> bool:
         return False
     contribs = list(row.get("contributions") or [])
     return bool(contribs) and all(_contribution_verification_satisfied(c) for c in contribs)
+
+
+def assignment_needs_correction(row: Mapping[str, Any]) -> bool:
+    if str(row.get("verification_status") or "") == VERIFICATION_NEEDS_CORRECTION:
+        return True
+    return any(
+        str(c.get("status") or "") == DISPLAY_REJECTED for c in (row.get("contributions") or [])
+    ) and not assignment_is_completed(row)
 
 
 def dashboard_summary(
@@ -1791,15 +1938,9 @@ def dashboard_summary(
     pending_verification = sum(
         1
         for row in shared_assignments
-        if any(str(c.get("status") or "") == DISPLAY_PENDING_APPROVAL for c in (row.get("contributions") or []))
-        and not assignment_is_verified(row)
+        if str(row.get("verification_status") or "") in {VERIFICATION_WAITING, VERIFICATION_PARTIAL}
     )
-    rejected_assignments = sum(
-        1
-        for row in shared_assignments
-        if any(str(c.get("status") or "") == DISPLAY_REJECTED for c in (row.get("contributions") or []))
-        and not assignment_is_completed(row)
-    )
+    rejected_assignments = sum(1 for row in shared_assignments if assignment_needs_correction(row))
     completion_rate = round((completed / assigned_unique) * 100, 1) if assigned_unique else None
     verification_rate = round((verified / assigned_unique) * 100, 1) if assigned_unique else None
     # Count group timer once (parent only); ignore group_item children (duration NULL / excluded).
@@ -1848,11 +1989,9 @@ def dashboard_summary(
             bucket["completed"] += 1
         if assignment_is_verified(row):
             bucket["verified"] += 1
-        if any(
-            str(c.get("status") or "") == DISPLAY_PENDING_APPROVAL for c in (row.get("contributions") or [])
-        ) and not assignment_is_verified(row):
+        if str(row.get("verification_status") or "") in {VERIFICATION_WAITING, VERIFICATION_PARTIAL}:
             bucket["pending_verification"] += 1
-        if any(str(c.get("status") or "") == DISPLAY_REJECTED for c in (row.get("contributions") or [])) and not assignment_is_completed(row):
+        if assignment_needs_correction(row):
             bucket["rejected"] += 1
         if row.get("status") == DISPLAY_OVERDUE:
             bucket["overdue"] += 1
