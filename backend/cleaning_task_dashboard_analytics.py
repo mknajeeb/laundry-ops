@@ -8,18 +8,19 @@ from typing import Any, Mapping
 
 from backend.business_time import business_today
 from backend.cleaning_task_activity import (
-    DISPLAY_APPROVED,
-    DISPLAY_COMPLETED,
     DISPLAY_OVERDUE,
-    DISPLAY_PENDING_APPROVAL,
-    DISPLAY_REJECTED,
-    _group_shared_assignments,
-    _latest_activity_by_resp,
+    VERIFICATION_PARTIAL,
+    VERIFICATION_WAITING,
     _activities_for_day,
     _day_responsibilities,
     _employee_names,
+    _group_shared_assignments,
+    _latest_activity_by_resp,
     _role_catalog,
     _task_meta_for_role,
+    assignment_is_completed,
+    assignment_is_verified,
+    assignment_needs_correction,
     ensure_cleaning_task_activity_tables,
 )
 from backend.task_catalog import list_categories
@@ -40,7 +41,9 @@ def monthly_task_performance(
 ) -> dict[str, Any]:
     """Daily assigned / completed / overdue / verified for a calendar month (ET business dates).
 
-    Shared assignments count once per day (same policy as the day dashboard).
+    Shared assignments count once per day. Verified, pending verification, completed,
+    and needs-correction use the same assignment helpers as the day dashboard: one
+    group is one assignment, and it is verified only when every required item is verified.
     """
     ensure_cleaning_task_activity_tables(cursor)
     today = business_today()
@@ -102,30 +105,21 @@ def monthly_task_performance(
         verified = 0
         pending_verification = 0
         rejected = 0
+        # Same assignment rules as the day dashboard. A group is one assignment and is
+        # verified only when every required item is verified, not when the parent timer closes.
         for row in shared:
-            st = row.get("status")
-            if st == DISPLAY_OVERDUE:
-                overdue += 1
-                pending += 1
-            elif st in (DISPLAY_PENDING_APPROVAL,):
-                pending_verification += 1
+            if assignment_is_completed(row):
                 completed += 1
-            elif st == DISPLAY_APPROVED:
-                verified += 1
-                completed += 1
-            elif st == DISPLAY_REJECTED:
-                rejected += 1
-                completed += 1
-            elif st == DISPLAY_COMPLETED:
-                completed += 1
-            elif st in ("not_started", "pending", None):
-                pending += 1
-            elif st == "in_progress":
-                pending += 1
             else:
-                # unknown — treat incomplete as pending
-                if st not in (DISPLAY_COMPLETED, DISPLAY_APPROVED, DISPLAY_PENDING_APPROVAL):
-                    pending += 1
+                pending += 1
+            if row.get("status") == DISPLAY_OVERDUE:
+                overdue += 1
+            if assignment_is_verified(row):
+                verified += 1
+            if str(row.get("verification_status") or "") in {VERIFICATION_WAITING, VERIFICATION_PARTIAL}:
+                pending_verification += 1
+            if assignment_needs_correction(row):
+                rejected += 1
 
         day_row = {
             "business_date": str(cur),
