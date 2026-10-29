@@ -542,6 +542,9 @@ def test_group_verification_follows_required_items_not_the_parent():
     waiting_ids = {row["activity"]["id"] for row in waiting}
     assert waiting_ids == {311, 312, 322, 303}
     assert 301 not in waiting_ids and 302 not in waiting_ids
+    approved_ids = {row["activity"]["id"] for row in out["queue"]["approved"]}
+    assert 321 in approved_ids
+    assert 302 not in approved_ids
     assert {row["employee_name"] for row in out["shift_end"]["blocking_close"]} >= waiting_names
     assert amna["contributions"][0]["verification_status"] == "waiting"
     assert jennifer["contributions"][0]["verification_status"] == "waiting"

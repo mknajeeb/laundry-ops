@@ -1349,7 +1349,7 @@ def list_supervisor_queue(
                 and int(child.get("parent_activity_id") or 0) == int(act.get("id") or 0)
                 and _subject_requires_verification(child)
             ]
-            actionable = False
+            listed = False
             for child in children:
                 child_status = str(child.get("status") or "")
                 if child_status == STATUS_PENDING_APPROVAL:
@@ -1358,15 +1358,22 @@ def list_supervisor_queue(
                             item, child, catalog=catalog, names=names, status=DISPLAY_PENDING_APPROVAL
                         )
                     )
-                    actionable = True
+                    listed = True
                 elif child_status == STATUS_REJECTED:
                     buckets["rejected"].append(
                         _group_item_queue_entry(
                             item, child, catalog=catalog, names=names, status=DISPLAY_REJECTED
                         )
                     )
-                    actionable = True
-            if not actionable:
+                    listed = True
+                elif child_status == STATUS_APPROVED:
+                    buckets["approved"].append(
+                        _group_item_queue_entry(
+                            item, child, catalog=catalog, names=names, status=DISPLAY_APPROVED
+                        )
+                    )
+                    listed = True
+            if not listed:
                 # Finished with no verification step. Keep it out of the verified bucket
                 # so one completion cannot be counted again as an approval.
                 buckets["completed_without_verification"].append(
