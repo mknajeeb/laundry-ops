@@ -141,6 +141,17 @@ class _FakeCursor:
             )
             self._id = self._resp_id
             return
+        if sql_norm.startswith("update") and "display_order=%s" in sql_norm:
+            display_order, org_id, rid, user_id, dow = params
+            for r in self.responsibilities:
+                if (
+                    r["organization_id"] == org_id
+                    and r["id"] == rid
+                    and r["user_id"] == user_id
+                    and r["day_of_week"] == dow
+                ):
+                    r["display_order"] = display_order
+            return
         if sql_norm.startswith("update") and "set remarks = %s" in sql_norm and "timing_mode" not in sql_norm:
             remarks, org_id, rid = params
             for r in self.responsibilities:

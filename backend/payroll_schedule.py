@@ -7,6 +7,8 @@ Performance preview uses rinse_folding_user_map when available.
 
 from __future__ import annotations
 
+import threading
+import time as _time
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Optional
@@ -476,6 +478,93 @@ def list_schedule_workers_for_grid(conn, organization_id: int) -> list[dict[str,
         prof["worker_name"] = prof.get("display_name")
         out.append(json_safe(prof))
     return out
+
+
+_worker_by_id_lock = threading.Lock()
+_worker_by_id_cache: dict[tuple[int, int], tuple[float, dict[str, Any] | None]] = {}
+_WORKER_BY_ID_TTL_SECONDS = 30.0
+
+
+def schedule_workers_by_ids(conn, organization_id: int, user_ids: Any) -> dict[int, dict[str, Any]]:
+    """Affiliation and display name for specific employees. Does not load the whole grid."""
+    ids: list[int] = []
+    for raw in user_ids or []:
+        try:
+            uid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if uid > 0 and uid not in ids:
+            ids.append(uid)
+    if not ids:
+        return {}
+    now = _time.monotonic()
+    org_id = int(organization_id)
+    cached: dict[int, dict[str, Any]] = {}
+    missing: list[int] = []
+    with _worker_by_id_lock:
+        for uid in ids:
+            hit = _worker_by_id_cache.get((org_id, uid))
+            if hit and now - hit[0] < _WORKER_BY_ID_TTL_SECONDS:
+                if hit[1]:
+                    cached[uid] = hit[1]
+            else:
+                missing.append(uid)
+    if not missing:
+        return cached
+    try:
+        from backend.business_entity import ensure_business_entity_column
+        from backend.portal_system_users import is_portal_system_user
+
+        c = _cursor(conn)
+        ensure_business_entity_column(c)
+        user_filter = _users_list_filter(c)
+        display_expr = _schedule_grid_display_name_expr(c)
+        placeholders = ",".join(["%s"] * len(missing))
+        c.execute(
+            f"""
+            SELECT DISTINCT
+                   u.id AS user_id,
+                   pwp.id AS worker_profile_id,
+                   pwp.default_hourly_rate,
+                   COALESCE(pwp.active, 1) AS active,
+                   COALESCE(pwp.can_work_rinse, 1) AS can_work_rinse,
+                   COALESCE(pwp.can_work_drop_off, 1) AS can_work_drop_off,
+                   COALESCE(pwp.can_work_both, 1) AS can_work_both,
+                   pwp.business_entity,
+                   {display_expr} AS display_name
+            FROM users u
+            LEFT JOIN payroll_profiles pp ON pp.user_id = u.id
+            LEFT JOIN payroll_worker_profiles pwp
+                   ON pwp.organization_id = u.organization_id AND pwp.user_id = u.id
+            WHERE u.organization_id = %s AND u.id IN ({placeholders}) AND {user_filter}
+              AND COALESCE(pwp.active, 1) = 1
+            """,
+            (org_id, *missing),
+        )
+        rows = c.fetchall() or []
+        if not isinstance(rows, list):
+            return {}
+        out: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            if not isinstance(row, dict) or not int(row.get("user_id") or 0):
+                continue
+            uid = int(row["user_id"])
+            try:
+                if is_portal_system_user(conn, uid):
+                    continue
+            except Exception:
+                pass
+            prof = dict(row)
+            prof["worker_name"] = prof.get("display_name")
+            out[uid] = json_safe(prof)
+        stamped = _time.monotonic()
+        with _worker_by_id_lock:
+            for uid in missing:
+                _worker_by_id_cache[(org_id, uid)] = (stamped, out.get(uid))
+        cached.update(out)
+        return cached
+    except Exception:
+        return cached
 
 
 def worker_exists_in_schedule_grid(conn, organization_id: int, user_id: int) -> bool:

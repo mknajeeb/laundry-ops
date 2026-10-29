@@ -64,6 +64,7 @@ import WeeklyScheduleBreaksByTimeView, { BreaksViewToggle } from "../components/
 import { BREAKS_VIEW, buildBreaksByTime } from "../components/weeklySchedule/weeklyScheduleBreaksByTime";
 import WeeklyScheduleResponsibilityChip from "../components/weeklySchedule/WeeklyScheduleResponsibilityChip";
 import { parseTaskDrag, reorderIds, TASK_DRAG_TYPE } from "../components/weeklySchedule/weeklyScheduleTaskMove";
+import { mergeScheduleMutation } from "../components/weeklySchedule/applyResponsibilityUpdate";
 import {
   ASSIGNMENT_KIND,
   buildHourlyCoverage,
@@ -377,6 +378,8 @@ export default function WeeklySchedulePage() {
   const [taskMove, setTaskMove] = useState(null);
   const [taskMoveSaving, setTaskMoveSaving] = useState(false);
   const [taskMoveError, setTaskMoveError] = useState("");
+  const [taskBusy, setTaskBusy] = useState("");
+  const [taskNotice, setTaskNotice] = useState("");
   const [showExcluded, setShowExcluded] = useState(false);
   const [showCost, setShowCost] = useState(false);
   const [costSaving, setCostSaving] = useState(false);
@@ -884,14 +887,22 @@ export default function WeeklySchedulePage() {
     setSaving(true);
     setDialogError("");
     const { kind, ...body } = form;
+    const savingTask = kind === ASSIGNMENT_KIND.RESPONSIBILITY;
+    if (savingTask) {
+      setTaskBusy(editingResponsibility?.id ? "Saving task…" : "Saving assignment…");
+      setTaskNotice("");
+    }
     try {
       let res;
-      if (kind === ASSIGNMENT_KIND.RESPONSIBILITY) {
+      if (savingTask) {
         res = editingResponsibility?.id
           ? await updateWeeklyScheduleResponsibility(editingResponsibility.id, body)
           : await createWeeklyScheduleResponsibility({ week_start: weekStart, ...body });
+        setData((prev) => mergeScheduleMutation(prev, res.data));
+        setTaskNotice(editingResponsibility?.id ? "Task saved." : "Task assigned.");
       } else if (editingEntry?.id) {
         res = await updateWeeklyScheduleEntry(editingEntry.id, body);
+        setData(res.data);
       } else {
         res = await createWeeklyScheduleEntry({
           week_start: weekStart,
@@ -899,13 +910,15 @@ export default function WeeklySchedulePage() {
           employer_affiliation:
             body.employer_affiliation || defaultNewShiftEntity(employeesById[body.user_id], organizationSlug),
         });
+        setData(res.data);
       }
-      setData(res.data);
       setDialogOpen(false);
     } catch (e) {
       setDialogError(e?.response?.data?.error || "Failed to save assignment");
+      if (savingTask) setTaskNotice("");
     } finally {
       setSaving(false);
+      if (savingTask) setTaskBusy("");
     }
   };
 
@@ -915,14 +928,19 @@ export default function WeeklySchedulePage() {
       if (!window.confirm(shared ? "Remove this task for everyone assigned to it?" : "Remove this task?")) return;
       setSaving(true);
       setDialogError("");
+      setTaskBusy("Removing task…");
+      setTaskNotice("");
       try {
         const res = await deleteWeeklyScheduleResponsibility(editingResponsibility.id);
-        setData(res.data);
+        setData((prev) => mergeScheduleMutation(prev, res.data));
+        setTaskNotice("Task removed.");
         setDialogOpen(false);
       } catch (e) {
         setDialogError(e?.response?.data?.error || "Failed to remove task");
+        setTaskNotice("");
       } finally {
         setSaving(false);
+        setTaskBusy("");
       }
       return;
     }
@@ -999,6 +1017,8 @@ export default function WeeklySchedulePage() {
       const cell = responsibilitiesByCell[`${target.userId}:${target.day}`] || [];
       const ordered = reorderIds(cell.map((row) => row.id), item.id, target.beforeId);
       setError("");
+      setTaskBusy("Saving task order…");
+      setTaskNotice("");
       try {
         const res = await reorderWeeklyScheduleTasks({
           week_start: weekStart,
@@ -1006,9 +1026,13 @@ export default function WeeklySchedulePage() {
           user_id: target.userId,
           ordered_ids: ordered,
         });
-        setData(res.data);
+        setData((prev) => mergeScheduleMutation(prev, res.data));
+        setTaskNotice("Task order saved.");
       } catch (e) {
         setError(e?.response?.data?.error || "Failed to reorder tasks");
+        setTaskNotice("");
+      } finally {
+        setTaskBusy("");
       }
       return;
     }
@@ -1021,28 +1045,38 @@ export default function WeeklySchedulePage() {
     if (!taskMove?.item?.id) return;
     setTaskMoveSaving(true);
     setTaskMoveError("");
+    setTaskBusy("Saving move…");
+    setTaskNotice("");
     try {
       const res = await moveWeeklyScheduleTask(taskMove.item.id, body);
-      setData(res.data);
+      setData((prev) => mergeScheduleMutation(prev, res.data));
+      setTaskNotice("Task moved.");
       setTaskMove(null);
     } catch (e) {
       setTaskMoveError(e?.response?.data?.error || "Failed to move task");
+      setTaskNotice("");
     } finally {
       setTaskMoveSaving(false);
+      setTaskBusy("");
     }
   };
 
   const handleAssignTasks = async (body) => {
     setAssignSaving(true);
     setAssignError("");
+    setTaskBusy("Saving assignment…");
+    setTaskNotice("");
     try {
       const res = await assignWeeklyScheduleTasks({ week_start: weekStart, ...body });
-      setData(res.data);
+      setData((prev) => mergeScheduleMutation(prev, res.data));
+      setTaskNotice("Tasks assigned.");
       setAssignOpen(false);
     } catch (e) {
       setAssignError(e?.response?.data?.error || "Failed to assign tasks");
+      setTaskNotice("");
     } finally {
       setAssignSaving(false);
+      setTaskBusy("");
     }
   };
 
@@ -1647,6 +1681,25 @@ export default function WeeklySchedulePage() {
             </Typography>
           ) : null}
 
+          {taskBusy ? (
+            <Alert
+              severity="info"
+              icon={<CircularProgress size={16} />}
+              sx={{ mb: 1.25, flexShrink: 0 }}
+              className="no-print"
+            >
+              {taskBusy}
+            </Alert>
+          ) : taskNotice ? (
+            <Alert
+              severity="success"
+              onClose={() => setTaskNotice("")}
+              sx={{ mb: 1.25, flexShrink: 0 }}
+              className="no-print"
+            >
+              {taskNotice}
+            </Alert>
+          ) : null}
           {error ? (
             <Alert severity="error" sx={{ mb: 1.25, flexShrink: 0 }} className="no-print">
               {error}

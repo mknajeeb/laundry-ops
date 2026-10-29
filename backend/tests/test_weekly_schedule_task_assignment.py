@@ -5,9 +5,12 @@ from unittest.mock import MagicMock, patch
 
 from backend.planned_weekly_schedule_responsibilities import (
     assign_tasks_for_days,
+    delete_assignment,
     list_week_responsibilities,
     move_task_assignment,
     reorder_day_tasks,
+    responsibility_change_patch,
+    responsibility_week_snapshot,
     update_responsibility,
 )
 from backend.tests.test_planned_weekly_schedule import WEEK, _FakeCursor, _create, _patched
@@ -185,3 +188,112 @@ def test_remarks_edit_does_not_require_a_correction():
                 conn, cursor, 1, created["items"][0]["id"], {"remarks": "Use the side door"}
             )
     assert edit_err is None and updated["remarks"] == "Use the side door"
+
+
+def test_a_failed_later_day_removes_the_days_already_inserted():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    _shifts(cursor)
+    p1, p2 = _patched()
+    with p1, p2:
+        _, err = assign_tasks_for_days(
+            conn, cursor, 1, week_start=WEEK, data={"days_of_week": [1], "role": "lint_cleaning", "user_ids": [10, 20], "execution_mode": "shared"}
+        )
+        assert err is None
+        _, err = assign_tasks_for_days(
+            conn,
+            cursor,
+            1,
+            week_start=WEEK,
+            data={"days_of_week": [2, 1], "role": "lint_cleaning", "user_ids": [10, 20], "execution_mode": "shared"},
+        )
+    assert err and "already has" in err
+    rows = [row for row in list_week_responsibilities(cursor, 1, week_start=WEEK) if row["role"] == "lint_cleaning"]
+    assert {row["day_of_week"] for row in rows} == {1}
+    assert {row["user_id"] for row in rows} == {10, 20}
+
+
+def test_participant_and_move_patches_touch_only_that_pairing():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    _shifts(cursor)
+    shift_count = len(cursor.rows)
+    p1, p2 = _patched()
+    with p1, p2:
+        created, err = assign_tasks_for_days(
+            conn,
+            cursor,
+            1,
+            week_start=WEEK,
+            data={"days_of_week": [1, 2], "role": "lint_cleaning", "user_ids": [10, 20], "execution_mode": "shared"},
+        )
+        assert err is None
+        monday = next(item for item in created["items"] if item["day_of_week"] == 1)
+        tuesday_id = next(item["id"] for item in created["items"] if item["day_of_week"] == 2)
+        before = responsibility_week_snapshot(cursor, 1, WEEK)
+        updated, err = update_responsibility(
+            conn,
+            cursor,
+            1,
+            monday["id"],
+            {"user_ids": [10], "day_of_week": 1, "role": "lint_cleaning", "execution_mode": "individual"},
+        )
+        assert err is None, err
+        patch = responsibility_change_patch(cursor, 1, WEEK, before)
+        moved_before = responsibility_week_snapshot(cursor, 1, WEEK)
+        moved, err = move_task_assignment(
+            conn, cursor, 1, tuesday_id, {"day_of_week": 3, "confirm_unscheduled": True}
+        )
+        assert err is None, err
+        move_patch = responsibility_change_patch(cursor, 1, WEEK, moved_before)
+        extra, err = assign_tasks_for_days(
+            conn, cursor, 1, week_start=WEEK, data={"days_of_week": [1], "role": "floor_cleaning", "user_ids": [10]}
+        )
+        assert err is None
+        order_before = responsibility_week_snapshot(cursor, 1, WEEK)
+        ordered, err = reorder_day_tasks(
+            cursor,
+            1,
+            week_start=WEEK,
+            day_of_week=1,
+            user_id=10,
+            ordered_ids=[updated["id"], extra["items"][0]["id"]],
+        )
+        assert err is None and ordered == [updated["id"], extra["items"][0]["id"]]
+        order_patch = responsibility_change_patch(cursor, 1, WEEK, order_before)
+    removed_users = {
+        row["user_id"]
+        for row in before
+        if row["id"] in patch["removed_ids"]
+    }
+    assert removed_users == {20}
+    kept = patch["responsibilities"]
+    assert {row["user_id"] for row in kept} == {10}
+    assert all(row["day_of_week"] == 1 for row in kept)
+    assert all(row["user_ids"] == [10] for row in kept)
+    assert tuesday_id not in {row["id"] for row in kept}
+    assert move_patch["removed_ids"] == []
+    assert {row["user_id"] for row in move_patch["responsibilities"]} == {10, 20}
+    assert {row["day_of_week"] for row in move_patch["responsibilities"]} == {3}
+    assert moved["user_ids"] == [10, 20] or set(moved["user_ids"]) == {10, 20}
+    assert {row["id"] for row in order_patch["responsibilities"]} == {extra["items"][0]["id"]}
+    assert order_patch["responsibilities"][0]["display_order"] == 1
+    assert len(cursor.rows) == shift_count
+
+
+def test_deleting_a_shared_assignment_removes_every_member():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    _shifts(cursor)
+    p1, p2 = _patched()
+    with p1, p2:
+        created, err = assign_tasks_for_days(
+            conn, cursor, 1, week_start=WEEK, data={"days_of_week": [1], "role": "lint_cleaning", "user_ids": [10, 20], "execution_mode": "shared"}
+        )
+        assert err is None
+        before = responsibility_week_snapshot(cursor, 1, WEEK)
+        assert delete_assignment(cursor, 1, created["items"][0]["id"])
+        patch = responsibility_change_patch(cursor, 1, WEEK, before)
+    assert set(patch["removed_ids"]) == {row["id"] for row in before}
+    assert patch["responsibilities"] == []
+    assert list_week_responsibilities(cursor, 1, week_start=WEEK) == []

@@ -70,7 +70,14 @@ def _column_present(cursor, column: str) -> bool:
     return str(field or "").lower() == column.lower()
 
 
+_group_columns_ready = False
+
+
 def _ensure_task_group_columns(cursor) -> None:
+    """Check assignment columns once per process. Each check is a remote round trip."""
+    global _group_columns_ready
+    if _group_columns_ready:
+        return
     for column, ddl in _GROUP_COLUMNS:
         try:
             if _column_present(cursor, column):
@@ -78,6 +85,7 @@ def _ensure_task_group_columns(cursor) -> None:
             cursor.execute(f"ALTER TABLE {TABLE} ADD COLUMN {column} {ddl}")
         except Exception:
             return
+    _group_columns_ready = True
 
 
 def ensure_responsibilities_table(cursor) -> None:
@@ -187,6 +195,83 @@ def _fetch_week_rows(cursor, organization_id: int, week_start: date) -> list[dic
     return [serialize_responsibility(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
 
 
+_CHANGE_FIELDS = (
+    "user_id",
+    "day_of_week",
+    "role",
+    "remarks",
+    "assignment_group_id",
+    "timing_mode",
+    "start_time",
+    "execution_mode",
+    "display_order",
+)
+
+
+def responsibility_week_snapshot(cursor, organization_id: int, week_start: date) -> list[dict[str, Any]]:
+    """Plain assignment rows for one week, captured before a task write."""
+    return _fetch_week_rows(cursor, organization_id, week_start)
+
+
+def responsibility_week_start(cursor, organization_id: int, responsibility_id: int) -> date | None:
+    ensure_responsibilities_table(cursor)
+    cursor.execute(
+        f"SELECT week_start FROM {TABLE} WHERE organization_id = %s AND id = %s LIMIT 1",
+        (int(organization_id), int(responsibility_id)),
+    )
+    row = cursor.fetchone()
+    if not isinstance(row, dict) or not row.get("week_start"):
+        return None
+    value = row.get("week_start")
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
+
+def _assignment_signature(row: Mapping[str, Any]) -> tuple:
+    return tuple(row.get(field) for field in _CHANGE_FIELDS)
+
+
+def responsibility_change_patch(
+    cursor,
+    organization_id: int,
+    week_start: date,
+    before_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Return the assignment rows this write changed, plus ids that were removed.
+
+    A task or pairing change does not affect attendance, shifts, breaks, roles,
+    or scheduled hours, so callers can refresh the affected cards from this patch.
+    Every remaining member of a changed pairing is included.
+    """
+    after_plain = _fetch_week_rows(cursor, organization_id, week_start)
+    before_by_id = {int(row["id"]): row for row in before_rows or [] if int(row.get("id") or 0)}
+    after_by_id = {int(row["id"]): row for row in after_plain}
+    removed = [rid for rid in before_by_id if rid not in after_by_id]
+    dirty = {
+        rid
+        for rid, row in after_by_id.items()
+        if rid not in before_by_id or _assignment_signature(before_by_id[rid]) != _assignment_signature(row)
+    }
+    annotated = annotate_assignment_members(after_plain)
+    before_groups: dict[str, set[int]] = {}
+    for row in before_rows or []:
+        before_groups.setdefault(assignment_key(row), set()).add(int(row["id"]))
+    after_groups: dict[str, set[int]] = {}
+    for row in annotated:
+        after_groups.setdefault(assignment_key(row), set()).add(int(row["id"]))
+    affected: set[str] = set()
+    for key, ids in before_groups.items():
+        if ids != after_groups.get(key, set()) or any(rid in dirty for rid in ids):
+            affected.add(key)
+    for key, ids in after_groups.items():
+        if key not in before_groups or any(rid in dirty for rid in ids):
+            affected.add(key)
+    selected = [row for row in annotated if assignment_key(row) in affected]
+    selected = annotate_responsibility_activity(cursor, organization_id, selected)
+    return {"removed_ids": removed, "responsibilities": selected}
+
+
 def list_week_responsibilities(cursor, organization_id: int, *, week_start: date) -> list[dict[str, Any]]:
     return annotate_assignment_members(_fetch_week_rows(cursor, organization_id, week_start))
 
@@ -272,17 +357,51 @@ def _parse_user_ids(data: Mapping[str, Any], *, fallback: Sequence[int] | None =
 
 
 def _worker_names(conn, organization_id: int, user_ids: Sequence[int]) -> dict[int, str]:
+    """Names for the employees on this assignment. Does not reload the week grid."""
+    from backend.payroll_schedule import schedule_workers_by_ids
     from backend.planned_weekly_schedule import _load_workers
 
+    wanted = [int(uid) for uid in user_ids]
+    named: dict[int, str] = {}
     try:
-        workers = _load_workers(conn, organization_id) if conn is not None else []
+        found = schedule_workers_by_ids(conn, organization_id, wanted) if conn is not None else {}
     except Exception:
-        workers = []
-    named = {
-        int(worker.get("user_id") or 0): str(worker.get("display_name") or worker.get("worker_name") or "").strip()
-        for worker in workers or []
-    }
-    return {int(uid): named.get(int(uid)) or f"User #{int(uid)}" for uid in user_ids}
+        found = {}
+    if not found and conn is not None:
+        try:
+            for worker in _load_workers(conn, organization_id) or []:
+                uid = int(worker.get("user_id") or 0)
+                if uid in wanted:
+                    found[uid] = worker
+        except Exception:
+            found = {}
+    for uid, worker in found.items():
+        label = str(worker.get("display_name") or worker.get("worker_name") or "").strip()
+        if label:
+            named[int(uid)] = label
+    return {uid: named.get(uid) or f"User #{uid}" for uid in wanted}
+
+
+def _task_worker_schedulable(conn, organization_id: int, user_id: int) -> str | None:
+    """Same affiliation rule as shift scheduling, for the one employee being assigned."""
+    from backend.payroll_employer_affiliation import (
+        EMPLOYER_AFFILIATION_NONE,
+        _organization_slug,
+        employer_affiliation_from_flags,
+    )
+    from backend.payroll_schedule import schedule_workers_by_ids
+    from backend.planned_weekly_schedule import _assert_worker_schedulable
+
+    try:
+        org_slug = _organization_slug(conn, organization_id)
+        if not isinstance(org_slug, str) and org_slug is not None:
+            raise TypeError("organization slug unavailable")
+        worker = schedule_workers_by_ids(conn, organization_id, [int(user_id)]).get(int(user_id))
+        if employer_affiliation_from_flags(worker, organization_slug=org_slug) == EMPLOYER_AFFILIATION_NONE:
+            return "worker is not assigned to a schedule entity (affiliation none)"
+        return None
+    except Exception:
+        return _assert_worker_schedulable(conn, organization_id, int(user_id))
 
 
 def _day_shifts(cursor, organization_id: int, week_start: date, day_of_week: int, user_ids: Sequence[int]) -> dict[int, list[dict[str, Any]]]:
@@ -366,7 +485,6 @@ def _validate_assignment(
 ) -> tuple[dict[str, Any] | None, str | None]:
     from backend.planned_weekly_schedule import (
         _assert_worker_in_org,
-        _assert_worker_schedulable,
         _load_role_catalog_index,
     )
     from backend.weekly_schedule_roles import accept_remarks, normalize_remarks, role_assignment_error
@@ -393,7 +511,7 @@ def _validate_assignment(
         if worker_err:
             return None, worker_err
         if uid not in kept:
-            schedulable_err = _assert_worker_schedulable(conn, organization_id, uid)
+            schedulable_err = _task_worker_schedulable(conn, organization_id, uid)
             if schedulable_err:
                 return None, f"{names[uid]}: {schedulable_err}"
     prior_remarks = {str(existing["remarks"])} if existing and existing.get("remarks") else None
@@ -880,6 +998,11 @@ def assign_tasks_for_days(
         payload["day_of_week"] = dow
         item, err = create_responsibility(conn, cursor, organization_id, week_start=week_start, data=payload)
         if err or item is None:
+            # Drop this request's rows before the caller can commit, so one failed day
+            # cannot leave the other days of a shared pairing half-saved.
+            for made in created:
+                for member in made.get("members") or []:
+                    delete_responsibility(cursor, organization_id, int(member["id"]))
             return None, err or "could not assign the task"
         created.append(item)
         for warning in item.get("timing_warnings") or []:
