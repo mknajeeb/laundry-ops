@@ -5,7 +5,7 @@ import {
   timelineRoleBreakdown,
   UNALLOCATED_BREAK_NOTE,
 } from "./weeklyScheduleRoles";
-import { assignmentKey, taskGroupLabel, taskTimingIssues, taskTimingLabel } from "./weeklyScheduleTaskTiming";
+import { assignmentKey, taskExecutionLabel, taskGroupLabel, taskTimingIssues, taskTimingLabel } from "./weeklyScheduleTaskTiming";
 
 export const ASSIGNMENT_KIND = { SHIFT: "shift", RESPONSIBILITY: "responsibility" };
 
@@ -107,6 +107,7 @@ function dayTaskGroups(responsibilities, dow, employeesById, entries = []) {
         item,
         timingLabel: taskTimingLabel(item),
         namesLabel: taskGroupLabel(item, employeesById),
+        executionLabel: taskExecutionLabel(item),
         warnings: taskTimingIssues(item, entries, employeesById).warnings,
       });
     }

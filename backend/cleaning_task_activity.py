@@ -291,7 +291,7 @@ def serialize_activity(row: Mapping[str, Any], *, catalog: Mapping[str, Any] | N
         "completion_source_label": {
             "pin": "Completed via PIN",
             "manual": "Recorded by Supervisor",
-            "corrected": "Corrected by Management",
+            "corrected": "Corrected by Supervisor",
         }.get(str(row.get("completion_source") or "pin").lower(), "Completed via PIN"),
         "recorded_by_user_id": int(row["recorded_by_user_id"])
         if row.get("recorded_by_user_id") is not None
@@ -610,6 +610,14 @@ def list_employee_day_tasks(
         for mid in item.get("user_ids") or []:
             all_member_ids.add(int(mid))
     names = _employee_names(cursor, organization_id, sorted(all_member_ids))
+    shared_by_resp: dict[int, dict[str, Any]] = {}
+    if any(
+        str(item.get("execution_mode") or "") == "shared" and len(item.get("user_ids") or []) >= 2
+        for item in assignments
+    ):
+        shared_by_resp = _latest_activity_by_resp(
+            _activities_for_day(cursor, organization_id, day)
+        )
     shifts = _day_shifts_for_user(cursor, organization_id, user_id, day)
     anchors = _shift_break_anchors(shifts)
     now = business_now()
@@ -681,6 +689,7 @@ def list_employee_day_tasks(
             "assigned_employees": member_names_sorted,
             "shared": len(member_ids) > 1,
             "execution_mode": str(item.get("execution_mode") or "individual"),
+            "partners": _shared_partner_rows(item, int(user_id), names, shared_by_resp),
             "is_activity_group": is_group,
             "activity_kind": "group" if is_group else "standalone",
             "group_items": (group_cfg or {}).get("items") if is_group else None,
@@ -725,6 +734,7 @@ def list_employee_day_tasks(
 
             if open_ser.get("is_activity_group") or is_activity_group_code(open_row.get("role")):
                 open_ser = enrich_open_group_activity(cursor, int(organization_id), open_ser)
+            open_ser["partners"] = partners_for_activity(cursor, int(organization_id), open_row)
         except Exception:
             pass
     return {
@@ -1289,6 +1299,7 @@ def list_supervisor_queue(
         "not_started": [],
         "overdue": [],
         "in_progress": [],
+        "completed_without_verification": [],
     }
 
     for item in assignments:
@@ -1313,8 +1324,9 @@ def list_supervisor_queue(
                 _contribution_entry(item, act, catalog=catalog, names=names, status=DISPLAY_APPROVED)
             )
         elif act and str(act.get("status")) == STATUS_COMPLETED:
-            # Completed without verification — still a finished contribution.
-            buckets["approved"].append(
+            # Finished with no verification step. Keep it out of the verified bucket
+            # so one completion cannot be counted again as an approval.
+            buckets["completed_without_verification"].append(
                 _contribution_entry(item, act, catalog=catalog, names=names, status=DISPLAY_COMPLETED)
             )
         elif act and str(act.get("status")) == STATUS_REJECTED:
@@ -1600,6 +1612,117 @@ def _activity_group_item_templates(cursor, organization_id: int, role: str) -> l
         return []
 
 
+_SUCCESS_DISPLAY = frozenset({DISPLAY_COMPLETED, DISPLAY_APPROVED, DISPLAY_PENDING_APPROVAL})
+_STARTED_DISPLAY = _SUCCESS_DISPLAY | frozenset({DISPLAY_IN_PROGRESS, DISPLAY_REJECTED})
+
+
+def partner_participation_state(status: Any) -> str:
+    """Assigned partner vs someone whose own timer is running vs finished."""
+    st = str(status or "")
+    if st == STATUS_IN_PROGRESS:
+        return "working"
+    if st in COMPLETED_STATUSES:
+        return "finished"
+    return "assigned"
+
+
+def _shared_partner_rows(
+    item: Mapping[str, Any],
+    viewer_user_id: int,
+    names: Mapping[int, str],
+    by_resp: Mapping[int, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Other employees on a Shared Execution assignment, including those who have not started."""
+    if str(item.get("execution_mode") or "") != "shared":
+        return []
+    if len(item.get("user_ids") or []) < 2:
+        return []
+    labels = {
+        "working": "Working now",
+        "assigned": "Not started",
+        "finished": "Finished",
+    }
+    out: list[dict[str, Any]] = []
+    for member in item.get("members") or []:
+        mid = int(member.get("user_id") or 0)
+        if not mid or mid == int(viewer_user_id):
+            continue
+        act = by_resp.get(int(member.get("id") or 0))
+        state = partner_participation_state(None if not act else act.get("status"))
+        out.append(
+            {
+                "user_id": mid,
+                "name": names.get(mid, f"User #{mid}"),
+                "state": state,
+                "state_label": labels[state],
+            }
+        )
+    out.sort(key=lambda row: str(row["name"]).lower())
+    return out
+
+
+def partners_for_activity(cursor, organization_id: int, activity: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Partners for one open shared activity. Individual and standalone tasks get none."""
+    day = _coerce_business_date(activity.get("business_date"))
+    if day is None:
+        return []
+    group = str(activity.get("assignment_group_id") or "").strip()
+    role = str(activity.get("role") or "")
+    if not group:
+        return []
+    rows = _day_responsibilities(cursor, int(organization_id), business_date=day)
+    members = [
+        row
+        for row in rows
+        if str(row.get("assignment_group_id") or "").strip() == group
+        and str(row.get("role") or "") == role
+    ]
+    if len(members) < 2 or str(members[0].get("execution_mode") or "") != "shared":
+        return []
+    names = _employee_names(cursor, int(organization_id), [int(row["user_id"]) for row in members])
+    by_resp = _latest_activity_by_resp(_activities_for_day(cursor, int(organization_id), day))
+    sample = dict(members[0])
+    sample["members"] = members
+    sample["user_ids"] = [int(row["user_id"]) for row in members]
+    sample["execution_mode"] = "shared"
+    return _shared_partner_rows(sample, int(activity.get("user_id") or 0), names, by_resp)
+
+
+def assignment_is_started(row: Mapping[str, Any]) -> bool:
+    return any(str(c.get("status") or "") in _STARTED_DISPLAY for c in (row.get("contributions") or []))
+
+
+def assignment_is_completed(row: Mapping[str, Any]) -> bool:
+    """One required assignment is complete when every member's work is successfully finished.
+
+    Shared Execution is still one assignment: two finished timers do not make two completions.
+    A partner who has not finished keeps the assignment incomplete.
+    """
+    contribs = list(row.get("contributions") or [])
+    if not contribs:
+        return False
+    return all(str(c.get("status") or "") in _SUCCESS_DISPLAY for c in contribs)
+
+
+def _contribution_verification_satisfied(contrib: Mapping[str, Any]) -> bool:
+    status = str(contrib.get("status") or "")
+    if status not in _SUCCESS_DISPLAY:
+        return False
+    act = contrib.get("activity") or {}
+    required = act.get("verification_required")
+    method = str(act.get("verification_method") or "").strip().lower()
+    if required in (0, False) or method == "none":
+        return True
+    return status == DISPLAY_APPROVED
+
+
+def assignment_is_verified(row: Mapping[str, Any]) -> bool:
+    if not assignment_is_completed(row):
+        return False
+    contribs = list(row.get("contributions") or [])
+    return bool(contribs) and all(_contribution_verification_satisfied(c) for c in contribs)
+
+
 def dashboard_summary(
     cursor,
     organization_id: int,
@@ -1657,27 +1780,28 @@ def dashboard_summary(
         activities=activities,
     )
 
-    # Assigned / overdue counted once per shared assignment; activity metrics per contribution.
+    # Headline counts are distinct required assignments. A shared group is one assignment
+    # no matter how many employees or activity rows it has. Contribution rows stay on the
+    # drill-down (queue, durations, activity log) and are not added into these totals.
     assigned_unique = len(shared_assignments)
     overdue_unique = sum(1 for row in shared_assignments if row["status"] == DISPLAY_OVERDUE)
-    completed_no_verify = sum(1 for a in activities if str(a.get("status")) == STATUS_COMPLETED)
-    started = (
-        len(queue["in_progress"])
-        + len(queue["pending_approval"])
-        + len(queue["approved"])
-        + len(queue["rejected"])
-        + completed_no_verify
+    started = sum(1 for row in shared_assignments if assignment_is_started(row))
+    completed = sum(1 for row in shared_assignments if assignment_is_completed(row))
+    verified = sum(1 for row in shared_assignments if assignment_is_verified(row))
+    pending_verification = sum(
+        1
+        for row in shared_assignments
+        if any(str(c.get("status") or "") == DISPLAY_PENDING_APPROVAL for c in (row.get("contributions") or []))
+        and not assignment_is_verified(row)
     )
-    completed = (
-        len(queue["pending_approval"])
-        + len(queue["approved"])
-        + len(queue["rejected"])
-        + completed_no_verify
+    rejected_assignments = sum(
+        1
+        for row in shared_assignments
+        if any(str(c.get("status") or "") == DISPLAY_REJECTED for c in (row.get("contributions") or []))
+        and not assignment_is_completed(row)
     )
-    verify_due = len(queue["pending_approval"]) + len(queue["approved"]) + len(queue["rejected"])
-    verify_done = len(queue["approved"])
     completion_rate = round((completed / assigned_unique) * 100, 1) if assigned_unique else None
-    verification_rate = round((verify_done / verify_due) * 100, 1) if verify_due else None
+    verification_rate = round((verified / assigned_unique) * 100, 1) if assigned_unique else None
     # Count group timer once (parent only); ignore group_item children (duration NULL / excluded).
     time_spent = sum(
         int(a.get("duration_seconds") or 0)
@@ -1693,6 +1817,7 @@ def dashboard_summary(
     by_cat: dict[str, dict[str, int]] = {
         c["code"]: {
             "assigned": 0,
+            "started": 0,
             "completed": 0,
             "pending_verification": 0,
             "verified": 0,
@@ -1708,6 +1833,7 @@ def dashboard_summary(
             code,
             {
                 "assigned": 0,
+                "started": 0,
                 "completed": 0,
                 "pending_verification": 0,
                 "verified": 0,
@@ -1716,55 +1842,52 @@ def dashboard_summary(
             },
         )
         bucket["assigned"] += 1
-        st = row.get("status")
-        if st == DISPLAY_OVERDUE:
-            bucket["overdue"] += 1
-        elif st == DISPLAY_PENDING_APPROVAL:
-            bucket["pending_verification"] += 1
+        if assignment_is_started(row):
+            bucket["started"] += 1
+        if assignment_is_completed(row):
             bucket["completed"] += 1
-        elif st == DISPLAY_APPROVED:
+        if assignment_is_verified(row):
             bucket["verified"] += 1
-            bucket["completed"] += 1
-        elif st == DISPLAY_REJECTED:
+        if any(
+            str(c.get("status") or "") == DISPLAY_PENDING_APPROVAL for c in (row.get("contributions") or [])
+        ) and not assignment_is_verified(row):
+            bucket["pending_verification"] += 1
+        if any(str(c.get("status") or "") == DISPLAY_REJECTED for c in (row.get("contributions") or [])) and not assignment_is_completed(row):
             bucket["rejected"] += 1
-            bucket["completed"] += 1
-        elif st == DISPLAY_COMPLETED:
-            bucket["completed"] += 1
+        if row.get("status") == DISPLAY_OVERDUE:
+            bucket["overdue"] += 1
     metrics = {
         "total_assigned": assigned_unique,
         "started": started,
         "completed": completed,
         "approved": len(queue["approved"]),
-        "verified": len(queue["approved"]),
+        "verified": verified,
         "pending_approval": len(queue["pending_approval"]),
-        "pending_verification": len(queue["pending_approval"]),
+        "pending_verification": pending_verification,
         "overdue": overdue_unique,
-        "rejected": len(queue["rejected"]),
+        "rejected": rejected_assignments,
         "in_progress": len(queue["in_progress"]),
         "not_started": len(queue["not_started"]),
-        "completed_no_verification": completed_no_verify,
+        "completed_no_verification": len(queue.get("completed_without_verification") or []),
         "completion_rate": completion_rate,
         "verification_rate": verification_rate,
         "time_spent_seconds": time_spent,
-        # Contribution counts (may exceed assigned when tasks are shared).
-        "contributions_assigned": (
-            len(queue["pending_approval"])
-            + len(queue["approved"])
-            + len(queue["rejected"])
-            + len(queue["not_started"])
-            + len(queue["overdue"])
-            + len(queue["in_progress"])
-            + completed_no_verify
-        ),
+        # Per-employee drill-down. This may exceed Assigned when a task is shared.
+        "contributions_assigned": sum(len(row.get("contributions") or []) for row in shared_assignments),
     }
-    category_breakdown = [
-        {
-            "category_code": c["code"],
-            "category_name": c["name"],
-            **by_cat.get(c["code"], {}),
-        }
-        for c in cats
-    ]
+    category_breakdown = []
+    for c in cats:
+        bucket = dict(by_cat.get(c["code"]) or {})
+        assigned_n = int(bucket.get("assigned") or 0)
+        completed_n = int(bucket.get("completed") or 0)
+        bucket["completion_rate"] = round((completed_n / assigned_n) * 100, 1) if assigned_n else None
+        category_breakdown.append(
+            {
+                "category_code": c["code"],
+                "category_name": c["name"],
+                **bucket,
+            }
+        )
 
     log = []
     for row in sorted(activities, key=lambda r: int(r.get("id") or 0), reverse=True):

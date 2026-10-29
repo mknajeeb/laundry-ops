@@ -162,7 +162,7 @@ function UntimedBreak({ item, canEdit, onEditEntry }) {
 
 function TaskLine({ task, canEdit, onEditResponsibility }) {
   const edit = canEdit ? () => onEditResponsibility?.(task.item) : undefined;
-  const detail = [task.namesLabel, task.timingLabel].filter(Boolean).join(" · ");
+  const detail = [task.namesLabel, task.executionLabel, task.timingLabel].filter(Boolean).join(" · ");
   return (
     <Box data-grid-task={task.role} {...activate(edit)} sx={{ ...clickableSx(Boolean(edit)), borderLeft: `3px solid ${roleStyle(task.role).accent}`, pl: 0.5, mt: 0.25 }}>
       <Typography sx={{ fontSize: "0.74rem", lineHeight: 1.3 }}>

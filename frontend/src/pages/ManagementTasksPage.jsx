@@ -183,13 +183,18 @@ export default function ManagementTasksPage() {
     const completed = cat.completed || 0;
     return {
       total_assigned: assigned,
-      started: completed + (cat.overdue || 0),
+      started: cat.started ?? 0,
       completed,
       verified: cat.verified || 0,
       pending_verification: cat.pending_verification || 0,
       overdue: cat.overdue || 0,
       rejected: cat.rejected || 0,
-      completion_rate: assigned ? Math.round((completed / assigned) * 1000) / 10 : null,
+      completion_rate:
+        cat.completion_rate != null
+          ? cat.completion_rate
+          : assigned
+            ? Math.round((completed / assigned) * 1000) / 10
+            : null,
     };
   }, [categoryTab, data?.category_breakdown, metrics]);
 

@@ -455,6 +455,7 @@ function DayTasks({ day, canEdit, onAdd, onEditResponsibility }) {
             >
               <Typography variant="body2" fontWeight={700} sx={{ fontSize: "0.78rem", lineHeight: 1.3 }}>
                 {group.namesLabel}
+                {group.executionLabel ? ` · ${group.executionLabel}` : ""}
                 {group.timingLabel ? ` · ${group.timingLabel}` : ""}
               </Typography>
               {remarks ? (

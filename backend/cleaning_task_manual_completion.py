@@ -74,7 +74,7 @@ def completion_source_label(source: Any) -> str:
     return {
         SOURCE_PIN: "Completed via PIN",
         SOURCE_MANUAL: "Recorded by Supervisor",
-        SOURCE_CORRECTED: "Corrected by Management",
+        SOURCE_CORRECTED: "Corrected by Supervisor",
     }.get(raw, "Completed via PIN")
 
 

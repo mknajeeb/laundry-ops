@@ -48,6 +48,12 @@ export function taskMemberNames(item, employeesById) {
   return taskMemberIds(item).map((id) => scheduleEmployeeName(employeesById, id));
 }
 
+/** "Shared" when this activity group is one collaborative assignment. */
+export function taskExecutionLabel(item) {
+  const ids = taskMemberIds(item);
+  return item?.execution_mode === "shared" && ids.length >= 2 ? "Shared" : "";
+}
+
 /** "Maria Perez + Francis", or "" when the assignment is a single employee. */
 export function taskGroupLabel(item, employeesById) {
   const names = [...taskMemberNames(item, employeesById)].sort((a, b) =>

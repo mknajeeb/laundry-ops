@@ -513,6 +513,7 @@ export function buildHourlyCoverageCsvRows({ days, weekStart, columns, hoursSumm
           csvCell(
             [
               group.people.map((person) => (person.remarks ? `${person.name}: ${person.remarks}` : person.name)).join("; "),
+              group.executionLabel || "",
               group.timingLabel || "",
             ]
               .filter(Boolean)
@@ -539,7 +540,7 @@ function gridCellText(cell, showBreaks) {
       (item) => `Not scheduled ${Math.round(item.hours * 60)} min${item.unallocated ? " (not allocated to a role)" : ""}`,
     ),
     ...cell.tasks.map((task) => {
-      const detail = [task.namesLabel, task.timingLabel].filter(Boolean).join(" · ");
+      const detail = [task.namesLabel, task.executionLabel, task.timingLabel].filter(Boolean).join(" · ");
       return `${task.label}${detail ? ` · ${detail}` : ""}: ${task.remarks || "no instructions"}`;
     }),
   ];

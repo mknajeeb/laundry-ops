@@ -33,9 +33,12 @@ import {
   bulkSetWeeklyScheduleEmployer,
   cascadeWeeklySchedule,
   createWeeklyScheduleEntry,
+  assignWeeklyScheduleTasks,
   createWeeklyScheduleResponsibility,
   deleteWeeklyScheduleEntry,
   deleteWeeklyScheduleResponsibility,
+  moveWeeklyScheduleTask,
+  reorderWeeklyScheduleTasks,
   disableWeeklyScheduleTemplate,
   duplicateWeeklyScheduleEntry,
   enableWeeklyScheduleTemplate,
@@ -48,6 +51,8 @@ import {
 } from "../api";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import WeeklyScheduleCascadeDialog from "../components/weeklySchedule/WeeklyScheduleCascadeDialog";
+import AssignTasksDialog from "../components/weeklySchedule/AssignTasksDialog";
+import TaskMoveDialog from "../components/weeklySchedule/TaskMoveDialog";
 import WeeklyScheduleEntryDialog from "../components/weeklySchedule/WeeklyScheduleEntryDialog";
 import WeeklyScheduleManageRolesDialog from "../components/weeklySchedule/WeeklyScheduleManageRolesDialog";
 import WeeklyScheduleTimeRoleView, {
@@ -58,6 +63,7 @@ import WeeklyScheduleBreaksTasksView from "../components/weeklySchedule/WeeklySc
 import WeeklyScheduleBreaksByTimeView, { BreaksViewToggle } from "../components/weeklySchedule/WeeklyScheduleBreaksByTimeView";
 import { BREAKS_VIEW, buildBreaksByTime } from "../components/weeklySchedule/weeklyScheduleBreaksByTime";
 import WeeklyScheduleResponsibilityChip from "../components/weeklySchedule/WeeklyScheduleResponsibilityChip";
+import { parseTaskDrag, reorderIds, TASK_DRAG_TYPE } from "../components/weeklySchedule/weeklyScheduleTaskMove";
 import {
   ASSIGNMENT_KIND,
   buildHourlyCoverage,
@@ -198,6 +204,11 @@ function ScheduleDayCell({
   openEditResponsibility,
   employeesById = {},
   scheduleEntries = [],
+  draggingTaskId = null,
+  onTaskDragStart,
+  onTaskDragEnd,
+  onTaskDrop,
+  onMoveTask,
 }) {
   const cellKey = `${employee.user_id}:${dow}`;
   const isDropTarget = dropTarget === cellKey;
@@ -213,7 +224,7 @@ function ScheduleDayCell({
     <Box
       onClick={(e) => {
         if (!canAddShift || isEmpty) return;
-        if (!e.target.closest("[data-shift-card]")) {
+        if (!e.target.closest("[data-shift-card], [data-task-card]")) {
           openCreate(employee.user_id, dow);
         }
       }}
@@ -228,6 +239,11 @@ function ScheduleDayCell({
       onDrop={(e) => {
         if (excluded || !canEdit) return;
         e.preventDefault();
+        const taskRaw = e.dataTransfer.getData(TASK_DRAG_TYPE);
+        if (taskRaw) {
+          onTaskDrop?.(taskRaw, { userId: employee.user_id, day: dow });
+          return;
+        }
         const entryId = e.dataTransfer.getData("text/plain");
         handleDrop(employee.user_id, dow, entryId);
       }}
@@ -285,6 +301,12 @@ function ScheduleDayCell({
           employeesById={employeesById}
           scheduleEntries={scheduleEntries}
           onClick={canEdit && !excluded ? openEditResponsibility : undefined}
+          onMove={canEdit && !excluded ? onMoveTask : undefined}
+          draggable={canEdit && !excluded}
+          dragging={Number(draggingTaskId) === Number(item.id)}
+          onDragStart={onTaskDragStart}
+          onDragEnd={onTaskDragEnd}
+          onDropOnCard={(raw) => onTaskDrop?.(raw, { userId: employee.user_id, day: dow, beforeId: item.id })}
         />
       ))}
       {canAddShift && isEmpty ? (
@@ -347,7 +369,14 @@ export default function WeeklySchedulePage() {
   const [viewMode, setViewMode] = useState(VIEW_MODE.EMPLOYEE);
   const [rolesOpen, setRolesOpen] = useState(false);
   const [draggingId, setDraggingId] = useState(null);
+  const [draggingTaskId, setDraggingTaskId] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [assignSaving, setAssignSaving] = useState(false);
+  const [assignError, setAssignError] = useState("");
+  const [taskMove, setTaskMove] = useState(null);
+  const [taskMoveSaving, setTaskMoveSaving] = useState(false);
+  const [taskMoveError, setTaskMoveError] = useState("");
   const [showExcluded, setShowExcluded] = useState(false);
   const [showCost, setShowCost] = useState(false);
   const [costSaving, setCostSaving] = useState(false);
@@ -555,6 +584,9 @@ export default function WeeklySchedulePage() {
       const key = `${item.user_id}:${item.day_of_week}`;
       if (!map[key]) map[key] = [];
       map[key].push(item);
+    }
+    for (const key of Object.keys(map)) {
+      map[key].sort((a, b) => (Number(a.display_order) || 0) - (Number(b.display_order) || 0) || Number(a.id) - Number(b.id));
     }
     return map;
   }, [viewResponsibilities]);
@@ -955,6 +987,65 @@ export default function WeeklySchedulePage() {
     }
   };
 
+  const handleTaskDrop = async (raw, target) => {
+    const parsed = parseTaskDrag(raw);
+    setDraggingTaskId(null);
+    setDropTarget(null);
+    if (!parsed || !target) return;
+    const item = (data?.daily_responsibilities || []).find((row) => Number(row.id) === Number(parsed.id));
+    if (!item) return;
+    const sameCell = Number(item.user_id) === Number(target.userId) && Number(item.day_of_week) === Number(target.day);
+    if (sameCell && target.beforeId && Number(target.beforeId) !== Number(item.id)) {
+      const cell = responsibilitiesByCell[`${target.userId}:${target.day}`] || [];
+      const ordered = reorderIds(cell.map((row) => row.id), item.id, target.beforeId);
+      setError("");
+      try {
+        const res = await reorderWeeklyScheduleTasks({
+          week_start: weekStart,
+          day_of_week: target.day,
+          user_id: target.userId,
+          ordered_ids: ordered,
+        });
+        setData(res.data);
+      } catch (e) {
+        setError(e?.response?.data?.error || "Failed to reorder tasks");
+      }
+      return;
+    }
+    if (sameCell) return;
+    setTaskMoveError("");
+    setTaskMove({ item, day: target.day, userId: target.userId });
+  };
+
+  const handleConfirmTaskMove = async (body) => {
+    if (!taskMove?.item?.id) return;
+    setTaskMoveSaving(true);
+    setTaskMoveError("");
+    try {
+      const res = await moveWeeklyScheduleTask(taskMove.item.id, body);
+      setData(res.data);
+      setTaskMove(null);
+    } catch (e) {
+      setTaskMoveError(e?.response?.data?.error || "Failed to move task");
+    } finally {
+      setTaskMoveSaving(false);
+    }
+  };
+
+  const handleAssignTasks = async (body) => {
+    setAssignSaving(true);
+    setAssignError("");
+    try {
+      const res = await assignWeeklyScheduleTasks({ week_start: weekStart, ...body });
+      setData(res.data);
+      setAssignOpen(false);
+    } catch (e) {
+      setAssignError(e?.response?.data?.error || "Failed to assign tasks");
+    } finally {
+      setAssignSaving(false);
+    }
+  };
+
   const handleDrop = async (userId, dayOfWeek, entryId) => {
     if (!entryId) return;
     setError("");
@@ -1128,6 +1219,14 @@ export default function WeeklySchedulePage() {
     openEditResponsibility,
     employeesById,
     scheduleEntries: data?.entries || [],
+    draggingTaskId,
+    onTaskDragStart: (item) => setDraggingTaskId(item.id),
+    onTaskDragEnd: () => setDraggingTaskId(null),
+    onTaskDrop: handleTaskDrop,
+    onMoveTask: (item) => {
+      setTaskMoveError("");
+      setTaskMove({ item, day: item.day_of_week, userId: item.user_id });
+    },
   };
 
   return (
@@ -1302,6 +1401,19 @@ export default function WeeklySchedulePage() {
                   sx={{ fontWeight: 700, py: 0.35 }}
                 >
                   User mapping
+                </Button>
+              ) : null}
+              {canEdit ? (
+                <Button
+                  size="small"
+                  variant="contained"
+                  onClick={() => {
+                    setAssignError("");
+                    setAssignOpen(true);
+                  }}
+                  sx={{ fontWeight: 800, py: 0.35 }}
+                >
+                  Assign Tasks
                 </Button>
               ) : null}
               {canEdit ? (
@@ -1909,6 +2021,29 @@ export default function WeeklySchedulePage() {
         </Box>
       ) : null}
 
+      <AssignTasksDialog
+        open={assignOpen && canEdit}
+        onClose={() => setAssignOpen(false)}
+        onAssign={handleAssignTasks}
+        saving={assignSaving}
+        error={assignError}
+        weekStart={weekStart}
+        employees={pickerEmployees}
+      />
+      <TaskMoveDialog
+        open={Boolean(taskMove) && canEdit}
+        item={taskMove?.item}
+        weekStart={weekStart}
+        employees={pickerEmployees}
+        employeesById={employeesById}
+        scheduleEntries={data?.entries || []}
+        initialDay={taskMove?.day}
+        initialUserId={taskMove?.userId}
+        saving={taskMoveSaving}
+        error={taskMoveError}
+        onClose={() => setTaskMove(null)}
+        onConfirm={handleConfirmTaskMove}
+      />
       <WeeklyScheduleEntryDialog
         open={dialogOpen && canEdit}
         onClose={() => setDialogOpen(false)}

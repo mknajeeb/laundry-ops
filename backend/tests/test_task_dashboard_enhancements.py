@@ -28,7 +28,7 @@ def test_friendly_status_labels():
 def test_completion_source_labels():
     assert completion_source_label("pin") == "Completed via PIN"
     assert completion_source_label(SOURCE_MANUAL) == "Recorded by Supervisor"
-    assert completion_source_label("corrected") == "Corrected by Management"
+    assert completion_source_label("corrected") == "Corrected by Supervisor"
 
 
 def test_parse_manual_payload_datetime_and_optional_start():

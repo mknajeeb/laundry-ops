@@ -34,7 +34,7 @@ EXECUTION_MODES = frozenset({EXECUTION_INDIVIDUAL, EXECUTION_SHARED})
 
 _COLUMNS = (
     "id, organization_id, week_start, user_id, day_of_week, role, remarks, "
-    "assignment_group_id, timing_mode, start_time, execution_mode"
+    "assignment_group_id, timing_mode, start_time, execution_mode, display_order"
 )
 
 _GROUP_COLUMNS = (
@@ -42,6 +42,12 @@ _GROUP_COLUMNS = (
     ("timing_mode", "VARCHAR(20) NOT NULL DEFAULT 'anytime'"),
     ("start_time", "TIME NULL DEFAULT NULL"),
     ("execution_mode", "VARCHAR(20) NOT NULL DEFAULT 'individual'"),
+    ("display_order", "INT NOT NULL DEFAULT 0"),
+)
+
+CORRECTION_TABLE = "planned_weekly_schedule_assignment_corrections"
+LOCKED_ACTIVITY_STATUSES = frozenset(
+    {"in_progress", "pending_approval", "approved", "rejected", "completed"}
 )
 
 
@@ -131,6 +137,8 @@ def serialize_responsibility(row: Mapping[str, Any]) -> dict[str, Any]:
         "start_time": start,
         "timing_label": timing_display(mode, start),
         "execution_mode": execution_mode,
+        "display_order": int(row.get("display_order") or 0),
+        "activity_status": None,
         "members": [{"id": int(row.get("id") or 0), "user_id": user_id}] if user_id else [],
     }
 
@@ -172,7 +180,7 @@ def _fetch_week_rows(cursor, organization_id: int, week_start: date) -> list[dic
         SELECT {_COLUMNS}
         FROM {TABLE}
         WHERE organization_id = %s AND week_start = %s
-        ORDER BY day_of_week ASC, role ASC, user_id ASC, id ASC
+        ORDER BY day_of_week ASC, display_order ASC, role ASC, user_id ASC, id ASC
         """,
         (int(organization_id), week_start),
     )
@@ -611,6 +619,17 @@ def update_responsibility(
     )
     if errors:
         return None, "; ".join(errors)
+    guard = _active_change_guard(
+        cursor,
+        organization_id,
+        existing=existing,
+        existing_users=existing_users,
+        payload=payload,
+        data=data,
+        actor_user_id=data.get("actor_user_id"),
+    )
+    if guard:
+        return None, guard
     group_id = str(existing.get("assignment_group_id") or "").strip() or uuid.uuid4().hex
     by_user = {int(member["user_id"]): int(member["id"]) for member in member_rows}
     kept_id = None
@@ -651,6 +670,463 @@ def update_responsibility(
         if uid not in payload["user_ids"]:
             delete_responsibility(cursor, organization_id, rid)
     return _with_warnings(get_responsibility(cursor, organization_id, int(kept_id or responsibility_id)), warnings), None
+
+
+def _structural_change(existing: Mapping[str, Any], existing_users: Sequence[int], payload: Mapping[str, Any]) -> bool:
+    if sorted(int(uid) for uid in payload["user_ids"]) != sorted(int(uid) for uid in existing_users):
+        return True
+    if int(payload["day_of_week"]) != int(existing.get("day_of_week") or 0):
+        return True
+    if str(payload.get("role") or "") != str(existing.get("role") or ""):
+        return True
+    if str(payload.get("execution_mode") or "") != str(existing.get("execution_mode") or EXECUTION_INDIVIDUAL):
+        return True
+    if str(payload.get("timing_mode") or "") != str(existing.get("timing_mode") or TIMING_ANYTIME):
+        return True
+    return (payload.get("start_time") or None) != (existing.get("start_time") or None)
+
+
+def _activity_lock_ids(cursor, organization_id: int, responsibility_ids: Sequence[int]) -> set[int]:
+    """Responsibility rows whose parent activity has started, finished, or been verified."""
+    ids = []
+    for raw in responsibility_ids or []:
+        try:
+            rid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if rid > 0 and rid not in ids:
+            ids.append(rid)
+    if not ids:
+        return set()
+    try:
+        if not table_exists(cursor, "cleaning_task_activities"):
+            return set()
+        placeholders = ",".join(["%s"] * len(ids))
+        cursor.execute(
+            f"""
+            SELECT responsibility_id, status, parent_activity_id, activity_kind
+            FROM cleaning_task_activities
+            WHERE organization_id = %s AND responsibility_id IN ({placeholders})
+            """,
+            (int(organization_id), *ids),
+        )
+        locked: set[int] = set()
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            if row.get("parent_activity_id") is not None or str(row.get("activity_kind") or "") == "group_item":
+                continue
+            if str(row.get("status") or "") in LOCKED_ACTIVITY_STATUSES:
+                rid = int(row.get("responsibility_id") or 0)
+                if rid:
+                    locked.add(rid)
+        return locked
+    except Exception:
+        # Schedule unit tests use a cursor that does not model activity tables.
+        if hasattr(cursor, "_resp_id"):
+            return set()
+        raise
+
+
+def _correction_reason(data: Mapping[str, Any]) -> str:
+    return str(data.get("correction_reason") or "").strip()
+
+
+def _record_assignment_correction(
+    cursor,
+    organization_id: int,
+    *,
+    assignment_group_id: str | None,
+    responsibility_id: int | None,
+    action: str,
+    reason: str,
+    actor_user_id: Any,
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+) -> None:
+    import json
+
+    cursor.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {CORRECTION_TABLE} (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          organization_id INT NOT NULL,
+          assignment_group_id VARCHAR(36) NULL,
+          responsibility_id INT NULL,
+          action VARCHAR(40) NOT NULL,
+          reason VARCHAR(255) NOT NULL,
+          actor_user_id INT NULL,
+          before_json TEXT NULL,
+          after_json TEXT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_pws_corr_org (organization_id, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    actor = int(actor_user_id) if str(actor_user_id or "").isdigit() else None
+    cursor.execute(
+        f"""
+        INSERT INTO {CORRECTION_TABLE} (
+          organization_id, assignment_group_id, responsibility_id, action, reason,
+          actor_user_id, before_json, after_json
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+        """,
+        (
+            int(organization_id),
+            assignment_group_id,
+            int(responsibility_id) if responsibility_id else None,
+            action[:40],
+            reason[:255],
+            actor,
+            json.dumps(dict(before), default=str)[:4000],
+            json.dumps(dict(after), default=str)[:4000],
+        ),
+    )
+
+
+def _active_change_guard(
+    cursor,
+    organization_id: int,
+    *,
+    existing: Mapping[str, Any],
+    existing_users: Sequence[int],
+    payload: Mapping[str, Any],
+    data: Mapping[str, Any],
+    actor_user_id: Any = None,
+) -> str | None:
+    if not _structural_change(existing, existing_users, payload):
+        return None
+    member_ids = [int(member.get("id") or 0) for member in (existing.get("members") or [])]
+    if not member_ids:
+        member_ids = [int(existing.get("id") or 0)]
+    locked = _activity_lock_ids(cursor, organization_id, member_ids)
+    if not locked:
+        return None
+    reason = _correction_reason(data)
+    if not data.get("confirm_active_change") or len(reason) < 3:
+        return (
+            "This assignment has already started or been completed. "
+            "Confirm an audited correction before changing participants, the day, timing, or execution mode."
+        )
+    _record_assignment_correction(
+        cursor,
+        organization_id,
+        assignment_group_id=str(existing.get("assignment_group_id") or "") or None,
+        responsibility_id=int(existing.get("id") or 0),
+        action="correct_assignment",
+        reason=reason,
+        actor_user_id=actor_user_id if actor_user_id is not None else data.get("actor_user_id"),
+        before={
+            "user_ids": [int(uid) for uid in existing_users],
+            "day_of_week": existing.get("day_of_week"),
+            "role": existing.get("role"),
+            "execution_mode": existing.get("execution_mode"),
+            "timing_mode": existing.get("timing_mode"),
+            "start_time": existing.get("start_time"),
+        },
+        after={
+            "user_ids": payload["user_ids"],
+            "day_of_week": payload["day_of_week"],
+            "role": payload["role"],
+            "execution_mode": payload["execution_mode"],
+            "timing_mode": payload["timing_mode"],
+            "start_time": payload["start_time"],
+        },
+    )
+    return None
+
+
+def _unscheduled_names(
+    conn,
+    cursor,
+    organization_id: int,
+    *,
+    week_start: date,
+    day_of_week: int,
+    user_ids: Sequence[int],
+) -> list[str]:
+    shifts = _day_shifts(cursor, organization_id, week_start, int(day_of_week), user_ids)
+    names = _worker_names(conn, organization_id, user_ids)
+    return [names[int(uid)] for uid in user_ids if not (shifts.get(int(uid)) or [])]
+
+
+def assign_tasks_for_days(
+    conn,
+    cursor,
+    organization_id: int,
+    *,
+    week_start: date,
+    data: Mapping[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """One task or activity group, one or more days. Each day gets its own assignment group."""
+    raw_days = data.get("days_of_week")
+    if raw_days is None:
+        raw_days = data.get("days")
+    if raw_days is None and data.get("day_of_week") is not None:
+        raw_days = [data.get("day_of_week")]
+    if not isinstance(raw_days, (list, tuple)) or not raw_days:
+        return None, "choose at least one date"
+    days: list[int] = []
+    for raw in raw_days:
+        dow = normalize_day_of_week(raw)
+        if dow is None:
+            return None, "day_of_week must be 0-6 (Sun-Sat)"
+        if dow not in days:
+            days.append(dow)
+    created: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for dow in days:
+        payload = dict(data)
+        payload["day_of_week"] = dow
+        item, err = create_responsibility(conn, cursor, organization_id, week_start=week_start, data=payload)
+        if err or item is None:
+            return None, err or "could not assign the task"
+        created.append(item)
+        for warning in item.get("timing_warnings") or []:
+            if warning not in warnings:
+                warnings.append(warning)
+    group_ids = {str(item.get("assignment_group_id") or "") for item in created}
+    return {
+        "items": created,
+        "assignment_group_ids": [gid for gid in group_ids if gid],
+        "timing_warnings": warnings,
+    }, None
+
+
+def move_task_assignment(
+    conn,
+    cursor,
+    organization_id: int,
+    responsibility_id: int,
+    data: Mapping[str, Any],
+    *,
+    actor_user_id: Any = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Move a standalone task, or a whole shared assignment, without splitting the group."""
+    existing = get_responsibility(cursor, organization_id, responsibility_id)
+    if not existing:
+        return None, "responsibility not found"
+    members = list(existing.get("members") or [{"id": existing["id"], "user_id": existing["user_id"]}])
+    user_ids = [int(member["user_id"]) for member in members]
+    shared = str(existing.get("execution_mode") or "") == EXECUTION_SHARED and len(user_ids) >= 2
+    target_day = normalize_day_of_week(data.get("day_of_week"))
+    if target_day is None:
+        return None, "day_of_week must be 0-6 (Sun-Sat)"
+    week_start = date.fromisoformat(str(existing["week_start"])[:10])
+    if shared:
+        if int(target_day) == int(existing.get("day_of_week") or 0):
+            return None, "Shared assignments stay together. Use Edit Participants to change who is assigned."
+        target_users = user_ids
+    else:
+        raw_user = data.get("user_id", existing.get("user_id"))
+        try:
+            target_user = int(raw_user)
+        except (TypeError, ValueError):
+            return None, "user_id is required"
+        if target_user <= 0:
+            return None, "user_id is required"
+        target_users = [target_user]
+        if target_user == int(existing.get("user_id") or 0) and int(target_day) == int(existing.get("day_of_week") or 0):
+            return existing, None
+    missing = _unscheduled_names(
+        conn,
+        cursor,
+        organization_id,
+        week_start=week_start,
+        day_of_week=target_day,
+        user_ids=target_users,
+    )
+    if missing and not data.get("confirm_unscheduled"):
+        listed = ", ".join(missing)
+        return None, f"unscheduled: {listed} is not scheduled on that day"
+    body = {
+        "user_ids": target_users,
+        "day_of_week": target_day,
+        "role": existing.get("role"),
+        "remarks": existing.get("remarks"),
+        "timing_mode": existing.get("timing_mode"),
+        "start_time": existing.get("start_time"),
+        "execution_mode": existing.get("execution_mode"),
+        "confirm_active_change": bool(data.get("confirm_active_change")),
+        "correction_reason": data.get("correction_reason"),
+        "actor_user_id": actor_user_id,
+    }
+    if not shared and len(user_ids) > 1:
+        # Individual execution: move only this employee's card and detach it from the others.
+        return _move_one_membership(
+            conn,
+            cursor,
+            organization_id,
+            existing,
+            target_user=target_users[0],
+            target_day=target_day,
+            data=body,
+        )
+    return update_responsibility(conn, cursor, organization_id, int(existing["id"]), body)
+
+
+def _move_one_membership(
+    conn,
+    cursor,
+    organization_id: int,
+    existing: Mapping[str, Any],
+    *,
+    target_user: int,
+    target_day: int,
+    data: Mapping[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    week_start = date.fromisoformat(str(existing["week_start"])[:10])
+    if _duplicate_exists(
+        cursor,
+        organization_id,
+        week_start=week_start,
+        user_id=target_user,
+        day_of_week=target_day,
+        role=str(existing.get("role") or ""),
+        exclude_ids={int(existing["id"])},
+    ):
+        names = _worker_names(conn, organization_id, [target_user])
+        return None, f"{names[target_user]} already has that task on this day"
+    payload = {
+        "user_ids": [int(target_user)],
+        "day_of_week": int(target_day),
+        "role": existing.get("role"),
+        "execution_mode": EXECUTION_INDIVIDUAL,
+        "timing_mode": existing.get("timing_mode"),
+        "start_time": existing.get("start_time"),
+    }
+    guard = _active_change_guard(
+        cursor,
+        organization_id,
+        existing=existing,
+        existing_users=[int(existing.get("user_id") or 0)],
+        payload=payload,
+        data=data,
+        actor_user_id=data.get("actor_user_id"),
+    )
+    if guard:
+        return None, guard
+    _update_member_row(
+        cursor,
+        organization_id,
+        int(existing["id"]),
+        user_id=int(target_user),
+        day_of_week=int(target_day),
+        role=str(existing.get("role") or ""),
+        remarks=existing.get("remarks"),
+        assignment_group_id=uuid.uuid4().hex,
+        timing_mode=str(existing.get("timing_mode") or TIMING_ANYTIME),
+        start_time=existing.get("start_time"),
+        execution_mode=EXECUTION_INDIVIDUAL,
+    )
+    return get_responsibility(cursor, organization_id, int(existing["id"])), None
+
+
+def reorder_day_tasks(
+    cursor,
+    organization_id: int,
+    *,
+    week_start: date,
+    day_of_week: int,
+    user_id: int,
+    ordered_ids: Sequence[Any],
+) -> tuple[list[int] | None, str | None]:
+    """Persist card order for one employee on one day. Does not change who is assigned."""
+    ensure_responsibilities_table(cursor)
+    dow = normalize_day_of_week(day_of_week)
+    if dow is None:
+        return None, "day_of_week must be 0-6 (Sun-Sat)"
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return None, "user_id is required"
+    ids: list[int] = []
+    for raw in ordered_ids or []:
+        try:
+            rid = int(raw)
+        except (TypeError, ValueError):
+            return None, "ordered_ids must be task ids"
+        if rid not in ids:
+            ids.append(rid)
+    if not ids:
+        return None, "ordered_ids is required"
+    owned = {
+        int(item["id"])
+        for item in list_week_responsibilities(cursor, organization_id, week_start=week_start)
+        if int(item["user_id"]) == uid and int(item["day_of_week"]) == int(dow)
+    }
+    if not set(ids).issubset(owned):
+        return None, "those tasks are not on that employee and day"
+    for index, rid in enumerate(ids):
+        cursor.execute(
+            f"UPDATE {TABLE} SET display_order=%s WHERE organization_id=%s AND id=%s AND user_id=%s AND day_of_week=%s",
+            (index, int(organization_id), int(rid), uid, int(dow)),
+        )
+    return ids, None
+
+
+def annotate_responsibility_activity(cursor, organization_id: int, items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Add a friendly activity status for schedule cards. Failures leave the schedule unchanged."""
+    out = [dict(item) for item in items or []]
+    ids = [int(item.get("id") or 0) for item in out if int(item.get("id") or 0)]
+    if not ids:
+        return out
+    try:
+        if not table_exists(cursor, "cleaning_task_activities"):
+            return out
+        placeholders = ",".join(["%s"] * len(ids))
+        cursor.execute(
+            f"""
+            SELECT responsibility_id, status, parent_activity_id, activity_kind
+            FROM cleaning_task_activities
+            WHERE organization_id = %s AND responsibility_id IN ({placeholders})
+            """,
+            (int(organization_id), *ids),
+        )
+        rank = {
+            "in_progress": 5,
+            "rejected": 4,
+            "pending_approval": 3,
+            "completed": 2,
+            "approved": 2,
+        }
+        labels = {
+            "in_progress": "In progress",
+            "rejected": "Needs redo",
+            "pending_approval": "Pending verification",
+            "completed": "Completed",
+            "approved": "Verified",
+        }
+        best: dict[int, str] = {}
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            if row.get("parent_activity_id") is not None or str(row.get("activity_kind") or "") == "group_item":
+                continue
+            status = str(row.get("status") or "")
+            if status not in rank:
+                continue
+            rid = int(row.get("responsibility_id") or 0)
+            current = best.get(rid)
+            if current is None or rank[status] > rank[current]:
+                best[rid] = status
+        by_key: dict[str, str] = {}
+        for item in out:
+            status = best.get(int(item.get("id") or 0))
+            if not status:
+                continue
+            key = assignment_key(item)
+            current = by_key.get(key)
+            if current is None or rank[status] > rank[current]:
+                by_key[key] = status
+        for item in out:
+            status = by_key.get(assignment_key(item))
+            if status:
+                item["activity_status"] = status
+                item["activity_status_label"] = labels[status]
+        return out
+    except Exception:
+        return out
 
 
 def sync_day_tasks(

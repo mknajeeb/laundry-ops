@@ -142,6 +142,7 @@ export default function WeeklyScheduleEntryDialog({
   const [unscheduledBreak, setUnscheduledBreak] = useState(0);
   const [respRole, setRespRole] = useState("");
   const [respRemarks, setRespRemarks] = useState("");
+  const [correctionReason, setCorrectionReason] = useState("");
   const [userIds, setUserIds] = useState([]);
   const [timingMode, setTimingMode] = useState(TASK_TIMING.ANYTIME);
   const [taskStart, setTaskStart] = useState("08:00");
@@ -174,6 +175,7 @@ export default function WeeklyScheduleEntryDialog({
       setDayOfWeek(responsibility.day_of_week);
       setRespRole(responsibility.role);
       setRespRemarks(responsibility.remarks || "");
+      setCorrectionReason("");
       setTimingMode(responsibility.timing_mode || TASK_TIMING.ANYTIME);
       setTaskStart(responsibility.start_time || "08:00");
       setExecutionMode(responsibility.execution_mode === "shared" ? "shared" : "individual");
@@ -213,6 +215,7 @@ export default function WeeklyScheduleEntryDialog({
     setUnscheduledBreak(0);
     setRespRole(kindForRole === ASSIGNMENT_KIND.RESPONSIBILITY && defaultRole ? defaultRole : untimedOptions[0]?.value || "");
     setRespRemarks("");
+    setCorrectionReason("");
     setUserIds(defaultUserId ? [Number(defaultUserId)] : []);
     setTimingMode(TASK_TIMING.ANYTIME);
     setTaskStart(defaultStartTime || "08:00");
@@ -394,6 +397,9 @@ export default function WeeklyScheduleEntryDialog({
         timing_mode: timingMode,
         start_time: timingMode === TASK_TIMING.SPECIFIC ? taskStart : null,
         execution_mode: canChooseSharedExecution && executionMode === "shared" ? "shared" : "individual",
+        ...(correctionReason.trim()
+          ? { confirm_active_change: true, correction_reason: correctionReason.trim() }
+          : {}),
       });
       return;
     }
@@ -427,7 +433,13 @@ export default function WeeklyScheduleEntryDialog({
     });
   };
 
-  const showEmployeePicker = Array.isArray(employees) && !isEdit;
+  const showEmployeePicker = Array.isArray(employees) && !isEdit && isShift;
+  const assignedNames = userIds
+    .map((id) => {
+      const fromList = taskEmployeeOptions.find((employee) => Number(employee.user_id) === Number(id));
+      return fromList?.display_name || scheduleEmployeeName(employeesById, id);
+    })
+    .filter(Boolean);
   const title = isShift
     ? (isEdit ? "Edit shift" : "Add shift")
     : (isEdit ? "Edit task" : "Add task");
@@ -442,7 +454,13 @@ export default function WeeklyScheduleEntryDialog({
               size="small"
               exclusive
               value={kind}
-              onChange={(_, next) => next && setKind(next)}
+              onChange={(_, next) => {
+                if (!next) return;
+                setKind(next);
+                if (next === ASSIGNMENT_KIND.RESPONSIBILITY && userId) {
+                  setUserIds((prev) => (prev.length ? prev : [Number(userId)]));
+                }
+              }}
               sx={{ "& .MuiToggleButton-root": { textTransform: "none", fontWeight: 700, px: 1.5 } }}
             >
               <ToggleButton value={ASSIGNMENT_KIND.SHIFT}>Shift (timed roles)</ToggleButton>
@@ -767,6 +785,16 @@ export default function WeeklyScheduleEntryDialog({
                   ))}
                 </Select>
               </FormControl>
+              <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                {assignedNames.length
+                  ? `Assigned: ${assignedNames.join(", ")}`
+                  : "Select every employee on this assignment."}
+              </Typography>
+              {respIsActivityGroup && userIds.length < 2 ? (
+                <Typography variant="caption" color="text.secondary">
+                  Select two or more employees to use Shared Execution — one checklist for the group, with a separate timer for each person.
+                </Typography>
+              ) : null}
               <FormControl size="small" fullWidth>
                 <InputLabel>Task</InputLabel>
                 <Select label="Task" value={respRole} onChange={(e) => setRespRole(e.target.value)}>
@@ -799,9 +827,25 @@ export default function WeeklyScheduleEntryDialog({
                     onChange={(e) => setExecutionMode(e.target.value)}
                   >
                     <MenuItem value="individual">Individual — each person completes their own checklist</MenuItem>
-                    <MenuItem value="shared">Shared — one collaborative checklist</MenuItem>
+                    <MenuItem value="shared">Shared Execution — one checklist, separate timers</MenuItem>
                   </Select>
                 </FormControl>
+              ) : null}
+              {["in_progress", "completed", "approved", "pending_approval", "rejected"].includes(responsibility?.activity_status) ? (
+                <>
+                  <Alert severity="warning">
+                    This assignment has already started or been completed. Changing participants, the day, timing, or
+                    execution mode needs a correction reason. Activity and verification history stay on the original record.
+                  </Alert>
+                  <TextField
+                    size="small"
+                    fullWidth
+                    label="Correction reason"
+                    value={correctionReason}
+                    onChange={(e) => setCorrectionReason(e.target.value)}
+                    inputProps={{ maxLength: 255 }}
+                  />
+                </>
               ) : null}
               <TextField
                 size="small"

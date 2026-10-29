@@ -1149,6 +1149,15 @@ export const updateWeeklyScheduleResponsibility = (id, body) =>
 export const deleteWeeklyScheduleResponsibility = (id) =>
   axios.delete(`${API_BASE}/rinse/shift-analysis/weekly-schedule/responsibilities/${encodeURIComponent(id)}`, { timeout: 30000 });
 
+export const assignWeeklyScheduleTasks = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/responsibilities/assign`, body, { timeout: 30000 });
+
+export const moveWeeklyScheduleTask = (id, body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/responsibilities/${encodeURIComponent(id)}/move`, body, { timeout: 30000 });
+
+export const reorderWeeklyScheduleTasks = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/responsibilities/reorder`, body, { timeout: 30000 });
+
 export const getShiftAnalysisSummary = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/summary`, { params, timeout: 60000 });
 

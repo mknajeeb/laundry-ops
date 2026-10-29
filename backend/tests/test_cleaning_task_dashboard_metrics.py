@@ -130,7 +130,11 @@ def test_shared_assignment_counts_once_and_shift_end_lists_pending():
 
     assert out["metrics"]["total_assigned"] == 2  # shared floor + solo lint
     assert out["metrics"]["contributions_assigned"] == 3
-    assert out["metrics"]["started"] == 2
+    # Both people started the shared task; the solo task has not. Started is one assignment.
+    assert out["metrics"]["started"] == 1
+    assert out["metrics"]["completed"] == 0
+    assert out["metrics"]["completion_rate"] == 0
+    assert out["metrics"]["started"] <= out["metrics"]["total_assigned"]
     assert out["metrics"]["pending_approval"] == 1
     assert out["metrics"]["in_progress"] == 1
     assert out["approval_policy"] == "per_employee_contribution"
@@ -172,3 +176,233 @@ def test_shared_assignment_counts_once_and_shift_end_lists_pending():
         out2 = dashboard_summary(cursor, 3, business_date=day)
     assert out2["metrics"]["total_assigned"] == 2
     assert out2["metrics"]["approved"] == 1
+    assert out2["metrics"]["started"] == 1
+    assert out2["metrics"]["completed"] == 0
+
+
+def _summary(assignments, activities, names):
+    cursor = _Cur()
+    day = date(2026, 10, 28)
+    with mock.patch(
+        "backend.cleaning_task_activity.business_today", return_value=day
+    ), mock.patch(
+        "backend.cleaning_task_activity.business_now", return_value=datetime(2026, 10, 28, 12, 0)
+    ), mock.patch(
+        "backend.cleaning_task_activity._day_responsibilities", return_value=assignments
+    ), mock.patch(
+        "backend.cleaning_task_activity._activities_for_day", return_value=activities
+    ), mock.patch(
+        "backend.cleaning_task_activity._role_catalog",
+        return_value={
+            "agroup_floor_washer": {"name": "Floor & Washer"},
+            "lint_cleaning": {"name": "Lint Cleaning"},
+        },
+    ), mock.patch(
+        "backend.cleaning_task_activity._employee_names",
+        return_value=names,
+    ), mock.patch(
+        "backend.cleaning_task_activity._day_shifts_for_user", return_value=[]
+    ), mock.patch(
+        "backend.cleaning_task_activity.ensure_cleaning_task_activity_tables"
+    ), mock.patch(
+        "backend.cleaning_task_activity.ensure_responsibilities_table"
+    ), mock.patch(
+        "backend.cleaning_task_activity._task_meta_for_role",
+        return_value={"category_code": "intra_day"},
+    ):
+        return dashboard_summary(cursor, 3, business_date=day)
+
+
+def _solo(rid, uid, role, group):
+    return {
+        "id": rid,
+        "user_id": uid,
+        "user_ids": [uid],
+        "members": [{"id": rid, "user_id": uid}],
+        "assignment_group_id": group,
+        "week_start": "2026-10-25",
+        "day_of_week": 3,
+        "role": role,
+        "execution_mode": "individual",
+        "timing_mode": "anytime",
+        "start_time": None,
+        "timing_label": "",
+    }
+
+
+def test_october_28_completed_rows_are_not_counted_twice():
+    """Production shape: 4 assignments, two approved and two completed-without-verification.
+
+    Those two completed rows used to land in the approved bucket and again in a
+    separate completed total, so Started and Completed became 6 and the rate 150%.
+    """
+    from backend.cleaning_task_activity import STATUS_COMPLETED
+
+    names = {35: "Mithila", 36: "Yesenia", 59: "Maria Rodriguez", 61: "Lily Chen"}
+    assignments = [
+        _solo(112, 59, "agroup_floor_washer", "g-maria"),
+        _solo(113, 36, "agroup_floor_washer", "g-yesenia"),
+        _solo(106, 61, "lint_cleaning", "g-lily"),
+        _solo(114, 35, "lint_cleaning", "g-mithila"),
+    ]
+    activities = [
+        {
+            "id": 53,
+            "responsibility_id": 114,
+            "user_id": 35,
+            "status": STATUS_APPROVED,
+            "role": "lint_cleaning",
+            "verification_required": 1,
+            "verification_method": "supervisor",
+            "duration_seconds": 1401,
+            "parent_activity_id": None,
+            "activity_kind": "standalone",
+            "business_date": date(2026, 10, 28),
+        },
+        {
+            "id": 54,
+            "responsibility_id": 106,
+            "user_id": 61,
+            "status": STATUS_APPROVED,
+            "role": "lint_cleaning",
+            "verification_required": 1,
+            "verification_method": "supervisor",
+            "duration_seconds": 1198,
+            "parent_activity_id": None,
+            "activity_kind": "standalone",
+            "business_date": date(2026, 10, 28),
+        },
+        {
+            "id": 61,
+            "responsibility_id": 113,
+            "user_id": 36,
+            "status": STATUS_COMPLETED,
+            "role": "agroup_floor_washer",
+            "verification_required": 0,
+            "verification_method": "none",
+            "completion_source": "corrected",
+            "duration_seconds": 1200,
+            "parent_activity_id": None,
+            "activity_kind": "group",
+            "business_date": date(2026, 10, 28),
+        },
+        {
+            "id": 62,
+            "responsibility_id": 112,
+            "user_id": 59,
+            "status": STATUS_COMPLETED,
+            "role": "agroup_floor_washer",
+            "verification_required": 0,
+            "verification_method": "none",
+            "completion_source": "manual",
+            "duration_seconds": 1200,
+            "parent_activity_id": None,
+            "activity_kind": "group",
+            "business_date": date(2026, 10, 28),
+        },
+        {
+            "id": 99,
+            "responsibility_id": 112,
+            "user_id": 59,
+            "status": STATUS_COMPLETED,
+            "role": "agroup_floor_washer",
+            "verification_required": 0,
+            "verification_method": "none",
+            "completion_source": "corrected",
+            "duration_seconds": 100,
+            "parent_activity_id": None,
+            "activity_kind": "group",
+            "business_date": date(2026, 10, 28),
+        },
+    ]
+    out = _summary(assignments, activities, names)
+    metrics = out["metrics"]
+    assert metrics["total_assigned"] == 4
+    assert metrics["started"] == 4
+    assert metrics["completed"] == 4
+    assert metrics["verified"] == 4
+    assert metrics["completion_rate"] == 100
+    assert metrics["started"] <= metrics["total_assigned"]
+    assert metrics["completed"] <= metrics["total_assigned"]
+    assert len(out["durations"]) == 5
+
+
+def test_shared_pair_counts_once_and_keeps_both_timers():
+    from backend.cleaning_task_activity import STATUS_COMPLETED
+
+    assignments = [
+        {
+            "id": 1,
+            "user_id": 10,
+            "user_ids": [10, 11],
+            "members": [{"id": 1, "user_id": 10}, {"id": 2, "user_id": 11}],
+            "assignment_group_id": "shared-floor",
+            "week_start": "2026-10-25",
+            "day_of_week": 3,
+            "role": "agroup_floor_washer",
+            "execution_mode": "shared",
+            "timing_mode": "anytime",
+            "start_time": None,
+            "timing_label": "",
+        },
+        {
+            "id": 2,
+            "user_id": 11,
+            "user_ids": [10, 11],
+            "members": [{"id": 1, "user_id": 10}, {"id": 2, "user_id": 11}],
+            "assignment_group_id": "shared-floor",
+            "week_start": "2026-10-25",
+            "day_of_week": 3,
+            "role": "agroup_floor_washer",
+            "execution_mode": "shared",
+            "timing_mode": "anytime",
+            "start_time": None,
+            "timing_label": "",
+        },
+    ]
+    activities = [
+        {
+            "id": 1,
+            "responsibility_id": 1,
+            "user_id": 10,
+            "status": STATUS_COMPLETED,
+            "role": "agroup_floor_washer",
+            "verification_required": 0,
+            "verification_method": "none",
+            "duration_seconds": 600,
+            "parent_activity_id": None,
+            "activity_kind": "group",
+            "business_date": date(2026, 10, 28),
+        },
+        {
+            "id": 2,
+            "responsibility_id": 2,
+            "user_id": 11,
+            "status": STATUS_COMPLETED,
+            "role": "agroup_floor_washer",
+            "verification_required": 0,
+            "verification_method": "none",
+            "duration_seconds": 540,
+            "parent_activity_id": None,
+            "activity_kind": "group",
+            "business_date": date(2026, 10, 28),
+        },
+    ]
+    out = _summary(assignments, activities, {10: "Francis", 11: "Yesenia"})
+    assert out["metrics"]["total_assigned"] == 1
+    assert out["metrics"]["started"] == 1
+    assert out["metrics"]["completed"] == 1
+    assert out["metrics"]["verified"] == 1
+    assert out["metrics"]["completion_rate"] == 100
+    assert out["metrics"]["contributions_assigned"] == 2
+    assert len(out["durations"]) == 2
+    assert {row["employee_name"] for row in out["durations"]} == {"Francis", "Yesenia"}
+
+
+def test_partner_states_distinguish_working_from_not_started():
+    from backend.cleaning_task_activity import partner_participation_state
+
+    assert partner_participation_state(None) == "assigned"
+    assert partner_participation_state("in_progress") == "working"
+    assert partner_participation_state("completed") == "finished"
+    assert partner_participation_state("approved") == "finished"

@@ -88,6 +88,37 @@ function statusLabel(status) {
   }
 }
 
+function PartnerLines({ partners, executionMode, assignedNames }) {
+  const names = (assignedNames || []).filter(Boolean);
+  if (executionMode !== "shared" || (!partners?.length && names.length < 2)) return null;
+  const working = (partners || []).filter((partner) => partner.state === "working").map((partner) => partner.name);
+  const waiting = (partners || []).filter((partner) => partner.state === "assigned").map((partner) => partner.name);
+  const finished = (partners || []).filter((partner) => partner.state === "finished").map((partner) => partner.name);
+  const headline = names.length ? names.join(", ") : (partners || []).map((partner) => partner.name).join(", ");
+  return (
+    <Box sx={{ mt: 0.5 }}>
+      <Typography variant="body2" sx={{ fontWeight: 700, color: OPS_MOBILE.navy }}>
+        {`Assigned with: ${headline}`}
+      </Typography>
+      {working.length ? (
+        <Typography variant="caption" display="block" sx={{ color: "#166534", fontWeight: 700 }}>
+          {`Working now: ${working.join(", ")}`}
+        </Typography>
+      ) : null}
+      {waiting.length ? (
+        <Typography variant="caption" display="block" color="text.secondary">
+          {`Not started: ${waiting.join(", ")}`}
+        </Typography>
+      ) : null}
+      {finished.length ? (
+        <Typography variant="caption" display="block" color="text.secondary">
+          {`Finished: ${finished.join(", ")}`}
+        </Typography>
+      ) : null}
+    </Box>
+  );
+}
+
 function TaskCard({ task, onStart, onCompleteUntimed, busy }) {
   const names = (task.assigned_employees || []).join(" + ");
   const canAct =
@@ -122,6 +153,11 @@ function TaskCard({ task, onStart, onCompleteUntimed, busy }) {
           {(task.group_items || []).map((it) => it.task_name || it.task_code).join(" · ")}
         </Typography>
       ) : null}
+      <PartnerLines
+        partners={task.partners}
+        executionMode={task.execution_mode}
+        assignedNames={task.assigned_employees}
+      />
       <Typography variant="caption" sx={{ fontWeight: 700, color: "#b45309" }}>
         {statusLabel(task.status)}
       </Typography>
@@ -691,6 +727,11 @@ export default function CleaningTasksPinPage() {
               ? "Shared Activity · your timer · one checklist"
               : "Activity Group · your timer"}
           </Typography>
+          <PartnerLines
+            partners={active.partners}
+            executionMode={active.execution_mode || active.group?.execution_mode}
+            assignedNames={active.assigned_employees || active.group?.assigned_employees}
+          />
           {active.group?.checklist_complete || active.shared_checklist_complete ? (
             <Typography variant="body2" sx={{ fontWeight: 700, color: "#166534" }}>
               Shared checklist complete

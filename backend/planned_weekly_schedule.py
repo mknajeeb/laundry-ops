@@ -2367,14 +2367,19 @@ def build_week_payload(
     view = effective_weekly_schedule_view(cursor, organization_id, user_roles)
 
     from backend.planned_weekly_schedule_responsibilities import (
+        annotate_responsibility_activity,
         filter_responsibilities_for_view,
         list_week_responsibilities,
     )
     from backend.weekly_schedule_template import schedule_template_payload
 
-    responsibilities = filter_responsibilities_for_view(
-        list_week_responsibilities(cursor, organization_id, week_start=week_start),
-        allowed_user_ids=schedulable_uids,
+    responsibilities = annotate_responsibility_activity(
+        cursor,
+        organization_id,
+        filter_responsibilities_for_view(
+            list_week_responsibilities(cursor, organization_id, week_start=week_start),
+            allowed_user_ids=schedulable_uids,
+        ),
     )
 
     payload = {

@@ -288,6 +288,9 @@ def enrich_shared_group_activity(
         "can_finish_participation": True,
         "checklist_complete": checklist_complete,
     }
+    from backend.cleaning_task_activity import partners_for_activity
+
+    out["partners"] = partners_for_activity(cursor, oid, out)
     return out
 
 

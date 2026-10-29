@@ -74,12 +74,14 @@ describe("task assignment display", () => {
   it("shows one group assignment with both names and the timing, and a separate group of the same task", () => {
     const entries = [shift(1, 1, "08:00", "16:00"), shift(2, 2, "08:00", "16:00"), shift(3, 3, "08:00", "16:00", { break_slots: [{ start_time: "12:00", end_time: "12:30" }], break_minutes: 30 })];
     const responsibilities = [
-      { id: 1, user_id: 1, user_ids: [1, 2], assignment_group_id: "g1", day_of_week: 1, role: "floor_cleaning", timing_mode: "specific_time", start_time: "08:00" },
-      { id: 2, user_id: 2, user_ids: [1, 2], assignment_group_id: "g1", day_of_week: 1, role: "floor_cleaning", timing_mode: "specific_time", start_time: "08:00" },
+      { id: 1, user_id: 1, user_ids: [1, 2], assignment_group_id: "g1", execution_mode: "shared", day_of_week: 1, role: "floor_cleaning", timing_mode: "specific_time", start_time: "08:00" },
+      { id: 2, user_id: 2, user_ids: [1, 2], assignment_group_id: "g1", execution_mode: "shared", day_of_week: 1, role: "floor_cleaning", timing_mode: "specific_time", start_time: "08:00" },
       { id: 3, user_id: 3, user_ids: [3], day_of_week: 1, role: "floor_cleaning", timing_mode: "before_break", remarks: "Front" },
       { id: 4, user_id: 3, user_ids: [3], day_of_week: 1, role: "lint_cleaning", timing_mode: "upon_entry" },
     ];
     const days = buildHourlyCoverage(entries, { dayIndices: [1], employeesById, responsibilities });
+    const shared = days[0].responsibilities.find((group) => group.namesLabel === "Francis + Maria Perez");
+    expect(shared.executionLabel).toBe("Shared");
     expect(days[0].responsibilities.map((group) => `${group.label} · ${group.namesLabel}${group.timingLabel ? ` · ${group.timingLabel}` : ""}`)).toEqual([
       "Lint Cleaning · Yesenia · Upon Entry",
       "Floor Cleaning · Francis + Maria Perez · 8:00 AM",

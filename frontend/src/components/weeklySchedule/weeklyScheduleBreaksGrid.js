@@ -1,5 +1,5 @@
 import { scheduleRoleCatalog, scheduleRoleLabel, sortRoles } from "./weeklyScheduleRoles";
-import { assignmentKey, taskGroupLabel, taskTimingIssues, taskTimingLabel } from "./weeklyScheduleTaskTiming";
+import { assignmentKey, taskExecutionLabel, taskGroupLabel, taskTimingIssues, taskTimingLabel } from "./weeklyScheduleTaskTiming";
 
 function employeeName(employeesById, userId) {
   const employee = employeesById?.[userId] || employeesById?.[String(userId)];
@@ -101,6 +101,7 @@ export function buildBreaksTasksGrid({
       label: scheduleRoleLabel(item.role),
       remarks: item.remarks || null,
       namesLabel,
+      executionLabel: taskExecutionLabel(item),
       timingLabel: taskTimingLabel(item),
       warnings: taskTimingIssues(item, timingEntries || shiftEntries, employeesById).warnings,
     });
