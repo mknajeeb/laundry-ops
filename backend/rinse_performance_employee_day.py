@@ -640,6 +640,60 @@ def pick_final_visible_session(
     return _pick_final_session_by(sessions, accept=session_is_visible_non_excluded)
 
 
+def _positive_int(raw: Any) -> int | None:
+    """Parse a positive integer. Booleans and WF-prefixed keys are not integers."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if raw > 0 else None
+    text = str(raw).strip()
+    if not text.isdigit():
+        return None
+    value = int(text)
+    return value if value > 0 else None
+
+
+def resolve_edit_day_segment_target(
+    session: Mapping[str, Any],
+    cursor=None,
+) -> dict[str, Any]:
+    """Split a Folder session card into its three identifiers.
+
+    ``performance_session_id`` is the stable approval key (``WF-2418`` or a
+    legacy numeric string). It is never rewritten and is never the payroll
+    parent id just because it contains digits.
+
+    ``segment_id`` is ``shift_job_segments.id``. A ``WF-{n}`` key encodes that
+    segment id when the card omits ``segment_id``.
+
+    ``shift_session_id`` is the payroll parent required by
+    ``update_time_record_segment``. Prefer the explicit field. A purely numeric
+    session id is that parent for older callers. Otherwise read it from the
+    segment row. This lookup does not update the segment or the approval key.
+    """
+    performance_session_id = str(session.get("session_id") or "").strip()
+    segment_id = _positive_int(session.get("segment_id"))
+    shift_session_id = _positive_int(session.get("shift_session_id"))
+    if shift_session_id is None and _positive_int(performance_session_id) is not None:
+        shift_session_id = _positive_int(performance_session_id)
+    if segment_id is None and "-" in performance_session_id:
+        segment_id = _positive_int(performance_session_id.rsplit("-", 1)[-1])
+    if shift_session_id is None and segment_id is not None and cursor is not None:
+        cursor.execute(
+            "SELECT shift_session_id FROM shift_job_segments WHERE id=%s LIMIT 1",
+            (int(segment_id),),
+        )
+        row = cursor.fetchone() or {}
+        if not isinstance(row, Mapping):
+            row = {}
+        shift_session_id = _positive_int(row.get("shift_session_id"))
+    return {
+        "performance_session_id": performance_session_id,
+        "segment_id": segment_id,
+        "shift_session_id": shift_session_id,
+    }
+
+
 def _end_times_same_minute(a: Any, b: Any) -> bool:
     """True when both values resolve to the same ET wall minute (seconds ignored)."""
     da = _parse_dt(a)
@@ -740,28 +794,33 @@ def apply_employee_day_end_time(
     if not final_sess:
         return {"ok": False, "status": "no_included_session"}
 
-    sid_raw = final_sess.get("session_id")
-    seg_raw = final_sess.get("segment_id")
-    try:
-        sid = int(sid_raw)
-        seg_id = int(seg_raw)
-    except (TypeError, ValueError):
+    # Unchanged End Time (Average Weight prefill) must succeed before any
+    # payroll-id lookup. WF-2418 is a performance key, not an integer.
+    current_end = final_sess.get("performance_end") or final_sess.get("end_time")
+    end_unchanged = _end_times_same_minute(current_end, end_time_et)
+    ident = resolve_edit_day_segment_target(
+        final_sess,
+        cursor=None if end_unchanged else cursor,
+    )
+    perf_sid = ident["performance_session_id"]
+    seg_id = ident["segment_id"]
+    shift_sid = ident["shift_session_id"]
+    if not perf_sid or (not end_unchanged and (seg_id is None or shift_sid is None)):
         return {
             "ok": False,
             "status": "invalid_session_segment",
-            "session_id": sid_raw,
-            "segment_id": seg_raw,
+            "session_id": perf_sid or final_sess.get("session_id"),
+            "segment_id": final_sess.get("segment_id"),
         }
 
-    current_end = final_sess.get("performance_end") or final_sess.get("end_time")
-    if _end_times_same_minute(current_end, end_time_et):
+    if end_unchanged:
         # Prefill-only save (e.g. Average Weight edit) must not wipe approvals.
         return {
             "ok": True,
             "unchanged": True,
             "approval_reset": False,
             "employee": target_emp.get("employee"),
-            "session_id": str(sid),
+            "session_id": perf_sid,
             "segment_id": seg_id,
             "end_time_et": end_time_et,
             "business_date_et": selected_date_et.isoformat(),
@@ -771,8 +830,8 @@ def apply_employee_day_end_time(
         update_time_record_segment(
             conn,
             int(organization_id),
-            sid,
-            seg_id,
+            int(shift_sid),
+            int(seg_id),
             ended_at=end_time_et,
             ended_at_provided=True,
         )
@@ -783,7 +842,7 @@ def apply_employee_day_end_time(
         cursor,
         organization_id,
         role_key=ROLE_FOLDER,
-        session_ids=[str(sid)],
+        session_ids=[perf_sid],
         reason="day_end_time_edit",
         actor_user_id=actor_user_id,
         actor_name=actor_name,
@@ -806,7 +865,7 @@ def apply_employee_day_end_time(
             str(target_emp.get("employee") or employee_name),
             "SET_DAY_END_TIME",
             str(end_time_et)[:64],
-            str(sid),
+            perf_sid,
             seg_id,
             actor_user_id,
             actor_name,
@@ -816,7 +875,7 @@ def apply_employee_day_end_time(
     return {
         "ok": True,
         "employee": target_emp.get("employee"),
-        "session_id": str(sid),
+        "session_id": perf_sid,
         "segment_id": seg_id,
         "end_time_et": end_time_et,
         "business_date_et": selected_date_et.isoformat(),

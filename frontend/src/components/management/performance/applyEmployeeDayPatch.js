@@ -147,6 +147,7 @@ export function employeeSessionsPayload(employee) {
     session_id: s.session_id,
     session_code: s.session_code,
     segment_id: s.segment_id,
+    shift_session_id: s.shift_session_id,
     user_id: s.user_id ?? employee.user_id,
     employee: employee.employee,
     total_pre_lbs: s.total_pre_lbs,

@@ -348,6 +348,72 @@ def test_guiling_consecutive_edits_without_page_refresh_keep_all_sessions():
 # ---------------------------------------------------------------------------
 
 
+def test_evelin_oct_27_override_rate_stays_published_and_oct_28_stays_off_graph():
+    """Lock the live approved day: override pounds, not evidence pounds.
+
+    WF-2418 evidence is 208.5 lb. The approved rate 50.15 publishes 274.05 lb.
+    Oct 28 is unapproved and must not become rankable.
+    """
+    approved = [
+        _sess(
+            sid="WF-2403",
+            code="WF-01",
+            status="APPROVED",
+            bags=2,
+            lbs=44.7,
+            hours=1.1764,
+            start="2026-10-27T04:59:00",
+            end="2026-10-27T06:09:53",
+            employee="Evelin (VeeWash)",
+            segment_id=2403,
+        ),
+        _sess(
+            sid="WF-2418",
+            code="WF-02",
+            status="APPROVED",
+            bags=8,
+            lbs=208.5,
+            hours=5.4647,
+            start="2026-10-27T08:38:00",
+            end="2026-10-27T14:05:53",
+            employee="Evelin (VeeWash)",
+            segment_id=2418,
+            rate_override=50.15,
+        ),
+    ]
+    emp = _compose("Evelin (VeeWash)", 30, approved)
+    assert emp["credited_weight_basis"] == "SESSION_RATE_OVERRIDE"
+    assert abs(float(emp["total_pre_lbs"]) - 318.75) < 0.01
+    assert abs(float(emp["performance_hours"]) - 6.6411) < 0.0001
+    assert abs(float(emp["lbs_per_hour"]) - (318.75 / 6.6411)) < 0.001
+    assert emp["dashboard_rankable"] is True
+    _day, published, live, graph_rows = _graph_and_rank([emp])
+    assert live == []
+    assert abs(graph_rows[0]["value"] - (318.75 / 6.6411)) < 0.001
+
+    pending = [
+        _sess(
+            sid="WF-2456",
+            code="WF-01",
+            status="UNAPPROVED",
+            bags=9,
+            lbs=237.4,
+            hours=5.0494,
+            start="2026-10-28T06:54:00",
+            end="2026-10-28T11:57:29",
+            employee="Evelin (VeeWash)",
+            segment_id=2456,
+        )
+    ]
+    pending_emp = _compose("Evelin (VeeWash)", 30, pending)
+    assert pending_emp["dashboard_rankable"] is False
+    assert pending_emp["day_publication_status"] == "NEEDS_APPROVAL"
+    _day, published, live, graph_rows = _graph_and_rank([pending_emp])
+    assert published == []
+    assert graph_rows == []
+    assert live[0]["employee"] == "Evelin (VeeWash)"
+
+
 def test_evelin_approved_override_updates_graph_and_ranking_identically():
     sessions = _evelin_sessions()
     # Override WF-E1: 140/2.5=56 → 72 lb/hr ⇒ 180 lbs

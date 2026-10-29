@@ -102,6 +102,7 @@ def apply_canonical_pre_to_folder_performance_bags(
         int(organization_id),
         ids,
         selected_date_et=selected_date_et,
+        include_settled_bulk_post=False,
     )
     for bag in out:
         bid = normalize_bag_id(bag.get("bag_id"))

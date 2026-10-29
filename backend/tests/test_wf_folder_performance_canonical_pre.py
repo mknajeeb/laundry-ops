@@ -16,6 +16,48 @@ ORG = 3
 DAY = date(2026, 8, 24)
 
 
+def test_folder_pre_skips_lifetime_portal_post_scan():
+    """Settled-bulk POST overlay must not run on the Folder PRE path."""
+    from backend.rinse_veewash_review import load_bag_weight_map
+
+    with patch(
+        "backend.rinse_current_cycle_weight.load_current_cycle_weight_map",
+        return_value={"B1": {"pre_weight_lbs": 10.0, "post_weight_lbs": 12.0}},
+    ), patch(
+        "backend.rinse_settled_bulk_only_weight.apply_settled_bulk_only_to_weight_map",
+        side_effect=AssertionError("lifetime portal scan"),
+    ):
+        out = load_bag_weight_map(
+            MagicMock(),
+            ORG,
+            ["B1"],
+            selected_date_et=DAY,
+            include_settled_bulk_post=False,
+        )
+    assert out["B1"]["pre_weight_lbs"] == 10.0
+
+    seen = {}
+
+    def _capture(*args, **kwargs):
+        seen["kwargs"] = kwargs
+        return {"STALE1": {"pre_weight_lbs": 1.0}}
+
+    with patch(
+        "backend.rinse_veewash_review.load_bag_weight_map",
+        side_effect=_capture,
+    ), patch(
+        "backend.rinse_current_cycle_weight.authoritative_evidence_pre_lbs",
+        return_value=1.0,
+    ):
+        apply_canonical_pre_to_folder_performance_bags(
+            MagicMock(),
+            ORG,
+            DAY,
+            [{"bag_id": "STALE1", "service_type": "WF"}],
+        )
+    assert seen["kwargs"]["include_settled_bulk_post"] is False
+
+
 def test_overlay_replaces_stale_day_bag_pre_with_canonical():
     bags = [
         {

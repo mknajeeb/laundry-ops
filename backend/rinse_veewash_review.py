@@ -947,6 +947,7 @@ def load_bag_weight_map(
     bag_ids: list[str],
     *,
     selected_date_et: date | None = None,
+    include_settled_bulk_post: bool = True,
 ) -> dict[str, dict[str, Any]]:
     """
     Pre/Post weight map for workload / Shift Monitor / review surfaces.
@@ -979,6 +980,11 @@ def load_bag_weight_map(
             ids,
             selected_date_et=selected_date_et,
         )
+        if not include_settled_bulk_post:
+            # Folder Performance credits canonical PRE only. The settled-bulk
+            # overlay rewrites POST from a lifetime portal scan and does not
+            # change pre_weight_lbs / authoritative_evidence_pre_lbs.
+            return weight_map
         return apply_settled_bulk_only_to_weight_map(
             cursor,
             organization_id,

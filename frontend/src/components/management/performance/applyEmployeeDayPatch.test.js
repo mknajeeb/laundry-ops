@@ -256,7 +256,9 @@ describe("employeeSessionsPayload", () => {
       user_id: 59,
       sessions: [
         {
-          session_id: "1",
+          session_id: "WF-2418",
+          segment_id: 2418,
+          shift_session_id: 8802,
           publication_status: "EXCLUDED",
           publication: { status: "EXCLUDED" },
           total_pre_lbs: 10,
@@ -266,6 +268,9 @@ describe("employeeSessionsPayload", () => {
       ],
     });
     expect(rows[0].publication_status).toBe("EXCLUDED");
+    expect(rows[0].session_id).toBe("WF-2418");
+    expect(rows[0].segment_id).toBe(2418);
+    expect(rows[0].shift_session_id).toBe(8802);
     expect(rows[0].employee).toBe("Maria");
   });
 });
