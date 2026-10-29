@@ -229,6 +229,11 @@ export default function CleaningTaskReviewPinPage() {
                         <Typography sx={{ fontWeight: 800 }}>
                           {row.role_label || row.role} · {row.employee_name}
                         </Typography>
+                        {row.activity_group_label ? (
+                          <Typography variant="caption" color="text.secondary" display="block">
+                            {row.activity_group_label}
+                          </Typography>
+                        ) : null}
                         <Typography variant="body2" color="text.secondary">
                           Timing {row.timing_label || "Anytime"}
                           {act

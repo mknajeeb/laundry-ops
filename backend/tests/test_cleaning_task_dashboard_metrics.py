@@ -536,8 +536,12 @@ def test_group_verification_follows_required_items_not_the_parent():
     assert metrics["verified"] == 0
     assert metrics["pending_verification"] == 3
     assert metrics["rejected"] == 1
-    waiting_names = {row["employee_name"] for row in out["shift_end"]["pending_approval"]}
+    waiting = out["shift_end"]["pending_approval"]
+    waiting_names = {row["employee_name"] for row in waiting}
     assert waiting_names == {"Amna", "Florentina", "Jennifer Farfan"}
+    waiting_ids = {row["activity"]["id"] for row in waiting}
+    assert waiting_ids == {311, 312, 322, 303}
+    assert 301 not in waiting_ids and 302 not in waiting_ids
     assert {row["employee_name"] for row in out["shift_end"]["blocking_close"]} >= waiting_names
     assert amna["contributions"][0]["verification_status"] == "waiting"
     assert jennifer["contributions"][0]["verification_status"] == "waiting"

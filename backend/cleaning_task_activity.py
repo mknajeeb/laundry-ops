@@ -1229,6 +1229,23 @@ def reject_activity(
     return serialize_activity(get_activity(cursor, organization_id, int(activity_id)) or {}, catalog=catalog)
 
 
+def _group_item_queue_entry(
+    item: Mapping[str, Any],
+    child: Mapping[str, Any],
+    *,
+    catalog: Mapping[str, Mapping[str, Any]],
+    names: Mapping[int, str],
+    status: str,
+) -> dict[str, Any]:
+    """Queue row for one required group item. Approval must use the child activity."""
+    labeled = dict(item)
+    labeled["role"] = child.get("role") or item.get("role")
+    entry = _contribution_entry(labeled, child, catalog=catalog, names=names, status=status)
+    entry["activity_group_label"] = _role_label(item.get("role"), catalog)
+    entry["parent_activity_id"] = int(child.get("parent_activity_id") or 0) or None
+    return entry
+
+
 def _contribution_entry(
     item: Mapping[str, Any],
     act: Mapping[str, Any] | None,
@@ -1324,27 +1341,32 @@ def list_supervisor_queue(
                 _contribution_entry(item, act, catalog=catalog, names=names, status=DISPLAY_APPROVED)
             )
         elif act and str(act.get("status")) == STATUS_COMPLETED:
-            # The parent timer closes as completed. Required group items still carry
-            # verification, so a finished group can still be waiting or need correction.
-            child_verification = verification_status_from_subjects(
-                [
-                    child
-                    for child in activities
-                    if child.get("parent_activity_id") is not None
-                    and int(child.get("parent_activity_id") or 0) == int(act.get("id") or 0)
-                ]
-            )
-            if child_verification in {VERIFICATION_WAITING, VERIFICATION_PARTIAL}:
-                buckets["pending_approval"].append(
-                    _contribution_entry(
-                        item, act, catalog=catalog, names=names, status=DISPLAY_PENDING_APPROVAL
+            # The parent timer closes as completed. Verify the required items, not the parent.
+            children = [
+                child
+                for child in activities
+                if child.get("parent_activity_id") is not None
+                and int(child.get("parent_activity_id") or 0) == int(act.get("id") or 0)
+                and _subject_requires_verification(child)
+            ]
+            actionable = False
+            for child in children:
+                child_status = str(child.get("status") or "")
+                if child_status == STATUS_PENDING_APPROVAL:
+                    buckets["pending_approval"].append(
+                        _group_item_queue_entry(
+                            item, child, catalog=catalog, names=names, status=DISPLAY_PENDING_APPROVAL
+                        )
                     )
-                )
-            elif child_verification == VERIFICATION_NEEDS_CORRECTION:
-                buckets["rejected"].append(
-                    _contribution_entry(item, act, catalog=catalog, names=names, status=DISPLAY_REJECTED)
-                )
-            else:
+                    actionable = True
+                elif child_status == STATUS_REJECTED:
+                    buckets["rejected"].append(
+                        _group_item_queue_entry(
+                            item, child, catalog=catalog, names=names, status=DISPLAY_REJECTED
+                        )
+                    )
+                    actionable = True
+            if not actionable:
                 # Finished with no verification step. Keep it out of the verified bucket
                 # so one completion cannot be counted again as an approval.
                 buckets["completed_without_verification"].append(
