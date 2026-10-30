@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  checklistItemLabel,
   completionChipColor,
   completionLabel,
   friendlyStatusLabel,
+  isChecklistTimestamp,
   statusChipColor,
   verificationChipColor,
   verificationLabel,
@@ -32,5 +34,14 @@ describe("taskDashboardLabels", () => {
     expect(verificationChipColor("waiting")).toBe("warning");
     expect(verificationChipColor("partial")).toBe("warning");
     expect(verificationChipColor("verified")).toBe("success");
+  });
+
+  it("labels checklist check-off separately from assignment Not Started", () => {
+    expect(checklistItemLabel("pending")).toBe("Not checked off");
+    expect(checklistItemLabel("completed")).toBe("Checked off");
+    expect(checklistItemLabel("approved")).toBe("Verified");
+    expect(isChecklistTimestamp({ activity_kind: "group_item" })).toBe(true);
+    expect(isChecklistTimestamp({ timestamp_kind: "checklist_checkoff" })).toBe(true);
+    expect(isChecklistTimestamp({ activity_kind: "group" })).toBe(false);
   });
 });

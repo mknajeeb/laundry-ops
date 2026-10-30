@@ -75,6 +75,8 @@ _TASK_CONFIG_COLUMNS: tuple[tuple[str, str], ...] = (
     ("verifier_config_json", "TEXT NULL"),
     ("input_schema_json", "TEXT NULL"),
     ("checklist_id", "INT NULL"),
+    # 0 = explicit override (preserves existing task configs); 1 = inherit global/group.
+    ("verification_inherits", "TINYINT(1) NOT NULL DEFAULT 0"),
 )
 
 
@@ -344,6 +346,7 @@ def task_definition_from_role(role: Mapping[str, Any], *, categories_by_code: Ma
     verify_required = bool(role.get("verification_required", True))
     if method == VERIFY_NONE:
         verify_required = False
+    inherits = bool(role.get("verification_inherits", False))
     return {
         "code": code,
         "name": str(role.get("name") or code),
@@ -354,10 +357,14 @@ def task_definition_from_role(role: Mapping[str, Any], *, categories_by_code: Ma
         "category_id": int(cat["id"]) if cat.get("id") is not None else None,
         "completion_type": completion,
         "timer_enabled": bool(role.get("timer_enabled", True)),
+        "verification_inherits": inherits,
         "verification_required": verify_required,
         "verification_method": method if verify_required else VERIFY_NONE,
         "verification_timing": timing,
         "verifier_config": _parse_json(role.get("verifier_config_json"), {}),
+        "verification_policy_label": (
+            "Inherited from global/group default" if inherits else "Task override"
+        ),
         "input_schema": _parse_json(role.get("input_schema_json"), []),
         "checklist_id": int(role["checklist_id"]) if role.get("checklist_id") is not None else None,
         "display_order": int(role.get("display_order") or 0),
@@ -374,7 +381,7 @@ def list_task_definitions(cursor, organization_id: int, *, include_inactive: boo
         """
         SELECT code, task_category_code, completion_type, timer_enabled, verification_required,
                verification_method, verification_timing, verifier_config_json, input_schema_json,
-               checklist_id, active, name, display_order, uses_time_slots
+               checklist_id, active, name, display_order, uses_time_slots, verification_inherits
         FROM weekly_schedule_roles
         WHERE organization_id = %s
         """,
@@ -441,7 +448,7 @@ def get_task_definition(cursor, organization_id: int, code: str) -> dict[str, An
             """
             SELECT code, task_category_code, completion_type, timer_enabled, verification_required,
                    verification_method, verification_timing, verifier_config_json, input_schema_json,
-                   checklist_id, active, name, display_order, uses_time_slots
+                   checklist_id, active, name, display_order, uses_time_slots, verification_inherits
             FROM weekly_schedule_roles
             WHERE organization_id = %s AND code = %s
             LIMIT 1
@@ -545,6 +552,15 @@ def upsert_task_definition(cursor, organization_id: int, code: str, data: Mappin
     completion = str(data.get("completion_type") or COMPLETION_SIMPLE)
     if completion not in COMPLETION_TYPES:
         raise TaskCatalogError("Invalid completion_type.")
+    # Inherit vs override: new tasks default to inherit unless explicitly overridden.
+    if "verification_inherits" in data:
+        inherits = bool(data.get("verification_inherits"))
+    elif data.get("verification_method") == VERIFY_NONE or data.get("verification_required") is False:
+        inherits = False  # intentional "not required" is an explicit override
+    elif any(k in data for k in ("verification_method", "verification_required", "verification_timing")):
+        inherits = False
+    else:
+        inherits = True
     method = str(data.get("verification_method") or VERIFY_SUPERVISOR)
     if method not in VERIFY_METHODS:
         raise TaskCatalogError("Invalid verification_method.")
@@ -554,6 +570,11 @@ def upsert_task_definition(cursor, organization_id: int, code: str, data: Mappin
     verify_required = bool(data.get("verification_required", method != VERIFY_NONE))
     if method == VERIFY_NONE:
         verify_required = False
+    if inherits:
+        # Store global-compatible placeholders; resolution uses inherit flag.
+        method = VERIFY_SUPERVISOR
+        verify_required = True
+        timing = VERIFY_TIMING_SAME_SHIFT
     timer_enabled = 1 if data.get("timer_enabled", True) else 0
     active = 1 if data.get("active", True) else 0
     verifier_config = data.get("verifier_config") if "verifier_config" in data else data.get("verifier_config_json")
@@ -581,7 +602,8 @@ def upsert_task_definition(cursor, organization_id: int, code: str, data: Mappin
             SET name = %s, active = %s, display_order = %s, uses_time_slots = 0, remarks_enabled = 1,
                 task_category_code = %s, completion_type = %s, timer_enabled = %s,
                 verification_required = %s, verification_method = %s, verification_timing = %s,
-                verifier_config_json = %s, input_schema_json = %s, checklist_id = %s
+                verifier_config_json = %s, input_schema_json = %s, checklist_id = %s,
+                verification_inherits = %s
             WHERE organization_id = %s AND code = %s
             """,
             (
@@ -597,6 +619,7 @@ def upsert_task_definition(cursor, organization_id: int, code: str, data: Mappin
                 verifier_config,
                 input_schema,
                 int(checklist_id) if checklist_id not in (None, "") else None,
+                1 if inherits else 0,
                 oid,
                 code_clean,
             ),
@@ -608,8 +631,8 @@ def upsert_task_definition(cursor, organization_id: int, code: str, data: Mappin
               organization_id, code, name, role_group, display_order, active,
               uses_time_slots, remarks_enabled, task_category_code, completion_type,
               timer_enabled, verification_required, verification_method, verification_timing,
-              verifier_config_json, input_schema_json, checklist_id
-            ) VALUES (%s,%s,%s,'CLEANING',%s,%s,0,1,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              verifier_config_json, input_schema_json, checklist_id, verification_inherits
+            ) VALUES (%s,%s,%s,'CLEANING',%s,%s,0,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 oid,
@@ -626,6 +649,7 @@ def upsert_task_definition(cursor, organization_id: int, code: str, data: Mappin
                 verifier_config,
                 input_schema,
                 int(checklist_id) if checklist_id not in (None, "") else None,
+                1 if inherits else 0,
             ),
         )
     defn = get_task_definition(cursor, oid, code_clean)

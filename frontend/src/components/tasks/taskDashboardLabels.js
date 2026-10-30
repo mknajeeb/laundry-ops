@@ -79,3 +79,26 @@ export function formatEtWall(value) {
   const text = String(value).replace("T", " ");
   return text.length >= 16 ? text.slice(0, 16) : text;
 }
+
+/** Checklist / group-item check-off status (not assignment participation). */
+export const CHECKLIST_ITEM_LABELS = {
+  pending: "Not checked off",
+  not_started: "Not checked off",
+  completed: "Checked off",
+  in_progress: "In Progress",
+  pending_approval: "Waiting for Verification",
+  approved: "Verified",
+  verified: "Verified",
+  rejected: "Needs Correction",
+};
+
+export function checklistItemLabel(status) {
+  const key = String(status || "").trim().toLowerCase();
+  return CHECKLIST_ITEM_LABELS[key] || "Not checked off";
+}
+
+export function isChecklistTimestamp(activity) {
+  if (!activity) return false;
+  if (activity.timestamp_kind === "checklist_checkoff") return true;
+  return String(activity.activity_kind || "") === "group_item";
+}

@@ -513,6 +513,12 @@ export const upsertManagementTaskChecklist = (body) =>
 export const upsertManagementTaskActivityGroup = (body) =>
   axios.post(`${API_BASE}/api/management/task-catalog/activity-groups`, body);
 
+export const getManagementTaskVerificationPolicy = () =>
+  axios.get(`${API_BASE}/api/management/task-catalog/verification-policy`);
+
+export const upsertManagementTaskVerificationPolicy = (body) =>
+  axios.put(`${API_BASE}/api/management/task-catalog/verification-policy`, body);
+
 function mtlPinHeaders(sessionToken) {
   const token = String(sessionToken || "").trim();
   return token

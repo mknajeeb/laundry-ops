@@ -29,10 +29,12 @@ import TaskManualCompletionDialog from "../components/tasks/TaskManualCompletion
 import TaskManageDialog from "../components/tasks/TaskManageDialog";
 import {
   DEFAULT_CATEGORY_TABS,
+  checklistItemLabel,
   completionChipColor,
   completionLabel,
   formatEtWall,
   friendlyStatusLabel,
+  isChecklistTimestamp,
   statusChipColor,
   verificationChipColor,
   verificationLabel,
@@ -84,13 +86,13 @@ function DualStatusChips({ completionStatus, verificationStatus }) {
     <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap justifyContent="flex-end">
       <Chip
         size="small"
-        label={`Completion: ${completionLabel(completionStatus)}`}
+        label={completionLabel(completionStatus)}
         color={completionChipColor(completionStatus)}
       />
       <Chip
         size="small"
         variant="outlined"
-        label={`Verification: ${verificationLabel(verificationStatus)}`}
+        label={verificationLabel(verificationStatus)}
         color={verificationChipColor(verificationStatus)}
       />
     </Stack>
@@ -492,9 +494,11 @@ export default function ManagementTasksPage() {
                               display="block"
                               color="text.secondary"
                             >
-                              {it.task_name || it.task_code}: {friendlyStatusLabel(it.status)}
+                              {it.task_name || it.task_code}: {checklistItemLabel(it.status)}
                               {it.completed_by_name ? ` · ${it.completed_by_name}` : ""}
-                              {it.completed_at ? ` · ${formatEtWall(it.completed_at)}` : ""}
+                              {it.completed_at
+                                ? ` · Checked off at ${formatEtWall(it.completed_at)}`
+                                : ""}
                             </Typography>
                           ))}
                         </Box>
@@ -505,7 +509,7 @@ export default function ManagementTasksPage() {
                             <TableCell>Employee</TableCell>
                             <TableCell>Completion / Verification</TableCell>
                             <TableCell>Start</TableCell>
-                            <TableCell>Completed</TableCell>
+                            <TableCell>End</TableCell>
                             {hideLabor ? null : <TableCell>Duration</TableCell>}
                             <TableCell>Source</TableCell>
                             <TableCell className="no-print" />
@@ -532,7 +536,12 @@ export default function ManagementTasksPage() {
                                         >
                                           <Typography variant="caption" color="text.secondary">
                                             {gi.role_label || gi.role}:{" "}
-                                            {friendlyStatusLabel(gi.display_status || gi.status)}
+                                            {checklistItemLabel(gi.display_status || gi.status)}
+                                            {gi.checked_off_at || gi.ended_at
+                                              ? ` · Checked off at ${formatEtWall(
+                                                  gi.checked_off_at || gi.ended_at
+                                                )}`
+                                              : ""}
                                           </Typography>
                                           {!readOnly && itemNeedsVerification(gi) && gi.id ? (
                                             <>
@@ -560,8 +569,20 @@ export default function ManagementTasksPage() {
                                     verificationStatus={c.verification_status}
                                   />
                                 </TableCell>
-                                <TableCell>{formatEtWall(act.started_at)}</TableCell>
-                                <TableCell>{formatEtWall(act.ended_at)}</TableCell>
+                                <TableCell>
+                                  {isChecklistTimestamp(act)
+                                    ? "—"
+                                    : formatEtWall(act.started_at)}
+                                </TableCell>
+                                <TableCell>
+                                  {isChecklistTimestamp(act)
+                                    ? act.checked_off_at || act.ended_at
+                                      ? `Checked off at ${formatEtWall(
+                                          act.checked_off_at || act.ended_at
+                                        )}`
+                                      : "—"
+                                    : formatEtWall(act.ended_at)}
+                                </TableCell>
                                 {hideLabor ? null : (
                                   <TableCell>
                                     {formatDuration(
@@ -699,14 +720,34 @@ export default function ManagementTasksPage() {
                         <TableCell>{row.employee_name}</TableCell>
                         <TableCell>
                           {row.role_label || row.role}
+                          {row.activity_kind === "group_item" ? (
+                            <Chip size="small" label="Checklist item" sx={{ ml: 1 }} />
+                          ) : null}
+                          {row.activity_kind === "group" ? (
+                            <Chip size="small" label="Group timer" sx={{ ml: 1 }} />
+                          ) : null}
                           {row.is_manual_completion ? (
                             <Chip size="small" label="Manual" sx={{ ml: 1 }} />
                           ) : null}
                         </TableCell>
-                        <TableCell>{formatEtWall(row.started_at)}</TableCell>
-                        <TableCell>{formatEtWall(row.ended_at)}</TableCell>
+                        <TableCell>
+                          {isChecklistTimestamp(row) ? "—" : formatEtWall(row.started_at)}
+                        </TableCell>
+                        <TableCell>
+                          {isChecklistTimestamp(row)
+                            ? row.checked_off_at || row.ended_at
+                              ? `Checked off at ${formatEtWall(
+                                  row.checked_off_at || row.ended_at
+                                )}`
+                              : "—"
+                            : formatEtWall(row.ended_at)}
+                        </TableCell>
                         {hideLabor ? null : (
-                          <TableCell>{formatDuration(row.duration_seconds)}</TableCell>
+                          <TableCell>
+                            {isChecklistTimestamp(row)
+                              ? "—"
+                              : formatDuration(row.duration_seconds)}
+                          </TableCell>
                         )}
                         <TableCell>
                           <Typography variant="caption">

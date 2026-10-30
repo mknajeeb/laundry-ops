@@ -283,6 +283,12 @@ def start_group_activity(
         )
         shared_session_id = int(session["id"])
 
+    from backend.task_verification_policy import resolve_verification_policy, snapshot_columns
+
+    # Snapshot group-level effective policy on the parent (audit). Verification of
+    # work products still lives on child item rows at complete-group time.
+    group_policy = resolve_verification_policy(cursor, oid, activity_group=group)
+    group_snap = snapshot_columns(group_policy)
     cursor.execute(
         f"""
         INSERT INTO {TABLE} (
@@ -311,9 +317,9 @@ def start_group_activity(
             group.get("category_code"),
             COMPLETION_SIMPLE,
             1,
-            0,
-            VERIFY_NONE,
-            "same_shift",
+            group_snap["verification_required"],
+            group_snap["verification_method"],
+            group_snap["verification_timing"],
             None,
             None,
             KIND_GROUP,
@@ -488,16 +494,30 @@ def complete_group_activity(
 
     # Spawn verification child activities (no duration) for items that need verify.
     catalog = _role_catalog(cursor, oid)
+    from backend.task_activity_groups import get_activity_group
+    from backend.task_verification_policy import resolve_verification_policy, snapshot_columns
+
+    parent_group = get_activity_group(cursor, oid, role_code=str(row.get("role") or ""))
     for it in items:
         if str(it.get("status")) != ITEM_COMPLETED:
             continue
         code = str(it.get("task_code") or "")
         meta = _task_meta_for_role(cursor, oid, code)
-        verify_required = bool(meta.get("verification_required", True))
-        verify_method = str(meta.get("verification_method") or VERIFY_SUPERVISOR)
-        if not verify_required:
-            verify_method = VERIFY_NONE
-        status = STATUS_PENDING_APPROVAL if verify_required and verify_method != VERIFY_NONE else STATUS_COMPLETED
+        policy = resolve_verification_policy(
+            cursor,
+            oid,
+            task_code=code,
+            activity_group=parent_group,
+            task_definition=meta,
+        )
+        snap = snapshot_columns(policy)
+        verify_required = bool(snap["verification_required"])
+        verify_method = str(snap["verification_method"])
+        status = (
+            STATUS_PENDING_APPROVAL
+            if verify_required and verify_method != VERIFY_NONE
+            else STATUS_COMPLETED
+        )
         completed_at = it.get("completed_at") or at
         cursor.execute(
             f"""
@@ -527,9 +547,9 @@ def complete_group_activity(
                 meta.get("category_code"),
                 meta.get("completion_type") or COMPLETION_SIMPLE,
                 0,
-                1 if status == STATUS_PENDING_APPROVAL else 0,
-                verify_method,
-                meta.get("verification_timing") or "same_shift",
+                snap["verification_required"],
+                snap["verification_method"],
+                snap["verification_timing"],
                 meta.get("checklist_id"),
                 it.get("completion_input_json"),
                 int(activity_id),

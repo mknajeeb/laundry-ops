@@ -12,6 +12,7 @@ timer plus per-item completion rows (no duration attributed per item).
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Mapping, Optional, Sequence
 
@@ -65,6 +66,11 @@ def ensure_task_activity_group_tables(cursor) -> None:
               category_code VARCHAR(40) NOT NULL,
               display_order INT NOT NULL DEFAULT 0,
               active TINYINT(1) NOT NULL DEFAULT 1,
+              verification_inherits TINYINT(1) NOT NULL DEFAULT 1,
+              verification_required TINYINT(1) NULL,
+              verification_method VARCHAR(32) NULL,
+              verification_timing VARCHAR(32) NULL,
+              verifier_config_json TEXT NULL,
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
               UNIQUE KEY uq_tag_org_code (organization_id, code),
@@ -87,6 +93,12 @@ def ensure_task_activity_group_tables(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+    try:
+        from backend.task_verification_policy import ensure_verification_policy_schema
+
+        ensure_verification_policy_schema(cursor)
+    except Exception:
+        pass
     invalidate_schema_cache()
 
 
@@ -106,9 +118,11 @@ def _serialize_group(
     items: Sequence[Mapping[str, Any]] | None = None,
     *,
     task_index: Mapping[str, Mapping[str, Any]] | None = None,
+    effective_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     code = str(row.get("code") or "")
     role_code = _schedule_role_code(code)
+    inherits = bool(row.get("verification_inherits", True))
     members = []
     for it in items or []:
         tc = str(it.get("task_code") or "")
@@ -123,10 +137,12 @@ def _serialize_group(
                 "timer_enabled": meta.get("timer_enabled"),
                 "verification_required": meta.get("verification_required"),
                 "verification_method": meta.get("verification_method"),
+                "verification_inherits": bool(meta.get("verification_inherits", False)),
                 "input_schema": meta.get("input_schema") or [],
             }
         )
     members.sort(key=lambda m: (m["display_order"], m["task_name"].lower()))
+    policy = effective_policy or {}
     return {
         "id": int(row["id"]),
         "organization_id": int(row["organization_id"]),
@@ -137,6 +153,27 @@ def _serialize_group(
         "display_order": int(row.get("display_order") or 0),
         "active": bool(row.get("active", True)),
         "kind": KIND_ACTIVITY_GROUP,
+        "verification_inherits": inherits,
+        "verification_required": bool(
+            policy.get("verification_required", row.get("verification_required", True))
+        ),
+        "verification_method": str(
+            policy.get("verification_method")
+            or row.get("verification_method")
+            or "supervisor"
+        ),
+        "verification_timing": str(
+            policy.get("verification_timing")
+            or row.get("verification_timing")
+            or "same_shift"
+        ),
+        "verifier_config": policy.get("verifier_config")
+        if isinstance(policy.get("verifier_config"), dict)
+        else {},
+        "verification_source": policy.get("source") or ("global" if inherits else "activity_group"),
+        "verification_policy_label": (
+            "Inherited from global default" if inherits else "Group override"
+        ),
         "items": members,
         "item_count": len(members),
     }
@@ -178,7 +215,17 @@ def list_activity_groups(
     rows = list(cursor.fetchall() or [])
     items = _load_items(cursor, oid, [int(r["id"]) for r in rows])
     task_index = {t["code"]: t for t in list_task_definitions(cursor, oid, include_inactive=True)}
-    return [_serialize_group(r, items.get(int(r["id"]), []), task_index=task_index) for r in rows]
+    from backend.task_verification_policy import resolve_verification_policy
+
+    out = []
+    for r in rows:
+        policy = resolve_verification_policy(cursor, oid, activity_group=r)
+        out.append(
+            _serialize_group(
+                r, items.get(int(r["id"]), []), task_index=task_index, effective_policy=policy
+            )
+        )
+    return out
 
 
 def get_activity_group(
@@ -222,17 +269,29 @@ def get_activity_group(
         return None
     items = _load_items(cursor, oid, [int(row["id"])])
     task_index = {t["code"]: t for t in list_task_definitions(cursor, oid, include_inactive=True)}
-    return _serialize_group(row, items.get(int(row["id"]), []), task_index=task_index)
+    from backend.task_verification_policy import resolve_verification_policy
+
+    policy = resolve_verification_policy(cursor, oid, activity_group=row)
+    return _serialize_group(
+        row, items.get(int(row["id"]), []), task_index=task_index, effective_policy=policy
+    )
 
 
 def _sync_schedule_role(cursor, organization_id: int, group: Mapping[str, Any]) -> None:
-    """Keep a synthetic untimed role so Weekly Schedule can assign the group."""
+    """Keep a synthetic role so Weekly Schedule can assign the group.
+
+    Syncs the group's *effective* verification policy (never silently forces none).
+    Parent group timers still complete without pending verification; item children
+    carry per-task verification snapshots at submit time.
+    """
     ensure_weekly_schedule_roles_table(cursor)
     role_code = _schedule_role_code(str(group["code"]))
     name = str(group.get("name") or role_code)[:ROLE_NAME_MAX]
-    # Prefer task_catalog upsert path via weekly_schedule_roles settings.
     from backend.task_catalog import upsert_task_definition
+    from backend.task_verification_policy import resolve_verification_policy
 
+    policy = resolve_verification_policy(cursor, int(organization_id), activity_group=group)
+    group_inherits = bool(group.get("verification_inherits", True))
     upsert_task_definition(
         cursor,
         int(organization_id),
@@ -242,8 +301,12 @@ def _sync_schedule_role(cursor, organization_id: int, group: Mapping[str, Any]) 
             "category_code": str(group.get("category_code") or "intra_day"),
             "completion_type": "simple",
             "timer_enabled": True,
-            "verification_required": False,
-            "verification_method": "none",
+            "verification_required": bool(policy.get("verification_required", True)),
+            "verification_method": str(policy.get("verification_method") or "supervisor"),
+            "verification_timing": str(policy.get("verification_timing") or "same_shift"),
+            "verifier_config": policy.get("verifier_config") or {},
+            # Mirror whether the group inherits global or has an explicit override.
+            "verification_inherits": group_inherits,
             "active": bool(group.get("active", True)),
             "display_order": int(group.get("display_order") or 0),
         },
@@ -268,6 +331,36 @@ def upsert_activity_group(
         raise ActivityGroupError("Choose a valid task category.")
     display_order = int(payload.get("display_order") or 0)
     active = bool(payload.get("active", True))
+
+    # Default: inherit global (never silent "none"). Explicit override required for none.
+    inherits = bool(payload.get("verification_inherits", True))
+    if "verification_inherits" not in payload and (
+        "verification_method" in payload or "verification_required" in payload
+    ):
+        # Saving verification fields without inherits flag ⇒ explicit override.
+        inherits = False
+    verify_required = None
+    verify_method = None
+    verify_timing = None
+    verifier_config_json = None
+    if not inherits:
+        from backend.task_verification_policy import _normalize_policy_fields
+
+        method = str(payload.get("verification_method") or "supervisor")
+        if payload.get("verification_required") is False or method == "none":
+            method = "none"
+        normalized = _normalize_policy_fields(
+            verification_required=payload.get("verification_required", method != "none"),
+            verification_method=method,
+            verification_timing=payload.get("verification_timing"),
+            verifier_config=payload.get("verifier_config")
+            if "verifier_config" in payload
+            else payload.get("verifier_config_json"),
+        )
+        verify_required = 1 if normalized["verification_required"] else 0
+        verify_method = normalized["verification_method"]
+        verify_timing = normalized["verification_timing"]
+        verifier_config_json = json.dumps(normalized["verifier_config"])
 
     raw_items = payload.get("items")
     if raw_items is None and payload.get("task_codes") is not None:
@@ -319,10 +412,24 @@ def upsert_activity_group(
         cursor.execute(
             f"""
             UPDATE {GROUPS_TABLE}
-            SET name=%s, category_code=%s, display_order=%s, active=%s
+            SET name=%s, category_code=%s, display_order=%s, active=%s,
+                verification_inherits=%s, verification_required=%s,
+                verification_method=%s, verification_timing=%s, verifier_config_json=%s
             WHERE organization_id=%s AND id=%s
             """,
-            (name[:80], category_code, display_order, 1 if active else 0, oid, int(group_id)),
+            (
+                name[:80],
+                category_code,
+                display_order,
+                1 if active else 0,
+                1 if inherits else 0,
+                verify_required,
+                verify_method,
+                verify_timing,
+                verifier_config_json,
+                oid,
+                int(group_id),
+            ),
         )
         gid = int(group_id)
     else:
@@ -344,10 +451,24 @@ def upsert_activity_group(
         cursor.execute(
             f"""
             INSERT INTO {GROUPS_TABLE}
-              (organization_id, code, name, category_code, display_order, active)
-            VALUES (%s,%s,%s,%s,%s,%s)
+              (organization_id, code, name, category_code, display_order, active,
+               verification_inherits, verification_required, verification_method,
+               verification_timing, verifier_config_json)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
-            (oid, code, name[:80], category_code, display_order, 1 if active else 0),
+            (
+                oid,
+                code,
+                name[:80],
+                category_code,
+                display_order,
+                1 if active else 0,
+                1 if inherits else 0,
+                verify_required,
+                verify_method,
+                verify_timing,
+                verifier_config_json,
+            ),
         )
         gid = int(cursor.lastrowid)
 

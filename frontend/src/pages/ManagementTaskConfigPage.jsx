@@ -19,6 +19,7 @@ import {
   upsertManagementTaskChecklist,
   upsertManagementTaskDefinition,
   upsertManagementTaskActivityGroup,
+  upsertManagementTaskVerificationPolicy,
   updateManagementTaskCategory,
 } from "../api";
 
@@ -66,6 +67,8 @@ export default function ManagementTaskConfigPage() {
   const [checklistDraft, setChecklistDraft] = useState(null);
   const [activityGroups, setActivityGroups] = useState([]);
   const [groupDraft, setGroupDraft] = useState(null);
+  const [globalPolicy, setGlobalPolicy] = useState(null);
+  const [globalDraft, setGlobalDraft] = useState(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -77,6 +80,14 @@ export default function ManagementTaskConfigPage() {
       setTasks(res.data?.tasks || []);
       setChecklists(res.data?.checklists || []);
       setActivityGroups(res.data?.activity_groups || []);
+      const policy = res.data?.verification_policy || {
+        verification_required: true,
+        verification_method: "supervisor",
+        verification_timing: "same_shift",
+        is_default: true,
+      };
+      setGlobalPolicy(policy);
+      setGlobalDraft(null);
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || "Could not load Task Management");
     } finally {
@@ -141,6 +152,7 @@ export default function ManagementTaskConfigPage() {
           const [code, req] = line.split("|").map((x) => (x || "").trim());
           return { task_code: code, required: req !== "optional", display_order: i * 10 };
         });
+      const inherits = groupDraft.verification_inherits !== false;
       await upsertManagementTaskActivityGroup({
         id: groupDraft.id,
         code: groupDraft.code,
@@ -148,6 +160,15 @@ export default function ManagementTaskConfigPage() {
         category_code: groupDraft.category_code || "intra_day",
         display_order: Number(groupDraft.display_order || 0),
         active: groupDraft.active !== false,
+        verification_inherits: inherits,
+        ...(inherits
+          ? {}
+          : {
+              verification_method: groupDraft.verification_method || "supervisor",
+              verification_required: groupDraft.verification_method !== "none",
+              verification_timing: groupDraft.verification_timing || "same_shift",
+              verifier_config: groupDraft.verifier_config || {},
+            }),
         items,
       });
       setGroupDraft(null);
@@ -155,6 +176,27 @@ export default function ManagementTaskConfigPage() {
       await load();
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || "Activity group save failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveGlobalPolicy = async () => {
+    if (!globalDraft) return;
+    setBusy(true);
+    setError("");
+    try {
+      const method = globalDraft.verification_method || "supervisor";
+      await upsertManagementTaskVerificationPolicy({
+        verification_method: method,
+        verification_required: method !== "none",
+        verification_timing: globalDraft.verification_timing || "same_shift",
+        verifier_config: globalDraft.verifier_config || {},
+      });
+      setOkMsg("Global verification policy saved. Applies to new activity only.");
+      await load();
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || "Could not save verification policy");
     } finally {
       setBusy(false);
     }
@@ -243,7 +285,8 @@ export default function ManagementTaskConfigPage() {
             Task Management
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Configure categories, tasks, activity groups, inputs, and checklists. Assign on Weekly Schedule.
+            Configure verification policy, categories, tasks, activity groups, inputs, and checklists.
+            Assign on Weekly Schedule. Policy changes apply to new activity only.
           </Typography>
         </Box>
         <Button component={RouterLink} to="/management/tasks" size="small" variant="outlined">
@@ -264,6 +307,88 @@ export default function ManagementTaskConfigPage() {
         <Typography>Loading…</Typography>
       ) : (
         <Stack spacing={2.5}>
+          <Paper variant="outlined" sx={{ p: 1.5 }}>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+                <Typography sx={{ fontWeight: 800 }}>Global verification default</Typography>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  disabled={busy}
+                  onClick={() =>
+                    setGlobalDraft({
+                      ...(globalPolicy || {}),
+                      verification_method:
+                        globalPolicy?.verification_method || "supervisor",
+                      verification_timing: globalPolicy?.verification_timing || "same_shift",
+                    })
+                  }
+                >
+                  Edit
+                </Button>
+              </Stack>
+              <Typography variant="body2" color="text.secondary">
+                Hierarchy: Global → Activity Group override → Task override. Default: Supervisor
+                verification required.
+                {globalPolicy
+                  ? ` Current: ${
+                      globalPolicy.verification_required
+                        ? `${globalPolicy.verification_method}/${globalPolicy.verification_timing}`
+                        : "not required"
+                    }${globalPolicy.is_default ? " (built-in default)" : ""}.`
+                  : ""}
+              </Typography>
+              {globalDraft ? (
+                <Stack spacing={1.25} sx={{ mt: 1.5 }}>
+                  <TextField
+                    select
+                    label="Verification"
+                    size="small"
+                    value={
+                      globalDraft.verification_required === false ||
+                      globalDraft.verification_method === "none"
+                        ? "none"
+                        : globalDraft.verification_method || "supervisor"
+                    }
+                    onChange={(e) => {
+                      const method = e.target.value;
+                      setGlobalDraft({
+                        ...globalDraft,
+                        verification_method: method,
+                        verification_required: method !== "none",
+                      });
+                    }}
+                    helperText="“No verification” is intentional only — never applied silently."
+                  >
+                    <MenuItem value="none">No verification</MenuItem>
+                    <MenuItem value="employee">Employee / peer</MenuItem>
+                    <MenuItem value="supervisor">Supervisor</MenuItem>
+                    <MenuItem value="role">Role-based</MenuItem>
+                  </TextField>
+                  <TextField
+                    select
+                    label="Verification timing"
+                    size="small"
+                    value={globalDraft.verification_timing || "same_shift"}
+                    onChange={(e) =>
+                      setGlobalDraft({ ...globalDraft, verification_timing: e.target.value })
+                    }
+                  >
+                    <MenuItem value="same_shift">Same shift</MenuItem>
+                    <MenuItem value="later_shift">Later shift</MenuItem>
+                    <MenuItem value="next_day">Next day</MenuItem>
+                  </TextField>
+                  <Stack direction="row" spacing={1}>
+                    <Button variant="contained" disabled={busy} onClick={saveGlobalPolicy}>
+                      Save global policy
+                    </Button>
+                    <Button disabled={busy} onClick={() => setGlobalDraft(null)}>
+                      Cancel
+                    </Button>
+                  </Stack>
+                </Stack>
+              ) : null}
+          </Paper>
+
           <Paper variant="outlined" sx={{ p: 1.5 }}>
             <Typography sx={{ fontWeight: 800, mb: 1 }}>Categories</Typography>
             <Stack spacing={1}>
@@ -305,8 +430,9 @@ export default function ManagementTaskConfigPage() {
                     category_code: categories.find((c) => c.active)?.code || "intra_day",
                     completion_type: "simple",
                     timer_enabled: true,
-                    verification_required: false,
-                    verification_method: "none",
+                    verification_inherits: true,
+                    verification_required: true,
+                    verification_method: "supervisor",
                     verification_timing: "same_shift",
                     verifier_config: { user_ids: [] },
                     input_schema: [],
@@ -331,9 +457,11 @@ export default function ManagementTaskConfigPage() {
                       <Typography variant="body2" color="text.secondary">
                         {task.category_name} · {task.completion_type}
                         {task.timer_enabled ? " · timed" : " · untimed"} ·{" "}
-                        {task.verification_required
-                          ? `verify:${task.verification_method}/${task.verification_timing}`
-                          : "no verification"}
+                        {task.verification_inherits
+                          ? "verify:inherited"
+                          : task.verification_required
+                            ? `verify:${task.verification_method}/${task.verification_timing}`
+                            : "no verification (override)"}
                         {task.checklist_id ? ` · checklist #${task.checklist_id}` : ""}
                       </Typography>
                     </Box>
@@ -420,40 +548,70 @@ export default function ManagementTaskConfigPage() {
                     helperText="Types: number, text, yes_no, checkbox, checklist. Example: gallons|number|Gallons remaining|required"
                   />
                 ) : null}
-                <TextField
-                  select
-                  label="Verification"
-                  size="small"
-                  value={
-                    draft.verification_required === false || draft.verification_method === "none"
-                      ? "none"
-                      : draft.verification_method || "supervisor"
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={draft.verification_inherits !== false}
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          verification_inherits: e.target.checked,
+                          ...(e.target.checked
+                            ? {}
+                            : {
+                                verification_method: draft.verification_method || "supervisor",
+                                verification_required: draft.verification_method !== "none",
+                              }),
+                        })
+                      }
+                    />
                   }
-                  onChange={(e) => {
-                    const method = e.target.value;
-                    setDraft({
-                      ...draft,
-                      verification_method: method,
-                      verification_required: method !== "none",
-                    });
-                  }}
-                >
-                  <MenuItem value="none">No verification</MenuItem>
-                  <MenuItem value="employee">Employee / peer</MenuItem>
-                  <MenuItem value="supervisor">Supervisor</MenuItem>
-                  <MenuItem value="role">Role-based</MenuItem>
-                </TextField>
-                <TextField
-                  select
-                  label="Verification timing"
-                  size="small"
-                  value={draft.verification_timing || "same_shift"}
-                  onChange={(e) => setDraft({ ...draft, verification_timing: e.target.value })}
-                >
-                  <MenuItem value="same_shift">Same shift</MenuItem>
-                  <MenuItem value="later_shift">Later shift</MenuItem>
-                  <MenuItem value="next_day">Next day</MenuItem>
-                </TextField>
+                  label={
+                    draft.verification_inherits !== false
+                      ? "Inherit global/group verification (default)"
+                      : "Override verification for this task"
+                  }
+                />
+                {draft.verification_inherits === false ? (
+                  <>
+                    <TextField
+                      select
+                      label="Verification"
+                      size="small"
+                      value={
+                        draft.verification_required === false || draft.verification_method === "none"
+                          ? "none"
+                          : draft.verification_method || "supervisor"
+                      }
+                      onChange={(e) => {
+                        const method = e.target.value;
+                        setDraft({
+                          ...draft,
+                          verification_inherits: false,
+                          verification_method: method,
+                          verification_required: method !== "none",
+                        });
+                      }}
+                      helperText="Choose “No verification” only when intentionally not required."
+                    >
+                      <MenuItem value="none">No verification</MenuItem>
+                      <MenuItem value="employee">Employee / peer</MenuItem>
+                      <MenuItem value="supervisor">Supervisor</MenuItem>
+                      <MenuItem value="role">Role-based</MenuItem>
+                    </TextField>
+                    <TextField
+                      select
+                      label="Verification timing"
+                      size="small"
+                      value={draft.verification_timing || "same_shift"}
+                      onChange={(e) => setDraft({ ...draft, verification_timing: e.target.value })}
+                    >
+                      <MenuItem value="same_shift">Same shift</MenuItem>
+                      <MenuItem value="later_shift">Later shift</MenuItem>
+                      <MenuItem value="next_day">Next day</MenuItem>
+                    </TextField>
+                  </>
+                ) : null}
                 <TextField
                   select
                   label="Checklist (optional)"
@@ -516,6 +674,9 @@ export default function ManagementTaskConfigPage() {
                     category_code: categories[0]?.code || "intra_day",
                     display_order: 0,
                     active: true,
+                    verification_inherits: true,
+                    verification_method: "supervisor",
+                    verification_timing: "same_shift",
                     itemsText: "",
                   })
                 }
@@ -535,6 +696,12 @@ export default function ManagementTaskConfigPage() {
                         <Typography sx={{ fontWeight: 800 }}>{g.name}</Typography>
                         <Typography variant="body2" color="text.secondary">
                           {g.category_code} · {(g.items || []).map((i) => i.task_name || i.task_code).join(", ")} · assign as {g.role_code}
+                          {" · "}
+                          {g.verification_inherits !== false
+                            ? "verify:inherited"
+                            : g.verification_required
+                              ? `verify:${g.verification_method}/${g.verification_timing}`
+                              : "no verification (override)"}
                           {!g.active ? " · inactive" : ""}
                         </Typography>
                       </Box>
@@ -610,6 +777,67 @@ export default function ManagementTaskConfigPage() {
                   }
                   label="Active"
                 />
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={groupDraft.verification_inherits !== false}
+                      onChange={(e) =>
+                        setGroupDraft({
+                          ...groupDraft,
+                          verification_inherits: e.target.checked,
+                        })
+                      }
+                    />
+                  }
+                  label={
+                    groupDraft.verification_inherits !== false
+                      ? "Inherit global verification (default)"
+                      : "Override verification for this group"
+                  }
+                />
+                {groupDraft.verification_inherits === false ? (
+                  <>
+                    <TextField
+                      select
+                      label="Group verification"
+                      size="small"
+                      value={
+                        groupDraft.verification_required === false ||
+                        groupDraft.verification_method === "none"
+                          ? "none"
+                          : groupDraft.verification_method || "supervisor"
+                      }
+                      onChange={(e) => {
+                        const method = e.target.value;
+                        setGroupDraft({
+                          ...groupDraft,
+                          verification_inherits: false,
+                          verification_method: method,
+                          verification_required: method !== "none",
+                        });
+                      }}
+                      helperText="Same options as standalone tasks. Member tasks may still override."
+                    >
+                      <MenuItem value="none">No verification</MenuItem>
+                      <MenuItem value="employee">Employee / peer</MenuItem>
+                      <MenuItem value="supervisor">Supervisor</MenuItem>
+                      <MenuItem value="role">Role-based</MenuItem>
+                    </TextField>
+                    <TextField
+                      select
+                      label="Verification timing"
+                      size="small"
+                      value={groupDraft.verification_timing || "same_shift"}
+                      onChange={(e) =>
+                        setGroupDraft({ ...groupDraft, verification_timing: e.target.value })
+                      }
+                    >
+                      <MenuItem value="same_shift">Same shift</MenuItem>
+                      <MenuItem value="later_shift">Later shift</MenuItem>
+                      <MenuItem value="next_day">Next day</MenuItem>
+                    </TextField>
+                  </>
+                ) : null}
                 <Stack direction="row" spacing={1}>
                   <Button variant="contained" disabled={busy} onClick={saveGroup}>
                     Save activity group

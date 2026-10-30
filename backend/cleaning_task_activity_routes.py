@@ -933,6 +933,8 @@ def register_cleaning_task_activity_routes(
                 return jsonify({"error": "activity_id is required"}), 400
             if not isinstance(ids, list):
                 ids = [ids]
+            # Independence (self + shared co-participant) is enforced inside approve_activity
+            # for both PIN and Management paths.
             approved = [
                 approve_activity(
                     cursor,
@@ -1209,6 +1211,13 @@ def register_cleaning_task_activity_routes(
         try:
             seed_builtin_categories(cursor, int(org_id))
             conn.commit()
+            from backend.task_verification_policy import (
+                ensure_verification_policy_schema,
+                get_global_verification_policy,
+            )
+
+            ensure_verification_policy_schema(cursor)
+            conn.commit()
             return jsonify(
                 {
                     "categories": list_categories(cursor, int(org_id)),
@@ -1217,8 +1226,46 @@ def register_cleaning_task_activity_routes(
                     "activity_groups": list_activity_groups(
                         cursor, int(org_id), include_inactive=True
                     ),
+                    "verification_policy": get_global_verification_policy(cursor, int(org_id)),
                 }
             )
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @app.route("/api/management/task-catalog/verification-policy", methods=["GET", "PUT"])
+    def management_task_catalog_verification_policy():
+        """Org-global verification default (Global → Group → Task hierarchy root)."""
+        conn, cursor, org_id, err = _mgmt_catalog_gate()
+        if err:
+            return err
+        try:
+            from backend.task_verification_policy import (
+                VerificationPolicyError,
+                get_global_verification_policy,
+                upsert_global_verification_policy,
+            )
+
+            if request.method == "GET":
+                return jsonify({"verification_policy": get_global_verification_policy(cursor, int(org_id))})
+            me, _, _ = require_user(cursor)
+            uid = int((me or {}).get("user_id") or (me or {}).get("id") or 0) or None
+            row = upsert_global_verification_policy(
+                cursor,
+                int(org_id),
+                request.json or {},
+                updated_by_user_id=uid,
+            )
+            conn.commit()
+            return jsonify({"ok": True, "verification_policy": row})
+        except VerificationPolicyError as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"error": exc.message}), exc.status
         finally:
             try:
                 conn.close()

@@ -279,6 +279,17 @@ def serialize_activity(row: Mapping[str, Any], *, catalog: Mapping[str, Any] | N
         "status_label": friendly_status_label(status),
         "started_at": _serialize_dt(row.get("started_at")),
         "ended_at": _serialize_dt(row.get("ended_at")),
+        # Group checklist children stamp started_at=ended_at at check-off; expose clearly.
+        "checked_off_at": (
+            _serialize_dt(row.get("ended_at") or row.get("started_at"))
+            if str(row.get("activity_kind") or "") == "group_item"
+            else None
+        ),
+        "timestamp_kind": (
+            "checklist_checkoff"
+            if str(row.get("activity_kind") or "") == "group_item"
+            else "work_interval"
+        ),
         "duration_seconds": (
             None
             if (
@@ -838,10 +849,12 @@ def start_task(
             paused_role = open_seg.get("role_id")
             close_open_job_segment(conn, int(shift_session_id), at, close_source="cleaning_task_start")
 
-    verify_required = bool(meta.get("verification_required", True))
-    verify_method = str(meta.get("verification_method") or VERIFY_SUPERVISOR)
-    if not verify_required:
-        verify_method = VERIFY_NONE
+    from backend.task_verification_policy import resolve_verification_policy, snapshot_columns
+
+    policy = resolve_verification_policy(
+        cursor, oid, task_code=str(target.get("role") or ""), task_definition=meta
+    )
+    snap = snapshot_columns(policy)
     cursor.execute(
         f"""
         INSERT INTO {TABLE} (
@@ -870,9 +883,9 @@ def start_task(
             meta.get("category_code"),
             meta.get("completion_type") or COMPLETION_SIMPLE,
             1,
-            1 if verify_required else 0,
-            verify_method,
-            meta.get("verification_timing") or "same_shift",
+            snap["verification_required"],
+            snap["verification_method"],
+            snap["verification_timing"],
             meta.get("checklist_id"),
             None,
             "standalone",
@@ -1053,10 +1066,12 @@ def complete_untimed_task(
         raise CleaningTaskError(exc.message, status=exc.status) from exc
 
     at = eastern_now_naive()
-    verify_required = bool(meta.get("verification_required", True))
-    verify_method = str(meta.get("verification_method") or VERIFY_SUPERVISOR)
-    if not verify_required:
-        verify_method = VERIFY_NONE
+    from backend.task_verification_policy import resolve_verification_policy, snapshot_columns
+
+    policy = resolve_verification_policy(
+        cursor, oid, task_code=str(target.get("role") or ""), task_definition=meta
+    )
+    snap = snapshot_columns(policy)
     cursor.execute(
         f"""
         INSERT INTO {TABLE} (
@@ -1084,9 +1099,9 @@ def complete_untimed_task(
             meta.get("category_code"),
             meta.get("completion_type") or COMPLETION_SIMPLE,
             0,
-            1 if verify_required else 0,
-            verify_method,
-            meta.get("verification_timing") or "same_shift",
+            snap["verification_required"],
+            snap["verification_method"],
+            snap["verification_timing"],
             meta.get("checklist_id"),
             json.dumps(validated, default=str),
         ),
@@ -1141,6 +1156,34 @@ def record_post_complete_choice(
     }
 
 
+def assert_independent_verifier(
+    cursor,
+    *,
+    organization_id: int,
+    activity: Mapping[str, Any],
+    verifier_user_id: int,
+) -> None:
+    """Block self-verify and shared-assignment co-participant verify (PIN + Management)."""
+    from backend.task_verification_policy import verifier_is_shared_co_participant
+
+    if int(activity.get("user_id") or 0) == int(verifier_user_id):
+        raise CleaningTaskError(
+            "You cannot verify your own completed task. Ask an independent authorized reviewer.",
+            status=403,
+        )
+    if verifier_is_shared_co_participant(
+        cursor,
+        organization_id=int(organization_id),
+        activity=activity,
+        verifier_user_id=int(verifier_user_id),
+    ):
+        raise CleaningTaskError(
+            "You cannot verify work from a shared assignment you participated in. "
+            "Ask an independent authorized reviewer.",
+            status=403,
+        )
+
+
 def approve_activity(
     cursor,
     *,
@@ -1154,11 +1197,12 @@ def approve_activity(
         raise CleaningTaskError("Task activity not found.", status=404)
     if str(row.get("status")) != STATUS_PENDING_APPROVAL:
         raise CleaningTaskError("Only completed tasks awaiting verification can be verified.", status=400)
-    if int(row.get("user_id") or 0) == int(supervisor_user_id):
-        raise CleaningTaskError(
-            "You cannot verify your own completed task. Ask another authorized person.",
-            status=403,
-        )
+    assert_independent_verifier(
+        cursor,
+        organization_id=int(organization_id),
+        activity=row,
+        verifier_user_id=int(supervisor_user_id),
+    )
     at = eastern_now_naive()
     cursor.execute(
         f"""
@@ -1197,11 +1241,12 @@ def reject_activity(
         raise CleaningTaskError("Task activity not found.", status=404)
     if str(row.get("status")) != STATUS_PENDING_APPROVAL:
         raise CleaningTaskError("Only completed tasks awaiting verification can be rejected.", status=400)
-    if int(row.get("user_id") or 0) == int(supervisor_user_id):
-        raise CleaningTaskError(
-            "You cannot reject your own completed task. Ask another authorized person.",
-            status=403,
-        )
+    assert_independent_verifier(
+        cursor,
+        organization_id=int(organization_id),
+        activity=row,
+        verifier_user_id=int(supervisor_user_id),
+    )
     at = eastern_now_naive()
     cursor.execute(
         f"""
@@ -2127,16 +2172,37 @@ def user_can_verify_activity(
     verifier_roles: Sequence[str] | None = None,
     has_supervisor_review: bool = False,
 ) -> bool:
-    """Backend authorization for verifying a completed contribution."""
+    """Backend authorization for verifying a completed contribution.
+
+    Independent-reviewer rule (PIN + Management): never self, never a co-participant
+    on the same shared assignment — regardless of supervisor/review grants.
+    Uses snapshotted activity verification fields when present (historical preservation).
+    """
+    from backend.task_verification_policy import verifier_is_shared_co_participant
+
     if int(activity.get("user_id") or 0) == int(verifier_user_id):
+        return False
+    if verifier_is_shared_co_participant(
+        cursor,
+        organization_id=int(organization_id),
+        activity=activity,
+        verifier_user_id=int(verifier_user_id),
+    ):
         return False
     if str(activity.get("status")) != STATUS_PENDING_APPROVAL:
         return False
     method = str(activity.get("verification_method") or VERIFY_SUPERVISOR)
-    meta = _task_meta_for_role(cursor, int(organization_id), str(activity.get("role") or ""))
     if activity.get("verification_required") in (0, False) or method == VERIFY_NONE:
         return False
-    config = meta.get("verifier_config") or {}
+    # Prefer snapshotted verifier_config on the activity when present; else catalog.
+    snap_config = activity.get("verifier_config")
+    if isinstance(snap_config, str):
+        try:
+            snap_config = json.loads(snap_config)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            snap_config = None
+    meta = _task_meta_for_role(cursor, int(organization_id), str(activity.get("role") or ""))
+    config = snap_config if isinstance(snap_config, dict) else (meta.get("verifier_config") or {})
     if method == VERIFY_SUPERVISOR:
         return bool(has_supervisor_review)
     if method == VERIFY_EMPLOYEE:

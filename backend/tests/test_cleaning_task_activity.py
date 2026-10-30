@@ -147,6 +147,22 @@ def test_historical_start_does_not_close_production_role():
         "backend.cleaning_task_activity.eastern_now_naive",
         return_value=datetime(2026, 10, 28, 15, 0, 0),
     ), mock.patch(
+        "backend.task_verification_policy.resolve_verification_policy",
+        return_value={
+            "verification_required": True,
+            "verification_method": "supervisor",
+            "verification_timing": "same_shift",
+            "verifier_config": {},
+        },
+    ), mock.patch(
+        "backend.task_verification_policy.snapshot_columns",
+        return_value={
+            "verification_required": 1,
+            "verification_method": "supervisor",
+            "verification_timing": "same_shift",
+            "verifier_config": {},
+        },
+    ), mock.patch(
         "backend.ta_routes.get_open_break", return_value=None
     ), mock.patch(
         "backend.shift_job_tracking.get_open_job_segment",
@@ -196,6 +212,22 @@ def test_start_complete_and_supervisor_approve_flow():
         "backend.cleaning_task_activity.business_today", return_value=date(2026, 10, 27)
     ), mock.patch(
         "backend.cleaning_task_activity.eastern_now_naive", return_value=datetime(2026, 10, 27, 9, 0, 0)
+    ), mock.patch(
+        "backend.task_verification_policy.resolve_verification_policy",
+        return_value={
+            "verification_required": True,
+            "verification_method": "supervisor",
+            "verification_timing": "same_shift",
+            "verifier_config": {},
+        },
+    ), mock.patch(
+        "backend.task_verification_policy.snapshot_columns",
+        return_value={
+            "verification_required": 1,
+            "verification_method": "supervisor",
+            "verification_timing": "same_shift",
+            "verifier_config": {},
+        },
     ), mock.patch(
         "backend.cleaning_task_activity.get_open_break", create=True
     ), mock.patch(
