@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import MagicMock, patch
 
 from backend.rinse_aca_job_trigger import (
@@ -74,6 +75,19 @@ class TestManualSyncDispatch:
         assert result.overall_status == "queued"
         assert result.http_status == 202
         assert result.aca_execution_name == "exec-1"
+        mock_start.assert_called_once_with(3, run_type="manual")
+
+    @patch.dict(os.environ, {"RINSE_SCRAPE_REMOTE_ONLY": "1"}, clear=False)
+    @patch("backend.rinse_manual_sync_dispatch.start_rinse_scrape_aca_job")
+    @patch("backend.rinse_manual_sync_dispatch.aca_job_trigger_configured", return_value=True)
+    @patch("backend.rinse_manual_sync_dispatch.is_scrape_cycle_running", return_value=(False, None))
+    def test_remote_only_still_triggers_aca_job(self, _running, _configured, mock_start):
+        mock_start.return_value = AcaJobStartResult(ok=True, execution_name="exec-remote")
+        conn = MagicMock()
+        conn.cursor.return_value = MagicMock()
+        result = dispatch_manual_rinse_sync(conn, 3)
+        assert result.http_status == 202
+        assert result.mode == "aca_job"
         mock_start.assert_called_once_with(3, run_type="manual")
 
     @patch("backend.rinse_manual_sync_dispatch.manual_sync_must_not_run_local_playwright", return_value=True)

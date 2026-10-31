@@ -187,9 +187,32 @@ else
   echo "startup.sh: Rinse scraper deps skipped (set NODE_BIN, e.g. /home/site/node-v20.18.0-linux-x64/bin/node)"
 fi
 
-echo "startup.sh: starting gunicorn on 0.0.0.0:${PORT:-8000} workers=${WORKERS:-2} timeout=${GUNICORN_TIMEOUT:-1200}"
-# Rinse export can run Playwright for up to RINSE_SCRAPE_TIMEOUT_SEC (default 900s, max 7200s); worker must outlive that.
+# P0 stability defaults (Oct 2026 RCA):
+# - Sync workers (not gthread): preserves per-process MySQL pools and avoids sharing one
+#   pool across many threads without a larger redesign.
+# - Short worker timeout: a stuck request cannot occupy a worker for 20 minutes.
+# - Long Playwright / bag-export / scheduled scrape must run on ACA (RINSE_SCRAPE_REMOTE_ONLY=1),
+#   not on these API workers. Sync /admin/rinse/bag-export will be killed at GUNICORN_TIMEOUT.
+WORKERS="${WORKERS:-3}"
+GUNICORN_TIMEOUT="${GUNICORN_TIMEOUT:-120}"
+GUNICORN_GRACEFUL_TIMEOUT="${GUNICORN_GRACEFUL_TIMEOUT:-30}"
+GUNICORN_KEEPALIVE="${GUNICORN_KEEPALIVE:-5}"
+echo "startup.sh: starting gunicorn on 0.0.0.0:${PORT:-8000} workers=${WORKERS} timeout=${GUNICORN_TIMEOUT} graceful-timeout=${GUNICORN_GRACEFUL_TIMEOUT} keepalive=${GUNICORN_KEEPALIVE}"
 if [ -x "$VENV/bin/gunicorn" ]; then
-  exec "$VENV/bin/gunicorn" --bind="0.0.0.0:${PORT:-8000}" --workers="${WORKERS:-2}" --timeout="${GUNICORN_TIMEOUT:-1200}" backend.app:app
+  exec "$VENV/bin/gunicorn" \
+    --bind="0.0.0.0:${PORT:-8000}" \
+    --worker-class=sync \
+    --workers="${WORKERS}" \
+    --timeout="${GUNICORN_TIMEOUT}" \
+    --graceful-timeout="${GUNICORN_GRACEFUL_TIMEOUT}" \
+    --keep-alive="${GUNICORN_KEEPALIVE}" \
+    backend.app:app
 fi
-exec gunicorn --bind="0.0.0.0:${PORT:-8000}" --workers="${WORKERS:-2}" --timeout="${GUNICORN_TIMEOUT:-1200}" backend.app:app
+exec gunicorn \
+  --bind="0.0.0.0:${PORT:-8000}" \
+  --worker-class=sync \
+  --workers="${WORKERS}" \
+  --timeout="${GUNICORN_TIMEOUT}" \
+  --graceful-timeout="${GUNICORN_GRACEFUL_TIMEOUT}" \
+  --keep-alive="${GUNICORN_KEEPALIVE}" \
+  backend.app:app

@@ -38,7 +38,7 @@ except Exception:
 
 from etl.transform_orders import transform_orders
 
-from backend.db import get_db
+from backend.db import DATABASE_BUSY_MESSAGE, DatabasePoolBusy, get_db
 from backend.attendance_pin_punch import (
     get_request_ip,
     list_organizations_for_attendance,
@@ -153,14 +153,33 @@ def _load_artifact_revision() -> str:
     return str(load_release_revision_stamps().get("artifact_revision") or "").strip()
 
 
+@app.route("/health/live", methods=["GET"])
+def health_live():
+    """Process liveness for Azure App Service ``healthCheckPath``.
+
+    Always returns HTTP 200 when this worker can accept the request.
+    Does **not** touch MySQL and does **not** evaluate release revision stamps,
+    so deploy stamp skew or database degradation cannot create a restart loop.
+    """
+    return jsonify({"status": "alive"}), 200
+
+
+@app.errorhandler(DatabasePoolBusy)
+def handle_database_pool_busy(_exc: DatabasePoolBusy):
+    """Pool checkout timed out. Body is a fixed sentence; details stay in the log."""
+    return jsonify({"error": DATABASE_BUSY_MESSAGE}), 503
+
+
 @app.route("/health", methods=["GET"])
 def health():
-    """Liveness probe; does not touch the database.
+    """Deploy / readiness probe; does not touch the database.
 
     Exposes source / build / artifact / runtime revisions so deploy stamp skew
     (e.g. GITHUB_SHA updated while SOURCE_RELEASE_SHA stays stale) is visible.
     When EXPECTED_RELEASE_SHA is set and does not match the artifact/runtime
     revision, status is ``unhealthy`` (HTTP 503).
+
+    Do **not** point Azure ``healthCheckPath`` here — use ``/health/live`` instead.
     """
     from backend.release_revision import load_release_revision_stamps
 
@@ -187,6 +206,7 @@ def health():
         "expected_revision": expected_revision or None,
         "revision_stamp_agreement": stamp_agreement,
         "expected_revision_match": expected_ok,
+        "liveness_path": "/health/live",
     }
     if build_time:
         out["build_time"] = build_time
@@ -5105,6 +5125,8 @@ def attendance_pin_unlock():
                 payload_user["organization_logo_url"] = matched["organization_logo_url"]
 
         return jsonify({"token": token, "user": payload_user})
+    except DatabasePoolBusy:
+        raise
     except Exception as e:
         if conn:
             try:
@@ -5143,6 +5165,8 @@ def public_attendance_pin_punch():
             role_id=data.get("role_id"),
         )
         return jsonify(body), status
+    except DatabasePoolBusy:
+        raise
     except Exception as e:
         try:
             conn.rollback()
@@ -5562,6 +5586,8 @@ def auth_login():
             "token": token,
             "user": payload_user,
         })
+    except DatabasePoolBusy:
+        raise
     except Exception as e:
         if conn:
             try:
@@ -10778,6 +10804,8 @@ def health_db():
         cursor.execute("SELECT 1")
         cursor.fetchone()
         return jsonify({"ok": True})
+    except DatabasePoolBusy:
+        raise
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 503
     finally:

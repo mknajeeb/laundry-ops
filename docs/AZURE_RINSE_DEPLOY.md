@@ -41,8 +41,8 @@ Set these under **Configuration → Application settings** (add if missing). Val
 | `RINSE_IMPORT_MAX_PAGES` | *(omit or e.g. `25`)* | If set, **draft import** uses this page cap. If omitted, import uses **`RINSE_MAX_PAGES`** (below), then default `10`. |
 | `RINSE_MAX_PAGES` | `20` | **Bag CSV export** and **draft import** (when `RINSE_IMPORT_MAX_PAGES` is not set). Your screenshot value `25` applies to import after this behavior. |
 | `RINSE_PAGE_SETTLE_MS` | *(omit)* | Import sets `2200` internally unless you set this globally (then it wins). |
-| `GUNICORN_TIMEOUT` | `1200` | In **startup** / App settings; worker must stay alive for long requests (bag export is still synchronous). |
-| `WORKERS` | `2` | Default in `startup.sh`. Async import runs in a **thread**; DB holds job state so polling works across workers. |
+| `GUNICORN_TIMEOUT` | `120` | P0 default in `startup.sh` (was 1200). Long Playwright/scrape/bag-export must run on **ACA** (`RINSE_SCRAPE_REMOTE_ONLY=1`), not on API workers. See `docs/API_P0_STABILITY_REMEDIATION.md`. |
+| `WORKERS` | `3` | P0 default in `startup.sh`. Async import runs in a **thread**; DB holds job state so polling works across workers. Keep `WORKERS × MYSQL_POOL_SIZE` well under MySQL `max_connections`. |
 
 ### Optional startup speed (Playwright on API)
 
