@@ -342,6 +342,15 @@ def serialize_activity(row: Mapping[str, Any], *, catalog: Mapping[str, Any] | N
         "is_activity_group": str(row.get("activity_kind") or "") == "group"
         or str(row.get("role") or "").startswith("agroup_"),
         "execution_mode": "shared" if row.get("shared_session_id") is not None else "individual",
+        "voided_at": _serialize_dt(row.get("voided_at")),
+        "voided_by_user_id": int(row["voided_by_user_id"])
+        if row.get("voided_by_user_id") is not None
+        else None,
+        "void_reason": (str(row.get("void_reason") or "").strip() or None),
+        "is_voided": row.get("voided_at") not in (None, ""),
+        "superseded_by_activity_id": int(row["superseded_by_activity_id"])
+        if row.get("superseded_by_activity_id") is not None
+        else None,
     }
 
 
@@ -406,6 +415,7 @@ def _activities_for_day(
     business_date: date,
     *,
     user_id: int | None = None,
+    include_voided: bool = False,
 ) -> list[dict[str, Any]]:
     ensure_cleaning_task_activity_tables(cursor)
     params: list[Any] = [int(organization_id), business_date]
@@ -416,6 +426,11 @@ def _activities_for_day(
     if user_id is not None:
         sql += " AND user_id = %s"
         params.append(int(user_id))
+    # Soft-voided rows stay in the table for audit but leave operational day views.
+    from backend.ta_helpers import table_has_column
+
+    if not include_voided and table_has_column(cursor, TABLE, "voided_at"):
+        sql += " AND voided_at IS NULL"
     sql += " ORDER BY id ASC"
     cursor.execute(sql, tuple(params))
     return [r for r in (cursor.fetchall() or []) if isinstance(r, dict)]
@@ -748,10 +763,44 @@ def list_employee_day_tasks(
             open_ser["partners"] = partners_for_activity(cursor, int(organization_id), open_row)
         except Exception:
             pass
+
+    # After finishing a shared timer, keep checklist reachable until required items are done.
+    shared_checklist_followup = None
+    if open_ser is None:
+        try:
+            from backend.cleaning_task_group_execution import enrich_open_group_activity
+
+            for act in activities:
+                if act.get("parent_activity_id") is not None:
+                    continue
+                if int(act.get("user_id") or 0) != int(user_id):
+                    continue
+                if act.get("shared_session_id") is None:
+                    continue
+                if str(act.get("status") or "") not in COMPLETED_STATUSES:
+                    continue
+                enriched = enrich_open_group_activity(
+                    cursor,
+                    int(organization_id),
+                    serialize_activity(act, catalog=catalog),
+                )
+                if enriched.get("shared_checklist_complete") or (
+                    isinstance(enriched.get("group"), Mapping)
+                    and enriched["group"].get("checklist_complete")
+                ):
+                    continue
+                enriched["checklist_followup_only"] = True
+                enriched["can_finish_participation"] = False
+                shared_checklist_followup = enriched
+                break
+        except Exception:
+            shared_checklist_followup = None
+
     return {
         "business_date": str(day),
         "user_id": int(user_id),
         "open_activity": open_ser,
+        "shared_checklist_followup": shared_checklist_followup,
         "pending": pending,
         "in_progress": in_progress,
         "completed": completed,
@@ -1649,6 +1698,23 @@ def _group_shared_assignments(
                 shared_checklist = contrib.get("shared_checklist_items")
                 shared_session_id = contrib.get("shared_session_id")
                 break
+        # Shared Floor & Washer style: participation finish ≠ checklist complete.
+        # Do not silently treat unfinished required checklist items as checked off.
+        checklist_status = None
+        checklist_complete = None
+        if execution_mode == "shared" and shared_checklist:
+            checklist_complete, checklist_status, completion_status, rollup = (
+                apply_shared_checklist_to_assignment_status(
+                    shared_checklist,
+                    completion_status=completion_status,
+                    rollup=rollup,
+                    member_statuses=member_statuses,
+                )
+            )
+            # Once required checklist is done, verification children drive waiting/verified.
+            if checklist_complete and verification_status == VERIFICATION_WAITING:
+                if rollup in {DISPLAY_COMPLETED, DISPLAY_APPROVED}:
+                    rollup = DISPLAY_PENDING_APPROVAL
         out.append(
             {
                 "assignment_key": key,
@@ -1672,6 +1738,8 @@ def _group_shared_assignments(
                 "completion_label": _COMPLETION_LABELS[completion_status],
                 "verification_status": verification_status,
                 "verification_label": _VERIFICATION_LABELS[verification_status],
+                "checklist_status": checklist_status,
+                "checklist_complete": checklist_complete if shared_checklist else None,
                 "category_code": (
                     _task_meta_for_role(cursor, int(organization_id), str(sample.get("role") or "")).get(
                         "category_code"
@@ -1809,6 +1877,69 @@ VERIFICATION_PARTIAL = "partial"
 VERIFICATION_VERIFIED = "verified"
 VERIFICATION_NEEDS_CORRECTION = "needs_correction"
 
+_SHARED_CHECKLIST_DONE = frozenset(
+    {STATUS_COMPLETED, STATUS_APPROVED, "completed", "approved", "verified"}
+)
+
+
+def shared_required_checklist_progress(
+    shared_checklist: Sequence[Mapping[str, Any]] | None,
+) -> tuple[bool, str | None, int, int]:
+    """Return (complete, checklist_status, done_count, required_count).
+
+    Participation finish is independent; required checklist gates assignment Completed.
+    """
+    items = [item for item in (shared_checklist or []) if isinstance(item, Mapping)]
+    required = [item for item in items if item.get("required", True)]
+    if not required:
+        return True, None, 0, 0
+    done = [
+        item
+        for item in required
+        if str(item.get("status") or "").lower() in _SHARED_CHECKLIST_DONE
+    ]
+    complete = len(done) == len(required)
+    if complete:
+        status = COMPLETION_COMPLETED
+    elif done:
+        status = COMPLETION_IN_PROGRESS
+    else:
+        status = COMPLETION_NOT_STARTED
+    return complete, status, len(done), len(required)
+
+
+def apply_shared_checklist_to_assignment_status(
+    shared_checklist: Sequence[Mapping[str, Any]] | None,
+    *,
+    completion_status: str,
+    rollup: str,
+    member_statuses: Sequence[str] | None = None,
+) -> tuple[bool | None, str | None, str, str]:
+    """Gate assignment Completed on required shared checklist items.
+
+    Returns (checklist_complete, checklist_status, completion_status, rollup).
+    Historical activity rows are not rewritten — display/totals only.
+    """
+    if shared_checklist is None:
+        return None, None, completion_status, rollup
+    complete, checklist_status, done_n, req_n = shared_required_checklist_progress(
+        shared_checklist
+    )
+    if req_n == 0:
+        return True, checklist_status, completion_status, rollup
+    if not complete:
+        # Timers may be finished; assignment stays In Progress until checklist done.
+        if done_n or any(
+            str(s) in _STARTED_DISPLAY or str(s) in _FINISHED_WORK_DISPLAY
+            for s in (member_statuses or [])
+        ):
+            checklist_status = COMPLETION_IN_PROGRESS
+        if completion_status == COMPLETION_COMPLETED:
+            completion_status = COMPLETION_IN_PROGRESS
+        if rollup in {DISPLAY_COMPLETED, DISPLAY_APPROVED}:
+            rollup = DISPLAY_IN_PROGRESS
+    return complete, checklist_status, completion_status, rollup
+
 _COMPLETION_LABELS = {
     COMPLETION_NOT_STARTED: "Not Started",
     COMPLETION_IN_PROGRESS: "In Progress",
@@ -1911,7 +2042,16 @@ def assignment_is_completed(row: Mapping[str, Any]) -> bool:
     Shared Execution is still one assignment: two finished timers do not make two completions.
     A partner who has not finished keeps the assignment incomplete. A finished submission
     that needs correction is still complete; it is not verified.
+    Required shared checklist items must also be complete — participation alone is not enough.
     """
+    if row.get("checklist_complete") is False:
+        return False
+    if str(row.get("execution_mode") or "") == "shared":
+        items = row.get("shared_checklist_items")
+        if items is not None:
+            complete, _, _, req_n = shared_required_checklist_progress(items)
+            if req_n and not complete:
+                return False
     recorded = str(row.get("completion_status") or "")
     if recorded:
         return recorded == COMPLETION_COMPLETED
@@ -1958,6 +2098,12 @@ def dashboard_summary(
         from backend.cleaning_task_manual_completion import ensure_manual_completion_schema
 
         ensure_manual_completion_schema(cursor)
+    except Exception:
+        pass
+    try:
+        from backend.cleaning_task_record_management import ensure_record_management_schema
+
+        ensure_record_management_schema(cursor)
     except Exception:
         pass
     day = business_date or business_today()
@@ -2330,23 +2476,160 @@ def _strip_task_duration_fields(row: Any) -> Any:
     return out
 
 
+_RINSE_HIDDEN_KEYS = frozenset(
+    {
+        "source",
+        "completion_source",
+        "completion_source_label",
+        "recorded_by_user_id",
+        "manual_reason",
+        "manual_remarks",
+        "times_manual",
+        "is_manual_completion",
+        "has_manual_completion",
+        "voided_at",
+        "voided_by_user_id",
+        "void_reason",
+        "is_voided",
+        "superseded_by_activity_id",
+        "can_correct",
+        "can_approve",
+        "can_manual_complete",
+        "can_manage_tasks",
+        "revision_history",
+        "audit_events",
+        "corrections",
+    }
+)
+
+
+def _activity_mapping_rinse_eligible(row: Mapping[str, Any] | None) -> bool:
+    if not row:
+        return False
+    try:
+        from backend.cleaning_task_record_management import activity_is_rinse_eligible
+
+        return activity_is_rinse_eligible(row)
+    except Exception:
+        # Fail closed for Rinse if schema helpers are unavailable.
+        source = str(row.get("completion_source") or "pin").lower()
+        if source != "pin":
+            return False
+        if row.get("voided_at") not in (None, ""):
+            return False
+        if row.get("times_manual") in (1, True, "1"):
+            return False
+        return True
+
+
+def _strip_rinse_management_fields(row: Any) -> Any:
+    if isinstance(row, list):
+        return [_strip_rinse_management_fields(item) for item in row]
+    if not isinstance(row, Mapping):
+        return row
+    out: dict[str, Any] = {}
+    for key, value in row.items():
+        if key in _RINSE_HIDDEN_KEYS or key in _RINSE_TASK_DURATION_KEYS:
+            continue
+        out[key] = _strip_rinse_management_fields(value)
+    return out
+
+
+def _filter_rinse_assignment(row: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Drop manual/voided contributions; drop assignment if nothing PIN-eligible remains."""
+    contribs_in = list(row.get("contributions") or [])
+    kept: list[dict[str, Any]] = []
+    for contrib in contribs_in:
+        act = contrib.get("activity") if isinstance(contrib, Mapping) else None
+        if act is None and isinstance(contrib, Mapping):
+            # Some payloads nest lightly — treat contrib itself as activity-like.
+            if not _activity_mapping_rinse_eligible(contrib):
+                continue
+            kept.append(dict(contrib))
+            continue
+        if not _activity_mapping_rinse_eligible(act if isinstance(act, Mapping) else None):
+            continue
+        kept.append(dict(contrib))
+    if not kept and contribs_in:
+        return None
+    out = dict(row)
+    out["contributions"] = kept
+    if kept:
+        out["has_manual_completion"] = False
+    return out
+
+
 def apply_rinse_task_dashboard_scope(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """API-level filter: keep compliance/verification; strip durations and labor hours."""
+    """API-level Rinse filter: PIN-original only; no labor, audit, or management actions.
+
+    Excludes manually created/corrected/voided/superseded activities from assignments,
+    totals, activity log, queue, and exports. Strips durations and management fields.
+    """
     out = dict(payload)
-    metrics = dict(out.get("metrics") or {})
-    metrics.pop("time_spent_seconds", None)
+    raw_assignments = list(out.get("shared_assignments") or [])
+    filtered_assignments: list[dict[str, Any]] = []
+    for row in raw_assignments:
+        if not isinstance(row, Mapping):
+            continue
+        if row.get("has_manual_completion"):
+            continue
+        kept = _filter_rinse_assignment(row)
+        if kept is None:
+            continue
+        filtered_assignments.append(kept)
+
+    # Recompute headline metrics from Rinse-visible assignments only.
+    started = sum(1 for row in filtered_assignments if assignment_is_started(row))
+    completed = sum(1 for row in filtered_assignments if assignment_is_completed(row))
+    verified = sum(1 for row in filtered_assignments if assignment_is_verified(row))
+    pending_verification = sum(
+        1
+        for row in filtered_assignments
+        if str(row.get("verification_status") or "")
+        in {VERIFICATION_WAITING, VERIFICATION_PARTIAL}
+    )
+    rejected = sum(1 for row in filtered_assignments if assignment_needs_correction(row))
+    total = len(filtered_assignments)
+    metrics = {
+        "total_assigned": total,
+        "started": started,
+        "completed": completed,
+        "verified": verified,
+        "pending_verification": pending_verification,
+        "rejected": rejected,
+        "completion_rate": round((100.0 * completed / total), 1) if total else 0.0,
+        "verification_rate": round((100.0 * verified / total), 1) if total else 0.0,
+        "contributions_assigned": sum(
+            len(row.get("contributions") or []) for row in filtered_assignments
+        ),
+    }
     out["metrics"] = metrics
     out["durations"] = []
-    out["shared_assignments"] = _strip_task_duration_fields(out.get("shared_assignments") or [])
-    out["activity_log"] = _strip_task_duration_fields(out.get("activity_log") or [])
-    queue = out.get("queue")
-    if isinstance(queue, Mapping):
-        out["queue"] = _strip_task_duration_fields(queue)
+    out["shared_assignments"] = _strip_rinse_management_fields(
+        _strip_task_duration_fields(filtered_assignments)
+    )
+    # Activity log / internal audit never exposed to Rinse.
+    out["activity_log"] = []
+    out.pop("queue", None)
     shift_end = out.get("shift_end")
     if isinstance(shift_end, Mapping):
-        out["shift_end"] = _strip_task_duration_fields(shift_end)
+        out["shift_end"] = _strip_rinse_management_fields(
+            _strip_task_duration_fields(shift_end)
+        )
     if "checklists" in out:
-        out["checklists"] = _strip_task_duration_fields(out.get("checklists") or [])
+        out["checklists"] = _strip_rinse_management_fields(
+            _strip_task_duration_fields(out.get("checklists") or [])
+        )
     out["hide_labor_metrics"] = True
     out["labor_fields_hidden"] = True
+    out["rinse_scope"] = {
+        "pin_original_only": True,
+        "activity_log_hidden": True,
+        "manual_and_voided_excluded": True,
+        "labor_hidden": True,
+    }
+    out["can_approve"] = False
+    out["can_manual_complete"] = False
+    out["can_manage_tasks"] = False
+    out["read_only"] = True
     return out

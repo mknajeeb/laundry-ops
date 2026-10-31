@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence
 
 from backend.business_time import business_today
 from backend.cleaning_task_activity import (
+    STATUS_APPROVED,
     STATUS_COMPLETED,
     STATUS_PENDING_APPROVAL,
     TABLE,
@@ -430,11 +431,21 @@ def checkoff_shared_item(
     row = get_activity(cursor, oid, int(activity_id))
     if not row or int(row.get("user_id") or 0) != uid:
         raise CleaningTaskError("Active activity group not found.", status=404)
-    if str(row.get("status")) != "in_progress":
-        raise CleaningTaskError("That activity group is not in progress.", status=400)
+    # Participants may finish their timer before the shared checklist is done.
+    # Allow check-off while the session is still open, even after participation ends.
+    status = str(row.get("status") or "")
     session_id = row.get("shared_session_id")
     if session_id is None:
         raise CleaningTaskError("Not a shared activity session.", status=400)
+    session = get_shared_session(cursor, oid, int(session_id))
+    session_status = str((session or {}).get("status") or SESSION_OPEN)
+    if status == "in_progress":
+        pass
+    elif status in {STATUS_COMPLETED, STATUS_PENDING_APPROVAL, STATUS_APPROVED}:
+        if session_status == SESSION_CHECKLIST_COMPLETE:
+            raise CleaningTaskError("Shared checklist is already complete.", status=400)
+    else:
+        raise CleaningTaskError("That activity group is not available for check-off.", status=400)
     # Must be an assigned collaborator on this shared assignment.
     group_id = str(row.get("assignment_group_id") or "").strip()
     if not group_id:

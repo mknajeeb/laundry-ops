@@ -26,7 +26,7 @@ describe("taskDashboardLabels", () => {
   it("keeps completion and verification labels separate", () => {
     expect(completionLabel("completed")).toBe("Completed");
     expect(completionLabel("in_progress")).toBe("In Progress");
-    expect(verificationLabel("waiting")).toBe("Waiting for Verification");
+    expect(verificationLabel("waiting")).toBe("Pending Verification");
     expect(verificationLabel("partial")).toBe("Partially Verified");
     expect(verificationLabel("not_required")).toBe("Not Required");
     expect(verificationLabel("needs_correction")).toBe("Needs Correction");

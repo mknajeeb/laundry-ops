@@ -1074,11 +1074,17 @@ def register_cleaning_task_activity_routes(
                 month=int(month) if month not in (None, "") else None,
                 category_code=(request.args.get("category") or request.args.get("category_code") or "").strip()
                 or None,
+                rinse_eligible_only=bool(rinse_only),
             )
             payload["read_only"] = bool(rinse_only)
             if rinse_only:
                 # Monthly chart has no labor fields; still flag for clients.
                 payload["hide_labor_metrics"] = True
+                payload["rinse_scope"] = {
+                    "pin_original_only": True,
+                    "manual_and_voided_excluded": True,
+                    "labor_hidden": True,
+                }
             return jsonify(payload)
         finally:
             try:
@@ -1167,6 +1173,107 @@ def register_cleaning_task_activity_routes(
             except Exception:
                 pass
             return jsonify({"error": exc.message, **exc.payload}), exc.status
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @app.route("/api/management/task-dashboard/update-record", methods=["POST"])
+    def management_task_dashboard_update_record():
+        """Edit start/end and/or business date with required reason (soft audit)."""
+        from backend.cleaning_task_record_management import update_activity_record
+
+        conn, cursor, org_id, me, err = _mgmt_write_gate(require_hub=False)
+        if err:
+            return err
+        try:
+            data = request.json or {}
+            activity_id = data.get("activity_id")
+            if not activity_id:
+                return jsonify({"error": "activity_id is required"}), 400
+            activity = update_activity_record(
+                conn,
+                cursor,
+                organization_id=int(org_id),
+                editor_user_id=int(me.get("user_id") or me.get("id") or 0),
+                activity_id=int(activity_id),
+                reason=str(data.get("reason") or ""),
+                remarks=data.get("remarks"),
+                started_at=data.get("started_at"),
+                ended_at=data.get("ended_at"),
+                business_date=data.get("business_date"),
+            )
+            return jsonify({"ok": True, "activity": activity})
+        except CleaningTaskError as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"error": exc.message, **exc.payload}), exc.status
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @app.route("/api/management/task-dashboard/void-activity", methods=["POST"])
+    def management_task_dashboard_void_activity():
+        """Soft-void an activity from operational reporting (no physical delete)."""
+        from backend.cleaning_task_record_management import void_activity_record
+
+        conn, cursor, org_id, me, err = _mgmt_write_gate(require_hub=False)
+        if err:
+            return err
+        try:
+            data = request.json or {}
+            activity_id = data.get("activity_id")
+            if not activity_id:
+                return jsonify({"error": "activity_id is required"}), 400
+            activity = void_activity_record(
+                conn,
+                cursor,
+                organization_id=int(org_id),
+                editor_user_id=int(me.get("user_id") or me.get("id") or 0),
+                activity_id=int(activity_id),
+                reason=str(data.get("reason") or ""),
+                remarks=data.get("remarks"),
+            )
+            return jsonify({"ok": True, "activity": activity})
+        except CleaningTaskError as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"error": exc.message, **exc.payload}), exc.status
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @app.route("/api/management/task-dashboard/activity-history", methods=["GET"])
+    def management_task_dashboard_activity_history():
+        """Management-only revision history for one activity."""
+        from backend.cleaning_task_record_management import list_activity_revisions
+        from backend.db import get_db
+        from backend.weekly_schedule_display_settings import is_rinse_schedule_viewer
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            org_id = user_org_id(me)
+            roles = role_set(me)
+            if is_rinse_schedule_viewer(roles) and not (roles & HUB_ROLES):
+                return jsonify({"error": "Rinse access is read-only for Task Management."}), 403
+            activity_id = request.args.get("activity_id")
+            if not activity_id:
+                return jsonify({"error": "activity_id is required"}), 400
+            revisions = list_activity_revisions(cursor, int(org_id), int(activity_id))
+            return jsonify({"ok": True, "revisions": revisions})
         finally:
             try:
                 conn.close()

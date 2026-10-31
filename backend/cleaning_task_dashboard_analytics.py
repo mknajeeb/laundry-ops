@@ -38,12 +38,16 @@ def monthly_task_performance(
     year: int | None = None,
     month: int | None = None,
     category_code: str | None = None,
+    rinse_eligible_only: bool = False,
 ) -> dict[str, Any]:
     """Daily assigned / completed / overdue / verified for a calendar month (ET business dates).
 
     Shared assignments count once per day. Verified, pending verification, completed,
     and needs-correction use the same assignment helpers as the day dashboard: one
     group is one assignment, and it is verified only when every required item is verified.
+
+    When ``rinse_eligible_only`` is True, only PIN-original non-voided activities are
+    used for status rollups (manual/corrected/voided excluded from Rinse reports).
     """
     ensure_cleaning_task_activity_tables(cursor)
     today = business_today()
@@ -68,6 +72,10 @@ def monthly_task_performance(
     while cur <= end:
         assignments = _day_responsibilities(cursor, oid, business_date=cur)
         activities = _activities_for_day(cursor, oid, cur)
+        if rinse_eligible_only:
+            from backend.cleaning_task_record_management import activity_is_rinse_eligible
+
+            activities = [row for row in activities if activity_is_rinse_eligible(row)]
         by_resp = _latest_activity_by_resp(activities)
         name_ids = {int(a["user_id"]) for a in assignments} | {int(r["user_id"]) for r in activities}
         names = _employee_names(cursor, oid, sorted(name_ids))

@@ -292,7 +292,19 @@ def record_manual_completion(
     is_shared = execution_mode == "shared" or row and row.get("shared_session_id") is not None
 
     attributed_items: list[dict[str, Any]] = []
-    if is_shared and (shared_item_completions or group_item_codes):
+    if is_shared:
+        # Manual completion must not bypass required shared checklist items.
+        from backend.cleaning_task_shared_execution import (
+            ITEM_COMPLETED,
+            list_shared_session_items,
+        )
+        from backend.task_activity_groups import get_activity_group
+
+        if not (shared_item_completions or group_item_codes):
+            raise CleaningTaskError(
+                "Attribute every required shared checklist item before recording completion.",
+                status=400,
+            )
         attributed_items = _apply_shared_item_attributions(
             conn,
             cursor,
@@ -306,10 +318,42 @@ def record_manual_completion(
             shared_item_completions=shared_item_completions or [],
             fallback_item_codes=list(group_item_codes or []),
         )
-    elif is_group and group_item_codes:
-        from backend.cleaning_task_group_execution import checkoff_group_item
+        refreshed = get_activity(cursor, oid, activity_id) or row or {}
+        session_id = refreshed.get("shared_session_id")
+        if session_id is not None:
+            session_items = list_shared_session_items(cursor, oid, int(session_id))
+            missing = [
+                str(it.get("task_code"))
+                for it in session_items
+                if bool(it.get("required", True))
+                and str(it.get("status") or "") != ITEM_COMPLETED
+            ]
+            if missing:
+                raise CleaningTaskError(
+                    f"Required shared checklist items still open ({len(missing)} remaining).",
+                    status=400,
+                    payload={"missing_task_codes": missing},
+                )
+        else:
+            group_cfg = get_activity_group(cursor, oid, role_code=role) or {}
+            required_codes = [
+                str(it.get("task_code"))
+                for it in (group_cfg.get("items") or [])
+                if it.get("task_code") and bool(it.get("required", True))
+            ]
+            attributed_codes = {str(i["task_code"]) for i in attributed_items}
+            missing = [c for c in required_codes if c not in attributed_codes]
+            if missing:
+                raise CleaningTaskError(
+                    f"Required shared checklist items still open ({len(missing)} remaining).",
+                    status=400,
+                    payload={"missing_task_codes": missing},
+                )
+    elif is_group:
+        from backend.cleaning_task_group_execution import checkoff_group_item, list_activity_items
+        from backend.task_activity_groups import get_activity_group
 
-        for code in group_item_codes:
+        for code in group_item_codes or []:
             try:
                 checkoff_group_item(
                     conn,
@@ -324,6 +368,29 @@ def record_manual_completion(
                     raise
             attributed_items.append(
                 {"task_code": str(code), "completed_by_user_id": employee}
+            )
+        items = list_activity_items(cursor, oid, activity_id)
+        if not items:
+            group_cfg = get_activity_group(cursor, oid, role_code=role) or {}
+            required_codes = [
+                str(it.get("task_code"))
+                for it in (group_cfg.get("items") or [])
+                if it.get("task_code") and bool(it.get("required", True))
+            ]
+            provided = {str(c) for c in (group_item_codes or [])}
+            missing = [c for c in required_codes if c not in provided]
+        else:
+            missing = [
+                str(it.get("task_code"))
+                for it in items
+                if bool(it.get("required", True))
+                and str(it.get("status") or "") != "completed"
+            ]
+        if missing:
+            raise CleaningTaskError(
+                f"Check off all required tasks first ({len(missing)} remaining).",
+                status=400,
+                payload={"missing_task_codes": missing},
             )
 
     out = _finalize_completion(

@@ -21,12 +21,22 @@ def test_rinse_dashboard_scope_strips_durations_and_time_on_tasks():
             {
                 "role": "floor_cleaning",
                 "status": "pending",
+                "completion_status": "in_progress",
+                "verification_status": "not_required",
+                "has_manual_completion": False,
                 "contributions": [
                     {
                         "employee_name": "Amna",
-                        "status": "pending",
+                        "status": "in_progress",
                         "group_duration_seconds": 300,
-                        "activity": {"id": 9, "duration_seconds": 300, "status": "in_progress"},
+                        "activity": {
+                            "id": 9,
+                            "duration_seconds": 300,
+                            "status": "in_progress",
+                            "completion_source": "pin",
+                            "times_manual": 0,
+                            "manual_reason": "secret",
+                        },
                     }
                 ],
             }
@@ -45,15 +55,17 @@ def test_rinse_dashboard_scope_strips_durations_and_time_on_tasks():
     }
     out = apply_rinse_task_dashboard_scope(payload)
     assert "time_spent_seconds" not in out["metrics"]
-    assert out["metrics"]["total_assigned"] == 3
-    assert out["metrics"]["completion_rate"] == 66.7
+    assert out["metrics"]["total_assigned"] == 1
     assert out["durations"] == []
+    assert out["activity_log"] == []
+    assert "queue" not in out
     assert "duration_seconds" not in out["shared_assignments"][0]["contributions"][0]
     assert "group_duration_seconds" not in out["shared_assignments"][0]["contributions"][0]
     assert "duration_seconds" not in out["shared_assignments"][0]["contributions"][0]["activity"]
-    assert "duration_seconds" not in out["activity_log"][0]
-    assert "duration_seconds" not in out["queue"]["overdue"][0]
+    assert "manual_reason" not in out["shared_assignments"][0]["contributions"][0]["activity"]
     assert "duration_seconds" not in out["shift_end"]["blocking_close"][0]
     assert "duration_seconds" not in out["checklists"][0]["groups"][0]["items"][0]
     assert out["hide_labor_metrics"] is True
     assert out["labor_fields_hidden"] is True
+    assert out["read_only"] is True
+    assert out["rinse_scope"]["pin_original_only"] is True

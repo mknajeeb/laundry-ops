@@ -68,6 +68,7 @@ import CleaningTasksPinPage from "./pages/CleaningTasksPinPage";
 import CleaningTaskReviewPinPage from "./pages/CleaningTaskReviewPinPage";
 import EmployeePinHubPage from "./pages/EmployeePinHubPage";
 import ManagementTasksPage from "./pages/ManagementTasksPage";
+import TaskDashboardPhase3PreviewPage from "./pages/TaskDashboardPhase3PreviewPage";
 import ManagementTaskConfigPage from "./pages/ManagementTaskConfigPage";
 import MaintenanceTaskListReportsPage from "./pages/MaintenanceTaskListReportsPage";
 import MaintenanceTaskSettingsPage from "./pages/MaintenanceTaskSettingsPage";
@@ -253,7 +254,12 @@ function isAttendanceRoute(path) {
 function isDevPreviewRoute(path) {
   if (!import.meta.env.DEV) return false;
   const p = normalizePathname(path);
-  return p === "/dev/change-role" || p.startsWith("/dev/change-role/");
+  return (
+    p === "/dev/change-role" ||
+    p.startsWith("/dev/change-role/") ||
+    p === "/dev/task-dashboard-phase3-preview" ||
+    p.startsWith("/dev/task-dashboard-phase3-preview/")
+  );
 }
 
 function isPublicPinSurface(path) {
@@ -751,6 +757,7 @@ function AppShell() {
     return (
       <Routes>
         <Route path="/dev/change-role" element={<ChangeRolePreviewPage />} />
+        <Route path="/dev/task-dashboard-phase3-preview" element={<TaskDashboardPhase3PreviewPage />} />
       </Routes>
     );
   }

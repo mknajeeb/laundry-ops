@@ -244,6 +244,12 @@ export default function CleaningTasksPinPage() {
         setCompleted(null);
         setInputDraftTask(null);
         resetInputs(body.open_activity.input_schema || []);
+      } else if (body.shared_checklist_followup) {
+        // Timer finished but required shared checklist still open — keep check-off reachable.
+        setActive(body.shared_checklist_followup);
+        setCompleted(null);
+        setInputDraftTask(null);
+        resetInputs([]);
       }
       const vbody = verifyRes?.data || {};
       setVerifyQueue(vbody.ok ? vbody.pending_verification || [] : []);
@@ -472,7 +478,17 @@ export default function CleaningTasksPinPage() {
       });
       const body = res?.data || {};
       if (!body.ok) throw new Error(body.error || "Could not check off task");
-      setActive(body.activity);
+      const next = body.activity;
+      if (
+        active.checklist_followup_only &&
+        (next?.shared_checklist_complete || next?.group?.checklist_complete)
+      ) {
+        setActive(null);
+        setCompleted(next);
+        await load();
+      } else {
+        setActive(next);
+      }
       setCheckoffCode(null);
       resetInputs([]);
     } catch (e) {
@@ -737,10 +753,16 @@ export default function CleaningTasksPinPage() {
               Shared checklist complete
               {active.status === "in_progress" ? " — finish your timer when ready" : ""}
             </Typography>
+          ) : active.checklist_followup_only ? (
+            <Typography variant="body2" sx={{ fontWeight: 700, color: OPS_MOBILE.navy }}>
+              Your timer is finished — check off remaining shared items
+            </Typography>
           ) : null}
-          <Typography sx={{ fontSize: "2.4rem", fontWeight: 900, textAlign: "center", color: OPS_MOBILE.navy }}>
-            {formatElapsed(active.started_at, nowMs)}
-          </Typography>
+          {active.checklist_followup_only ? null : (
+            <Typography sx={{ fontSize: "2.4rem", fontWeight: 900, textAlign: "center", color: OPS_MOBILE.navy }}>
+              {formatElapsed(active.started_at, nowMs)}
+            </Typography>
+          )}
           <Stack spacing={1}>
             {(active.group?.items || []).map((item) => {
               const done = item.status === "completed";
@@ -793,17 +815,19 @@ export default function CleaningTasksPinPage() {
               );
             })}
           </Stack>
-          <Button
-            variant="contained"
-            color="success"
-            disabled={busy || !active.group?.can_complete_group}
-            onClick={completeGroup}
-            sx={{ fontWeight: 800, textTransform: "none", py: 1.5 }}
-          >
-            {active.execution_mode === "shared" || active.group?.execution_mode === "shared"
-              ? "Finish My Participation"
-              : "Complete Group"}
-          </Button>
+          {active.checklist_followup_only ? null : (
+            <Button
+              variant="contained"
+              color="success"
+              disabled={busy || !active.group?.can_complete_group}
+              onClick={completeGroup}
+              sx={{ fontWeight: 800, textTransform: "none", py: 1.5 }}
+            >
+              {active.execution_mode === "shared" || active.group?.execution_mode === "shared"
+                ? "Finish My Participation"
+                : "Complete Group"}
+            </Button>
+          )}
         </Stack>
       ) : active ? (
         <Stack spacing={1.5} alignItems="stretch">

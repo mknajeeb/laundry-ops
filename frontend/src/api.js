@@ -492,6 +492,15 @@ export const manualCompleteManagementTask = (body) =>
 export const correctManagementTaskCompletion = (body) =>
   axios.post(`${API_BASE}/api/management/task-dashboard/correct-completion`, body);
 
+export const updateManagementTaskRecord = (body) =>
+  axios.post(`${API_BASE}/api/management/task-dashboard/update-record`, body);
+
+export const voidManagementTaskActivity = (body) =>
+  axios.post(`${API_BASE}/api/management/task-dashboard/void-activity`, body);
+
+export const getManagementTaskActivityHistory = (params = {}) =>
+  axios.get(`${API_BASE}/api/management/task-dashboard/activity-history`, { params });
+
 export const getManagementTaskCatalog = () =>
   axios.get(`${API_BASE}/api/management/task-catalog`);
 

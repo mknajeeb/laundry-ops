@@ -36,11 +36,23 @@ export const COMPLETION_LABELS = {
 
 export const VERIFICATION_LABELS = {
   not_required: "Not Required",
-  waiting: "Waiting for Verification",
+  waiting: "Pending Verification",
+  pending_verification: "Pending Verification",
   partial: "Partially Verified",
   verified: "Verified",
   needs_correction: "Needs Correction",
 };
+
+/** Unified compact badge vocabulary for the redesigned dashboard. */
+export const DASHBOARD_STATUS_BADGES = [
+  "Not Started",
+  "In Progress",
+  "Completed",
+  "Pending Verification",
+  "Partially Verified",
+  "Verified",
+  "Needs Correction",
+];
 
 export function completionLabel(status) {
   const key = String(status || "").trim().toLowerCase();
