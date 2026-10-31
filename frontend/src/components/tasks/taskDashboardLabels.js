@@ -109,6 +109,61 @@ export function checklistItemLabel(status) {
   return CHECKLIST_ITEM_LABELS[key] || "Not checked off";
 }
 
+const FINISHED_PARTICIPATION = new Set([
+  "finished",
+  "completed",
+  "approved",
+  "pending_approval",
+  "pending_verification",
+  "verified",
+  "rejected",
+]);
+
+/** This employee's own timer. Do not infer it from a partner or the checklist. */
+export function participationStatusOf(contribution) {
+  const explicit = String(contribution?.participation_status || "").trim().toLowerCase();
+  if (explicit === "finished" || explicit === "in_progress" || explicit === "not_started") {
+    return explicit;
+  }
+  const st = String(contribution?.status || contribution?.activity?.status || "")
+    .trim()
+    .toLowerCase();
+  if (st === "in_progress") return "in_progress";
+  if (FINISHED_PARTICIPATION.has(st)) return "finished";
+  return "not_started";
+}
+
+export function participationLabel(status) {
+  const key = String(status || "").trim().toLowerCase();
+  if (key === "finished") return "Finished";
+  if (key === "in_progress") return "In Progress";
+  return "Not Started";
+}
+
+export function overallLabel(status) {
+  const key = String(status || "").trim().toLowerCase();
+  return (
+    {
+      not_started: "Not Started",
+      in_progress: "In Progress",
+      pending_verification: "Pending Verification",
+      partial: "Partially Verified",
+      verified: "Verified",
+      completed: "Completed",
+      needs_correction: "Needs Correction",
+      overdue: "Overdue",
+    }[key] || "In Progress"
+  );
+}
+
+export function participationSummary({ finished, assigned, checklistDone, checklistRequired }) {
+  const people = `${finished} of ${assigned} employees finished`;
+  if (Number(checklistRequired) > 0) {
+    return `${people} · ${checklistDone} of ${checklistRequired} checklist items completed`;
+  }
+  return people;
+}
+
 export function isChecklistTimestamp(activity) {
   if (!activity) return false;
   if (activity.timestamp_kind === "checklist_checkoff") return true;

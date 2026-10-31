@@ -33,7 +33,7 @@ import {
 import { businessTodayYmd } from "../utils/businessTime";
 import { formatDashboardDate } from "../components/tasks/taskDashboardFormat";
 
-function Metric({ label, value, accent }) {
+function Metric({ label, value, accent, hint }) {
   return (
     <Box
       sx={{
@@ -53,6 +53,11 @@ function Metric({ label, value, accent }) {
       <Typography variant="h5" sx={{ fontWeight: 800, color: VEEWASH_DASHBOARD.wfCharcoal }}>
         {value ?? 0}
       </Typography>
+      {hint ? (
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25, lineHeight: 1.25 }}>
+          {hint}
+        </Typography>
+      ) : null}
     </Box>
   );
 }
@@ -335,16 +340,19 @@ export default function ManagementTasksPage() {
                 label="Completed"
                 value={categoryMetrics.completed}
                 accent={VEEWASH_DASHBOARD.teal}
+                hint="Work finished. Also counted below if it still needs approval or is already verified."
               />
               <Metric
                 label="Verified"
                 value={categoryMetrics.verified}
                 accent={VEEWASH_DASHBOARD.tealDark}
+                hint="Supervisor approved. These are included in Completed."
               />
               <Metric
                 label="Pending verification"
                 value={categoryMetrics.pending}
                 accent={VEEWASH_DASHBOARD.pending}
+                hint="Finished work awaiting approval. These are included in Completed."
               />
               {!hideLabor && data?.metrics?.time_spent_seconds != null ? (
                 <Metric

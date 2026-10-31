@@ -516,7 +516,13 @@ def finish_shared_participation(
     user_id: int,
     activity_id: int,
 ) -> dict[str, Any]:
-    """End this employee's timer without requiring the full checklist (and without stopping peers)."""
+    """End this employee's timer without stopping peers.
+
+    When the activity group requires the checklist before completion, required items
+    must be checked off first. Otherwise this employee's participation can finish
+    while the shared checklist is still open. The dashboard still reports that
+    assignment as In Progress until the checklist is complete.
+    """
     ensure_shared_activity_schema(cursor)
     oid = int(organization_id)
     uid = int(user_id)
@@ -528,6 +534,34 @@ def finish_shared_participation(
     session_id = row.get("shared_session_id")
     if session_id is None:
         raise CleaningTaskError("Not a shared activity session.", status=400)
+
+    from backend.task_activity_groups import (
+        get_activity_group,
+        group_has_required_checklist_items,
+        participation_finish_allowed_with_open_checklist,
+    )
+
+    group = get_activity_group(cursor, oid, role_code=str(row.get("role") or ""))
+    session_items = list_shared_session_items(cursor, oid, int(session_id))
+    has_required = group_has_required_checklist_items(
+        (group or {}).get("items")
+    ) or group_has_required_checklist_items(session_items)
+    if not participation_finish_allowed_with_open_checklist(
+        None if not group else group.get("require_checklist_before_completion"),
+        shared=True,
+        has_required_items=has_required,
+    ):
+        missing = [
+            str(it.get("task_code") or "")
+            for it in session_items
+            if bool(it.get("required", True)) and str(it.get("status") or "") != ITEM_COMPLETED
+        ]
+        if missing:
+            raise CleaningTaskError(
+                f"Check off all required tasks before finishing ({len(missing)} remaining).",
+                status=400,
+                payload={"missing_task_codes": missing},
+            )
 
     # Ensure verification children exist if checklist already finished.
     maybe_complete_shared_checklist(

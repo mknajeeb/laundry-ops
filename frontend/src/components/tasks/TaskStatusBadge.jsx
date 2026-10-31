@@ -4,6 +4,7 @@ import {
   completionLabel,
   verificationLabel,
   checklistItemLabel,
+  overallLabel,
 } from "./taskDashboardLabels";
 
 const STYLES = {
@@ -21,6 +22,11 @@ const STYLES = {
     bg: VEEWASH_DASHBOARD.tealLight,
     color: VEEWASH_DASHBOARD.tealDark,
     border: VEEWASH_DASHBOARD.tealBorder,
+  },
+  Finished: {
+    bg: VEEWASH_DASHBOARD.snapshotBg,
+    color: VEEWASH_DASHBOARD.primaryBlueDark,
+    border: VEEWASH_DASHBOARD.primaryBlueBorder,
   },
   "Pending Verification": {
     bg: VEEWASH_DASHBOARD.pendingLight,
@@ -82,6 +88,10 @@ export function TaskStatusBadge({ label, sx }) {
 
 export function CompletionBadge({ status }) {
   return <TaskStatusBadge label={completionLabel(status)} />;
+}
+
+export function OverallBadge({ status }) {
+  return <TaskStatusBadge label={overallLabel(status)} />;
 }
 
 export function VerificationBadge({ status }) {

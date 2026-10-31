@@ -13,10 +13,20 @@ import {
   CompletionBadge,
   VerificationBadge,
   ChecklistBadge,
+  OverallBadge,
   TaskStatusBadge,
 } from "./TaskStatusBadge";
-import { formatDashboardDateTime, formatDashboardTime } from "./taskDashboardFormat";
-import { checklistItemLabel, friendlyStatusLabel } from "./taskDashboardLabels";
+import {
+  formatDashboardDateTime,
+  formatDashboardTime,
+  participationTimeLine,
+} from "./taskDashboardFormat";
+import {
+  friendlyStatusLabel,
+  participationLabel,
+  participationStatusOf,
+  participationSummary,
+} from "./taskDashboardLabels";
 
 function formatDuration(seconds) {
   if (seconds == null) return null;
@@ -52,6 +62,21 @@ export default function TaskAssignmentCard({
   const modeLabel =
     row.execution_mode === "shared" ? "Shared" : row.shared ? "Group" : null;
   const checklistItems = row.shared_checklist_items || [];
+  const showParticipation = Boolean(row.shared || row.execution_mode === "shared" || row.overall_status);
+  const requiredItems = checklistItems.filter((item) => item.required !== false);
+  const checklistDone = requiredItems.filter((item) =>
+    ["completed", "approved", "verified"].includes(String(item.status || "").toLowerCase())
+  ).length;
+  const finishedCount = (row.contributions || []).filter(
+    (c) => participationStatusOf(c) === "finished"
+  ).length;
+  const summary = participationSummary({
+    finished: row.employees_finished ?? finishedCount,
+    assigned: row.employees_assigned ?? (row.contributions || []).length,
+    checklistDone: row.checklist_done ?? checklistDone,
+    checklistRequired: row.checklist_required ?? requiredItems.length,
+  });
+  const verifyLocked = row.verification_eligible === false;
 
   return (
     <Box
@@ -93,10 +118,21 @@ export default function TaskAssignmentCard({
             {employees}
             {row.timing_label ? ` · ${row.timing_label}` : ""}
           </Typography>
+          {showParticipation ? (
+            <Typography variant="body2" sx={{ mt: 0.35, fontWeight: 700, color: VEEWASH_DASHBOARD.wfCharcoal }}>
+              {summary}
+            </Typography>
+          ) : null}
         </Box>
         <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-          <CompletionBadge status={row.completion_status} />
-          <VerificationBadge status={row.verification_status} />
+          {row.overall_status ? (
+            <OverallBadge status={row.overall_status} />
+          ) : (
+            <>
+              <CompletionBadge status={row.completion_status} />
+              <VerificationBadge status={row.verification_status} />
+            </>
+          )}
           <IconButton
             size="small"
             onClick={(e) => {
@@ -172,6 +208,7 @@ export default function TaskAssignmentCard({
             {(row.contributions || []).map((c) => {
               const act = c.activity || {};
               const duration = hideLabor ? null : formatDuration(act.duration_seconds);
+              const participation = participationStatusOf(c);
               return (
                 <Box
                   key={`${c.employee_id}-${act.id || c.responsibility_id}`}
@@ -194,17 +231,25 @@ export default function TaskAssignmentCard({
                         {c.employee_name}
                       </Typography>
                       <Typography variant="caption" color="text.secondary">
-                        {act.timestamp_kind === "checklist_checkoff"
-                          ? `Checked off ${formatDashboardDateTime(act.checked_off_at || act.ended_at)}`
-                          : `${formatDashboardDateTime(act.started_at)} → ${formatDashboardDateTime(
-                              act.ended_at
-                            )}`}
+                        {showParticipation
+                          ? participationTimeLine(c)
+                          : act.timestamp_kind === "checklist_checkoff"
+                            ? `Checked off ${formatDashboardDateTime(act.checked_off_at || act.ended_at)}`
+                            : `${formatDashboardDateTime(act.started_at)} → ${formatDashboardDateTime(
+                                act.ended_at
+                              )}`}
                         {duration ? ` · ${duration}` : ""}
                       </Typography>
                     </Box>
                     <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
-                      <TaskStatusBadge label={friendlyStatusLabel(c.status || act.status)} />
-                      {!readOnly && canApprove && String(c.status) === "pending_approval" && act.id ? (
+                      <TaskStatusBadge
+                        label={
+                          showParticipation
+                            ? participationLabel(participation)
+                            : friendlyStatusLabel(c.status || act.status)
+                        }
+                      />
+                      {!readOnly && canApprove && !verifyLocked && String(c.status) === "pending_approval" && act.id ? (
                         <>
                           <Button size="small" variant="contained" onClick={() => onApprove(act.id)}
                             sx={{ bgcolor: VEEWASH_DASHBOARD.teal, "&:hover": { bgcolor: VEEWASH_DASHBOARD.tealDark } }}>
@@ -254,6 +299,7 @@ export default function TaskAssignmentCard({
                             <ChecklistBadge status={gi.display_status || gi.status} />
                             {!readOnly &&
                             canApprove &&
+                            !verifyLocked &&
                             (gi.display_status === "pending_approval" ||
                               gi.display_status === "pending_verification") &&
                             gi.activity_id ? (
@@ -272,7 +318,7 @@ export default function TaskAssignmentCard({
                     </Stack>
                   ) : null}
 
-                  {rejectId === act.id ? (
+                  {rejectId != null && act.id != null && rejectId === act.id ? (
                     <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1 }}>
                       <Box
                         component="input"

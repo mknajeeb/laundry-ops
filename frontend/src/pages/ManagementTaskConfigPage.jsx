@@ -153,6 +153,15 @@ export default function ManagementTaskConfigPage() {
           return { task_code: code, required: req !== "optional", display_order: i * 10 };
         });
       const inherits = groupDraft.verification_inherits !== false;
+      const requireChecklist = groupDraft.id
+        ? groupDraft.requireChecklistTouched
+          ? { require_checklist_before_completion: groupDraft.require_checklist_before_completion === true }
+          : {}
+        : {
+            require_checklist_before_completion: groupDraft.requireChecklistTouched
+              ? groupDraft.require_checklist_before_completion === true
+              : items.some((item) => item.required !== false),
+          };
       await upsertManagementTaskActivityGroup({
         id: groupDraft.id,
         code: groupDraft.code,
@@ -160,6 +169,7 @@ export default function ManagementTaskConfigPage() {
         category_code: groupDraft.category_code || "intra_day",
         display_order: Number(groupDraft.display_order || 0),
         active: groupDraft.active !== false,
+        ...requireChecklist,
         verification_inherits: inherits,
         ...(inherits
           ? {}
@@ -678,6 +688,8 @@ export default function ManagementTaskConfigPage() {
                     verification_method: "supervisor",
                     verification_timing: "same_shift",
                     itemsText: "",
+                    require_checklist_before_completion: true,
+                    requireChecklistTouched: false,
                   })
                 }
               >
@@ -702,6 +714,13 @@ export default function ManagementTaskConfigPage() {
                             : g.verification_required
                               ? `verify:${g.verification_method}/${g.verification_timing}`
                               : "no verification (override)"}
+                          {g.require_checklist_before_completion === false
+                            ? " · finish allowed with open checklist"
+                            : g.require_checklist_before_completion === true ||
+                                (g.require_checklist_before_completion == null &&
+                                  (g.items || []).some((item) => item.required !== false))
+                              ? " · checklist required before finish"
+                              : ""}
                           {!g.active ? " · inactive" : ""}
                         </Typography>
                       </Box>
@@ -713,6 +732,7 @@ export default function ManagementTaskConfigPage() {
                             itemsText: (g.items || [])
                               .map((i) => `${i.task_code}${i.required ? "" : "|optional"}`)
                               .join("\n"),
+                            requireChecklistTouched: false,
                           })
                         }
                       >
@@ -777,6 +797,40 @@ export default function ManagementTaskConfigPage() {
                   }
                   label="Active"
                 />
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={(() => {
+                        if (groupDraft.requireChecklistTouched) {
+                          return groupDraft.require_checklist_before_completion === true;
+                        }
+                        if (groupDraft.require_checklist_before_completion === false) return false;
+                        if (groupDraft.require_checklist_before_completion === true) return true;
+                        const lines = String(groupDraft.itemsText || "")
+                          .split("\n")
+                          .map((line) => line.trim())
+                          .filter(Boolean);
+                        if (!lines.length) return !groupDraft.id;
+                        return lines.some((line) => !line.includes("|optional"));
+                      })()}
+                      onChange={(e) =>
+                        setGroupDraft({
+                          ...groupDraft,
+                          require_checklist_before_completion: e.target.checked,
+                          requireChecklistTouched: true,
+                        })
+                      }
+                    />
+                  }
+                  label="Require Checklist Before Completion"
+                />
+                <Typography variant="caption" color="text.secondary">
+                  Groups with required checklist items use this requirement, including existing groups
+                  whose setting is still unset. Saving other fields does not rewrite that unset value.
+                  Turn it off to let an employee finish while required items are still open. Groups with
+                  no required items complete normally. An open required checklist stays In Progress on
+                  the dashboard either way.
+                </Typography>
                 <FormControlLabel
                   control={
                     <Switch

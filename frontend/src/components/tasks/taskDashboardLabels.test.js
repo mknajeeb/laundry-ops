@@ -5,6 +5,10 @@ import {
   completionLabel,
   friendlyStatusLabel,
   isChecklistTimestamp,
+  overallLabel,
+  participationLabel,
+  participationStatusOf,
+  participationSummary,
   statusChipColor,
   verificationChipColor,
   verificationLabel,
@@ -43,5 +47,20 @@ describe("taskDashboardLabels", () => {
     expect(isChecklistTimestamp({ activity_kind: "group_item" })).toBe(true);
     expect(isChecklistTimestamp({ timestamp_kind: "checklist_checkoff" })).toBe(true);
     expect(isChecklistTimestamp({ activity_kind: "group" })).toBe(false);
+  });
+
+  it("keeps employee participation separate from assignment completion", () => {
+    expect(participationStatusOf({ status: "completed" })).toBe("finished");
+    expect(participationStatusOf({ status: "pending" })).toBe("not_started");
+    expect(participationStatusOf({ participation_status: "not_started", status: "completed" })).toBe(
+      "not_started"
+    );
+    expect(participationLabel("finished")).toBe("Finished");
+    expect(participationLabel("in_progress")).toBe("In Progress");
+    expect(overallLabel("in_progress")).toBe("In Progress");
+    expect(overallLabel("pending_verification")).toBe("Pending Verification");
+    expect(
+      participationSummary({ finished: 1, assigned: 2, checklistDone: 0, checklistRequired: 2 })
+    ).toBe("1 of 2 employees finished · 0 of 2 checklist items completed");
   });
 });

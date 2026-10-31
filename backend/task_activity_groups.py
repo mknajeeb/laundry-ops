@@ -71,6 +71,7 @@ def ensure_task_activity_group_tables(cursor) -> None:
               verification_method VARCHAR(32) NULL,
               verification_timing VARCHAR(32) NULL,
               verifier_config_json TEXT NULL,
+              require_checklist_before_completion TINYINT(1) NULL,
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
               UNIQUE KEY uq_tag_org_code (organization_id, code),
@@ -99,6 +100,13 @@ def ensure_task_activity_group_tables(cursor) -> None:
         ensure_verification_policy_schema(cursor)
     except Exception:
         pass
+    if table_exists(cursor, GROUPS_TABLE) and not table_has_column(
+        cursor, GROUPS_TABLE, "require_checklist_before_completion"
+    ):
+        # NULL preserves existing groups. New groups set the flag explicitly.
+        cursor.execute(
+            f"ALTER TABLE {GROUPS_TABLE} ADD COLUMN require_checklist_before_completion TINYINT(1) NULL"
+        )
     invalidate_schema_cache()
 
 
@@ -111,6 +119,54 @@ def _slug_code(raw: str, *, max_len: int = 28) -> str:
 def _schedule_role_code(group_code: str) -> str:
     slug = activity_group_slug_from_code(group_code)
     return f"{ACTIVITY_GROUP_PREFIX}{slug}"[:40]
+
+
+def _serialize_require_checklist_flag(value: Any) -> bool | None:
+    """None means the stored column is unset. It is not rewritten."""
+    if value in (None, ""):
+        return None
+    if value in (1, True, "1"):
+        return True
+    if value in (0, False, "0"):
+        return False
+    return None
+
+
+def group_has_required_checklist_items(items: Sequence[Mapping[str, Any]] | None) -> bool:
+    for item in items or []:
+        if isinstance(item, Mapping) and bool(item.get("required", True)):
+            return True
+    return False
+
+
+def default_require_checklist_before_completion(items: Sequence[Mapping[str, Any]]) -> int:
+    """New groups with a required checklist item start with the finish gate on."""
+    return 1 if group_has_required_checklist_items(items) else 0
+
+
+def participation_finish_allowed_with_open_checklist(
+    value: Any,
+    *,
+    shared: bool = False,
+    has_required_items: bool | None = None,
+) -> bool:
+    """Whether this employee may finish while required checklist items are still open.
+
+    Explicit OFF allows it. Explicit ON blocks it.
+    An unset value is ON when the group has required checklist items, and allows
+    normal completion when it does not. The stored NULL is left as NULL.
+    ``shared`` applies only when the caller does not say whether required items exist.
+    """
+    flag = _serialize_require_checklist_flag(value)
+    if flag is False:
+        return True
+    if flag is True:
+        return False
+    if has_required_items is True:
+        return False
+    if has_required_items is False:
+        return True
+    return bool(shared)
 
 
 def _serialize_group(
@@ -173,6 +229,9 @@ def _serialize_group(
         "verification_source": policy.get("source") or ("global" if inherits else "activity_group"),
         "verification_policy_label": (
             "Inherited from global default" if inherits else "Group override"
+        ),
+        "require_checklist_before_completion": _serialize_require_checklist_flag(
+            row.get("require_checklist_before_completion")
         ),
         "items": members,
         "item_count": len(members),
@@ -400,6 +459,7 @@ def upsert_activity_group(
     if not normalized:
         raise ActivityGroupError("Add at least one task to the activity group.")
 
+    existing = None
     if group_id is not None:
         cursor.execute(
             f"SELECT * FROM {GROUPS_TABLE} WHERE organization_id=%s AND id=%s LIMIT 1",
@@ -408,13 +468,28 @@ def upsert_activity_group(
         existing = cursor.fetchone()
         if not existing:
             raise ActivityGroupError("Activity group not found.", status=404)
+    if "require_checklist_before_completion" in payload:
+        require_flag = 1 if payload.get("require_checklist_before_completion") in (1, True, "1") else 0
+    elif existing is not None:
+        require_flag = _serialize_require_checklist_flag(
+            existing.get("require_checklist_before_completion")
+        )
+        if require_flag is True:
+            require_flag = 1
+        elif require_flag is False:
+            require_flag = 0
+    else:
+        require_flag = default_require_checklist_before_completion(normalized)
+
+    if group_id is not None:
         code = str(existing["code"])
         cursor.execute(
             f"""
             UPDATE {GROUPS_TABLE}
             SET name=%s, category_code=%s, display_order=%s, active=%s,
                 verification_inherits=%s, verification_required=%s,
-                verification_method=%s, verification_timing=%s, verifier_config_json=%s
+                verification_method=%s, verification_timing=%s, verifier_config_json=%s,
+                require_checklist_before_completion=%s
             WHERE organization_id=%s AND id=%s
             """,
             (
@@ -427,6 +502,7 @@ def upsert_activity_group(
                 verify_method,
                 verify_timing,
                 verifier_config_json,
+                require_flag,
                 oid,
                 int(group_id),
             ),
@@ -453,8 +529,8 @@ def upsert_activity_group(
             INSERT INTO {GROUPS_TABLE}
               (organization_id, code, name, category_code, display_order, active,
                verification_inherits, verification_required, verification_method,
-               verification_timing, verifier_config_json)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               verification_timing, verifier_config_json, require_checklist_before_completion)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 oid,
@@ -468,6 +544,7 @@ def upsert_activity_group(
                 verify_method,
                 verify_timing,
                 verifier_config_json,
+                require_flag,
             ),
         )
         gid = int(cursor.lastrowid)

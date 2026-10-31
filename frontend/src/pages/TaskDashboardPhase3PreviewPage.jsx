@@ -18,11 +18,17 @@ const MOCK_SHARED = {
   execution_mode: "shared",
   shared: true,
   timing_label: "Anytime",
-  assigned_employees: ["Angelica", "Aselisa"],
+  assigned_employees: ["Maria Perez", "Rocio"],
+  overall_status: "in_progress",
   completion_status: "in_progress",
   verification_status: "not_required",
+  verification_eligible: false,
   checklist_complete: false,
-  checklist_status: "in_progress",
+  checklist_status: "not_started",
+  employees_finished: 1,
+  employees_assigned: 2,
+  checklist_done: 0,
+  checklist_required: 2,
   has_manual_completion: false,
   shared_checklist_items: [
     { task_code: "floor_cleaning", task_name: "Floor Cleaning", required: true, status: "pending" },
@@ -30,34 +36,26 @@ const MOCK_SHARED = {
   ],
   contributions: [
     {
-      employee_name: "Angelica",
+      employee_id: 11,
+      employee_name: "Maria Perez",
       status: "completed",
-      completion_status: "completed",
-      verification_status: "not_required",
+      participation_status: "finished",
       activity: {
         id: 77,
-        started_at: "2026-10-30 09:12:00",
-        ended_at: "2026-10-30 09:48:00",
-        duration_seconds: 2160,
+        started_at: "2026-10-30 09:00:00",
+        ended_at: "2026-10-30 09:35:00",
+        duration_seconds: 2100,
         completion_source: "pin",
         business_date: "2026-10-30",
       },
       can_manual_complete: true,
     },
     {
-      employee_name: "Aselisa",
-      status: "completed",
-      completion_status: "completed",
-      verification_status: "not_required",
-      activity: {
-        id: 78,
-        started_at: "2026-10-30 09:15:00",
-        ended_at: "2026-10-30 09:52:00",
-        duration_seconds: 2220,
-        completion_source: "pin",
-        business_date: "2026-10-30",
-      },
-      can_manual_complete: true,
+      employee_id: 12,
+      employee_name: "Rocio",
+      status: "pending",
+      participation_status: "not_started",
+      activity: null,
     },
   ],
 };
@@ -258,7 +256,8 @@ export default function TaskDashboardPhase3PreviewPage() {
         />
       </Stack>
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
-        Phase 3 preview · view={view} · VeeWash tokens
+        Floor &amp; Washer is In Progress and is not included in Completed or Pending verification.
+        Those totals are Lint Cleaning only. Phase 3 preview · view={view}
       </Typography>
     </DashboardShell>
   );

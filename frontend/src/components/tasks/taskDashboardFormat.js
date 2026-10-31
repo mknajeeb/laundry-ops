@@ -1,5 +1,7 @@
 /** Friendly date/time formatting for Task Dashboard (America/New_York wall times). */
 
+import { participationStatusOf } from "./taskDashboardLabels";
+
 export function formatDashboardDate(value) {
   if (!value) return "—";
   const text = String(value).trim().replace("T", " ");
@@ -35,6 +37,16 @@ export function formatDashboardTime(value) {
   hour = hour % 12;
   if (hour === 0) hour = 12;
   return `${hour}:${minute} ${suffix}`;
+}
+
+export function participationTimeLine(contribution) {
+  const status = participationStatusOf(contribution);
+  if (status === "not_started") return "Not Started";
+  const act = contribution?.activity || {};
+  const started = formatDashboardTime(act.started_at);
+  if (status === "in_progress") return `Started ${started}`;
+  if (!act.ended_at) return `Started ${started}`;
+  return `Started ${started}, Finished ${formatDashboardTime(act.ended_at)}`;
 }
 
 export function formatDashboardDateTime(value) {

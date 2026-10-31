@@ -476,7 +476,22 @@ def complete_group_activity(
         for it in items
         if bool(it.get("required", True)) and str(it.get("status")) != ITEM_COMPLETED
     ]
-    if missing:
+    from backend.task_activity_groups import (
+        get_activity_group,
+        group_has_required_checklist_items,
+        participation_finish_allowed_with_open_checklist,
+    )
+
+    parent_group = get_activity_group(cursor, oid, role_code=str(row.get("role") or ""))
+    has_required = bool(missing) or group_has_required_checklist_items(
+        (parent_group or {}).get("items")
+    )
+    finish_with_open_checklist = participation_finish_allowed_with_open_checklist(
+        None if not parent_group else parent_group.get("require_checklist_before_completion"),
+        shared=False,
+        has_required_items=has_required,
+    )
+    if missing and not finish_with_open_checklist:
         raise CleaningTaskError(
             f"Check off all required tasks first ({len(missing)} remaining).",
             status=400,
@@ -494,10 +509,7 @@ def complete_group_activity(
 
     # Spawn verification child activities (no duration) for items that need verify.
     catalog = _role_catalog(cursor, oid)
-    from backend.task_activity_groups import get_activity_group
     from backend.task_verification_policy import resolve_verification_policy, snapshot_columns
-
-    parent_group = get_activity_group(cursor, oid, role_code=str(row.get("role") or ""))
     for it in items:
         if str(it.get("status")) != ITEM_COMPLETED:
             continue

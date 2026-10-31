@@ -1702,7 +1702,7 @@ def _group_shared_assignments(
         # Do not silently treat unfinished required checklist items as checked off.
         checklist_status = None
         checklist_complete = None
-        if execution_mode == "shared" and shared_checklist:
+        if shared_checklist:
             checklist_complete, checklist_status, completion_status, rollup = (
                 apply_shared_checklist_to_assignment_status(
                     shared_checklist,
@@ -1716,6 +1716,7 @@ def _group_shared_assignments(
                 if rollup in {DISPLAY_COMPLETED, DISPLAY_APPROVED}:
                     rollup = DISPLAY_PENDING_APPROVAL
         out.append(
+            apply_assignment_reporting(
             {
                 "assignment_key": key,
                 "assignment_group_id": sample.get("assignment_group_id"),
@@ -1764,6 +1765,7 @@ def _group_shared_assignments(
                     for m in members
                 ],
             }
+            )
         )
     return out
 
@@ -1929,6 +1931,7 @@ def apply_shared_checklist_to_assignment_status(
         return True, checklist_status, completion_status, rollup
     if not complete:
         # Timers may be finished; assignment stays In Progress until checklist done.
+        # A pending-approval rollup is the same hole: a finished timer is not checklist completion.
         if done_n or any(
             str(s) in _STARTED_DISPLAY or str(s) in _FINISHED_WORK_DISPLAY
             for s in (member_statuses or [])
@@ -1936,7 +1939,7 @@ def apply_shared_checklist_to_assignment_status(
             checklist_status = COMPLETION_IN_PROGRESS
         if completion_status == COMPLETION_COMPLETED:
             completion_status = COMPLETION_IN_PROGRESS
-        if rollup in {DISPLAY_COMPLETED, DISPLAY_APPROVED}:
+        if rollup in {DISPLAY_COMPLETED, DISPLAY_APPROVED, DISPLAY_PENDING_APPROVAL}:
             rollup = DISPLAY_IN_PROGRESS
     return complete, checklist_status, completion_status, rollup
 
@@ -2044,6 +2047,12 @@ def assignment_is_completed(row: Mapping[str, Any]) -> bool:
     that needs correction is still complete; it is not verified.
     Required shared checklist items must also be complete — participation alone is not enough.
     """
+    if str(row.get("overall_status") or "") in {
+        COMPLETION_NOT_STARTED,
+        COMPLETION_IN_PROGRESS,
+        DISPLAY_OVERDUE,
+    }:
+        return False
     if row.get("checklist_complete") is False:
         return False
     if str(row.get("execution_mode") or "") == "shared":
@@ -2070,10 +2079,151 @@ def _contribution_verification_satisfied(contrib: Mapping[str, Any]) -> bool:
 
 
 def assignment_is_verified(row: Mapping[str, Any]) -> bool:
-    if not assignment_is_completed(row):
+    """Supervisor approval counts only after the shared work is actually finished.
+
+    An open required checklist, or a participant who has not finished, keeps the
+    group unverified even if a contribution status says approved.
+    """
+    if row.get("checklist_complete") is False:
+        return False
+    if str(row.get("overall_status") or "") in {
+        COMPLETION_NOT_STARTED,
+        COMPLETION_IN_PROGRESS,
+        DISPLAY_OVERDUE,
+    }:
         return False
     contribs = list(row.get("contributions") or [])
+    participation = [str(c.get("participation_status") or "") for c in contribs]
+    if any(p in {PARTICIPATION_NOT_STARTED, PARTICIPATION_IN_PROGRESS} for p in participation):
+        return False
+    if not assignment_is_completed(row):
+        return False
     return bool(contribs) and all(_contribution_verification_satisfied(c) for c in contribs)
+
+
+PARTICIPATION_NOT_STARTED = "not_started"
+PARTICIPATION_IN_PROGRESS = "in_progress"
+PARTICIPATION_FINISHED = "finished"
+OVERALL_PENDING_VERIFICATION = "pending_verification"
+
+
+def participation_status_from_display(status: Any) -> str:
+    """This employee's timer only. Another employee's timer does not count."""
+    st = str(status or "")
+    if st in {DISPLAY_IN_PROGRESS, STATUS_IN_PROGRESS, "in_progress"}:
+        return PARTICIPATION_IN_PROGRESS
+    if st in _FINISHED_WORK_DISPLAY or st in {
+        STATUS_COMPLETED,
+        STATUS_APPROVED,
+        STATUS_PENDING_APPROVAL,
+        STATUS_REJECTED,
+        "completed",
+        "approved",
+        "pending_approval",
+        "pending_verification",
+        "verified",
+        "rejected",
+    }:
+        return PARTICIPATION_FINISHED
+    return PARTICIPATION_NOT_STARTED
+
+
+def apply_assignment_reporting(row: dict[str, Any]) -> dict[str, Any]:
+    """Separate participation, checklist, overall completion, and verification.
+
+    Display and totals only. Nested activity rows are not rewritten.
+    """
+    contributions: list[dict[str, Any]] = []
+    for contrib in row.get("contributions") or []:
+        if not isinstance(contrib, Mapping):
+            continue
+        copy = dict(contrib)
+        copy["participation_status"] = participation_status_from_display(copy.get("status"))
+        contributions.append(copy)
+    row["contributions"] = contributions
+
+    finished_n = sum(
+        1 for c in contributions if c["participation_status"] == PARTICIPATION_FINISHED
+    )
+    progress_n = sum(
+        1 for c in contributions if c["participation_status"] == PARTICIPATION_IN_PROGRESS
+    )
+    assigned_n = len(contributions)
+    all_finished = assigned_n > 0 and finished_n == assigned_n
+    is_shared = bool(row.get("shared")) or str(row.get("execution_mode") or "") == "shared"
+
+    items = row.get("shared_checklist_items")
+    if isinstance(items, list):
+        complete, checklist_status, done_n, req_n = shared_required_checklist_progress(items)
+    else:
+        complete, checklist_status, done_n, req_n = True, None, 0, 0
+    has_required = req_n > 0
+    if has_required:
+        row["checklist_complete"] = complete
+        row["checklist_status"] = checklist_status
+    row["employees_finished"] = finished_n
+    row["employees_assigned"] = assigned_n
+    row["checklist_done"] = done_n
+    row["checklist_required"] = req_n
+
+    checklist_open = has_required and not complete
+    participation_open = is_shared and assigned_n > 0 and not all_finished
+    if has_required and assigned_n > 0 and not all_finished:
+        participation_open = True
+    blocked = checklist_open or participation_open
+    anyone = bool(finished_n or progress_n or done_n)
+
+    if is_shared or has_required:
+        if blocked:
+            row["verification_status"] = VERIFICATION_NOT_REQUIRED
+            row["verification_eligible"] = False
+            if anyone:
+                row["completion_status"] = COMPLETION_IN_PROGRESS
+                row["overall_status"] = COMPLETION_IN_PROGRESS
+                if str(row.get("status") or "") in {
+                    DISPLAY_COMPLETED,
+                    DISPLAY_APPROVED,
+                    DISPLAY_PENDING_APPROVAL,
+                    "partial",
+                }:
+                    row["status"] = DISPLAY_IN_PROGRESS
+            else:
+                row["completion_status"] = COMPLETION_NOT_STARTED
+                if str(row.get("status") or "") == DISPLAY_OVERDUE:
+                    row["overall_status"] = DISPLAY_OVERDUE
+                else:
+                    row["overall_status"] = COMPLETION_NOT_STARTED
+                    row["status"] = DISPLAY_PENDING
+        else:
+            verification = str(row.get("verification_status") or VERIFICATION_NOT_REQUIRED)
+            if verification == VERIFICATION_NEEDS_CORRECTION:
+                overall = VERIFICATION_NEEDS_CORRECTION
+            elif verification == VERIFICATION_VERIFIED:
+                overall = VERIFICATION_VERIFIED
+            elif verification == VERIFICATION_PARTIAL:
+                overall = VERIFICATION_PARTIAL
+            elif verification == VERIFICATION_WAITING:
+                overall = OVERALL_PENDING_VERIFICATION
+                row["completion_status"] = COMPLETION_COMPLETED
+            else:
+                overall = COMPLETION_COMPLETED
+                row["completion_status"] = COMPLETION_COMPLETED
+            row["overall_status"] = overall
+            row["verification_eligible"] = verification in {
+                VERIFICATION_WAITING,
+                VERIFICATION_PARTIAL,
+                VERIFICATION_NEEDS_CORRECTION,
+                VERIFICATION_VERIFIED,
+            }
+
+        completion = str(row.get("completion_status") or COMPLETION_NOT_STARTED)
+        verification = str(row.get("verification_status") or VERIFICATION_NOT_REQUIRED)
+        rollup = str(row.get("status") or "")
+        row["completion_label"] = _COMPLETION_LABELS.get(completion, "Not Started")
+        row["verification_label"] = _VERIFICATION_LABELS.get(verification, "Not Required")
+        row["status_label"] = friendly_status_label(rollup, overdue=rollup == DISPLAY_OVERDUE)
+
+    return row
 
 
 def assignment_needs_correction(row: Mapping[str, Any]) -> bool:
