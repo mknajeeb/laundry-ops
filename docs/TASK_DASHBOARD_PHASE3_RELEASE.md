@@ -101,20 +101,43 @@ Out of release: Phases 4–6, Azure config changes, P0 stability patch.
 
 ---
 
-## 5. GO / NO-GO
+## 5. Hold for P0 (active)
+
+P0 API stability takes priority over Phase 3 deploy.
+
+| Gate | State (as of last check) |
+|---|---|
+| Production `origin/main` | `07f3338b` |
+| P0 `8c20b4a7` on main | **Not yet** |
+| Phase 3 release tip | `7209cf4211118f5b9c4433807d0162b1cea2b365` |
+
+**After P0 deploys successfully, before Phase 3 deploy:**
+
+1. Reconfirm new production `origin/main` SHA (must include P0)
+2. Merge/rebase deployed P0 into `feat/task-dashboard-redesign-record-mgmt` without dropping Phase 3
+3. Preserve all Phase 3 functionality (dashboard, Rinse scope, record mgmt, shared checklist)
+4. Rerun affected backend + frontend regression tests
+5. Re-verify `task_dashboard_record_mgmt_v1.sql` compatibility
+6. Confirm VeeWash + Rinse UI behavior unchanged
+7. Return final integrated release SHA + readiness; **STOP** for Phase 3 deploy approval
+
+Do not apply Phase 3 migration or modify production data during the hold.
+
+## 6. GO / NO-GO
 
 | Decision | Recommendation |
 |---|---|
-| Merge / release prep | **GO** (approved SHA + additive migration ready) |
-| Production deploy / apply migration | **NO-GO** until explicit final deployment approval |
-| Include P0 in this release | **NO** — not on main; keep separate |
+| Keep Phase 3 release ready | **GO** (`7209cf42`) |
+| Production Phase 3 deploy / migration | **NO-GO** — waiting on P0 deploy + re-integration |
+| Cherry-pick undeployed P0 into Phase 3 now | **NO** — wait for P0 on production main first |
 
 ---
 
-## 6. Safety constraints (active)
+## 7. Safety constraints (active)
 
-- Do not deploy
+- Do not deploy Phase 3
 - Do not apply production migrations
 - Do not change Azure configuration
 - Do not modify production records
 - Do not start Phases 4–6
+- Do not integrate P0 until it is on production main
