@@ -1323,6 +1323,158 @@ def reject_activity(
     return serialize_activity(get_activity(cursor, organization_id, int(activity_id)) or {}, catalog=catalog)
 
 
+def approve_activity_ids(
+    cursor,
+    *,
+    organization_id: int,
+    activity_ids: Sequence[Any],
+    supervisor_user_id: int,
+    approve_all: bool = False,
+) -> list[dict[str, Any]]:
+    """Verify each id once. Already-approved rows are returned without a new event."""
+    ordered: list[int] = []
+    for raw in activity_ids or []:
+        iid = int(raw)
+        if iid not in ordered:
+            ordered.append(iid)
+    if not ordered:
+        raise CleaningTaskError("activity_id is required", status=400)
+    rows = []
+    for iid in ordered:
+        row = get_activity(cursor, int(organization_id), iid)
+        if not row:
+            raise CleaningTaskError("Task activity not found.", status=404)
+        rows.append(row)
+    if approve_all:
+        _assert_approve_all_ready(cursor, int(organization_id), rows)
+    catalog = _role_catalog(cursor, int(organization_id))
+    approved: list[dict[str, Any]] = []
+    for row in rows:
+        if str(row.get("status")) == STATUS_APPROVED:
+            approved.append(serialize_activity(row, catalog=catalog))
+            continue
+        approved.append(
+            approve_activity(
+                cursor,
+                organization_id=int(organization_id),
+                activity_id=int(row["id"]),
+                supervisor_user_id=int(supervisor_user_id),
+            )
+        )
+    return approved
+
+
+def _assert_approve_all_ready(cursor, organization_id: int, rows: Sequence[Mapping[str, Any]]) -> None:
+    """Block overall approval while the shared assignment is still unfinished."""
+    group_ids = {str(row.get("assignment_group_id") or "") for row in rows}
+    if len(group_ids) != 1:
+        raise CleaningTaskError("Approve one assignment at a time.", status=400)
+    gid = group_ids.pop()
+    if not gid:
+        return
+    day = _coerce_business_date(rows[0].get("business_date"))
+    if day is None:
+        raise CleaningTaskError("This assignment cannot be verified yet.", status=400)
+    activities = _activities_for_day(cursor, int(organization_id), day)
+    assignments = [
+        item
+        for item in _day_responsibilities(cursor, int(organization_id), business_date=day)
+        if str(item.get("assignment_group_id") or "") == gid
+    ]
+    if len(assignments) < 2 and not any(row.get("parent_activity_id") for row in rows):
+        return
+    by_resp = _latest_activity_by_resp(activities)
+    name_ids = {int(item["user_id"]) for item in assignments}
+    name_ids |= {int(row.get("user_id") or 0) for row in activities}
+    names = _employee_names(cursor, int(organization_id), sorted(i for i in name_ids if i))
+    catalog = _role_catalog(cursor, int(organization_id))
+    pending_children = [
+        act
+        for act in activities
+        if str(act.get("assignment_group_id") or "") == gid
+        and act.get("parent_activity_id") is not None
+        and str(act.get("status")) == STATUS_PENDING_APPROVAL
+    ]
+    entries = []
+    for child in pending_children:
+        member = next(
+            (item for item in assignments if int(item["user_id"]) == int(child.get("user_id") or 0)),
+            assignments[0] if assignments else None,
+        )
+        if member is None:
+            continue
+        entries.append(
+            _group_item_queue_entry(
+                member, child, catalog=catalog, names=names, status=DISPLAY_PENDING_APPROVAL
+            )
+        )
+    if not entries:
+        return
+    role = str(assignments[0].get("role") or "") if assignments else ""
+    cards = build_verification_review_cards(
+        entries,
+        assignments=assignments,
+        activities=activities,
+        by_resp=by_resp,
+        names=names,
+        catalog=catalog,
+        templates_by_role={role: _activity_group_item_templates(cursor, int(organization_id), role)},
+    )
+    card = cards[0] if cards else None
+    if not card or not card.get("can_approve_all"):
+        raise CleaningTaskError(
+            (card or {}).get("block_reason") or "This assignment cannot be verified yet.",
+            status=400,
+        )
+
+
+def reject_activity_ids(
+    cursor,
+    *,
+    organization_id: int,
+    activity_ids: Sequence[Any],
+    supervisor_user_id: int,
+    reason: str,
+) -> list[dict[str, Any]]:
+    """Reject each pending record once. The same reason is stored on each row."""
+    reason_clean = (reason or "").strip()
+    if len(reason_clean) < 3:
+        raise CleaningTaskError("A rejection reason is required.", status=400)
+    ordered: list[int] = []
+    for raw in activity_ids or []:
+        iid = int(raw)
+        if iid not in ordered:
+            ordered.append(iid)
+    if not ordered:
+        raise CleaningTaskError("activity_id is required", status=400)
+    catalog = _role_catalog(cursor, int(organization_id))
+    rejected: list[dict[str, Any]] = []
+    pending_found = False
+    for iid in ordered:
+        row = get_activity(cursor, int(organization_id), iid)
+        if not row:
+            raise CleaningTaskError("Task activity not found.", status=404)
+        status = str(row.get("status") or "")
+        if status == STATUS_REJECTED:
+            rejected.append(serialize_activity(row, catalog=catalog))
+            continue
+        if status != STATUS_PENDING_APPROVAL:
+            continue
+        pending_found = True
+        rejected.append(
+            reject_activity(
+                cursor,
+                organization_id=int(organization_id),
+                activity_id=iid,
+                supervisor_user_id=int(supervisor_user_id),
+                reason=reason_clean,
+            )
+        )
+    if not rejected and not pending_found:
+        raise CleaningTaskError("Only completed tasks awaiting verification can be rejected.", status=400)
+    return rejected
+
+
 def _group_item_queue_entry(
     item: Mapping[str, Any],
     child: Mapping[str, Any],
@@ -1529,8 +1681,23 @@ def list_supervisor_queue(
         "business_date": str(day),
         "approval_policy": "per_employee_contribution",
         "approval_policy_label": (
-            "Verify each employee's contribution separately when verification is required. "
-            "Shared tasks stay one assignment, with individual timers and verifications."
+            "A shared assignment is one verification. Approve all of its checklist records together. "
+            "Expand the card to see who checked off each item. Those records stay separate."
+        ),
+        "verification_cards": build_verification_review_cards(
+            buckets["pending_approval"],
+            assignments=assignments,
+            activities=activities,
+            by_resp=by_resp,
+            names=names,
+            catalog=catalog,
+            templates_by_role={
+                str(item.get("role") or ""): _activity_group_item_templates(
+                    cursor, int(organization_id), str(item.get("role") or "")
+                )
+                for item in assignments
+                if str(item.get("role") or "").startswith("agroup_")
+            },
         ),
         "shift_end": shift_end,
         **buckets,
@@ -2107,6 +2274,259 @@ PARTICIPATION_FINISHED = "finished"
 OVERALL_PENDING_VERIFICATION = "pending_verification"
 
 
+def employee_participation_counts(assignments: Sequence[Mapping[str, Any]]) -> tuple[int, int]:
+    """Count employee participations, not unique people and not assignments.
+
+    An employee on two activities counts twice. A shared group still contributes
+    one row per assigned employee.
+    """
+    assigned = 0
+    started = 0
+    for row in assignments or []:
+        if not isinstance(row, Mapping):
+            continue
+        for contrib in row.get("contributions") or []:
+            if not isinstance(contrib, Mapping):
+                continue
+            assigned += 1
+            part = str(contrib.get("participation_status") or "")
+            if part not in {
+                PARTICIPATION_NOT_STARTED,
+                PARTICIPATION_IN_PROGRESS,
+                PARTICIPATION_FINISHED,
+            }:
+                part = participation_status_from_display(contrib.get("status"))
+            if part in {PARTICIPATION_IN_PROGRESS, PARTICIPATION_FINISHED}:
+                started += 1
+    return assigned, started
+
+
+def _review_wall(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    return str(value).replace("T", " ")[:19]
+
+
+def build_verification_review_cards(
+    pending_entries: Sequence[Mapping[str, Any]],
+    *,
+    assignments: Sequence[Mapping[str, Any]],
+    activities: Sequence[Mapping[str, Any]],
+    by_resp: Mapping[int, Mapping[str, Any]],
+    names: Mapping[int, str],
+    catalog: Mapping[str, Mapping[str, Any]],
+    templates_by_role: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    """One review card per assignment. Underlying checklist rows are not merged."""
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    order: list[str] = []
+    for entry in pending_entries or []:
+        if not isinstance(entry, Mapping):
+            continue
+        key = str(entry.get("assignment_key") or f"solo:{entry.get('responsibility_id')}")
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(entry)
+
+    cards: list[dict[str, Any]] = []
+    done_states = {STATUS_PENDING_APPROVAL, STATUS_APPROVED, STATUS_COMPLETED}
+    for key in order:
+        entries = grouped[key]
+        members = [row for row in assignments or [] if assignment_key(row) == key]
+        parent_role = str((members[0].get("role") if members else entries[0].get("role")) or "")
+        title = entries[0].get("activity_group_label") or entries[0].get("role_label") or _role_label(
+            parent_role, catalog
+        )
+        participation: list[dict[str, Any]] = []
+        unfinished = False
+        parent_ids: set[int] = set()
+        member_rows = members or []
+        if member_rows:
+            for member in member_rows:
+                act = by_resp.get(int(member["id"])) if by_resp else None
+                part = participation_status_from_display(None if not act else act.get("status"))
+                if part != PARTICIPATION_FINISHED:
+                    unfinished = True
+                if act and act.get("id") is not None and act.get("parent_activity_id") is None:
+                    parent_ids.add(int(act["id"]))
+                uid = int(member["user_id"])
+                participation.append(
+                    {
+                        "employee_id": uid,
+                        "employee_name": names.get(uid, f"User #{uid}"),
+                        "participation_status": part,
+                        "participation_label": {
+                            PARTICIPATION_NOT_STARTED: "Not Started",
+                            PARTICIPATION_IN_PROGRESS: "In Progress",
+                            PARTICIPATION_FINISHED: "Finished",
+                        }[part],
+                        "started_at": _review_wall(None if not act else act.get("started_at")),
+                        "finished_at": _review_wall(None if not act else act.get("ended_at"))
+                        if part == PARTICIPATION_FINISHED
+                        else None,
+                    }
+                )
+        else:
+            entry = entries[0]
+            act = entry.get("activity") if isinstance(entry.get("activity"), Mapping) else {}
+            part = participation_status_from_display(entry.get("status") or act.get("status"))
+            unfinished = part != PARTICIPATION_FINISHED
+            uid = int(entry.get("employee_id") or act.get("user_id") or 0)
+            participation.append(
+                {
+                    "employee_id": uid,
+                    "employee_name": entry.get("employee_name") or names.get(uid, f"User #{uid}"),
+                    "participation_status": part,
+                    "participation_label": {
+                        PARTICIPATION_NOT_STARTED: "Not Started",
+                        PARTICIPATION_IN_PROGRESS: "In Progress",
+                        PARTICIPATION_FINISHED: "Finished",
+                    }.get(part, "Not Started"),
+                    "started_at": _review_wall(act.get("started_at")),
+                    "finished_at": _review_wall(act.get("ended_at")) if part == PARTICIPATION_FINISHED else None,
+                }
+            )
+
+        children = [
+            act
+            for act in activities or []
+            if act.get("parent_activity_id") is not None and int(act.get("parent_activity_id") or 0) in parent_ids
+        ]
+        if not children:
+            for entry in entries:
+                act = entry.get("activity")
+                if isinstance(act, Mapping) and act.get("id") is not None:
+                    children.append(act)
+
+        templates = list((templates_by_role or {}).get(parent_role) or [])
+        required_codes = [
+            str(item.get("task_code"))
+            for item in templates
+            if item.get("task_code") and bool(item.get("required", True))
+        ]
+        by_code: dict[str, dict[str, Any]] = {}
+        for child in children:
+            code = str(child.get("role") or "")
+            bucket = by_code.setdefault(
+                code,
+                {
+                    "task_code": code,
+                    "task_label": _role_label(code, catalog) if code else str(entries[0].get("role_label") or "Task"),
+                    "records": [],
+                },
+            )
+            uid = int(child.get("user_id") or 0)
+            bucket["records"].append(
+                {
+                    "activity_id": int(child["id"]) if child.get("id") is not None else None,
+                    "employee_id": uid,
+                    "employee_name": names.get(uid, f"User #{uid}"),
+                    "checked_off_at": _review_wall(child.get("started_at") or child.get("ended_at")),
+                    "status": str(child.get("status") or ""),
+                    "rejection_reason": child.get("rejection_reason"),
+                }
+            )
+        for code in required_codes:
+            by_code.setdefault(
+                code,
+                {"task_code": code, "task_label": _role_label(code, catalog), "records": []},
+            )
+
+        member_ids = {int(member["user_id"]) for member in member_rows}
+        checklist_incomplete = False
+        codes_to_check = required_codes or [
+            code for code, bucket in by_code.items() if bucket.get("records") and member_rows
+        ]
+        checked_states = done_states | {STATUS_REJECTED}
+        per_employee_copies = False
+        for code in codes_to_check:
+            records = list((by_code.get(code) or {}).get("records") or [])
+            recorders = {int(rec.get("employee_id") or 0) for rec in records}
+            if len(recorders) > 1 or (member_ids and member_ids <= recorders):
+                per_employee_copies = True
+                break
+        for code in codes_to_check:
+            records = list((by_code.get(code) or {}).get("records") or [])
+            done = [rec for rec in records if str(rec.get("status")) in checked_states]
+            recorders = {int(rec.get("employee_id") or 0) for rec in records}
+            if per_employee_copies and member_ids:
+                for mid in member_ids:
+                    if not any(
+                        int(rec.get("employee_id") or 0) == mid and str(rec.get("status")) in checked_states
+                        for rec in records
+                    ):
+                        checklist_incomplete = True
+            elif not done:
+                checklist_incomplete = True
+
+        any_rejected = any(str(child.get("status")) == STATUS_REJECTED for child in children)
+        pending_ids: list[int] = []
+        seen_ids: set[int] = set()
+        for child in children:
+            if str(child.get("status")) == STATUS_PENDING_APPROVAL and child.get("id") is not None:
+                iid = int(child["id"])
+                if iid not in seen_ids:
+                    seen_ids.add(iid)
+                    pending_ids.append(iid)
+
+        if unfinished:
+            overall = COMPLETION_IN_PROGRESS
+            overall_label = "In Progress"
+            block = "Assigned participants have not all finished."
+        elif any_rejected:
+            overall = VERIFICATION_NEEDS_CORRECTION
+            overall_label = "Needs Correction"
+            block = "A checklist item needs correction before this assignment can be verified."
+        elif checklist_incomplete:
+            overall = COMPLETION_IN_PROGRESS
+            overall_label = "In Progress"
+            block = "Required checklist items are still incomplete."
+        elif pending_ids:
+            overall = OVERALL_PENDING_VERIFICATION
+            overall_label = "Pending Verification"
+            block = None
+        else:
+            overall = VERIFICATION_VERIFIED
+            overall_label = "Verified"
+            block = None
+
+        assigned_names = []
+        for person in participation:
+            name = str(person.get("employee_name") or "")
+            if name and name not in assigned_names:
+                assigned_names.append(name)
+        checklist = []
+        for code, bucket in by_code.items():
+            records = list(bucket.get("records") or [])
+            checklist.append(
+                {
+                    "task_code": bucket.get("task_code"),
+                    "task_label": bucket.get("task_label"),
+                    "checked_off": any(str(rec.get("status")) in done_states for rec in records),
+                    "needs_correction": any(str(rec.get("status")) == STATUS_REJECTED for rec in records),
+                    "records": records,
+                }
+            )
+        cards.append(
+            {
+                "assignment_key": key,
+                "role_label": title,
+                "timing_label": (members[0].get("timing_label") if members else None)
+                or entries[0].get("timing_label"),
+                "assigned_employees": assigned_names,
+                "participation": participation,
+                "checklist": checklist,
+                "overall_status": overall,
+                "overall_label": overall_label,
+                "pending_activity_ids": pending_ids,
+                "can_approve_all": bool(pending_ids) and block is None,
+                "block_reason": block,
+            }
+        )
+    return cards
+
+
 def participation_status_from_display(status: Any) -> str:
     """This employee's timer only. Another employee's timer does not count."""
     st = str(status or "")
@@ -2381,8 +2801,13 @@ def dashboard_summary(
         "completion_rate": completion_rate,
         "verification_rate": verification_rate,
         "time_spent_seconds": time_spent,
-        # Per-employee drill-down. This may exceed Assigned when a task is shared.
+        # Per-employee drill-down. Headline Assigned/Started use these employee counts.
+        # Completed, pending verification, and verified stay one per assignment.
         "contributions_assigned": sum(len(row.get("contributions") or []) for row in shared_assignments),
+        "employees_assigned": employee_participation_counts(shared_assignments)[0],
+        "employees_started": employee_participation_counts(shared_assignments)[1],
+        "completed_activities": completed,
+        "verified_activities": verified,
     }
     category_breakdown = []
     for c in cats:
@@ -2740,6 +3165,7 @@ def apply_rinse_task_dashboard_scope(payload: Mapping[str, Any]) -> dict[str, An
     )
     rejected = sum(1 for row in filtered_assignments if assignment_needs_correction(row))
     total = len(filtered_assignments)
+    employees_assigned, employees_started = employee_participation_counts(filtered_assignments)
     metrics = {
         "total_assigned": total,
         "started": started,
@@ -2749,9 +3175,11 @@ def apply_rinse_task_dashboard_scope(payload: Mapping[str, Any]) -> dict[str, An
         "rejected": rejected,
         "completion_rate": round((100.0 * completed / total), 1) if total else 0.0,
         "verification_rate": round((100.0 * verified / total), 1) if total else 0.0,
-        "contributions_assigned": sum(
-            len(row.get("contributions") or []) for row in filtered_assignments
-        ),
+        "contributions_assigned": employees_assigned,
+        "employees_assigned": employees_assigned,
+        "employees_started": employees_started,
+        "completed_activities": completed,
+        "verified_activities": verified,
     }
     out["metrics"] = metrics
     out["durations"] = []

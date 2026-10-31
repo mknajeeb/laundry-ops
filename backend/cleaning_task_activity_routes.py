@@ -746,14 +746,20 @@ def register_cleaning_task_activity_routes(
 
             roles = {str(r).upper() for r in (ctx["matched"].get("_roles") or [])}
             can_sup = _can_review(cursor, int(ctx["org_id"]), int(ctx["user_id"]), roles)
+            from backend.cleaning_task_activity import approve_activity_ids
+
             ids = data.get("activity_ids") or data.get("activity_id")
             if ids is None:
                 return jsonify({"ok": False, "error": "activity_id is required"}), 400
             if not isinstance(ids, list):
                 ids = [ids]
-            approved = []
+            ordered = []
             for aid in ids:
-                row = get_activity(cursor, int(ctx["org_id"]), int(aid))
+                iid = int(aid)
+                if iid not in ordered:
+                    ordered.append(iid)
+            for iid in ordered:
+                row = get_activity(cursor, int(ctx["org_id"]), iid)
                 if not row:
                     raise CleaningTaskError("Task activity not found.", status=404)
                 if not user_can_verify_activity(
@@ -767,14 +773,13 @@ def register_cleaning_task_activity_routes(
                     return jsonify(
                         {"ok": False, "error": "You are not authorized to verify this task."}
                     ), 403
-                approved.append(
-                    approve_activity(
-                        cursor,
-                        organization_id=int(ctx["org_id"]),
-                        activity_id=int(aid),
-                        supervisor_user_id=int(ctx["user_id"]),
-                    )
-                )
+            approved = approve_activity_ids(
+                cursor,
+                organization_id=int(ctx["org_id"]),
+                activity_ids=ordered,
+                supervisor_user_id=int(ctx["user_id"]),
+                approve_all=bool(data.get("approve_all")),
+            )
             conn.commit()
             return jsonify({"ok": True, "activities": approved})
         except CleaningTaskError as exc:
@@ -812,29 +817,42 @@ def register_cleaning_task_activity_routes(
 
             roles = {str(r).upper() for r in (ctx["matched"].get("_roles") or [])}
             can_sup = _can_review(cursor, int(ctx["org_id"]), int(ctx["user_id"]), roles)
-            row = get_activity(cursor, int(ctx["org_id"]), int(data.get("activity_id") or 0))
-            if not row:
-                return jsonify({"ok": False, "error": "Task activity not found."}), 404
-            if not user_can_verify_activity(
+            from backend.cleaning_task_activity import reject_activity_ids
+
+            raw_ids = data.get("activity_ids") or data.get("activity_id")
+            if raw_ids is None:
+                return jsonify({"ok": False, "error": "activity_id is required"}), 400
+            if not isinstance(raw_ids, list):
+                raw_ids = [raw_ids]
+            ordered = []
+            for aid in raw_ids:
+                iid = int(aid)
+                if iid not in ordered:
+                    ordered.append(iid)
+            for iid in ordered:
+                row = get_activity(cursor, int(ctx["org_id"]), iid)
+                if not row:
+                    return jsonify({"ok": False, "error": "Task activity not found."}), 404
+                if not user_can_verify_activity(
+                    cursor,
+                    organization_id=int(ctx["org_id"]),
+                    activity=row,
+                    verifier_user_id=int(ctx["user_id"]),
+                    verifier_roles=sorted(roles),
+                    has_supervisor_review=can_sup,
+                ):
+                    return jsonify(
+                        {"ok": False, "error": "You are not authorized to reject this task."}
+                    ), 403
+            rejected = reject_activity_ids(
                 cursor,
                 organization_id=int(ctx["org_id"]),
-                activity=row,
-                verifier_user_id=int(ctx["user_id"]),
-                verifier_roles=sorted(roles),
-                has_supervisor_review=can_sup,
-            ):
-                return jsonify(
-                    {"ok": False, "error": "You are not authorized to reject this task."}
-                ), 403
-            activity = reject_activity(
-                cursor,
-                organization_id=int(ctx["org_id"]),
-                activity_id=int(data.get("activity_id") or 0),
+                activity_ids=ordered,
                 supervisor_user_id=int(ctx["user_id"]),
                 reason=str(data.get("reason") or data.get("rejection_reason") or ""),
             )
             conn.commit()
-            return jsonify({"ok": True, "activity": activity})
+            return jsonify({"ok": True, "activities": rejected, "activity": rejected[0] if rejected else None})
         except CleaningTaskError as exc:
             try:
                 conn.rollback()
@@ -928,6 +946,8 @@ def register_cleaning_task_activity_routes(
             ):
                 return jsonify({"error": "Forbidden"}), 403
             data = request.json or {}
+            from backend.cleaning_task_activity import approve_activity_ids
+
             ids = data.get("activity_ids") or data.get("activity_id")
             if ids is None:
                 return jsonify({"error": "activity_id is required"}), 400
@@ -935,15 +955,13 @@ def register_cleaning_task_activity_routes(
                 ids = [ids]
             # Independence (self + shared co-participant) is enforced inside approve_activity
             # for both PIN and Management paths.
-            approved = [
-                approve_activity(
-                    cursor,
-                    organization_id=int(org_id),
-                    activity_id=int(aid),
-                    supervisor_user_id=uid,
-                )
-                for aid in ids
-            ]
+            approved = approve_activity_ids(
+                cursor,
+                organization_id=int(org_id),
+                activity_ids=ids,
+                supervisor_user_id=uid,
+                approve_all=bool(data.get("approve_all")),
+            )
             conn.commit()
             return jsonify({"ok": True, "activities": approved})
         except CleaningTaskError as exc:
@@ -980,16 +998,23 @@ def register_cleaning_task_activity_routes(
                 cursor, int(org_id), uid, "cleaning_task_review"
             ):
                 return jsonify({"error": "Forbidden"}), 403
+            from backend.cleaning_task_activity import reject_activity_ids
+
             data = request.json or {}
-            activity = reject_activity(
+            raw_ids = data.get("activity_ids") or data.get("activity_id")
+            if raw_ids is None:
+                return jsonify({"error": "activity_id is required"}), 400
+            if not isinstance(raw_ids, list):
+                raw_ids = [raw_ids]
+            rejected = reject_activity_ids(
                 cursor,
                 organization_id=int(org_id),
-                activity_id=int(data.get("activity_id") or 0),
+                activity_ids=raw_ids,
                 supervisor_user_id=uid,
                 reason=str(data.get("reason") or data.get("rejection_reason") or ""),
             )
             conn.commit()
-            return jsonify({"ok": True, "activity": activity})
+            return jsonify({"ok": True, "activities": rejected, "activity": rejected[0] if rejected else None})
         except CleaningTaskError as exc:
             try:
                 conn.rollback()

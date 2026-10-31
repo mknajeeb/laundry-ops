@@ -7,6 +7,7 @@ import {
   isChecklistTimestamp,
   overallLabel,
   participationLabel,
+  dashboardHeadlineMetrics,
   participationStatusOf,
   participationSummary,
   statusChipColor,
@@ -62,5 +63,26 @@ describe("taskDashboardLabels", () => {
     expect(
       participationSummary({ finished: 1, assigned: 2, checklistDone: 0, checklistRequired: 2 })
     ).toBe("1 of 2 employees finished · 0 of 2 checklist items completed");
+  });
+
+  it("counts employees separately from completed activities", () => {
+    const counts = dashboardHeadlineMetrics([
+      {
+        completion_status: "completed",
+        verification_status: "verified",
+        overall_status: "verified",
+        contributions: [
+          { participation_status: "finished" },
+          { participation_status: "finished" },
+        ],
+      },
+    ]);
+    expect(counts).toEqual({
+      employeesAssigned: 2,
+      employeesStarted: 2,
+      completedActivities: 1,
+      verifiedActivities: 1,
+      pendingVerification: 0,
+    });
   });
 });

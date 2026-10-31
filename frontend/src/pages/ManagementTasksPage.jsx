@@ -18,7 +18,7 @@ import TaskManualCompletionDialog from "../components/tasks/TaskManualCompletion
 import TaskManageDialog from "../components/tasks/TaskManageDialog";
 import TaskAssignmentCard from "../components/tasks/TaskAssignmentCard";
 import TaskRecordDialog from "../components/tasks/TaskRecordDialog";
-import { DEFAULT_CATEGORY_TABS } from "../components/tasks/taskDashboardLabels";
+import { DEFAULT_CATEGORY_TABS, dashboardHeadlineMetrics } from "../components/tasks/taskDashboardLabels";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import {
   approveManagementTaskDashboard,
@@ -139,19 +139,10 @@ export default function ManagementTasksPage() {
     return rows.filter((r) => String(r.category_code || "intra_day") === categoryTab);
   }, [data, categoryTab]);
 
-  const categoryMetrics = useMemo(() => {
-    const rows = filteredAssignments;
-    const total = rows.length;
-    const started = rows.filter((r) =>
-      ["in_progress", "completed"].includes(String(r.completion_status))
-    ).length;
-    const completed = rows.filter((r) => String(r.completion_status) === "completed").length;
-    const verified = rows.filter((r) => String(r.verification_status) === "verified").length;
-    const pending = rows.filter((r) =>
-      ["waiting", "partial"].includes(String(r.verification_status))
-    ).length;
-    return { total, started, completed, verified, pending };
-  }, [filteredAssignments]);
+  const categoryMetrics = useMemo(
+    () => dashboardHeadlineMetrics(filteredAssignments),
+    [filteredAssignments]
+  );
 
   const toggle = (key) => {
     setOpenKeys((prev) => {
@@ -330,29 +321,34 @@ export default function ManagementTasksPage() {
         ) : (
           <>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
-              <Metric label="Assigned" value={categoryMetrics.total} />
               <Metric
-                label="Started"
-                value={categoryMetrics.started}
+                label="Employees Assigned"
+                value={categoryMetrics.employeesAssigned}
+                hint="One count per employee on each activity. Two activities count the same person twice."
+              />
+              <Metric
+                label="Employees Started"
+                value={categoryMetrics.employeesStarted}
                 accent={VEEWASH_DASHBOARD.primaryBlue}
+                hint="Assigned participations that have started."
               />
               <Metric
-                label="Completed"
-                value={categoryMetrics.completed}
+                label="Completed Activities"
+                value={categoryMetrics.completedActivities}
                 accent={VEEWASH_DASHBOARD.teal}
-                hint="Work finished. Also counted below if it still needs approval or is already verified."
+                hint="Assignments whose work is finished. A shared group counts once. Verified and pending verification are included here."
               />
               <Metric
-                label="Verified"
-                value={categoryMetrics.verified}
+                label="Verified Activities"
+                value={categoryMetrics.verifiedActivities}
                 accent={VEEWASH_DASHBOARD.tealDark}
-                hint="Supervisor approved. These are included in Completed."
+                hint="Supervisor approved. Included in Completed Activities, not an extra completion."
               />
               <Metric
-                label="Pending verification"
-                value={categoryMetrics.pending}
+                label="Pending Verification"
+                value={categoryMetrics.pendingVerification}
                 accent={VEEWASH_DASHBOARD.pending}
-                hint="Finished work awaiting approval. These are included in Completed."
+                hint="Finished assignments awaiting approval. Included in Completed Activities."
               />
               {!hideLabor && data?.metrics?.time_spent_seconds != null ? (
                 <Metric

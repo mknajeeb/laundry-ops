@@ -6,7 +6,6 @@ import {
   Button,
   CircularProgress,
   Stack,
-  TextField,
   Typography,
 } from "@mui/material";
 import {
@@ -14,6 +13,8 @@ import {
   attendancePinCleaningTasksReject,
   attendancePinCleaningTasksReview,
 } from "../api";
+import TaskVerificationReviewCard from "../components/tasks/TaskVerificationReviewCard";
+import { formatDashboardTime } from "../components/tasks/taskDashboardFormat";
 import { OpsMobileShell, OpsTopBar, OPS_MOBILE } from "../opsMobile";
 import {
   clearPinHubSession,
@@ -33,12 +34,9 @@ function sanitizeSlug(raw) {
   }
 }
 
-function formatDuration(seconds) {
-  if (seconds == null) return "—";
-  const sec = Math.max(0, Number(seconds) || 0);
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+function reviewClock(value) {
+  const text = formatDashboardTime(value);
+  return text === "—" ? null : text;
 }
 
 /**
@@ -54,9 +52,7 @@ export default function CleaningTaskReviewPinPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [queue, setQueue] = useState(null);
-  const [rejectId, setRejectId] = useState(null);
-  const [reason, setReason] = useState("");
-  const [selected, setSelected] = useState(() => new Set());
+  const [notice, setNotice] = useState("");
 
   const goHub = useCallback(() => {
     navigate(pinHubMenuPath(slug || hub?.organization_slug || ""), { replace: true });
@@ -75,12 +71,12 @@ export default function CleaningTaskReviewPinPage() {
     }
     setLoading(true);
     setError("");
+    setNotice("");
     try {
       const res = await attendancePinCleaningTasksReview(slug, hub.pin, { hubToken: hub.token });
       const body = res?.data || {};
       if (!body.ok) throw new Error(body.error || "Could not load review");
       setQueue(body);
-      setSelected(new Set());
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || "Could not load review");
     } finally {
@@ -92,27 +88,21 @@ export default function CleaningTaskReviewPinPage() {
     load();
   }, [load]);
 
-  const toggle = (id) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const approveIds = async (ids) => {
+  const approveIds = async (ids, approveAll = false) => {
     const list = (ids || []).filter(Boolean);
     if (!list.length) return;
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       const res = await attendancePinCleaningTasksApprove(slug, hub.pin, {
         hubToken: hub.token,
         activity_ids: list,
+        approve_all: approveAll,
       });
       const body = res?.data || {};
       if (!body.ok) throw new Error(body.error || "Could not approve");
+      setNotice(approveAll ? "Assignment verified." : "Verified.");
       await load();
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || "Could not approve");
@@ -121,22 +111,25 @@ export default function CleaningTaskReviewPinPage() {
     }
   };
 
-  const approveSelected = async () => approveIds([...selected]);
-
-  const rejectOne = async () => {
-    if (!rejectId) return;
+  const rejectIds = async (ids, rejectReason) => {
+    const list = (ids || []).filter(Boolean);
+    if (!list.length) return;
+    if (String(rejectReason || "").trim().length < 3) {
+      setError("A rejection reason is required.");
+      return;
+    }
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       const res = await attendancePinCleaningTasksReject(slug, hub.pin, {
         hubToken: hub.token,
-        activity_id: rejectId,
-        reason,
+        activity_ids: list,
+        reason: rejectReason,
       });
       const body = res?.data || {};
       if (!body.ok) throw new Error(body.error || "Could not reject");
-      setRejectId(null);
-      setReason("");
+      setNotice(list.length > 1 ? "Assignment sent back for redo." : "Item sent back for correction.");
       await load();
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || "Could not reject");
@@ -145,13 +138,13 @@ export default function CleaningTaskReviewPinPage() {
     }
   };
 
+  const reviewCards = queue?.verification_cards || [];
   const sections = [
-    ["Pending approvals", queue?.pending_approval || [], true],
-    ["In progress", queue?.in_progress || [], false],
-    ["Overdue", queue?.overdue || [], false],
-    ["Not started", queue?.not_started || [], false],
-    ["Approved", queue?.approved || [], false],
-    ["Rejected / redo", queue?.rejected || [], false],
+    ["In progress", queue?.in_progress || []],
+    ["Overdue", queue?.overdue || []],
+    ["Not started", queue?.not_started || []],
+    ["Approved", queue?.approved || []],
+    ["Rejected / redo", queue?.rejected || []],
   ];
 
   if (!hub?.token) {
@@ -171,7 +164,12 @@ export default function CleaningTaskReviewPinPage() {
         onLock={lock}
         identity={hub.employee_first_name || hub.employee_name || ""}
       />
-      {error ? (
+          {notice ? (
+        <Alert severity="success" sx={{ mb: 1.5 }}>
+          {notice}
+        </Alert>
+      ) : null}
+          {error ? (
         <Alert severity="error" sx={{ mb: 1.5 }}>
           {error}
         </Alert>
@@ -195,17 +193,30 @@ export default function CleaningTaskReviewPinPage() {
           ) : (
             <Alert severity="success">No open cleaning items blocking close for today.</Alert>
           )}
-          {(queue?.pending_approval || []).length ? (
-            <Button
-              variant="contained"
-              disabled={busy || selected.size === 0}
-              onClick={approveSelected}
-              sx={{ fontWeight: 800, textTransform: "none" }}
-            >
-              Approve selected ({selected.size})
-            </Button>
-          ) : null}
-          {sections.map(([label, rows, selectable]) => (
+          <Box>
+            <Typography sx={{ fontWeight: 800, mb: 1, color: OPS_MOBILE.navy }}>
+              Pending approvals ({reviewCards.length})
+            </Typography>
+            <Stack spacing={1}>
+              {reviewCards.length ? (
+                reviewCards.map((card) => (
+                  <TaskVerificationReviewCard
+                    key={card.assignment_key}
+                    card={card}
+                    busy={busy}
+                    onApproveAll={(ids) => approveIds(ids, true)}
+                    onNeedsRedo={(ids, redoReason) => rejectIds(ids, redoReason)}
+                    onRejectItem={(id, itemReason) => rejectIds([id], itemReason)}
+                  />
+                ))
+              ) : (
+                <Typography variant="body2" color="text.secondary">
+                  None
+                </Typography>
+              )}
+            </Stack>
+          </Box>
+          {sections.map(([label, rows]) => (
             <Box key={label}>
               <Typography sx={{ fontWeight: 800, mb: 1, color: OPS_MOBILE.navy }}>
                 {label} ({rows.length})
@@ -222,9 +233,8 @@ export default function CleaningTaskReviewPinPage() {
                           p: 1.5,
                           borderRadius: 2,
                           border: `1px solid ${OPS_MOBILE.border}`,
-                          bgcolor: selectable && id && selected.has(id) ? "#eff6ff" : "#fff",
+                          bgcolor: "#fff",
                         }}
-                        onClick={() => selectable && id && toggle(id)}
                       >
                         <Typography sx={{ fontWeight: 800 }}>
                           {row.role_label || row.role} · {row.employee_name}
@@ -235,41 +245,14 @@ export default function CleaningTaskReviewPinPage() {
                           </Typography>
                         ) : null}
                         <Typography variant="body2" color="text.secondary">
-                          Timing {row.timing_label || "Anytime"}
-                          {act
-                            ? ` · ${act.started_at || "—"} → ${act.ended_at || "—"} (${formatDuration(act.duration_seconds)})`
+                          {row.timing_label ? `Scheduled: ${row.timing_label}` : "Anytime"}
+                          {act?.started_at
+                            ? ` · Started: ${reviewClock(act.started_at) || "—"}`
                             : " · Not started"}
+                          {act?.ended_at && reviewClock(act.ended_at) !== reviewClock(act.started_at)
+                            ? ` · Finished: ${reviewClock(act.ended_at)}`
+                            : ""}
                         </Typography>
-                        {selectable && id ? (
-                          <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                            <Button
-                              size="small"
-                              variant="contained"
-                              disabled={busy}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                approveIds([id]);
-                              }}
-                              sx={{ textTransform: "none", fontWeight: 700 }}
-                            >
-                              Approve
-                            </Button>
-                            <Button
-                              size="small"
-                              color="warning"
-                              variant="outlined"
-                              disabled={busy}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setRejectId(id);
-                                setReason("");
-                              }}
-                              sx={{ textTransform: "none", fontWeight: 700 }}
-                            >
-                              Needs redo
-                            </Button>
-                          </Stack>
-                        ) : null}
                         {act?.rejection_reason ? (
                           <Typography variant="caption" color="error" display="block" sx={{ mt: 0.5 }}>
                             {act.rejection_reason}
@@ -286,28 +269,6 @@ export default function CleaningTaskReviewPinPage() {
               </Stack>
             </Box>
           ))}
-          {rejectId ? (
-            <Box sx={{ p: 1.5, borderRadius: 2, border: `1px solid ${OPS_MOBILE.border}`, bgcolor: "#fff7ed" }}>
-              <Typography sx={{ fontWeight: 800, mb: 1 }}>Rejection reason</Typography>
-              <TextField
-                fullWidth
-                size="small"
-                multiline
-                minRows={2}
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                placeholder="Required"
-              />
-              <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                <Button variant="contained" color="warning" disabled={busy} onClick={rejectOne} sx={{ textTransform: "none", fontWeight: 800 }}>
-                  Reject
-                </Button>
-                <Button disabled={busy} onClick={() => setRejectId(null)} sx={{ textTransform: "none" }}>
-                  Cancel
-                </Button>
-              </Stack>
-            </Box>
-          ) : null}
         </Stack>
       )}
     </OpsMobileShell>

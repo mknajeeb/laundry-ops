@@ -10,6 +10,8 @@ import TaskRecordDialog from "../components/tasks/TaskRecordDialog";
 import TaskManualCompletionDialog from "../components/tasks/TaskManualCompletionDialog";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import { formatDashboardDate } from "../components/tasks/taskDashboardFormat";
+import { dashboardHeadlineMetrics } from "../components/tasks/taskDashboardLabels";
+import TaskVerificationReviewCard from "../components/tasks/TaskVerificationReviewCard";
 
 const MOCK_SHARED = {
   assignment_key: "g:2026-10-30:floor-washer",
@@ -91,7 +93,7 @@ const MOCK_SOLO = {
   ],
 };
 
-function Metric({ label, value, accent }) {
+function Metric({ label, value, accent, hint }) {
   return (
     <Box
       sx={{
@@ -111,11 +113,85 @@ function Metric({ label, value, accent }) {
       <Typography variant="h5" sx={{ fontWeight: 800, color: VEEWASH_DASHBOARD.wfCharcoal }}>
         {value}
       </Typography>
+      {hint ? (
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25, lineHeight: 1.25 }}>
+          {hint}
+        </Typography>
+      ) : null}
     </Box>
   );
 }
 
-function DashboardShell({ title, readOnly, hideLabor, children, extraActions }) {
+const REVIEW_CARD = {
+  assignment_key: "g:floor",
+  role_label: "Floor & Washer",
+  timing_label: "9:00 AM",
+  assigned_employees: ["Maria Perez", "Rocio"],
+  overall_label: "Pending Verification",
+  overall_status: "pending_verification",
+  can_approve_all: true,
+  pending_activity_ids: [97, 98, 99, 100],
+  participation: [
+    {
+      employee_id: 31,
+      employee_name: "Maria Perez",
+      participation_status: "finished",
+      participation_label: "Finished",
+      started_at: "2026-10-31 09:05:00",
+      finished_at: "2026-10-31 09:36:00",
+    },
+    {
+      employee_id: 57,
+      employee_name: "Rocio",
+      participation_status: "finished",
+      participation_label: "Finished",
+      started_at: "2026-10-31 09:05:12",
+      finished_at: "2026-10-31 09:36:44",
+    },
+  ],
+  checklist: [
+    {
+      task_code: "custom_check_washer_residue",
+      task_label: "Check Washer Residue",
+      checked_off: true,
+      records: [
+        {
+          activity_id: 99,
+          employee_name: "Maria Perez",
+          checked_off_at: "2026-10-31 09:35:55",
+          status: "pending_approval",
+        },
+        {
+          activity_id: 97,
+          employee_name: "Rocio",
+          checked_off_at: "2026-10-31 09:36:39",
+          status: "pending_approval",
+        },
+      ],
+    },
+    {
+      task_code: "floor_cleaning",
+      task_label: "Floor Brooming",
+      checked_off: true,
+      records: [
+        {
+          activity_id: 100,
+          employee_name: "Maria Perez",
+          checked_off_at: "2026-10-31 09:37:06",
+          status: "pending_approval",
+        },
+        {
+          activity_id: 98,
+          employee_name: "Rocio",
+          checked_off_at: "2026-10-31 09:36:05",
+          status: "pending_approval",
+        },
+      ],
+    },
+  ],
+};
+
+function DashboardShell({ title, readOnly, hideLabor, children, extraActions, rows = [MOCK_SHARED, MOCK_SOLO] }) {
   return (
     <Box sx={{ bgcolor: VEEWASH_DASHBOARD.pageBackground, minHeight: "100vh", pb: 4 }}>
       <Box sx={{ maxWidth: 1100, mx: "auto", px: { xs: 1.5, sm: 2 }, pt: 2 }}>
@@ -132,11 +208,35 @@ function DashboardShell({ title, readOnly, hideLabor, children, extraActions }) 
           {extraActions}
         </Stack>
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
-          <Metric label="Assigned" value={2} />
-          <Metric label="Started" value={2} accent={VEEWASH_DASHBOARD.primaryBlue} />
-          <Metric label="Completed" value={readOnly ? 1 : 1} accent={VEEWASH_DASHBOARD.teal} />
-          <Metric label="Verified" value={0} accent={VEEWASH_DASHBOARD.tealDark} />
-          <Metric label="Pending verification" value={1} accent={VEEWASH_DASHBOARD.pending} />
+          <Metric
+            label="Employees Assigned"
+            value={dashboardHeadlineMetrics(rows).employeesAssigned}
+            hint="One count per employee on each activity."
+          />
+          <Metric
+            label="Employees Started"
+            value={dashboardHeadlineMetrics(rows).employeesStarted}
+            accent={VEEWASH_DASHBOARD.primaryBlue}
+            hint="Participations that have started."
+          />
+          <Metric
+            label="Completed Activities"
+            value={dashboardHeadlineMetrics(rows).completedActivities}
+            accent={VEEWASH_DASHBOARD.teal}
+            hint="Assignments whose work is finished. Verified and pending verification are included."
+          />
+          <Metric
+            label="Verified Activities"
+            value={dashboardHeadlineMetrics(rows).verifiedActivities}
+            accent={VEEWASH_DASHBOARD.tealDark}
+            hint="Supervisor approved. Included in Completed Activities."
+          />
+          <Metric
+            label="Pending Verification"
+            value={dashboardHeadlineMetrics(rows).pendingVerification}
+            accent={VEEWASH_DASHBOARD.pending}
+            hint="Finished assignments awaiting approval. Included in Completed Activities."
+          />
           {!hideLabor ? (
             <Metric label="Time spent" value="1h 8m" accent={VEEWASH_DASHBOARD.wfCharcoal} />
           ) : null}
@@ -184,6 +284,18 @@ export default function TaskDashboardPhase3PreviewPage() {
           busy={false}
         />
       </DashboardShell>
+    );
+  }
+
+  if (view === "review") {
+    return (
+      <Box sx={{ bgcolor: "#f4f7fb", minHeight: "100vh", p: 1.5 }}>
+        <Box sx={{ maxWidth: 420, mx: "auto" }}>
+          <Typography sx={{ fontWeight: 900, mb: 1 }}>Task Review</Typography>
+          <Typography sx={{ fontWeight: 800, mb: 1 }}>Pending approvals (1)</Typography>
+          <TaskVerificationReviewCard card={REVIEW_CARD} />
+        </Box>
+      </Box>
     );
   }
 

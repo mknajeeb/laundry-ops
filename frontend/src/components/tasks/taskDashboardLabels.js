@@ -156,6 +156,41 @@ export function overallLabel(status) {
   );
 }
 
+/** Headline counts: employees for participation, assignments for completion. */
+export function dashboardHeadlineMetrics(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  let employeesAssigned = 0;
+  let employeesStarted = 0;
+  for (const row of list) {
+    const contribs = Array.isArray(row?.contributions) ? row.contributions : [];
+    employeesAssigned += contribs.length;
+    for (const contrib of contribs) {
+      const part = participationStatusOf(contrib);
+      if (part === "in_progress" || part === "finished") employeesStarted += 1;
+    }
+  }
+  const completedActivities = list.filter(
+    (row) => String(row?.completion_status || "") === "completed"
+  ).length;
+  const verifiedActivities = list.filter(
+    (row) =>
+      String(row?.verification_status || "") === "verified" ||
+      String(row?.overall_status || "") === "verified"
+  ).length;
+  const pendingVerification = list.filter((row) => {
+    const verification = String(row?.verification_status || "");
+    const overall = String(row?.overall_status || "");
+    return verification === "waiting" || verification === "partial" || overall === "pending_verification";
+  }).length;
+  return {
+    employeesAssigned,
+    employeesStarted,
+    completedActivities,
+    verifiedActivities,
+    pendingVerification,
+  };
+}
+
 export function participationSummary({ finished, assigned, checklistDone, checklistRequired }) {
   const people = `${finished} of ${assigned} employees finished`;
   if (Number(checklistRequired) > 0) {
