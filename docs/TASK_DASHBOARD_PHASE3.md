@@ -2,7 +2,9 @@
 
 **Branch:** `feat/task-dashboard-redesign-record-mgmt`  
 **Base:** production `main` @ `07f3338b`  
-**Status:** Implemented locally. **Not deployed. Production migrations not applied.**
+**Approved commit:** `4236bc5344b7c4854f1fdff2cd636281d89ee0cf`  
+**Status:** Validated & committed. **Not deployed. Production migrations not applied.**  
+**Release prep:** [`TASK_DASHBOARD_PHASE3_RELEASE.md`](./TASK_DASHBOARD_PHASE3_RELEASE.md) · screenshots [`phase3-screenshots/`](./phase3-screenshots/)
 
 ---
 
