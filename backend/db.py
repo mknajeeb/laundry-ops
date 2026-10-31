@@ -30,6 +30,21 @@ _DEFAULT_CONNECT_TIMEOUT_SEC = 8
 _DEFAULT_POOL_ACQUIRE_TIMEOUT_SEC = 5.0
 _MAX_POOL_ACQUIRE_TIMEOUT_SEC = 30.0
 
+# Client-facing text only. Server logs keep the pool diagnostics.
+DATABASE_BUSY_MESSAGE = "Service temporarily busy. Please try again in a moment."
+
+
+class DatabasePoolBusy(Exception):
+    """Pool checkout exceeded MYSQL_POOL_ACQUIRE_TIMEOUT.
+
+    ``str(self)`` is safe to show to a client. The MySQL ``PoolError`` is
+    chained as ``__cause__`` for server logs and must not be copied into
+    the HTTP body.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(DATABASE_BUSY_MESSAGE)
+
 
 def _env_int(name: str, default: int) -> int:
     raw = (os.getenv(name) or "").strip()
@@ -154,22 +169,25 @@ def get_db():
     or the pool exhausts under parallel requests (login + branding, etc.).
 
     When every pooled connection is checked out, wait up to
-    ``MYSQL_POOL_ACQUIRE_TIMEOUT`` seconds (default 5), then raise PoolError.
-    That wait is not the handshake timeout (``MYSQL_CONNECT_TIMEOUT``).
+    ``MYSQL_POOL_ACQUIRE_TIMEOUT`` seconds (default 5), then raise
+    ``DatabasePoolBusy``. That wait is not the handshake timeout
+    (``MYSQL_CONNECT_TIMEOUT``). The client message is fixed; pool details
+    stay in the server log.
     """
     timeout = resolve_pool_acquire_timeout_sec()
     deadline = time.monotonic() + timeout
     while True:
         try:
             return _ensure_pool().get_connection()
-        except mysql_errors.PoolError:
+        except mysql_errors.PoolError as exc:
             if time.monotonic() >= deadline:
                 logger.error(
-                    "mysql_pool_exhausted pool_size=%s acquire_timeout_sec=%s connect_timeout_sec=%s error=%s",
+                    "mysql_pool_exhausted pool_size=%s acquire_timeout_sec=%s connect_timeout_sec=%s error=%s detail=%s",
                     _pool_size_resolved or resolve_pool_size(),
                     timeout,
                     resolve_connect_timeout_sec(),
-                    mysql_errors.PoolError.__name__,
+                    type(exc).__name__,
+                    exc,
                 )
-                raise
+                raise DatabasePoolBusy() from exc
             time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))

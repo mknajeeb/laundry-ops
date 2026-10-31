@@ -38,7 +38,7 @@ except Exception:
 
 from etl.transform_orders import transform_orders
 
-from backend.db import get_db
+from backend.db import DATABASE_BUSY_MESSAGE, DatabasePoolBusy, get_db
 from backend.attendance_pin_punch import (
     get_request_ip,
     list_organizations_for_attendance,
@@ -162,6 +162,12 @@ def health_live():
     so deploy stamp skew or database degradation cannot create a restart loop.
     """
     return jsonify({"status": "alive"}), 200
+
+
+@app.errorhandler(DatabasePoolBusy)
+def handle_database_pool_busy(_exc: DatabasePoolBusy):
+    """Pool checkout timed out. Body is a fixed sentence; details stay in the log."""
+    return jsonify({"error": DATABASE_BUSY_MESSAGE}), 503
 
 
 @app.route("/health", methods=["GET"])
@@ -5119,6 +5125,8 @@ def attendance_pin_unlock():
                 payload_user["organization_logo_url"] = matched["organization_logo_url"]
 
         return jsonify({"token": token, "user": payload_user})
+    except DatabasePoolBusy:
+        raise
     except Exception as e:
         if conn:
             try:
@@ -5157,6 +5165,8 @@ def public_attendance_pin_punch():
             role_id=data.get("role_id"),
         )
         return jsonify(body), status
+    except DatabasePoolBusy:
+        raise
     except Exception as e:
         try:
             conn.rollback()
@@ -5576,6 +5586,8 @@ def auth_login():
             "token": token,
             "user": payload_user,
         })
+    except DatabasePoolBusy:
+        raise
     except Exception as e:
         if conn:
             try:
@@ -10792,6 +10804,8 @@ def health_db():
         cursor.execute("SELECT 1")
         cursor.fetchone()
         return jsonify({"ok": True})
+    except DatabasePoolBusy:
+        raise
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 503
     finally:

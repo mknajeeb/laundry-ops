@@ -2855,6 +2855,25 @@ def register_rinse_shift_analysis_routes(
     @app.route("/api/rinse/sync/targeted-pending-refresh", methods=["POST"])
     def rinse_sync_targeted_pending_refresh():
         """Direct ?q=BAGID refresh for pending workload bags missing from latest portal crawl."""
+        import os
+
+        from backend.rinse_bag_export_runner import _parse_env_truthy
+
+        # Scheduled refresh stays on the ACA job. This HTTP route must not
+        # start Playwright inside a gunicorn worker when remote-only is set.
+        if _parse_env_truthy(os.getenv("RINSE_SCRAPE_REMOTE_ONLY")):
+            from backend.rinse_aca_job_trigger import remote_only_user_message
+
+            return (
+                jsonify(
+                    {
+                        "error": remote_only_user_message(),
+                        "dispatch_mode": "remote_only_blocked",
+                    }
+                ),
+                503,
+            )
+
         from backend.rinse_off_portal_scan_refresh import refresh_pending_workload_scans_via_direct_lookup
         from backend.rinse_scheduled_scrape import _today_et
 

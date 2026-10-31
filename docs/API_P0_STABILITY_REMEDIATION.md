@@ -76,7 +76,7 @@ Do **not** raise `WORKERS` without lowering `MYSQL_POOL_SIZE` so `WORKERS × MYS
 |---|---|
 | Scheduled Rinse scrape and its CSV artifacts | ACA job `rinse-scrape-scheduled`. Does not read the API process env. Default `RINSE_AV_SINGLE_PASS` is ON, so the job does not consult `RINSE_BAG_EXPORT_ENABLED`. Manual Refresh Both Syncs returns 202 and starts that job |
 | API `POST /admin/rinse/bag-export` and sync/async import | Stop when `RINSE_BAG_EXPORT_ENABLED=0` on the API. Those handlers run Playwright for minutes and cannot survive a 120s worker timeout |
-| `POST /api/rinse/sync/targeted-pending-refresh` | No UI caller. Still runs local Playwright (default cap 3600s) on the API. A 120s worker timeout will kill that request. Scheduled targeted refresh inside the ACA job is unchanged. Do not call this route after the timeout drop |
+| `POST /api/rinse/sync/targeted-pending-refresh` | When `RINSE_SCRAPE_REMOTE_ONLY=1`, the route returns 503 and does not start Playwright. Scheduled targeted refresh inside the ACA job is unchanged. `/api/rinse/sync/both` still starts that job |
 | PIN, attendance punch, Task Dashboard, payroll list/approve, one-batch paystub HTML | Stay on the API. No Playwright. Bulk approve is one open-break lookup per record (cap 2000) then a single `UPDATE`. A normal payroll week finishes well under 120s |
 
 ---
@@ -84,10 +84,11 @@ Do **not** raise `WORKERS` without lowering `MYSQL_POOL_SIZE` so `WORKERS × MYS
 ## Code changes in this branch
 
 1. `startup.sh` — safer gunicorn defaults + graceful-timeout / keep-alive / explicit sync class  
-2. `backend/db.py` — default pool 8, handshake timeout, separate pool-acquire wait (default 5s), exhaustion logging, `pool_config_snapshot()`  
-3. `backend/app.py` — add `GET /health/live`; document that Azure must not use `/health` for healthCheckPath  
-4. Tests — `test_db_pool_config.py`, `test_health_liveness.py`  
-5. This runbook
+2. `backend/db.py` — default pool 8, handshake timeout, separate pool-acquire wait (default 5s), exhaustion logging, `pool_config_snapshot()`. Checkout timeout raises `DatabasePoolBusy` with the fixed client sentence  
+3. `backend/app.py` — `GET /health/live`; pool-busy handler returns HTTP 503 and `Service temporarily busy. Please try again in a moment.` Login, PIN unlock, PIN punch, and `/health/db` use that handler. Other exceptions stay unchanged  
+4. `backend/rinse_shift_analysis_routes.py` — `RINSE_SCRAPE_REMOTE_ONLY=1` blocks local Playwright on targeted pending refresh. Refresh Both Syncs still starts the ACA job  
+5. Tests — pool config, liveness, pool-busy HTTP, remote-only refresh, export-flag gate  
+6. This runbook
 
 **Out of scope (intentionally):** payroll formulas, attendance business logic, Task Management features, Azure portal changes, deploys.
 
@@ -145,13 +146,13 @@ Apply on the **production** API slot only. Do not change the ACA job, do not res
 
 | Check | Result |
 |---|---|
-| 1. Pool acquire wait, separate from handshake | **Pass, after this patch.** mysql-connector 9.x `get_connection()` uses `queue.get(block=False)`. `MYSQL_CONNECT_TIMEOUT` only sets `connection_timeout`. `get_db()` now waits up to `MYSQL_POOL_ACQUIRE_TIMEOUT` (default 5s) and then raises `PoolError` |
+| 1. Pool acquire wait, separate from handshake | **Pass.** mysql-connector pops the queue with no wait. `get_db()` waits up to `MYSQL_POOL_ACQUIRE_TIMEOUT` (default 5s), logs `mysql_pool_exhausted`, and raises `DatabasePoolBusy`. Clients receive HTTP 503 and `Service temporarily busy. Please try again in a moment.` |
 | 2. Total connections under 171 | **Pass for one API instance.** Live `max_connections=171`. Steady budget after this API deploy is about 70, including the current ACA image at up to 32. See the budget table. The server has already refused 7 connections since startup; this change lowers the API's idle pool |
 | 3. `/health/live` has no blocking dependencies | **Pass.** Handler returns 200 JSON only. Tests reject any `get_db` or revision-stamp call |
 | 4. Health check will not recycle on DB or stamp skew | **Pass**, if the path is `/health/live` and not `/health`. See the health-check section |
 | 5. Scheduled scrape/exports with API flag `0` | **Pass**, if the flag is changed only on the API. The job is a different process. Single-pass (default) writes portal and scan-event CSVs without `export_enabled()`. Legacy triple-scrape (`RINSE_AV_SINGLE_PASS=0`) does check that flag **in the job env** |
-| 6. 120s worker timeout vs work that must stay on the API | **Pass for PIN, attendance, Task Dashboard, and payroll reads/approve/paystubs.** **Residual:** API Playwright routes listed above. Disable bag export/import on the API. Do not call targeted-pending-refresh on the API |
-| 7. Regression tests | **221 passed, 3 failed.** Failures are pre-existing on this branch in PIN hub feature-order and `ensure_employee_mobile_pin_access_tables` call counts. Pool, `/health/live`, attendance PIN punch, payroll, and Task Dashboard tests passed. Scheduler was disabled for the run (`DAILY_OPERATIONAL_RESET_EMBEDDED_SCHEDULER=0`) so tests did not open a live reset job |
+| 6. 120s worker timeout vs work that must stay on the API | **Pass for PIN, attendance, Task Dashboard, and payroll reads/approve/paystubs.** Bag export and API import stop when `RINSE_BAG_EXPORT_ENABLED=0`. Targeted pending refresh does not run Playwright when `RINSE_SCRAPE_REMOTE_ONLY=1` |
+| 7. Regression tests | **241 passed, 3 failed** on this branch. The same 3 failed on baseline `07f3338b` (213 passed, 3 failed on the shared files). No new failures. The three are PIN hub feature order and `ensure_employee_mobile_pin_access_tables` call counts |
 | 8. Azure steps | This document. Not applied |
 
 ## Operational risks
@@ -159,7 +160,7 @@ Apply on the **production** API slot only. Do not change the ACA job, do not res
 | Risk | Mitigation |
 |---|---|
 | Sync bag export or API import killed at 120s | `RINSE_BAG_EXPORT_ENABLED=0` on the API only |
-| Targeted-pending-refresh on the API killed at 120s | No UI caller. Leave it unused; ACA scheduled path still runs targeted refresh |
+| Targeted-pending-refresh on the API | Blocked with HTTP 503 when `RINSE_SCRAPE_REMOTE_ONLY=1`. ACA job still runs the refresh |
 | Setting the export flag to 0 on the ACA job | Do not. That is a different env. Required only if single-pass is turned off |
 | 3×8 pool too small under burst | `get_db()` waits 5s, then logs `mysql_pool_exhausted`. Raise pool to 10–12 only if `active_connections` stays under 120 |
 | Dead socket reconnect holds the process pool lock | Bounded by `MYSQL_CONNECT_TIMEOUT` (8s), not by the acquire wait |

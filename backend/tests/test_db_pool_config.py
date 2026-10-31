@@ -69,15 +69,21 @@ def test_resolve_pool_acquire_timeout_independent_of_connect(monkeypatch):
     assert db.resolve_pool_acquire_timeout_sec() == db._DEFAULT_POOL_ACQUIRE_TIMEOUT_SEC
 
 
-def test_get_db_logs_and_reraises_pool_error(monkeypatch):
+def test_get_db_logs_and_raises_safe_pool_busy(monkeypatch, caplog):
     class _BoomPool:
         def get_connection(self):
             raise mysql_errors.PoolError("Failed getting connection; pool exhausted")
 
     monkeypatch.setenv("MYSQL_POOL_ACQUIRE_TIMEOUT", "0")
     monkeypatch.setattr(db, "_ensure_pool", lambda: _BoomPool())
-    with pytest.raises(mysql_errors.PoolError):
-        db.get_db()
+    with caplog.at_level("ERROR", logger="backend.db"):
+        with pytest.raises(db.DatabasePoolBusy) as raised:
+            db.get_db()
+    assert str(raised.value) == db.DATABASE_BUSY_MESSAGE
+    assert isinstance(raised.value.__cause__, mysql_errors.PoolError)
+    assert "mysql_pool_exhausted" in caplog.text
+    assert "pool exhausted" in caplog.text
+    assert "password" not in caplog.text.lower()
 
 
 def test_get_db_waits_for_pooled_connection_then_succeeds(monkeypatch):
@@ -114,7 +120,8 @@ def test_get_db_acquire_wait_is_bounded(monkeypatch):
     monkeypatch.setattr(db, "_ensure_pool", lambda: _BoomPool())
     monkeypatch.setattr(db.time, "monotonic", _mono)
     monkeypatch.setattr(db.time, "sleep", _sleep)
-    with pytest.raises(mysql_errors.PoolError):
+    with pytest.raises(db.DatabasePoolBusy) as raised:
         db.get_db()
+    assert str(raised.value) == db.DATABASE_BUSY_MESSAGE
     assert clock["now"] >= 1000.2
     assert clock["now"] < 1000.2 + 0.05 + 0.001
