@@ -129,8 +129,11 @@ def _snapshot(row: Mapping[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key in keys:
         val = row.get(key)
-        if hasattr(val, "isoformat"):
-            out[key] = val.isoformat(sep=" ")
+        if isinstance(val, datetime):
+            out[key] = val.replace(microsecond=0).isoformat(sep=" ")
+        elif isinstance(val, date):
+            # date.isoformat() does not accept sep; business_date is a date.
+            out[key] = val.isoformat()
         else:
             out[key] = val
     return out
