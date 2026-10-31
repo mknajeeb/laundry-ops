@@ -1,10 +1,10 @@
 # Task Dashboard Phase 3 — Release preparation
 
-**Status:** Release-ready. **Production deployment NOT authorized.**  
-**Approved commit / release SHA:** `4236bc5344b7c4854f1fdff2cd636281d89ee0cf`  
+**Status:** Integrated with deployed P0. **Production deployment NOT authorized.**  
 **Branch:** `feat/task-dashboard-redesign-record-mgmt`  
-**Base (production main at prep time):** `07f3338bb21d42e5dd9521a818d0871f430187c1`  
-  (TVP Phases 1–2 already on main)
+**Production `origin/main`:** `457c9d5c1384bbdeca8226c5b424a87c6990725c` (P0 API stability)  
+**Phase 3 parent:** `a9023bc77d9e81ca6af222c376da6c8937c953bb`  
+**Integration merge:** `8536b1cbc0550e9112f04847fe8dd3ad2b0c6b63`
 
 **Screenshots (keep with release review):** [`docs/phase3-screenshots/`](./phase3-screenshots/)
 
@@ -14,18 +14,19 @@
 
 | Item | Finding |
 |---|---|
-| `origin/main` tip | `07f3338b` — TVP independent verification |
-| P0 commit `8c20b4a7` on main? | **No** (`fix/api-p0-stability` only) |
-| File overlap Phase 3 ↔ P0 | **None** |
-| Integration into Phase 3 | **Not required** — P0 not deployed |
+| `origin/main` tip | `457c9d5c` — deployed P0 API stability |
+| P0 commits on this branch | `8c20b4a7` and `457c9d5c`, via merge `8536b1cb` |
+| File overlap Phase 3 ↔ P0 | **None.** Merge was clean |
+| Phase 3 paths | Task dashboard, record management, Rinse scope |
+| P0 paths kept | `startup.sh`, `backend/db.py`, `backend/app.py` health/pool handling, `/health/live` |
 
-Do **not** cherry-pick or merge P0 into this release. When P0 is later approved, merge it separately; no overwrite risk with Phase 3 paths (`startup.sh` / `backend/db.py` / `/health/live` untouched here).
+Do **not** drop either side. Do **not** change Azure worker, pool, or health settings in the Phase 3 deploy.
 
 ---
 
 ## 2. Release contents verification
 
-Release delta vs `origin/main` is **exactly one commit** (`4236bc53`) plus any subsequent release-prep docs/SQL hardening on this branch.
+Release delta vs production `origin/main` (`457c9d5c`) is the Phase 3 dashboard work only. P0 is already the base.
 
 | Check | Status |
 |---|---|
@@ -38,7 +39,7 @@ Release delta vs `origin/main` is **exactly one commit** (`4236bc53`) plus any s
 | Existing approvals preserved | Time edits keep `approved_*` / status; mark `corrected` only |
 | Payroll / attendance isolation | No writes to payroll or attendance tables |
 
-Out of release: Phases 4–6, Azure config changes, P0 stability patch.
+Out of release: Phases 4–6 and any Azure worker, pool, or health-check changes. P0 stays in place.
 
 ---
 
@@ -60,7 +61,7 @@ Out of release: Phases 4–6, Azure config changes, P0 stability patch.
 
 ### A. Pre-deploy
 - [ ] Confirm release SHA still matches approved commit (or documented prep follow-ups)
-- [ ] Confirm P0 still separate / not accidentally reverted
+- [ ] Confirm the release still contains P0 `457c9d5c` and the Phase 3 dashboard commits
 - [ ] Production DB backup (MySQL dump or Azure backup point)
 - [ ] Confirm screenshots reviewed: `docs/phase3-screenshots/`
 
@@ -88,7 +89,7 @@ Out of release: Phases 4–6, Azure config changes, P0 stability patch.
 - [ ] Payroll / attendance punch screens unaffected
 
 ### E. Rollback
-- [ ] Redeploy prior SHA (`07f3338b` or last known-good)
+- [ ] Redeploy production SHA `457c9d5c` if Phase 3 must come off. That keeps the P0 API stability patch
 - [ ] Leave additive columns in place (harmless); do not DROP without review
 - [ ] Soft-voided rows remain voided if managers already acted — restore via support only if needed
 
@@ -101,35 +102,23 @@ Out of release: Phases 4–6, Azure config changes, P0 stability patch.
 
 ---
 
-## 5. Hold for P0 (active)
+## 5. P0 integration (done)
 
-P0 API stability takes priority over Phase 3 deploy.
-
-| Gate | State (as of last check) |
+| Gate | State |
 |---|---|
-| Production `origin/main` | `07f3338b` |
-| P0 `8c20b4a7` on main | **Not yet** |
-| Phase 3 release tip | `7209cf4211118f5b9c4433807d0162b1cea2b365` |
-
-**After P0 deploys successfully, before Phase 3 deploy:**
-
-1. Reconfirm new production `origin/main` SHA (must include P0)
-2. Merge/rebase deployed P0 into `feat/task-dashboard-redesign-record-mgmt` without dropping Phase 3
-3. Preserve all Phase 3 functionality (dashboard, Rinse scope, record mgmt, shared checklist)
-4. Rerun affected backend + frontend regression tests
-5. Re-verify `task_dashboard_record_mgmt_v1.sql` compatibility
-6. Confirm VeeWash + Rinse UI behavior unchanged
-7. Return final integrated release SHA + readiness; **STOP** for Phase 3 deploy approval
-
-Do not apply Phase 3 migration or modify production data during the hold.
+| Production `origin/main` | `457c9d5c` |
+| P0 merged into Phase 3 | **Yes** — merge `8536b1cb` |
+| Phase 3 functionality retained | **Yes** — no overlapping files |
+| Backend + frontend regression | 64 backend passed, 7 frontend passed |
+| Migration applied in production | **No** — wait for deployment approval |
 
 ## 6. GO / NO-GO
 
 | Decision | Recommendation |
 |---|---|
-| Keep Phase 3 release ready | **GO** (`7209cf42`) |
-| Production Phase 3 deploy / migration | **NO-GO** — waiting on P0 deploy + re-integration |
-| Cherry-pick undeployed P0 into Phase 3 now | **NO** — wait for P0 on production main first |
+| Integrated release ready for approval | **GO** — branch tip after this checklist update |
+| Production Phase 3 deploy / migration | **NO-GO** until a separate approval |
+| Azure P0 settings | **Leave as deployed.** This release does not change them |
 
 ---
 
@@ -140,4 +129,4 @@ Do not apply Phase 3 migration or modify production data during the hold.
 - Do not change Azure configuration
 - Do not modify production records
 - Do not start Phases 4–6
-- Do not integrate P0 until it is on production main
+- P0 is already on production main and on this branch. Do not revert it
