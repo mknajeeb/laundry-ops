@@ -153,14 +153,27 @@ def _load_artifact_revision() -> str:
     return str(load_release_revision_stamps().get("artifact_revision") or "").strip()
 
 
+@app.route("/health/live", methods=["GET"])
+def health_live():
+    """Process liveness for Azure App Service ``healthCheckPath``.
+
+    Always returns HTTP 200 when this worker can accept the request.
+    Does **not** touch MySQL and does **not** evaluate release revision stamps,
+    so deploy stamp skew or database degradation cannot create a restart loop.
+    """
+    return jsonify({"status": "alive"}), 200
+
+
 @app.route("/health", methods=["GET"])
 def health():
-    """Liveness probe; does not touch the database.
+    """Deploy / readiness probe; does not touch the database.
 
     Exposes source / build / artifact / runtime revisions so deploy stamp skew
     (e.g. GITHUB_SHA updated while SOURCE_RELEASE_SHA stays stale) is visible.
     When EXPECTED_RELEASE_SHA is set and does not match the artifact/runtime
     revision, status is ``unhealthy`` (HTTP 503).
+
+    Do **not** point Azure ``healthCheckPath`` here — use ``/health/live`` instead.
     """
     from backend.release_revision import load_release_revision_stamps
 
@@ -187,6 +200,7 @@ def health():
         "expected_revision": expected_revision or None,
         "revision_stamp_agreement": stamp_agreement,
         "expected_revision_match": expected_ok,
+        "liveness_path": "/health/live",
     }
     if build_time:
         out["build_time"] = build_time
