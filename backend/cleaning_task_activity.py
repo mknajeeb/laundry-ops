@@ -399,7 +399,9 @@ def _day_responsibilities(
     catalog = _role_catalog(cursor, int(organization_id))
     items = []
     for item in list_week_responsibilities(cursor, int(organization_id), week_start=week):
-        if int(item.get("day_of_week") or -1) != dow:
+        # Sunday is stored as 0. `or -1` treats that as missing and hides the day.
+        raw_dow = item.get("day_of_week")
+        if raw_dow is None or int(raw_dow) != dow:
             continue
         if not is_task_role(item.get("role") or "", catalog):
             continue

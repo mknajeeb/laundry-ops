@@ -418,7 +418,9 @@ def _day_shifts(cursor, organization_id: int, week_start: date, day_of_week: int
     )
     grouped: dict[int, list[dict[str, Any]]] = {uid: [] for uid in wanted}
     for row in cursor.fetchall() or []:
-        if not isinstance(row, dict) or int(row.get("day_of_week") or -1) != int(day_of_week):
+        # Sunday is stored as 0. `or -1` treats that as missing and drops the shift.
+        raw_dow = row.get("day_of_week") if isinstance(row, dict) else None
+        if not isinstance(row, dict) or raw_dow is None or int(raw_dow) != int(day_of_week):
             continue
         uid = int(row.get("user_id") or 0)
         if uid not in wanted:
