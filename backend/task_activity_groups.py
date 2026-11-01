@@ -208,17 +208,23 @@ def _serialize_group(
                 "required": bool(it.get("required", True)),
                 "section_label": (str(it.get("section_label") or "").strip() or None),
                 "section_order": int(it.get("section_order") or 0),
+                "active": it.get("active", True) not in (0, False, "0"),
+                "instructions": (str(it.get("instructions") or "").strip() or None)
+                or meta.get("description")
+                or meta.get("instructions")
+                or None,
                 "completion_type": meta.get("completion_type"),
                 "timer_enabled": meta.get("timer_enabled"),
                 "verification_required": meta.get("verification_required"),
                 "verification_method": meta.get("verification_method"),
                 "verification_inherits": bool(meta.get("verification_inherits", False)),
                 "input_schema": meta.get("input_schema") or [],
-                "instructions": meta.get("description") or meta.get("instructions") or None,
                 **responsibility,
             }
         )
-    members.sort(key=lambda m: (m["display_order"], m["task_name"].lower()))
+    members.sort(
+        key=lambda m: (int(m.get("section_order") or 0), m["display_order"], m["task_name"].lower())
+    )
     policy = effective_policy or {}
     return {
         "id": int(row["id"]),
@@ -258,6 +264,25 @@ def _serialize_group(
         "items": members,
         "item_count": len(members),
     }
+
+
+def _task_has_execution_history(cursor, organization_id: int, task_code: str) -> bool:
+    """True when a check-off already exists. The master row is deactivated, not deleted."""
+    from backend.ta_helpers import table_exists
+
+    code = str(task_code or "")
+    if not code:
+        return False
+    for table in ("cleaning_task_shared_session_items", "cleaning_task_activity_items"):
+        if not table_exists(cursor, table):
+            continue
+        cursor.execute(
+            f"SELECT id FROM {table} WHERE organization_id=%s AND task_code=%s LIMIT 1",
+            (int(organization_id), code),
+        )
+        if cursor.fetchone():
+            return True
+    return False
 
 
 def _load_items(cursor, organization_id: int, group_ids: Sequence[int]) -> dict[int, list[dict]]:
@@ -465,6 +490,8 @@ def upsert_activity_group(
             mode, user_ids = normalize_responsibility("team", [])
             section_label = None
             section_order = 0
+            instructions = None
+            active = True
         else:
             tc = str(item.get("task_code") or item.get("code") or "").strip()
             required = bool(item.get("required", True))
@@ -475,6 +502,8 @@ def upsert_activity_group(
             )
             section_label = (str(item.get("section_label") or "").strip() or None)
             section_order = int(item.get("section_order") or 0)
+            instructions = (str(item.get("instructions") or "").strip()[:2000] or None)
+            active = item.get("active", True) not in (0, False, "0")
         if not tc:
             continue
         if is_activity_group_code(tc):
@@ -497,6 +526,8 @@ def upsert_activity_group(
                 "responsibility_user_ids": user_ids,
                 "section_label": section_label,
                 "section_order": section_order,
+                "instructions": instructions,
+                "active": active,
             }
         )
     if not normalized:
@@ -607,16 +638,27 @@ def upsert_activity_group(
     by_code = {str(row.get("task_code") or ""): row for row in existing_rows}
     keep_codes = {item["task_code"] for item in normalized}
     has_responsibility = _has_col(cursor, GROUP_ITEMS_TABLE, "responsibility_mode")
+    has_item_instructions = _has_col(cursor, GROUP_ITEMS_TABLE, "instructions")
+    has_item_active = _has_col(cursor, GROUP_ITEMS_TABLE, "active")
     for item in normalized:
         user_json = _json.dumps(item.get("responsibility_user_ids") or [])
         current = by_code.get(item["task_code"])
         if current and current.get("id") is not None:
             if has_responsibility:
+                extra_sql = ""
+                extra_params: list[Any] = []
+                if has_item_instructions:
+                    extra_sql += ", instructions=%s"
+                    extra_params.append(item.get("instructions"))
+                if has_item_active:
+                    extra_sql += ", active=%s"
+                    extra_params.append(1 if item.get("active", True) else 0)
                 cursor.execute(
                     f"""
                     UPDATE {GROUP_ITEMS_TABLE}
                     SET display_order=%s, required=%s, responsibility_mode=%s,
                         responsibility_user_ids_json=%s, section_label=%s, section_order=%s
+                        {extra_sql}
                     WHERE id=%s AND organization_id=%s
                     """,
                     (
@@ -626,6 +668,7 @@ def upsert_activity_group(
                         user_json,
                         item.get("section_label"),
                         int(item.get("section_order") or 0),
+                        *extra_params,
                         int(current["id"]),
                         oid,
                     ),
@@ -646,24 +689,31 @@ def upsert_activity_group(
                 )
             continue
         if has_responsibility:
+            columns = (
+                "organization_id, group_id, task_code, display_order, required, "
+                "responsibility_mode, responsibility_user_ids_json, section_label, section_order"
+            )
+            values: list[Any] = [
+                oid,
+                gid,
+                item["task_code"],
+                int(item["display_order"]),
+                1 if item["required"] else 0,
+                item.get("responsibility_mode") or "team",
+                user_json,
+                item.get("section_label"),
+                int(item.get("section_order") or 0),
+            ]
+            if has_item_instructions:
+                columns += ", instructions"
+                values.append(item.get("instructions"))
+            if has_item_active:
+                columns += ", active"
+                values.append(1 if item.get("active", True) else 0)
+            placeholders = ",".join(["%s"] * len(values))
             cursor.execute(
-                f"""
-                INSERT INTO {GROUP_ITEMS_TABLE}
-                  (organization_id, group_id, task_code, display_order, required,
-                   responsibility_mode, responsibility_user_ids_json, section_label, section_order)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    oid,
-                    gid,
-                    item["task_code"],
-                    int(item["display_order"]),
-                    1 if item["required"] else 0,
-                    item.get("responsibility_mode") or "team",
-                    user_json,
-                    item.get("section_label"),
-                    int(item.get("section_order") or 0),
-                ),
+                f"INSERT INTO {GROUP_ITEMS_TABLE} ({columns}) VALUES ({placeholders})",
+                tuple(values),
             )
         else:
             cursor.execute(
@@ -682,6 +732,12 @@ def upsert_activity_group(
             )
     for code, row in by_code.items():
         if code in keep_codes or row.get("id") is None:
+            continue
+        if has_item_active and _task_has_execution_history(cursor, oid, code):
+            cursor.execute(
+                f"UPDATE {GROUP_ITEMS_TABLE} SET active=0 WHERE id=%s AND organization_id=%s",
+                (int(row["id"]), oid),
+            )
             continue
         cursor.execute(
             f"DELETE FROM {GROUP_ITEMS_TABLE} WHERE id=%s AND organization_id=%s",

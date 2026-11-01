@@ -13,6 +13,7 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
+import { CompletionDetails } from "../../opsMobile/TaskCompletionInputs";
 import {
   CompletionBadge,
   VerificationBadge,
@@ -198,6 +199,7 @@ export default function TaskAssignmentCard({
                       <Typography variant="caption" color="text.secondary" display="block">
                         Responsible: {item.responsibility_label || "Anyone on Team"}
                       </Typography>
+                      <CompletionDetails completionInput={item.completion_input} schema={item.input_schema} />
                     </Box>
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <ChecklistBadge status={item.display_status || item.status} />

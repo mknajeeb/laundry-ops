@@ -2478,6 +2478,11 @@ def _review_item_from_shared(item: Mapping[str, Any], shared: Mapping[str, Any])
     out["responsibility_mode"] = shared.get("responsibility_mode") or "team"
     out["completed_by_name"] = shared.get("completed_by_name")
     out["checked_off_at"] = shared.get("completed_at")
+    out["completion_input"] = shared.get("completion_input")
+    out["section_label"] = shared.get("section_label")
+    out["section_order"] = shared.get("section_order") or 0
+    out["display_order"] = shared.get("display_order") or 0
+    out["input_schema"] = shared.get("input_schema") or []
     out["records"] = [record] if record else []
     return out
 
@@ -2574,10 +2579,19 @@ def build_verification_review_cards(
                 if isinstance(act, Mapping) and act.get("id") is not None:
                     children.append(act)
 
+        shared_items = []
+        for member in members:
+            if member.get("shared_checklist_items"):
+                shared_items = list(member.get("shared_checklist_items") or [])
+                break
         templates = list((templates_by_role or {}).get(parent_role) or [])
+        if shared_items:
+            required_source = shared_items
+        else:
+            required_source = templates
         required_codes = [
             str(item.get("task_code"))
-            for item in templates
+            for item in required_source
             if item.get("task_code") and bool(item.get("required", True))
         ]
         by_code: dict[str, dict[str, Any]] = {}
@@ -2700,10 +2714,16 @@ def build_verification_review_cards(
                 shared = shared_by_code.get(code)
                 if shared:
                     seen_codes.add(code)
+                    item["task_label"] = shared.get("task_name") or item.get("task_label")
                     if item.get("records"):
                         item["responsibility_label"] = shared.get("responsibility_label") or "Anyone on Team"
                         item["responsibility_mode"] = shared.get("responsibility_mode") or "team"
                         item["completed_by_name"] = shared.get("completed_by_name") or item.get("completed_by_name")
+                        item["completion_input"] = shared.get("completion_input")
+                        item["section_label"] = shared.get("section_label")
+                        item["section_order"] = shared.get("section_order") or 0
+                        item["display_order"] = shared.get("display_order") or 0
+                        item["input_schema"] = shared.get("input_schema") or []
                     else:
                         item = _review_item_from_shared(item, shared)
                 merged.append(item)
@@ -2712,6 +2732,13 @@ def build_verification_review_cards(
                     continue
                 merged.append(_review_item_from_shared({}, shared))
             checklist = merged
+        checklist.sort(
+            key=lambda it: (
+                int(it.get("section_order") or 0),
+                int(it.get("display_order") or 0),
+                str(it.get("task_label") or ""),
+            )
+        )
         cards.append(
             {
                 "assignment_key": key,

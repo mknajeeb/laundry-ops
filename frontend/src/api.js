@@ -506,6 +506,12 @@ export const getManagementTaskActivityHistory = (params = {}) =>
 export const getManagementTaskCatalog = () =>
   axios.get(`${API_BASE}/api/management/task-catalog`);
 
+export const getManagementTaskAssignees = () =>
+  axios.get(`${API_BASE}/api/management/task-catalog/assignees`);
+
+export const getEndOfDayClosingTemplate = () =>
+  axios.get(`${API_BASE}/api/management/task-catalog/templates/end-of-day-closing`);
+
 export const createManagementTaskCategory = (body) =>
   axios.post(`${API_BASE}/api/management/task-catalog/categories`, body);
 

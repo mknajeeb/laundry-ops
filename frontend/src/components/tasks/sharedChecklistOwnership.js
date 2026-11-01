@@ -35,3 +35,22 @@ export function splitSharedChecklist(items, userId) {
     requiredTotal: required.length,
   };
 }
+
+const DONE = new Set(["completed", "approved", "verified"]);
+
+export function groupChecklistSections(items) {
+  const groups = new Map();
+  for (const item of items || []) {
+    const label = String(item?.section_label || "Checklist");
+    const order = Number(item?.section_order || 0);
+    if (!groups.has(label)) groups.set(label, { label, order, items: [] });
+    groups.get(label).items.push(item);
+  }
+  return [...groups.values()]
+    .map((group) => {
+      const total = group.items.length;
+      const done = group.items.filter((item) => DONE.has(String(item?.status || "").toLowerCase())).length;
+      return { ...group, done, total };
+    })
+    .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+}

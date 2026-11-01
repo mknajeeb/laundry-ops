@@ -57,3 +57,70 @@ def test_validate_completion_input_number():
     assert out["values"]["gallons"] == 8
     with pytest.raises(TaskCatalogError, match="Missing required"):
         validate_completion_input(defn, {"values": {}})
+    zero = {
+        "completion_type": COMPLETION_INPUT,
+        "input_schema": [{"id": "count", "type": "number", "label": "Unprocessed WF bags", "required": True, "min": 0}],
+    }
+    assert validate_completion_input(zero, {"values": {"count": 0}})["values"]["count"] == 0
+    with pytest.raises(TaskCatalogError, match="cannot be less than"):
+        validate_completion_input(zero, {"values": {"count": -1}})
+
+
+def test_conditional_machine_numbers_and_hidden_fields():
+    defn = {
+        "completion_type": COMPLETION_INPUT,
+        "input_schema": [
+            {
+                "id": "result",
+                "type": "choice",
+                "label": "New machines out of order?",
+                "required": True,
+                "options": [{"value": "no", "label": "No"}, {"value": "yes", "label": "Yes"}],
+            },
+            {
+                "id": "machines",
+                "type": "machine_numbers",
+                "label": "Machine Number(s)",
+                "required": True,
+                "show_when": {"field": "result", "in": ["yes"]},
+                "required_when": {"field": "result", "in": ["yes"]},
+            },
+            {
+                "id": "issue",
+                "type": "text",
+                "label": "Issue Description",
+                "required": True,
+                "show_when": {"field": "result", "in": ["yes"]},
+                "required_when": {"field": "result", "in": ["yes"]},
+            },
+        ],
+    }
+    quiet = validate_completion_input(defn, {"values": {"result": "no", "machines": "12"}})
+    assert quiet["values"] == {"result": "no"}
+    with pytest.raises(TaskCatalogError, match="Machine Number"):
+        validate_completion_input(defn, {"values": {"result": "yes"}})
+    done = validate_completion_input(
+        defn, {"values": {"result": "yes", "machines": "08, 12, 08", "issue": "Not draining"}}
+    )
+    assert done["values"]["machines"] == ["08", "12"]
+    assert done["values"]["issue"] == "Not draining"
+
+
+def test_lost_and_found_photos_required_only_above_zero():
+    defn = {
+        "completion_type": COMPLETION_INPUT,
+        "input_schema": [
+            {"id": "count", "type": "number", "label": "Lost & Found count", "required": True, "min": 0},
+            {
+                "id": "photos",
+                "type": "photo",
+                "label": "Lost & Found photos",
+                "required": False,
+                "show_when": {"field": "count", "gt": 0},
+                "required_when": {"field": "count", "gt": 0},
+            },
+        ],
+    }
+    assert validate_completion_input(defn, {"values": {"count": 0}})["values"]["count"] == 0
+    with pytest.raises(TaskCatalogError, match="photos"):
+        validate_completion_input(defn, {"values": {"count": 2}})

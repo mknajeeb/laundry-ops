@@ -185,10 +185,35 @@ def ensure_shared_session(
     except Exception:
         overrides = {}
     has_snapshot = table_has_column(cursor, SESSION_ITEMS_TABLE, "responsibility_snapshot_json")
+    has_definition = table_has_column(cursor, SESSION_ITEMS_TABLE, "definition_snapshot_json")
+    from backend.task_activity_item_responsibility import definition_snapshot_json, item_is_active
+
     for item in group_items or []:
+        if not item_is_active(item):
+            continue
         resolved = resolve_responsibility(item, overrides.get(int(item.get("id") or 0)))
         snap = snapshot_json(resolved["responsibility_mode"], resolved["responsibility_user_ids"])
-        if has_snapshot:
+        definition = definition_snapshot_json(item) if has_definition else None
+        if has_snapshot and has_definition:
+            cursor.execute(
+                f"""
+                INSERT INTO {SESSION_ITEMS_TABLE}
+                  (organization_id, shared_session_id, task_code, display_order, required, status,
+                   responsibility_snapshot_json, definition_snapshot_json)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    oid,
+                    session_id,
+                    str(item.get("task_code") or ""),
+                    int(item.get("display_order") or 0),
+                    1 if item.get("required", True) else 0,
+                    ITEM_PENDING,
+                    snap,
+                    definition,
+                ),
+            )
+        elif has_snapshot:
             cursor.execute(
                 f"""
                 INSERT INTO {SESSION_ITEMS_TABLE}
@@ -245,7 +270,18 @@ def serialize_shared_item(
     except (TypeError, ValueError, json.JSONDecodeError):
         completion_input = None
     code = str(row.get("task_code") or "")
-    info = meta or {}
+    info = dict(meta or {})
+    from backend.task_activity_item_responsibility import parse_definition_snapshot
+
+    frozen = parse_definition_snapshot(row.get("definition_snapshot_json"))
+    if frozen:
+        info = {
+            **info,
+            "name": frozen.get("task_name") or info.get("name"),
+            "instructions": frozen.get("instructions"),
+            "completion_type": frozen.get("completion_type") or info.get("completion_type"),
+            "input_schema": frozen.get("input_schema") or [],
+        }
     completed_by = int(row["completed_by_user_id"]) if row.get("completed_by_user_id") is not None else None
     from backend.task_activity_item_responsibility import parse_snapshot, responsibility_payload
 
@@ -269,6 +305,8 @@ def serialize_shared_item(
         "completed_by_user_id": completed_by,
         "completed_by_name": (names or {}).get(completed_by) if completed_by is not None else None,
         "instructions": info.get("description") or info.get("instructions") or None,
+        "section_label": (frozen or {}).get("section_label"),
+        "section_order": int((frozen or {}).get("section_order") or 0),
         **responsibility,
         "completion_input": completion_input,
         "child_activity_id": int(row["child_activity_id"])
@@ -552,8 +590,23 @@ def checkoff_shared_item(
         raise CleaningTaskError("That task is not part of this activity group.", status=404)
 
     meta = _task_meta_for_role(cursor, oid, code)
+    from backend.task_activity_item_responsibility import parse_definition_snapshot
+
+    frozen = parse_definition_snapshot(item.get("definition_snapshot_json"))
+    if frozen:
+        meta = {
+            **meta,
+            "completion_type": frozen.get("completion_type") or meta.get("completion_type"),
+            "input_schema": frozen.get("input_schema") if frozen.get("input_schema") is not None else meta.get("input_schema"),
+        }
     try:
         validated = validate_completion_input(meta, completion_input)
+    except TaskCatalogError as exc:
+        raise CleaningTaskError(exc.message, status=exc.status) from exc
+    from backend.task_completion_photos import persist_completion_photos
+
+    try:
+        validated = persist_completion_photos(cursor, oid, validated)
     except TaskCatalogError as exc:
         raise CleaningTaskError(exc.message, status=exc.status) from exc
 

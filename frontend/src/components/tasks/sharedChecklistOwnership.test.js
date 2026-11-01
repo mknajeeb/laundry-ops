@@ -1,4 +1,4 @@
-import { isMyChecklistItem, splitSharedChecklist } from "./sharedChecklistOwnership";
+import { groupChecklistSections, isMyChecklistItem, splitSharedChecklist } from "./sharedChecklistOwnership";
 
 const team = { task_code: "a", required: true, responsibility_mode: "team", status: "pending" };
 const mine = {
@@ -25,5 +25,17 @@ describe("splitSharedChecklist", () => {
     expect(split.requiredTotal).toBe(2);
     expect(isMyChecklistItem(team, 3)).toBe(true);
     expect(isMyChecklistItem(theirs, 7)).toBe(false);
+  });
+
+  it("groups items by section and counts progress", () => {
+    const sections = groupChecklistSections([
+      { task_code: "a", section_label: "Machines", section_order: 10, status: "completed" },
+      { task_code: "b", section_label: "Machines", section_order: 10, status: "pending" },
+      { task_code: "c", section_label: "Facility Cleaning", section_order: 20, status: "completed" },
+    ]);
+    expect(sections.map((section) => [section.label, section.done, section.total])).toEqual([
+      ["Machines", 1, 2],
+      ["Facility Cleaning", 1, 1],
+    ]);
   });
 });

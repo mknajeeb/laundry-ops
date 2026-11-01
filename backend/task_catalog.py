@@ -51,8 +51,20 @@ INPUT_TEXT = "text"
 INPUT_YES_NO = "yes_no"
 INPUT_CHECKBOX = "checkbox"
 INPUT_CHECKLIST = "checklist"
+INPUT_CHOICE = "choice"
+INPUT_MACHINE_NUMBERS = "machine_numbers"
+INPUT_PHOTO = "photo"
 INPUT_TYPES = frozenset(
-    {INPUT_NUMBER, INPUT_TEXT, INPUT_YES_NO, INPUT_CHECKBOX, INPUT_CHECKLIST}
+    {
+        INPUT_NUMBER,
+        INPUT_TEXT,
+        INPUT_YES_NO,
+        INPUT_CHECKBOX,
+        INPUT_CHECKLIST,
+        INPUT_CHOICE,
+        INPUT_MACHINE_NUMBERS,
+        INPUT_PHOTO,
+    }
 )
 
 BUILTIN_CATEGORIES: tuple[dict[str, Any], ...] = (
@@ -658,6 +670,70 @@ def upsert_task_definition(cursor, organization_id: int, code: str, data: Mappin
     return defn
 
 
+def _condition_met(condition: Any, values: Mapping[str, Any]) -> bool:
+    """Generic show/require rule stored on a checklist field. Not activity-specific."""
+    if not isinstance(condition, Mapping) or not condition:
+        return True
+    if isinstance(condition.get("any"), list):
+        return any(_condition_met(part, values) for part in condition["any"])
+    if isinstance(condition.get("all"), list):
+        return all(_condition_met(part, values) for part in condition["all"])
+    field = str(condition.get("field") or "").strip()
+    current = values.get(field) if field else None
+    if "in" in condition:
+        allowed = condition.get("in") or []
+        return current in allowed or str(current) in {str(item) for item in allowed}
+    if "gt" in condition:
+        try:
+            return float(current) > float(condition.get("gt"))
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+def _field_is_shown(field: Mapping[str, Any], values: Mapping[str, Any]) -> bool:
+    if "show_when" not in field:
+        return True
+    return _condition_met(field.get("show_when"), values)
+
+
+def _field_is_required(field: Mapping[str, Any], values: Mapping[str, Any]) -> bool:
+    if not _field_is_shown(field, values):
+        return False
+    if "required_when" in field and _condition_met(field.get("required_when"), values):
+        return True
+    return bool(field.get("required", True))
+
+
+def _choice_options(field: Mapping[str, Any]) -> list[dict[str, str]]:
+    options = []
+    for opt in field.get("options") or []:
+        if isinstance(opt, str):
+            options.append({"value": opt, "label": opt})
+        elif isinstance(opt, Mapping):
+            value = str(opt.get("value") or opt.get("id") or "").strip()
+            if value:
+                options.append({"value": value, "label": str(opt.get("label") or value)})
+    return options
+
+
+def _parse_machine_numbers(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        parts = [str(part) for part in raw]
+    else:
+        parts = re.split(r"[,;\s]+", str(raw or ""))
+    numbers = []
+    for part in parts:
+        token = part.strip()
+        if not token:
+            continue
+        if not re.fullmatch(r"[A-Za-z0-9-]{1,12}", token):
+            raise TaskCatalogError(f"Invalid machine number: {token}")
+        if token not in numbers:
+            numbers.append(token)
+    return numbers
+
+
 def validate_completion_input(defn: Mapping[str, Any], submitted: Any) -> dict[str, Any]:
     """Validate employee-submitted completion input against task input_schema."""
     if str(defn.get("completion_type") or COMPLETION_SIMPLE) != COMPLETION_INPUT:
@@ -667,6 +743,8 @@ def validate_completion_input(defn: Mapping[str, Any], submitted: Any) -> dict[s
         raise TaskCatalogError("This task requires input but has no configured fields.")
     payload = submitted if isinstance(submitted, dict) else {}
     values = payload.get("values") if isinstance(payload.get("values"), dict) else payload
+    if not isinstance(values, dict):
+        values = {}
     out: dict[str, Any] = {}
     for field in schema:
         if not isinstance(field, dict):
@@ -674,26 +752,53 @@ def validate_completion_input(defn: Mapping[str, Any], submitted: Any) -> dict[s
         key = str(field.get("id") or field.get("key") or "").strip()
         if not key:
             continue
-        required = bool(field.get("required", True))
+        label = field.get("label") or key
+        if not _field_is_shown(field, values):
+            continue
+        required = _field_is_required(field, values)
         ftype = str(field.get("type") or INPUT_TEXT)
-        raw = values.get(key) if isinstance(values, dict) else None
-        if raw in (None, "") and required:
-            raise TaskCatalogError(f"Missing required input: {field.get('label') or key}")
-        if raw in (None, ""):
+        raw = values.get(key)
+        empty = raw in (None, "") or raw == [] or raw is False and ftype == INPUT_CHECKBOX
+        if ftype == INPUT_CHECKBOX:
+            empty = not bool(raw)
+        if empty and required:
+            raise TaskCatalogError(f"Missing required input: {label}")
+        if empty:
             continue
         if ftype == INPUT_NUMBER:
             try:
-                out[key] = float(raw) if "." in str(raw) else int(raw)
+                number = float(raw) if "." in str(raw) else int(raw)
             except (TypeError, ValueError):
-                raise TaskCatalogError(f"Invalid number for {field.get('label') or key}")
+                raise TaskCatalogError(f"Invalid number for {label}")
+            if field.get("min") is not None and number < float(field.get("min")):
+                raise TaskCatalogError(f"{label} cannot be less than {field.get('min')}")
+            out[key] = number
         elif ftype == INPUT_YES_NO:
             out[key] = str(raw).strip().lower() in {"1", "true", "yes", "y"}
         elif ftype == INPUT_CHECKBOX:
             out[key] = bool(raw)
         elif ftype == INPUT_CHECKLIST:
             if not isinstance(raw, list):
-                raise TaskCatalogError(f"Checklist input required for {field.get('label') or key}")
+                raise TaskCatalogError(f"Checklist input required for {label}")
             out[key] = raw
+        elif ftype == INPUT_CHOICE:
+            allowed = _choice_options(field)
+            match = next((opt["value"] for opt in allowed if opt["value"] == str(raw).strip()), None)
+            if match is None:
+                raise TaskCatalogError(f"Choose a value for {label}")
+            out[key] = match
+        elif ftype == INPUT_MACHINE_NUMBERS:
+            numbers = _parse_machine_numbers(raw)
+            if not numbers and required:
+                raise TaskCatalogError(f"Missing required input: {label}")
+            if numbers:
+                out[key] = numbers
+        elif ftype == INPUT_PHOTO:
+            photos = raw if isinstance(raw, list) else []
+            if not photos and required:
+                raise TaskCatalogError(f"Missing required input: {label}")
+            if photos:
+                out[key] = photos
         else:
             out[key] = str(raw)[:500]
     remarks = payload.get("remarks")

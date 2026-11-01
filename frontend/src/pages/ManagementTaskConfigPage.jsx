@@ -14,7 +14,13 @@ import {
   Typography,
 } from "@mui/material";
 import ManagementHubNav from "../components/management/ManagementHubNav";
+import ActivityChecklistEditor, {
+  itemsFromGroup,
+  itemsToPayload,
+} from "../components/tasks/ActivityChecklistEditor";
 import {
+  getEndOfDayClosingTemplate,
+  getManagementTaskAssignees,
   getManagementTaskCatalog,
   upsertManagementTaskChecklist,
   upsertManagementTaskDefinition,
@@ -70,6 +76,7 @@ export default function ManagementTaskConfigPage() {
   const [globalPolicy, setGlobalPolicy] = useState(null);
   const [globalDraft, setGlobalDraft] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [assignees, setAssignees] = useState([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -77,6 +84,12 @@ export default function ManagementTaskConfigPage() {
     try {
       const res = await getManagementTaskCatalog();
       setCategories(res.data?.categories || []);
+      try {
+        const people = await getManagementTaskAssignees();
+        setAssignees(people.data?.assignees || []);
+      } catch {
+        setAssignees([]);
+      }
       setTasks(res.data?.tasks || []);
       setChecklists(res.data?.checklists || []);
       setActivityGroups(res.data?.activity_groups || []);
@@ -144,18 +157,42 @@ export default function ManagementTaskConfigPage() {
     setBusy(true);
     setError("");
     try {
-      const items = (groupDraft.itemRows || [])
-        .filter((row) => row.task_code)
-        .map((row, i) => ({
-          task_code: row.task_code,
-          required: row.required !== false,
-          display_order: i * 10,
-          responsibility_mode: row.responsibility_mode === "named" ? "named" : "team",
-          responsibility_user_ids: String(row.responsibility_user_ids_text || "")
-            .split(",")
-            .map((part) => Number(part.trim()))
-            .filter((id) => id > 0),
-        }));
+      const rows = itemsToPayload(groupDraft.itemRows || []);
+      const used = new Set(rows.map((row) => row.task_code).filter(Boolean));
+      const items = [];
+      for (const [index, row] of rows.entries()) {
+        let code = row.task_code;
+        if (!code) {
+          const base =
+            String(row.task_name || "item")
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, "_")
+              .replace(/^_|_$/g, "")
+              .slice(0, 40) || `item_${index + 1}`;
+          code = base;
+          let n = 2;
+          while (used.has(code)) {
+            code = `${base}_${n}`;
+            n += 1;
+          }
+          used.add(code);
+        }
+        const saved = await upsertManagementTaskDefinition({
+          code,
+          name: row.task_name,
+          category_code: groupDraft.category_code || "intra_day",
+          completion_type: (row.input_schema || []).length ? "input_required" : "simple",
+          input_schema: row.input_schema || [],
+          timer_enabled: false,
+          verification_inherits: true,
+          active: row.active !== false,
+          display_order: row.display_order,
+        });
+        items.push({
+          ...row,
+          task_code: saved.data?.task?.code || code,
+        });
+      }
       const inherits = groupDraft.verification_inherits !== false;
       const requireChecklist = groupDraft.id
         ? groupDraft.requireChecklistTouched
@@ -191,6 +228,45 @@ export default function ManagementTaskConfigPage() {
       await load();
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || "Activity group save failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startEndOfDay = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const existing = activityGroups.find(
+        (group) => group.code === "end_of_day_closing" || group.name === "End of Day Closing"
+      );
+      if (existing) {
+        setGroupDraft({
+          ...existing,
+          itemRows: itemsFromGroup(existing.items),
+          requireChecklistTouched: false,
+        });
+        return;
+      }
+      const res = await getEndOfDayClosingTemplate();
+      const template = res.data || {};
+      setGroupDraft({
+        name: template.name || "End of Day Closing",
+        code: template.code || "end_of_day_closing",
+        instructions: template.instructions || "",
+        category_code: template.category_code || "end_of_day",
+        display_order: template.display_order || 30,
+        active: true,
+        verification_inherits: false,
+        verification_method: template.verification_method || "supervisor",
+        verification_timing: template.verification_timing || "same_shift",
+        verification_required: true,
+        require_checklist_before_completion: true,
+        requireChecklistTouched: true,
+        itemRows: itemsFromGroup(template.items),
+      });
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || "Could not load End of Day Closing");
     } finally {
       setBusy(false);
     }
@@ -679,28 +755,33 @@ export default function ManagementTaskConfigPage() {
                     <Paper variant="outlined" sx={{ p: 1.5 }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
               <Typography sx={{ fontWeight: 800 }}>Activities</Typography>
-              <Button
-                size="small"
-                variant="outlined"
-                disabled={busy}
-                onClick={() =>
-                  setGroupDraft({
-                    name: "",
-                    instructions: "",
-                    category_code: categories[0]?.code || "intra_day",
-                    display_order: 0,
-                    active: true,
-                    verification_inherits: true,
-                    verification_method: "supervisor",
-                    verification_timing: "same_shift",
-                    itemRows: [],
-                    require_checklist_before_completion: true,
-                    requireChecklistTouched: false,
-                  })
-                }
-              >
-                Add activity
-              </Button>
+              <Stack direction="row" spacing={1}>
+                <Button size="small" variant="contained" disabled={busy} onClick={startEndOfDay}>
+                  End of Day Closing
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  disabled={busy}
+                  onClick={() =>
+                    setGroupDraft({
+                      name: "",
+                      instructions: "",
+                      category_code: categories[0]?.code || "intra_day",
+                      display_order: 0,
+                      active: true,
+                      verification_inherits: true,
+                      verification_method: "supervisor",
+                      verification_timing: "same_shift",
+                      itemRows: [],
+                      require_checklist_before_completion: true,
+                      requireChecklistTouched: false,
+                    })
+                  }
+                >
+                  Add activity
+                </Button>
+              </Stack>
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
               An Activity has one timer and its checklist items. Verification checklists stay separate.
@@ -735,13 +816,7 @@ export default function ManagementTaskConfigPage() {
                         onClick={() =>
                           setGroupDraft({
                             ...g,
-                            itemRows: (g.items || []).map((i) => ({
-                              task_code: i.task_code,
-                              task_name: i.task_name,
-                              required: i.required !== false,
-                              responsibility_mode: i.responsibility_mode === "named" ? "named" : "team",
-                              responsibility_user_ids_text: (i.responsibility_user_ids || []).join(", "),
-                            })),
+                            itemRows: itemsFromGroup(g.items),
                             requireChecklistTouched: false,
                           })
                         }
@@ -797,76 +872,11 @@ export default function ManagementTaskConfigPage() {
                   value={groupDraft.display_order ?? 0}
                   onChange={(e) => setGroupDraft({ ...groupDraft, display_order: e.target.value })}
                 />
-                <Typography variant="body2" sx={{ fontWeight: 800 }}>
-                  Checklist items
-                </Typography>
-                {(groupDraft.itemRows || []).map((row, index) => (
-                  <Stack key={`${row.task_code}-${index}`} spacing={0.5}>
-                    <Typography sx={{ fontWeight: 700 }}>{row.task_name || row.task_code}</Typography>
-                    <TextField
-                      select
-                      size="small"
-                      label="Default responsibility"
-                      value={row.responsibility_mode === "named" ? "named" : "team"}
-                      onChange={(e) => {
-                        const itemRows = [...(groupDraft.itemRows || [])];
-                        itemRows[index] = { ...row, responsibility_mode: e.target.value };
-                        setGroupDraft({ ...groupDraft, itemRows });
-                      }}
-                    >
-                      <MenuItem value="team">Anyone on Team</MenuItem>
-                      <MenuItem value="named">Named employees</MenuItem>
-                    </TextField>
-                    {row.responsibility_mode === "named" ? (
-                      <TextField
-                        size="small"
-                        label="Employee ids"
-                        value={row.responsibility_user_ids_text || ""}
-                        onChange={(e) => {
-                          const itemRows = [...(groupDraft.itemRows || [])];
-                          itemRows[index] = { ...row, responsibility_user_ids_text: e.target.value };
-                          setGroupDraft({ ...groupDraft, itemRows });
-                        }}
-                        helperText="Comma-separated. A date on the Weekly Schedule can override this."
-                      />
-                    ) : null}
-                  </Stack>
-                ))}
-                <TextField
-                  select
-                  size="small"
-                  label="Add checklist item"
-                  value={groupDraft.addCode || ""}
-                  onChange={(e) => {
-                    const code = e.target.value;
-                    if (!code) return;
-                    const task = tasks.find((t) => t.code === code);
-                    setGroupDraft({
-                      ...groupDraft,
-                      addCode: "",
-                      itemRows: [
-                        ...(groupDraft.itemRows || []),
-                        {
-                          task_code: code,
-                          task_name: task?.name,
-                          required: true,
-                          responsibility_mode: "team",
-                          responsibility_user_ids_text: "",
-                        },
-                      ],
-                    });
-                  }}
-                >
-                  <MenuItem value="">Select task…</MenuItem>
-                  {tasks
-                    .filter((t) => !(groupDraft.itemRows || []).some((row) => row.task_code === t.code))
-                    .filter((t) => !String(t.code || "").startsWith("agroup_"))
-                    .map((t) => (
-                      <MenuItem key={t.code} value={t.code}>
-                        {t.name}
-                      </MenuItem>
-                    ))}
-                </TextField>
+                <ActivityChecklistEditor
+                  items={groupDraft.itemRows || []}
+                  assignees={assignees}
+                  onChange={(itemRows) => setGroupDraft({ ...groupDraft, itemRows })}
+                />
                 <FormControlLabel
                   control={
                     <Switch

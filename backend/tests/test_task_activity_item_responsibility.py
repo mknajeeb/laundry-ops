@@ -1,5 +1,6 @@
 """Item responsibility: defaults, date overrides, roster conflicts, snapshots."""
 
+import json
 from datetime import date
 
 import pytest
@@ -177,3 +178,31 @@ def test_business_date_is_sunday_start():
 
     assert business_date_for_week(date(2026, 11, 1), 0) == date(2026, 11, 1)
     assert business_date_for_week(date(2026, 11, 1), 1) == date(2026, 11, 2)
+
+
+def test_definition_snapshot_is_a_copy_and_inactive_items_are_skipped():
+    from backend.end_of_day_closing_template import end_of_day_closing_payload
+    from backend.task_activity_item_responsibility import (
+        definition_snapshot,
+        item_is_active,
+        parse_definition_snapshot,
+    )
+
+    payload = end_of_day_closing_payload()
+    assert payload["name"] == "End of Day Closing"
+    assert payload["category_code"] == "end_of_day"
+    assert payload["verification_method"] == "supervisor"
+    assert payload["require_checklist_before_completion"] is True
+    labels = [item["section_label"] for item in payload["items"]]
+    assert labels.count("Facility Cleaning") == 5
+    assert "Clean restrooms" in {item["task_name"] for item in payload["items"]}
+    lost = next(item for item in payload["items"] if item["task_code"] == "eod_lost_count")
+    frozen = definition_snapshot(lost)
+    lost["task_name"] = "Changed later"
+    lost["input_schema"] = []
+    parsed = parse_definition_snapshot(json.dumps(frozen))
+    assert parsed["task_name"] == "Lost & Found count"
+    assert any(field.get("id") == "photos" for field in parsed["input_schema"])
+    assert item_is_active({"task_code": "lint", "active": 1}) is True
+    assert item_is_active({"task_code": "lint", "active": 0}) is False
+    assert item_is_active({"task_code": "lint"}) is True

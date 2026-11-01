@@ -1393,6 +1393,73 @@ def register_cleaning_task_activity_routes(
             except Exception:
                 pass
 
+    @app.route("/api/management/task-catalog/assignees", methods=["GET"])
+    def management_task_catalog_assignees():
+        conn, cursor, org_id, err = _mgmt_catalog_gate()
+        if err:
+            return err
+        try:
+            cursor.execute(
+                """
+                SELECT id, COALESCE(NULLIF(display_name, ''), username) AS name
+                FROM users
+                WHERE organization_id=%s AND active=1
+                ORDER BY name
+                """,
+                (int(org_id),),
+            )
+            return jsonify({"assignees": cursor.fetchall() or []})
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @app.route("/api/management/task-catalog/templates/end-of-day-closing", methods=["GET"])
+    def management_task_catalog_end_of_day_template():
+        conn, cursor, org_id, err = _mgmt_catalog_gate()
+        if err:
+            return err
+        del cursor, org_id
+        try:
+            from backend.end_of_day_closing_template import end_of_day_closing_payload
+
+            return jsonify(end_of_day_closing_payload())
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @app.route("/api/management/task-completion-photos/<token>", methods=["GET"])
+    def management_task_completion_photo(token):
+        from flask import Response
+
+        from backend.db import get_db
+        from backend.task_completion_photos import get_photo
+
+        conn = get_db()
+        try:
+            cursor = conn.cursor(dictionary=True)
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            org_id = user_org_id(me)
+            if not org_id:
+                return jsonify({"error": "Organization required"}), 400
+            row = get_photo(cursor, int(org_id), token)
+            if not row:
+                return jsonify({"error": "Photo not found"}), 404
+            blob = row.get("image_blob")
+            if isinstance(blob, memoryview):
+                blob = blob.tobytes()
+            return Response(blob or b"", mimetype=str(row.get("content_type") or "image/jpeg"))
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     @app.route("/api/management/task-catalog/verification-policy", methods=["GET", "PUT"])
     def management_task_catalog_verification_policy():
         """Org-global verification default (Global → Group → Task hierarchy root)."""

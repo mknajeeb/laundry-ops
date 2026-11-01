@@ -3,7 +3,42 @@ import { Box, Button, Collapse, IconButton, Stack, Typography } from "@mui/mater
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import { OPS_MOBILE } from "../../opsMobile";
 import TaskCompletionInputs from "../../opsMobile/TaskCompletionInputs";
-import { responsibilityLabel, splitSharedChecklist } from "./sharedChecklistOwnership";
+import { groupChecklistSections, responsibilityLabel, splitSharedChecklist } from "./sharedChecklistOwnership";
+
+function SectionBlock({ title, done, total, items, busy, editingCode, inputValues, inputRemarks, onChangeValues, onChangeRemarks, onCheckoff, startOpen }) {
+  const [open, setOpen] = useState(startOpen);
+  return (
+    <Box>
+      <Button
+        fullWidth
+        onClick={() => setOpen((value) => !value)}
+        sx={{ justifyContent: "space-between", textTransform: "none", fontWeight: 800, px: 0 }}
+      >
+        <span>{title}</span>
+        <span>
+          {done}/{total}
+        </span>
+      </Button>
+      <Collapse in={open}>
+        <Stack spacing={1}>
+          {items.map((item) => (
+            <ItemRow
+              key={item.task_code || item.id}
+              item={item}
+              busy={busy}
+              editing={editingCode === item.task_code}
+              inputValues={inputValues}
+              inputRemarks={inputRemarks}
+              onChangeValues={onChangeValues}
+              onChangeRemarks={onChangeRemarks}
+              onCheckoff={onCheckoff}
+            />
+          ))}
+        </Stack>
+      </Collapse>
+    </Box>
+  );
+}
 
 function ItemRow({ item, busy, editing, inputValues, inputRemarks, onChangeValues, onChangeRemarks, onCheckoff }) {
   const [info, setInfo] = useState(false);
@@ -90,23 +125,27 @@ export default function SharedActivityChecklist({
   return (
     <Stack spacing={1}>
       <Typography variant="body2" sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-        {split.requiredDone} of {split.requiredTotal} required
+        Progress: {split.requiredDone}/{split.requiredTotal}
       </Typography>
       <Typography variant="caption" sx={{ fontWeight: 800, color: "text.secondary" }}>
         My Items
       </Typography>
       {split.myItems.length ? (
-        split.myItems.map((item) => (
-          <ItemRow
-            key={item.task_code || item.id}
-            item={item}
+        groupChecklistSections(split.myItems).map((section) => (
+          <SectionBlock
+            key={section.label}
+            title={section.label}
+            done={section.done}
+            total={section.total}
+            items={section.items}
             busy={busy}
-            editing={editingCode === item.task_code}
+            editingCode={editingCode}
             inputValues={inputValues}
             inputRemarks={inputRemarks}
             onChangeValues={onChangeValues}
             onChangeRemarks={onChangeRemarks}
             onCheckoff={onCheckoff}
+            startOpen={section.done < section.total}
           />
         ))
       ) : (
@@ -125,17 +164,21 @@ export default function SharedActivityChecklist({
           </Button>
           <Collapse in={othersOpen}>
             <Stack spacing={1}>
-              {split.otherItems.map((item) => (
-                <ItemRow
-                  key={item.task_code || item.id}
-                  item={item}
+              {groupChecklistSections(split.otherItems).map((section) => (
+                <SectionBlock
+                  key={`other-${section.label}`}
+                  title={section.label}
+                  done={section.done}
+                  total={section.total}
+                  items={section.items}
                   busy={busy}
-                  editing={editingCode === item.task_code}
+                  editingCode={editingCode}
                   inputValues={inputValues}
                   inputRemarks={inputRemarks}
                   onChangeValues={onChangeValues}
                   onChangeRemarks={onChangeRemarks}
                   onCheckoff={onCheckoff}
+                  startOpen={false}
                 />
               ))}
             </Stack>

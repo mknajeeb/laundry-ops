@@ -11,7 +11,7 @@ import json
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
-from backend.ta_helpers import table_exists, table_has_column
+from backend.ta_helpers import invalidate_schema_cache, table_exists, table_has_column
 
 MODE_TEAM = "team"
 MODE_NAMED = "named"
@@ -60,6 +60,14 @@ def ensure_item_responsibility_schema(cursor) -> None:
             cursor.execute(
                 f"ALTER TABLE {GROUP_ITEMS_TABLE} ADD COLUMN section_order INT NOT NULL DEFAULT 0"
             )
+        if not table_has_column(cursor, GROUP_ITEMS_TABLE, "instructions"):
+            cursor.execute(
+                f"ALTER TABLE {GROUP_ITEMS_TABLE} ADD COLUMN instructions TEXT NULL"
+            )
+        if not table_has_column(cursor, GROUP_ITEMS_TABLE, "active"):
+            cursor.execute(
+                f"ALTER TABLE {GROUP_ITEMS_TABLE} ADD COLUMN active TINYINT(1) NOT NULL DEFAULT 1"
+            )
     if not table_exists(cursor, OVERRIDES_TABLE):
         cursor.execute(
             f"""
@@ -78,10 +86,13 @@ def ensure_item_responsibility_schema(cursor) -> None:
             """
         )
     for table in (SESSION_ITEMS_TABLE, "cleaning_task_activity_items"):
-        if table_exists(cursor, table) and not table_has_column(
-            cursor, table, "responsibility_snapshot_json"
-        ):
+        if not table_exists(cursor, table):
+            continue
+        if not table_has_column(cursor, table, "responsibility_snapshot_json"):
             cursor.execute(f"ALTER TABLE {table} ADD COLUMN responsibility_snapshot_json TEXT NULL")
+        if not table_has_column(cursor, table, "definition_snapshot_json"):
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN definition_snapshot_json TEXT NULL")
+    invalidate_schema_cache()
 
 
 def parse_user_ids(raw: Any) -> list[int]:
@@ -139,6 +150,46 @@ def responsibility_payload(mode: Any, user_ids: Any, names: Mapping[int, str] | 
 def snapshot_json(mode: Any, user_ids: Any) -> str:
     chosen, ids = normalize_responsibility(mode, user_ids)
     return json.dumps({"responsibility_mode": chosen, "user_ids": ids})
+
+
+def definition_snapshot(item: Mapping[str, Any]) -> dict[str, Any]:
+    """Freeze the checklist line as it was when a session started.
+
+    Later edits to the master Activity do not rewrite this copy.
+    """
+    schema = item.get("input_schema") or []
+    return {
+        "task_name": str(item.get("task_name") or item.get("name") or item.get("task_code") or ""),
+        "instructions": (str(item.get("instructions") or "").strip() or None),
+        "section_label": (str(item.get("section_label") or "").strip() or None),
+        "section_order": int(item.get("section_order") or 0),
+        "display_order": int(item.get("display_order") or 0),
+        "completion_type": item.get("completion_type") or "simple",
+        "input_schema": schema if isinstance(schema, list) else [],
+    }
+
+
+def definition_snapshot_json(item: Mapping[str, Any]) -> str:
+    return json.dumps(definition_snapshot(item))
+
+
+def parse_definition_snapshot(raw: Any) -> dict[str, Any] | None:
+    if raw in (None, ""):
+        return None
+    if isinstance(raw, Mapping):
+        data = dict(raw)
+    else:
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+    return data if isinstance(data, dict) else None
+
+
+def item_is_active(item: Mapping[str, Any] | None) -> bool:
+    if not item:
+        return False
+    return item.get("active", True) is not False and item.get("active") != 0
 
 
 def parse_snapshot(raw: Any) -> dict[str, Any] | None:
@@ -479,7 +530,11 @@ def attach_checklist_responsibilities(
         groups[role] = group or {}
     for item in rows:
         group = groups.get(str(item.get("role") or ""))
-        members = list((group or {}).get("items") or [])
+        members = [
+            member
+            for member in ((group or {}).get("items") or [])
+            if item_is_active(member)
+        ]
         if not members:
             continue
         week = _as_date(item.get("week_start"))

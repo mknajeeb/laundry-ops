@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Box, Button, Collapse, Stack, TextField, Typography } from "@mui/material";
 import { formatDashboardTime } from "./taskDashboardFormat";
 import { OPS_MOBILE } from "../../opsMobile";
+import { CompletionDetails } from "../../opsMobile/TaskCompletionInputs";
 
 function clock(value) {
   const text = formatDashboardTime(value);
@@ -106,10 +107,16 @@ export default function TaskVerificationReviewCard({
                         ? "Checked off"
                         : "Not checked off"}
                   </Typography>
+                  {item.section_label ? (
+                    <Typography variant="caption" sx={{ fontWeight: 800 }} display="block">
+                      {item.section_label}
+                    </Typography>
+                  ) : null}
                   <Typography variant="caption" color="text.secondary" display="block">
                     Responsible: {item.responsibility_label || "Anyone on Team"}
                     {item.completed_by_name ? ` · Checked off by ${item.completed_by_name}` : ""}
                   </Typography>
+                  <CompletionDetails completionInput={item.completion_input} schema={item.input_schema} />
                   {(item.records || []).map((rec) => (
                     <Box key={rec.activity_id || `${item.task_code}-${rec.employee_id}`} sx={{ pl: 1 }}>
                       <Typography variant="caption" color="text.secondary" display="block">

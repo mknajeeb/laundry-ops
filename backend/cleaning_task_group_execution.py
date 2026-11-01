@@ -90,6 +90,8 @@ def ensure_group_activity_schema(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+    elif not table_has_column(cursor, ITEMS_TABLE, "child_activity_id"):
+        cursor.execute(f"ALTER TABLE {ITEMS_TABLE} ADD COLUMN child_activity_id BIGINT NULL")
     from backend.cleaning_task_shared_execution import ensure_shared_activity_schema
 
     ensure_shared_activity_schema(cursor)
