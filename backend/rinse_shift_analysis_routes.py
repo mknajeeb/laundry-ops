@@ -2756,7 +2756,21 @@ def register_rinse_shift_analysis_routes(
             if week_start is None:
                 return jsonify({"error": "responsibility not found"}), 404
             before_rows = responsibility_week_snapshot(cursor, tenant_oid, week_start)
-            item, err = update_responsibility(conn, cursor, tenant_oid, responsibility_id, body)
+            try:
+                item, err = update_responsibility(conn, cursor, tenant_oid, responsibility_id, body)
+            except Exception as exc:
+                from backend.task_activity_item_responsibility import ItemResponsibilityConflict
+
+                if isinstance(exc, ItemResponsibilityConflict):
+                    conn.rollback()
+                    return jsonify(
+                        {
+                            "error": str(exc),
+                            "code": "item_responsibility",
+                            "items": exc.items,
+                        }
+                    ), 409
+                raise
             if err:
                 conn.rollback()
                 status = 404 if err == "responsibility not found" else 409 if "already started" in err else 400

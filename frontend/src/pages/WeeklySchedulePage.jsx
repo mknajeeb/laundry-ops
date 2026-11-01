@@ -367,6 +367,7 @@ export default function WeeklySchedulePage() {
   const [dialogDefaults, setDialogDefaults] = useState({ userId: null, day: 0 });
   const [editingResponsibility, setEditingResponsibility] = useState(null);
   const [dialogError, setDialogError] = useState("");
+  const [responsibilityConflicts, setResponsibilityConflicts] = useState([]);
   const [viewMode, setViewMode] = useState(VIEW_MODE.EMPLOYEE);
   const [rolesOpen, setRolesOpen] = useState(false);
   const [draggingId, setDraggingId] = useState(null);
@@ -913,8 +914,11 @@ export default function WeeklySchedulePage() {
         setData(res.data);
       }
       setDialogOpen(false);
+      setResponsibilityConflicts([]);
     } catch (e) {
-      setDialogError(e?.response?.data?.error || "Failed to save assignment");
+      const payload = e?.response?.data || {};
+      setDialogError(payload.error || "Failed to save assignment");
+      setResponsibilityConflicts(payload.code === "item_responsibility" ? payload.items || [] : []);
       if (savingTask) setTaskNotice("");
     } finally {
       setSaving(false);
@@ -2120,6 +2124,7 @@ export default function WeeklySchedulePage() {
         shiftCategoryChoices={shiftCategoryChoices}
         categoryLabel={entityLabel}
         dailyResponsibilities={data?.daily_responsibilities}
+        responsibilityConflicts={responsibilityConflicts}
       />
       <WeeklyScheduleManageRolesDialog
         open={rolesOpen && canEdit}

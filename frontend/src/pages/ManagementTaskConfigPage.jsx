@@ -144,14 +144,18 @@ export default function ManagementTaskConfigPage() {
     setBusy(true);
     setError("");
     try {
-      const items = String(groupDraft.itemsText || "")
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean)
-        .map((line, i) => {
-          const [code, req] = line.split("|").map((x) => (x || "").trim());
-          return { task_code: code, required: req !== "optional", display_order: i * 10 };
-        });
+      const items = (groupDraft.itemRows || [])
+        .filter((row) => row.task_code)
+        .map((row, i) => ({
+          task_code: row.task_code,
+          required: row.required !== false,
+          display_order: i * 10,
+          responsibility_mode: row.responsibility_mode === "named" ? "named" : "team",
+          responsibility_user_ids: String(row.responsibility_user_ids_text || "")
+            .split(",")
+            .map((part) => Number(part.trim()))
+            .filter((id) => id > 0),
+        }));
       const inherits = groupDraft.verification_inherits !== false;
       const requireChecklist = groupDraft.id
         ? groupDraft.requireChecklistTouched
@@ -674,7 +678,7 @@ export default function ManagementTaskConfigPage() {
 
                     <Paper variant="outlined" sx={{ p: 1.5 }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-              <Typography sx={{ fontWeight: 800 }}>Activity Groups</Typography>
+              <Typography sx={{ fontWeight: 800 }}>Activities</Typography>
               <Button
                 size="small"
                 variant="outlined"
@@ -689,17 +693,17 @@ export default function ManagementTaskConfigPage() {
                     verification_inherits: true,
                     verification_method: "supervisor",
                     verification_timing: "same_shift",
-                    itemsText: "",
+                    itemRows: [],
                     require_checklist_before_completion: true,
                     requireChecklistTouched: false,
                   })
                 }
               >
-                Add group
+                Add activity
               </Button>
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-              One PIN timer for several related tasks. Not the same as shared employee assignments or verification checklists.
+              An Activity has one timer and its checklist items. Verification checklists stay separate.
             </Typography>
             <Stack spacing={1}>
               {activityGroups.length ? (
@@ -731,9 +735,13 @@ export default function ManagementTaskConfigPage() {
                         onClick={() =>
                           setGroupDraft({
                             ...g,
-                            itemsText: (g.items || [])
-                              .map((i) => `${i.task_code}${i.required ? "" : "|optional"}`)
-                              .join("\n"),
+                            itemRows: (g.items || []).map((i) => ({
+                              task_code: i.task_code,
+                              task_name: i.task_name,
+                              required: i.required !== false,
+                              responsibility_mode: i.responsibility_mode === "named" ? "named" : "team",
+                              responsibility_user_ids_text: (i.responsibility_user_ids || []).join(", "),
+                            })),
                             requireChecklistTouched: false,
                           })
                         }
@@ -789,15 +797,76 @@ export default function ManagementTaskConfigPage() {
                   value={groupDraft.display_order ?? 0}
                   onChange={(e) => setGroupDraft({ ...groupDraft, display_order: e.target.value })}
                 />
+                <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                  Checklist items
+                </Typography>
+                {(groupDraft.itemRows || []).map((row, index) => (
+                  <Stack key={`${row.task_code}-${index}`} spacing={0.5}>
+                    <Typography sx={{ fontWeight: 700 }}>{row.task_name || row.task_code}</Typography>
+                    <TextField
+                      select
+                      size="small"
+                      label="Default responsibility"
+                      value={row.responsibility_mode === "named" ? "named" : "team"}
+                      onChange={(e) => {
+                        const itemRows = [...(groupDraft.itemRows || [])];
+                        itemRows[index] = { ...row, responsibility_mode: e.target.value };
+                        setGroupDraft({ ...groupDraft, itemRows });
+                      }}
+                    >
+                      <MenuItem value="team">Anyone on Team</MenuItem>
+                      <MenuItem value="named">Named employees</MenuItem>
+                    </TextField>
+                    {row.responsibility_mode === "named" ? (
+                      <TextField
+                        size="small"
+                        label="Employee ids"
+                        value={row.responsibility_user_ids_text || ""}
+                        onChange={(e) => {
+                          const itemRows = [...(groupDraft.itemRows || [])];
+                          itemRows[index] = { ...row, responsibility_user_ids_text: e.target.value };
+                          setGroupDraft({ ...groupDraft, itemRows });
+                        }}
+                        helperText="Comma-separated. A date on the Weekly Schedule can override this."
+                      />
+                    ) : null}
+                  </Stack>
+                ))}
                 <TextField
-                  label="Member task codes (one per line; append |optional)"
+                  select
                   size="small"
-                  multiline
-                  minRows={3}
-                  value={groupDraft.itemsText || ""}
-                  onChange={(e) => setGroupDraft({ ...groupDraft, itemsText: e.target.value })}
-                  helperText="Use existing task codes only (not other activity groups)."
-                />
+                  label="Add checklist item"
+                  value={groupDraft.addCode || ""}
+                  onChange={(e) => {
+                    const code = e.target.value;
+                    if (!code) return;
+                    const task = tasks.find((t) => t.code === code);
+                    setGroupDraft({
+                      ...groupDraft,
+                      addCode: "",
+                      itemRows: [
+                        ...(groupDraft.itemRows || []),
+                        {
+                          task_code: code,
+                          task_name: task?.name,
+                          required: true,
+                          responsibility_mode: "team",
+                          responsibility_user_ids_text: "",
+                        },
+                      ],
+                    });
+                  }}
+                >
+                  <MenuItem value="">Select task…</MenuItem>
+                  {tasks
+                    .filter((t) => !(groupDraft.itemRows || []).some((row) => row.task_code === t.code))
+                    .filter((t) => !String(t.code || "").startsWith("agroup_"))
+                    .map((t) => (
+                      <MenuItem key={t.code} value={t.code}>
+                        {t.name}
+                      </MenuItem>
+                    ))}
+                </TextField>
                 <FormControlLabel
                   control={
                     <Switch
@@ -816,12 +885,9 @@ export default function ManagementTaskConfigPage() {
                         }
                         if (groupDraft.require_checklist_before_completion === false) return false;
                         if (groupDraft.require_checklist_before_completion === true) return true;
-                        const lines = String(groupDraft.itemsText || "")
-                          .split("\n")
-                          .map((line) => line.trim())
-                          .filter(Boolean);
-                        if (!lines.length) return !groupDraft.id;
-                        return lines.some((line) => !line.includes("|optional"));
+                        const rows = groupDraft.itemRows || [];
+                        if (!rows.length) return !groupDraft.id;
+                        return rows.some((row) => row.required !== false);
                       })()}
                       onChange={(e) =>
                         setGroupDraft({

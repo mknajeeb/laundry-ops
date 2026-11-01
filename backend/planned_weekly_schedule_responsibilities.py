@@ -750,6 +750,41 @@ def update_responsibility(
     )
     if guard:
         return None, guard
+    removed_users = [uid for uid in existing_users if uid not in payload["user_ids"]]
+    role = str(payload.get("role") or existing.get("role") or "")
+    if role.startswith("agroup_"):
+        try:
+            from backend.task_activity_groups import get_activity_group
+            from backend.task_activity_item_responsibility import (
+                ItemResponsibilityConflict,
+                ItemResponsibilityError,
+                apply_roster_responsibility,
+                business_date_for_week,
+            )
+
+            group = get_activity_group(cursor, organization_id, role_code=role)
+            items = list((group or {}).get("items") or [])
+            if items:
+                business_date = business_date_for_week(week_start, int(payload["day_of_week"]))
+                apply_roster_responsibility(
+                    cursor,
+                    organization_id,
+                    role=role,
+                    business_date=business_date,
+                    removed_user_ids=removed_users,
+                    eligible_user_ids=payload["user_ids"],
+                    overrides=data.get("item_responsibility_overrides") or [],
+                    group_items=items,
+                )
+        except ItemResponsibilityConflict:
+            raise
+        except ItemResponsibilityError as exc:
+            return None, exc.message
+        except Exception:
+            if hasattr(cursor, "_resp_id") or getattr(cursor, "tables", None) is not None:
+                pass
+            else:
+                raise
     group_id = str(existing.get("assignment_group_id") or "").strip() or uuid.uuid4().hex
     by_user = {int(member["user_id"]): int(member["id"]) for member in member_rows}
     kept_id = None

@@ -111,6 +111,12 @@ def ensure_task_activity_group_tables(cursor) -> None:
         cursor.execute(
             f"ALTER TABLE {GROUPS_TABLE} ADD COLUMN require_checklist_before_completion TINYINT(1) NULL"
         )
+    try:
+        from backend.task_activity_item_responsibility import ensure_item_responsibility_schema
+
+        ensure_item_responsibility_schema(cursor)
+    except Exception:
+        pass
     invalidate_schema_cache()
 
 
@@ -187,18 +193,29 @@ def _serialize_group(
     for it in items or []:
         tc = str(it.get("task_code") or "")
         meta = (task_index or {}).get(tc) or {}
+        from backend.task_activity_item_responsibility import responsibility_payload
+
+        responsibility = responsibility_payload(
+            it.get("responsibility_mode"),
+            it.get("responsibility_user_ids_json") or it.get("responsibility_user_ids"),
+        )
         members.append(
             {
+                "id": int(it["id"]) if it.get("id") is not None else None,
                 "task_code": tc,
                 "task_name": meta.get("name") or tc,
                 "display_order": int(it.get("display_order") or 0),
                 "required": bool(it.get("required", True)),
+                "section_label": (str(it.get("section_label") or "").strip() or None),
+                "section_order": int(it.get("section_order") or 0),
                 "completion_type": meta.get("completion_type"),
                 "timer_enabled": meta.get("timer_enabled"),
                 "verification_required": meta.get("verification_required"),
                 "verification_method": meta.get("verification_method"),
                 "verification_inherits": bool(meta.get("verification_inherits", False)),
                 "input_schema": meta.get("input_schema") or [],
+                "instructions": meta.get("description") or meta.get("instructions") or None,
+                **responsibility,
             }
         )
     members.sort(key=lambda m: (m["display_order"], m["task_name"].lower()))
@@ -249,7 +266,7 @@ def _load_items(cursor, organization_id: int, group_ids: Sequence[int]) -> dict[
     placeholders = ",".join(["%s"] * len(group_ids))
     cursor.execute(
         f"""
-        SELECT id, organization_id, group_id, task_code, display_order, required
+        SELECT *
         FROM {GROUP_ITEMS_TABLE}
         WHERE organization_id=%s AND group_id IN ({placeholders})
         ORDER BY display_order ASC, id ASC
@@ -439,14 +456,25 @@ def upsert_activity_group(
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
     for i, item in enumerate(raw_items):
+        from backend.task_activity_item_responsibility import normalize_responsibility
+
         if isinstance(item, str):
             tc = item.strip()
             required = True
             order = i * 10
+            mode, user_ids = normalize_responsibility("team", [])
+            section_label = None
+            section_order = 0
         else:
             tc = str(item.get("task_code") or item.get("code") or "").strip()
             required = bool(item.get("required", True))
             order = int(item.get("display_order") if item.get("display_order") is not None else i * 10)
+            mode, user_ids = normalize_responsibility(
+                item.get("responsibility_mode"),
+                item.get("responsibility_user_ids") or item.get("user_ids"),
+            )
+            section_label = (str(item.get("section_label") or "").strip() or None)
+            section_order = int(item.get("section_order") or 0)
         if not tc:
             continue
         if is_activity_group_code(tc):
@@ -460,7 +488,17 @@ def upsert_activity_group(
         if tc in seen:
             raise ActivityGroupError(f"Duplicate task in group: {tc}")
         seen.add(tc)
-        normalized.append({"task_code": tc, "display_order": order, "required": required})
+        normalized.append(
+            {
+                "task_code": tc,
+                "display_order": order,
+                "required": required,
+                "responsibility_mode": mode,
+                "responsibility_user_ids": user_ids,
+                "section_label": section_label,
+                "section_order": section_order,
+            }
+        )
     if not normalized:
         raise ActivityGroupError("Add at least one task to the activity group.")
 
@@ -561,24 +599,93 @@ def upsert_activity_group(
             (text, oid, gid),
         )
 
-    cursor.execute(
-        f"DELETE FROM {GROUP_ITEMS_TABLE} WHERE organization_id=%s AND group_id=%s",
-        (oid, gid),
-    )
+    import json as _json
+
+    from backend.ta_helpers import table_has_column as _has_col
+
+    existing_rows = _load_items(cursor, oid, [gid]).get(gid, [])
+    by_code = {str(row.get("task_code") or ""): row for row in existing_rows}
+    keep_codes = {item["task_code"] for item in normalized}
+    has_responsibility = _has_col(cursor, GROUP_ITEMS_TABLE, "responsibility_mode")
     for item in normalized:
+        user_json = _json.dumps(item.get("responsibility_user_ids") or [])
+        current = by_code.get(item["task_code"])
+        if current and current.get("id") is not None:
+            if has_responsibility:
+                cursor.execute(
+                    f"""
+                    UPDATE {GROUP_ITEMS_TABLE}
+                    SET display_order=%s, required=%s, responsibility_mode=%s,
+                        responsibility_user_ids_json=%s, section_label=%s, section_order=%s
+                    WHERE id=%s AND organization_id=%s
+                    """,
+                    (
+                        int(item["display_order"]),
+                        1 if item["required"] else 0,
+                        item.get("responsibility_mode") or "team",
+                        user_json,
+                        item.get("section_label"),
+                        int(item.get("section_order") or 0),
+                        int(current["id"]),
+                        oid,
+                    ),
+                )
+            else:
+                cursor.execute(
+                    f"""
+                    UPDATE {GROUP_ITEMS_TABLE}
+                    SET display_order=%s, required=%s
+                    WHERE id=%s AND organization_id=%s
+                    """,
+                    (
+                        int(item["display_order"]),
+                        1 if item["required"] else 0,
+                        int(current["id"]),
+                        oid,
+                    ),
+                )
+            continue
+        if has_responsibility:
+            cursor.execute(
+                f"""
+                INSERT INTO {GROUP_ITEMS_TABLE}
+                  (organization_id, group_id, task_code, display_order, required,
+                   responsibility_mode, responsibility_user_ids_json, section_label, section_order)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    oid,
+                    gid,
+                    item["task_code"],
+                    int(item["display_order"]),
+                    1 if item["required"] else 0,
+                    item.get("responsibility_mode") or "team",
+                    user_json,
+                    item.get("section_label"),
+                    int(item.get("section_order") or 0),
+                ),
+            )
+        else:
+            cursor.execute(
+                f"""
+                INSERT INTO {GROUP_ITEMS_TABLE}
+                  (organization_id, group_id, task_code, display_order, required)
+                VALUES (%s,%s,%s,%s,%s)
+                """,
+                (
+                    oid,
+                    gid,
+                    item["task_code"],
+                    int(item["display_order"]),
+                    1 if item["required"] else 0,
+                ),
+            )
+    for code, row in by_code.items():
+        if code in keep_codes or row.get("id") is None:
+            continue
         cursor.execute(
-            f"""
-            INSERT INTO {GROUP_ITEMS_TABLE}
-              (organization_id, group_id, task_code, display_order, required)
-            VALUES (%s,%s,%s,%s,%s)
-            """,
-            (
-                oid,
-                gid,
-                item["task_code"],
-                int(item["display_order"]),
-                1 if item["required"] else 0,
-            ),
+            f"DELETE FROM {GROUP_ITEMS_TABLE} WHERE id=%s AND organization_id=%s",
+            (int(row["id"]), oid),
         )
 
     group = get_activity_group(cursor, oid, group_id=gid)

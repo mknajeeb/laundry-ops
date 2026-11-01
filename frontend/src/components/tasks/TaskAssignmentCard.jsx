@@ -191,9 +191,14 @@ export default function TaskAssignmentCard({
                     alignItems="center"
                     spacing={1}
                   >
-                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                      {item.task_name || item.task_code}
-                    </Typography>
+                    <Box>
+                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                        {item.task_name || item.task_code}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        Responsible: {item.responsibility_label || "Anyone on Team"}
+                      </Typography>
+                    </Box>
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <ChecklistBadge status={item.display_status || item.status} />
                       {item.completed_by_name ? (

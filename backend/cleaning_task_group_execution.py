@@ -122,6 +122,10 @@ def serialize_group_item(
         completion_input = None
     code = str(row.get("task_code") or "")
     info = meta or {}
+    from backend.task_activity_item_responsibility import parse_snapshot, responsibility_payload
+
+    snap = parse_snapshot(row.get("responsibility_snapshot_json"))
+    responsibility = snap or responsibility_payload("team", [])
     return {
         "id": int(row.get("id") or 0),
         "task_code": code,
@@ -130,6 +134,7 @@ def serialize_group_item(
         "required": bool(row.get("required", True)),
         "status": str(row.get("status") or ITEM_PENDING),
         "completed_at": str(row.get("completed_at") or "")[:19] or None,
+        **responsibility,
         "completion_input": completion_input,
         "child_activity_id": int(row["child_activity_id"])
         if row.get("child_activity_id") is not None
@@ -328,22 +333,47 @@ def start_group_activity(
     )
     activity_id = int(cursor.lastrowid)
     if not shared:
+        from backend.ta_helpers import table_has_column
+        from backend.task_activity_item_responsibility import resolve_responsibility, snapshot_json
+
+        has_snapshot = table_has_column(cursor, ITEMS_TABLE, "responsibility_snapshot_json")
         for item in group["items"]:
-            cursor.execute(
-                f"""
-                INSERT INTO {ITEMS_TABLE}
-                  (organization_id, activity_id, task_code, display_order, required, status)
-                VALUES (%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    oid,
-                    activity_id,
-                    item["task_code"],
-                    int(item.get("display_order") or 0),
-                    1 if item.get("required", True) else 0,
-                    ITEM_PENDING,
-                ),
-            )
+            resolved = resolve_responsibility(item, None)
+            snap = snapshot_json(resolved["responsibility_mode"], resolved["responsibility_user_ids"])
+            if has_snapshot:
+                cursor.execute(
+                    f"""
+                    INSERT INTO {ITEMS_TABLE}
+                      (organization_id, activity_id, task_code, display_order, required, status,
+                       responsibility_snapshot_json)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        oid,
+                        activity_id,
+                        item["task_code"],
+                        int(item.get("display_order") or 0),
+                        1 if item.get("required", True) else 0,
+                        ITEM_PENDING,
+                        snap,
+                    ),
+                )
+            else:
+                cursor.execute(
+                    f"""
+                    INSERT INTO {ITEMS_TABLE}
+                      (organization_id, activity_id, task_code, display_order, required, status)
+                    VALUES (%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        oid,
+                        activity_id,
+                        item["task_code"],
+                        int(item.get("display_order") or 0),
+                        1 if item.get("required", True) else 0,
+                        ITEM_PENDING,
+                    ),
+                )
     _record_event(
         cursor,
         organization_id=oid,

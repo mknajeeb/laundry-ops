@@ -171,22 +171,57 @@ def ensure_shared_session(
         (oid, gid, day, str(role), SESSION_OPEN),
     )
     session_id = int(cursor.lastrowid)
+    from backend.ta_helpers import table_has_column
+    from backend.task_activity_item_responsibility import (
+        load_overrides_for_items,
+        resolve_responsibility,
+        snapshot_json,
+    )
+
+    item_ids = [int(item.get("id") or 0) for item in (group_items or []) if item.get("id")]
+    overrides = {}
+    try:
+        overrides = load_overrides_for_items(cursor, oid, item_ids, day)
+    except Exception:
+        overrides = {}
+    has_snapshot = table_has_column(cursor, SESSION_ITEMS_TABLE, "responsibility_snapshot_json")
     for item in group_items or []:
-        cursor.execute(
-            f"""
-            INSERT INTO {SESSION_ITEMS_TABLE}
-              (organization_id, shared_session_id, task_code, display_order, required, status)
-            VALUES (%s,%s,%s,%s,%s,%s)
-            """,
-            (
-                oid,
-                session_id,
-                str(item.get("task_code") or ""),
-                int(item.get("display_order") or 0),
-                1 if item.get("required", True) else 0,
-                ITEM_PENDING,
-            ),
-        )
+        resolved = resolve_responsibility(item, overrides.get(int(item.get("id") or 0)))
+        snap = snapshot_json(resolved["responsibility_mode"], resolved["responsibility_user_ids"])
+        if has_snapshot:
+            cursor.execute(
+                f"""
+                INSERT INTO {SESSION_ITEMS_TABLE}
+                  (organization_id, shared_session_id, task_code, display_order, required, status,
+                   responsibility_snapshot_json)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    oid,
+                    session_id,
+                    str(item.get("task_code") or ""),
+                    int(item.get("display_order") or 0),
+                    1 if item.get("required", True) else 0,
+                    ITEM_PENDING,
+                    snap,
+                ),
+            )
+        else:
+            cursor.execute(
+                f"""
+                INSERT INTO {SESSION_ITEMS_TABLE}
+                  (organization_id, shared_session_id, task_code, display_order, required, status)
+                VALUES (%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    oid,
+                    session_id,
+                    str(item.get("task_code") or ""),
+                    int(item.get("display_order") or 0),
+                    1 if item.get("required", True) else 0,
+                    ITEM_PENDING,
+                ),
+            )
     return get_shared_session(cursor, oid, session_id) or {
         "id": session_id,
         "organization_id": oid,
@@ -212,6 +247,17 @@ def serialize_shared_item(
     code = str(row.get("task_code") or "")
     info = meta or {}
     completed_by = int(row["completed_by_user_id"]) if row.get("completed_by_user_id") is not None else None
+    from backend.task_activity_item_responsibility import parse_snapshot, responsibility_payload
+
+    snap = parse_snapshot(row.get("responsibility_snapshot_json"))
+    if snap is None:
+        responsibility = responsibility_payload("team", [])
+    else:
+        responsibility = responsibility_payload(
+            snap.get("responsibility_mode"),
+            snap.get("responsibility_user_ids"),
+            names,
+        )
     return {
         "id": int(row.get("id") or 0),
         "task_code": code,
@@ -222,6 +268,8 @@ def serialize_shared_item(
         "completed_at": str(row.get("completed_at") or "")[:19] or None,
         "completed_by_user_id": completed_by,
         "completed_by_name": (names or {}).get(completed_by) if completed_by is not None else None,
+        "instructions": info.get("description") or info.get("instructions") or None,
+        **responsibility,
         "completion_input": completion_input,
         "child_activity_id": int(row["child_activity_id"])
         if row.get("child_activity_id") is not None
@@ -278,11 +326,25 @@ def enrich_shared_group_activity(
         return activity
     catalog = _role_catalog(cursor, oid)
     items = list_shared_session_items(cursor, oid, int(session_id))
+    from backend.task_activity_item_responsibility import parse_user_ids
+
     name_ids = {
         int(it["completed_by_user_id"])
         for it in items
         if it.get("completed_by_user_id") is not None
     }
+    for it in items:
+        snap = it.get("responsibility_snapshot_json")
+        parsed = None
+        if snap:
+            try:
+                import json as _json
+
+                parsed = _json.loads(snap) if isinstance(snap, str) else snap
+            except (TypeError, ValueError):
+                parsed = None
+        if isinstance(parsed, dict):
+            name_ids.update(parse_user_ids(parsed.get("user_ids")))
     names = _employee_names(cursor, oid, sorted(name_ids)) if name_ids else {}
     serialized = []
     for it in items:

@@ -2397,6 +2397,31 @@ def _review_wall(value: Any) -> str | None:
     return str(value).replace("T", " ")[:19]
 
 
+def _review_item_from_shared(item: Mapping[str, Any], shared: Mapping[str, Any]) -> dict[str, Any]:
+    """One shared check-off. Responsibility and the actual checker both stay visible."""
+    checked = str(shared.get("status") or "") in {"completed", "approved", "verified"}
+    record = None
+    if shared.get("completed_by_name") or shared.get("completed_at") or shared.get("child_activity_id"):
+        record = {
+            "activity_id": shared.get("child_activity_id"),
+            "employee_id": shared.get("completed_by_user_id"),
+            "employee_name": shared.get("completed_by_name"),
+            "checked_off_at": shared.get("completed_at"),
+            "status": shared.get("status"),
+            "rejection_reason": None,
+        }
+    out = dict(item)
+    out["task_code"] = shared.get("task_code") or out.get("task_code")
+    out["task_label"] = shared.get("task_name") or out.get("task_label")
+    out["checked_off"] = checked
+    out["responsibility_label"] = shared.get("responsibility_label") or "Anyone on Team"
+    out["responsibility_mode"] = shared.get("responsibility_mode") or "team"
+    out["completed_by_name"] = shared.get("completed_by_name")
+    out["checked_off_at"] = shared.get("completed_at")
+    out["records"] = [record] if record else []
+    return out
+
+
 def build_verification_review_cards(
     pending_entries: Sequence[Mapping[str, Any]],
     *,
@@ -2600,6 +2625,28 @@ def build_verification_review_cards(
                     "records": records,
                 }
             )
+        shared_items = []
+        for assignment in assignments or []:
+            if str(assignment.get("assignment_key") or "") != str(key):
+                continue
+            shared_items = list(assignment.get("shared_checklist_items") or [])
+            break
+        if shared_items:
+            shared_by_code = {str(item.get("task_code") or ""): item for item in shared_items}
+            seen_codes = set()
+            merged = []
+            for item in checklist:
+                code = str(item.get("task_code") or "")
+                shared = shared_by_code.get(code)
+                if shared:
+                    item = _review_item_from_shared(item, shared)
+                    seen_codes.add(code)
+                merged.append(item)
+            for code, shared in shared_by_code.items():
+                if code in seen_codes:
+                    continue
+                merged.append(_review_item_from_shared({}, shared))
+            checklist = merged
         cards.append(
             {
                 "assignment_key": key,

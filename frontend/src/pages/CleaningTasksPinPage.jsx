@@ -25,6 +25,7 @@ import {
   attendancePinSwitchRole,
 } from "../api";
 import { OpsMobileShell, OpsTopBar, OPS_MOBILE } from "../opsMobile";
+import SharedActivityChecklist from "../components/tasks/SharedActivityChecklist";
 import TaskCompletionInputs, {
   emptyInputValues,
   formatCompletionInput,
@@ -790,58 +791,17 @@ export default function CleaningTasksPinPage() {
               {formatElapsed(active.started_at, nowMs)}
             </Typography>
           )}
-          <Stack spacing={1}>
-            {(active.group?.items || []).map((item) => {
-              const done = item.status === "completed";
-              const editing = checkoffCode === item.task_code;
-              return (
-                <Box
-                  key={item.task_code}
-                  sx={{
-                    p: 1.25,
-                    borderRadius: 2,
-                    border: `1px solid ${OPS_MOBILE.border}`,
-                    bgcolor: done ? "#f0fdf4" : "#fff",
-                  }}
-                >
-                  <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-                    {item.task_name || item.task_code}
-                    {item.required ? "" : " (optional)"}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    {done
-                      ? item.completed_by_name
-                        ? `Checked off by ${item.completed_by_name}`
-                        : "Checked off"
-                      : "Pending"}
-                  </Typography>
-                  {!done ? (
-                    <>
-                      {editing ? (
-                        <TaskCompletionInputs
-                          schema={item.input_schema || []}
-                          values={inputValues}
-                          remarks={inputRemarks}
-                          onChangeValues={setInputValues}
-                          onChangeRemarks={setInputRemarks}
-                          disabled={busy}
-                        />
-                      ) : null}
-                      <Button
-                        fullWidth
-                        variant="outlined"
-                        disabled={busy}
-                        onClick={() => checkoffGroupItem(item)}
-                        sx={{ mt: 1, fontWeight: 800, textTransform: "none" }}
-                      >
-                        {editing ? "Save check-off" : "Check off"}
-                      </Button>
-                    </>
-                  ) : null}
-                </Box>
-              );
-            })}
-          </Stack>
+          <SharedActivityChecklist
+            items={active.group?.items || []}
+            userId={active.user_id}
+            busy={busy}
+            editingCode={checkoffCode}
+            inputValues={inputValues}
+            inputRemarks={inputRemarks}
+            onChangeValues={setInputValues}
+            onChangeRemarks={setInputRemarks}
+            onCheckoff={checkoffGroupItem}
+          />
           {active.checklist_followup_only ? null : (
             <>
             <TextField

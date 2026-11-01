@@ -106,6 +106,10 @@ export default function TaskVerificationReviewCard({
                         ? "Checked off"
                         : "Not checked off"}
                   </Typography>
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    Responsible: {item.responsibility_label || "Anyone on Team"}
+                    {item.completed_by_name ? ` · Checked off by ${item.completed_by_name}` : ""}
+                  </Typography>
                   {(item.records || []).map((rec) => (
                     <Box key={rec.activity_id || `${item.task_code}-${rec.employee_id}`} sx={{ pl: 1 }}>
                       <Typography variant="caption" color="text.secondary" display="block">

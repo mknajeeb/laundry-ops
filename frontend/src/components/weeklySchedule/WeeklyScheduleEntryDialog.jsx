@@ -22,6 +22,7 @@ import {
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
+import { getManagementTaskCatalog } from "../../api";
 import AddIcon from "@mui/icons-material/Add";
 import CloseIcon from "@mui/icons-material/Close";
 import ShiftScheduleTimeFields from "../datetime/ShiftScheduleTimeFields";
@@ -121,6 +122,8 @@ export default function WeeklyScheduleEntryDialog({
   shiftCategoryChoices = null,
   categoryLabel = (value) => value,
   dailyResponsibilities = NO_TASKS,
+  responsibilityConflicts = [],
+  previewActivityItems = null,
 }) {
   const isEdit = Boolean(entry?.id || responsibility?.id);
   const catalog = scheduleRoleCatalog();
@@ -250,6 +253,41 @@ export default function WeeklyScheduleEntryDialog({
 
   const isShift = kind === ASSIGNMENT_KIND.SHIFT;
   const respIsActivityGroup = String(respRole || "").startsWith("agroup_");
+  const [activityItems, setActivityItems] = useState([]);
+  const [formError, setFormError] = useState("");
+  useEffect(() => {
+    if (Array.isArray(previewActivityItems)) {
+      setActivityItems(previewActivityItems);
+      return undefined;
+    }
+    if (!open || kind === ASSIGNMENT_KIND.SHIFT || !String(respRole || "").startsWith("agroup_")) {
+      setActivityItems([]);
+      return undefined;
+    }
+    let cancelled = false;
+    getManagementTaskCatalog()
+      .then((res) => {
+        const groups = res.data?.activity_groups || [];
+        const group = groups.find((row) => row.role_code === respRole);
+        if (cancelled) return;
+        setActivityItems(
+          (group?.items || []).map((item) => ({
+            group_item_id: item.id,
+            task_code: item.task_code,
+            task_name: item.task_name || item.task_code,
+            responsibility_mode: item.responsibility_mode === "named" ? "named" : "team",
+            user_ids: (item.responsibility_user_ids || []).map(Number),
+            dirty: false,
+          }))
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setActivityItems([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, kind, respRole, previewActivityItems]);
   const canChooseSharedExecution = !isShift && respIsActivityGroup && userIds.length >= 2;
   useEffect(() => {
     if (!canChooseSharedExecution && executionMode === "shared") {
@@ -387,16 +425,35 @@ export default function WeeklyScheduleEntryDialog({
   const handleSubmit = () => {
     if (!canSave) return;
     if (!isShift) {
+      const rosterIds = userIds.map(Number);
+      const itemOverrides = activityItems
+        .filter((item) => item.dirty || (responsibilityConflicts || []).some((conflict) => conflict.task_code === item.task_code))
+        .map((item) => ({
+          group_item_id: item.group_item_id,
+          task_code: item.task_code,
+          responsibility_mode: item.responsibility_mode,
+          user_ids:
+            item.responsibility_mode === "named"
+              ? (item.user_ids || []).map(Number).filter((id) => rosterIds.includes(id))
+              : [],
+        }));
+      const unnamed = itemOverrides.filter((item) => item.responsibility_mode === "named" && !item.user_ids.length);
+      if (unnamed.length) {
+        setFormError("Choose at least one employee for each named item, or switch it to Anyone on Team.");
+        return;
+      }
+      setFormError("");
       onSave({
         kind: ASSIGNMENT_KIND.RESPONSIBILITY,
         user_id: Number(userIds[0]),
-        user_ids: userIds.map(Number),
+        user_ids: rosterIds,
         day_of_week: Number(dayOfWeek),
         role: respRole,
         remarks: respRemarks.trim() || null,
         timing_mode: timingMode,
         start_time: timingMode === TASK_TIMING.SPECIFIC ? taskStart : null,
         execution_mode: canChooseSharedExecution && executionMode === "shared" ? "shared" : "individual",
+        item_responsibility_overrides: itemOverrides,
         ...(correctionReason.trim()
           ? { confirm_active_change: true, correction_reason: correctionReason.trim() }
           : {}),
@@ -790,6 +847,62 @@ export default function WeeklyScheduleEntryDialog({
                   ? `Assigned: ${assignedNames.join(", ")}`
                   : "Select every employee on this assignment."}
               </Typography>
+              {respIsActivityGroup && activityItems.length ? (
+                <Stack spacing={1}>
+                  <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                    Checklist responsibility for this date
+                  </Typography>
+                  {(responsibilityConflicts || []).length ? (
+                    <Alert severity="warning">
+                      Choose a new responsibility for the listed items. This date only. Completed check-offs stay as recorded.
+                    </Alert>
+                  ) : null}
+                  {activityItems.map((item, index) => {
+                    const conflict = (responsibilityConflicts || []).some((row) => row.task_code === item.task_code);
+                    return (
+                      <Stack key={item.task_code} spacing={0.5} sx={{ p: 1, border: "1px solid", borderColor: conflict ? "warning.main" : "divider", borderRadius: 1 }}>
+                        <Typography variant="body2" sx={{ fontWeight: 700 }}>{item.task_name}</Typography>
+                        <FormControl size="small" fullWidth>
+                          <InputLabel>Responsibility</InputLabel>
+                          <Select
+                            label="Responsibility"
+                            value={item.responsibility_mode === "named" ? "named" : "team"}
+                            onChange={(e) => {
+                              const next = [...activityItems];
+                              next[index] = { ...item, responsibility_mode: e.target.value, dirty: true, user_ids: e.target.value === "team" ? [] : item.user_ids };
+                              setActivityItems(next);
+                            }}
+                          >
+                            <MenuItem value="team">Anyone on Team</MenuItem>
+                            <MenuItem value="named">Named employees</MenuItem>
+                          </Select>
+                        </FormControl>
+                        {item.responsibility_mode === "named" ? (
+                          <FormControl size="small" fullWidth>
+                            <InputLabel>Employees</InputLabel>
+                            <Select
+                              multiple
+                              label="Employees"
+                              value={(item.user_ids || []).map(Number).filter((id) => userIds.map(Number).includes(id))}
+                              onChange={(e) => {
+                                const next = [...activityItems];
+                                next[index] = { ...item, user_ids: e.target.value.map(Number), dirty: true, responsibility_mode: "named" };
+                                setActivityItems(next);
+                              }}
+                            >
+                              {userIds.map((id) => (
+                                <MenuItem key={id} value={Number(id)}>
+                                  {scheduleEmployeeName(employeesById, id)}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                        ) : null}
+                      </Stack>
+                    );
+                  })}
+                </Stack>
+              ) : null}
               {respIsActivityGroup && userIds.length < 2 ? (
                 <Typography variant="caption" color="text.secondary">
                   Select two or more employees to use Shared Execution — one checklist for the group, with a separate timer for each person.
@@ -875,7 +988,7 @@ export default function WeeklyScheduleEntryDialog({
             </>
           )}
 
-          {error ? <Alert severity="error">{error}</Alert> : null}
+          {formError || error ? <Alert severity="error">{formError || error}</Alert> : null}
         </Stack>
       </DialogContent>
       <DialogActions>
