@@ -294,7 +294,9 @@ def test_shared_activity_copy_is_independent_and_checklist_names_the_destination
         ):
             preview, err = preview_copy_shift(conn, cursor, 1, source["id"], user_ids=[30], days_of_week=[4])
             assert err is None, err
-            assert any("own assignment" in note for target in preview["targets"] for note in target["notes"])
+            assert any("separate assignment" in note for target in preview["targets"] for note in target["notes"])
+            assert preview["activities"][0]["mode"] == "independent"
+            assert preview["activities"][0]["join_available"] is False
             result, err = apply_copy_shift(conn, cursor, 1, source["id"], user_ids=[30], days_of_week=[4])
         assert err is None, err
         rows = [row for row in list_week_responsibilities(cursor, 1, week_start=WEEK) if row["role"] == "agroup_closing"]
@@ -419,6 +421,313 @@ def test_checklist_plan_does_not_drop_an_ineligible_destination_name():
     )
     assert clear["issues"] == []
     assert clear["overrides"][0]["user_ids"] == [10, 20, 30]
+
+
+def test_shared_activity_joins_the_existing_group_and_keeps_its_checklist():
+    def checklist(cursor, organization_id, role, business_date):
+        return {
+            "error": None,
+            "open_session": False,
+            "items": [
+                {
+                    "group_item_id": 7,
+                    "task_code": "lock_doors",
+                    "task_name": "Lock doors",
+                    "responsibility_mode": "named",
+                    "responsibility_user_ids": [10, 20],
+                    "date_override": True,
+                }
+            ],
+        }
+
+    def run(conn, cursor):
+        cursor.roles.append(
+            {
+                "organization_id": 1,
+                "code": "agroup_closing",
+                "name": "Closing",
+                "role_group": None,
+                "display_order": 500,
+                "active": 1,
+                "uses_time_slots": 0,
+                "remarks_enabled": 1,
+            }
+        )
+        source = _source(cursor)
+        _tasks(
+            cursor,
+            role="agroup_closing",
+            user_ids=[10, 20],
+            execution_mode="shared",
+            timing_mode="anytime",
+            start_time=None,
+            remarks="Lock up",
+        )
+        with patch("backend.planned_weekly_schedule_copy._checklist_for_role_date", side_effect=checklist), patch(
+            "backend.task_activity_item_responsibility.attach_checklist_responsibilities",
+            side_effect=lambda _c, _o, rows: [dict(row) for row in rows],
+        ):
+            preview, err = preview_copy_shift(conn, cursor, 1, source["id"], user_ids=[30], days_of_week=[1])
+            assert err is None, err
+            assert preview["activities"][0]["mode"] == "join"
+            assert preview["activities"][0]["join_available"] is True
+            assert any("Adds Cara to Closing" in note for note in preview["targets"][0]["notes"])
+            result, err = apply_copy_shift(conn, cursor, 1, source["id"], user_ids=[30], days_of_week=[1])
+        assert err is None, err
+        rows = [row for row in list_week_responsibilities(cursor, 1, week_start=WEEK) if row["role"] == "agroup_closing"]
+        original = [row for row in rows if row["user_id"] in {10, 20}]
+        joined = next(row for row in rows if row["user_id"] == 30)
+        group_ids = {row["assignment_group_id"] for row in original}
+        assert len(group_ids) == 1
+        assert joined["assignment_group_id"] in group_ids
+        assert joined["execution_mode"] == "shared"
+        assert {row["user_id"] for row in original} == {10, 20}
+        assert result["checklist_overrides"][0]["user_ids"] == [10, 20, 30]
+        assert not any("cleaning_task_" in sql or "payroll_" in sql or "clock" in sql for sql in cursor.sqls if sql.startswith(("insert", "update", "delete")))
+        return source
+
+    _run(run)
+
+
+def test_join_uses_a_separate_assignment_only_on_days_without_a_shared_group():
+    def checklist(cursor, organization_id, role, business_date):
+        named = business_date == date(2026, 6, 15)
+        return {
+            "error": None,
+            "open_session": False,
+            "items": [
+                {
+                    "group_item_id": 7,
+                    "task_code": "lock_doors",
+                    "task_name": "Lock doors",
+                    "responsibility_mode": "named",
+                    "responsibility_user_ids": [10, 20] if named else [],
+                    "date_override": named,
+                }
+            ],
+        }
+
+    def run(conn, cursor):
+        cursor.roles.append(
+            {
+                "organization_id": 1,
+                "code": "agroup_closing",
+                "name": "Closing",
+                "role_group": None,
+                "display_order": 500,
+                "active": 1,
+                "uses_time_slots": 0,
+                "remarks_enabled": 1,
+            }
+        )
+        source = _source(cursor)
+        _tasks(
+            cursor,
+            role="agroup_closing",
+            user_ids=[10, 20],
+            execution_mode="shared",
+            timing_mode="anytime",
+            start_time=None,
+            remarks="Lock up",
+        )
+        with patch("backend.planned_weekly_schedule_copy._checklist_for_role_date", side_effect=checklist), patch(
+            "backend.task_activity_item_responsibility.attach_checklist_responsibilities",
+            side_effect=lambda _c, _o, rows: [dict(row) for row in rows],
+        ):
+            preview, err = preview_copy_shift(conn, cursor, 1, source["id"], user_ids=[30], days_of_week=[1, 4])
+            assert err is None, err
+            assert preview["activities"][0]["mode"] == "join"
+            monday = next(row for row in preview["targets"] if row["day_of_week"] == 1)
+            thursday = next(row for row in preview["targets"] if row["day_of_week"] == 4)
+            assert any("Adds Cara to Closing" in note for note in monday["notes"])
+            assert any("No shared Closing on this day" in note for note in thursday["notes"])
+            assert thursday["activity_plan"][0]["mode"] == "independent"
+            result, err = apply_copy_shift(conn, cursor, 1, source["id"], user_ids=[30], days_of_week=[1, 4])
+        assert err is None, err
+        rows = [row for row in list_week_responsibilities(cursor, 1, week_start=WEEK) if row["role"] == "agroup_closing"]
+        monday_rows = [row for row in rows if row["day_of_week"] == 1]
+        thursday_row = next(row for row in rows if row["user_id"] == 30 and row["day_of_week"] == 4)
+        assert {row["assignment_group_id"] for row in monday_rows} == {monday_rows[0]["assignment_group_id"]}
+        assert {row["user_id"] for row in monday_rows} == {10, 20, 30}
+        assert thursday_row["execution_mode"] == "individual"
+        assert thursday_row["assignment_group_id"] != monday_rows[0]["assignment_group_id"]
+        by_date = {item["business_date"]: item["user_ids"] for item in result["checklist_overrides"]}
+        assert by_date["2026-06-15"] == [10, 20, 30]
+        assert by_date["2026-06-18"] == [30]
+        return source
+
+    _run(run)
+
+
+def test_shared_activity_can_stay_independent_without_changing_the_checklist():
+    def checklist(*_args, **_kwargs):
+        return {
+            "error": None,
+            "open_session": False,
+            "items": [
+                {
+                    "group_item_id": 7,
+                    "task_code": "lock_doors",
+                    "task_name": "Lock doors",
+                    "responsibility_mode": "named",
+                    "responsibility_user_ids": [10, 20],
+                    "date_override": True,
+                }
+            ],
+        }
+
+    def run(conn, cursor):
+        cursor.roles.append(
+            {
+                "organization_id": 1,
+                "code": "agroup_closing",
+                "name": "Closing",
+                "role_group": None,
+                "display_order": 500,
+                "active": 1,
+                "uses_time_slots": 0,
+                "remarks_enabled": 1,
+            }
+        )
+        source = _source(cursor)
+        _tasks(cursor, role="agroup_closing", user_ids=[10, 20], execution_mode="shared", timing_mode="anytime", start_time=None)
+        modes = [{"role": "agroup_closing", "mode": "independent"}]
+        with patch("backend.planned_weekly_schedule_copy._checklist_for_role_date", side_effect=checklist), patch(
+            "backend.task_activity_item_responsibility.attach_checklist_responsibilities",
+            side_effect=lambda _c, _o, rows: [dict(row) for row in rows],
+        ):
+            preview, err = preview_copy_shift(
+                conn, cursor, 1, source["id"], user_ids=[30], days_of_week=[1], activity_modes=modes
+            )
+            assert err is None, err
+            assert preview["counts"]["needs_resolution"] == 1
+            assert preview["targets"][0]["issues"][0]["code"] == "shared_checklist"
+            refused, err = apply_copy_shift(
+                conn, cursor, 1, source["id"], user_ids=[30], days_of_week=[1], activity_modes=modes
+            )
+            assert refused is None and "Resolve flagged" in err
+            result, err = apply_copy_shift(
+                conn,
+                cursor,
+                1,
+                source["id"],
+                user_ids=[30],
+                days_of_week=[1],
+                activity_modes=modes,
+                resolutions=[{"user_id": 30, "day_of_week": 1, "action": "copy_without_checklist"}],
+            )
+        assert err is None, err
+        rows = [row for row in list_week_responsibilities(cursor, 1, week_start=WEEK) if row["role"] == "agroup_closing"]
+        copied = next(row for row in rows if row["user_id"] == 30)
+        original = [row for row in rows if row["user_id"] in {10, 20}]
+        assert copied["execution_mode"] == "individual"
+        assert copied["assignment_group_id"] not in {row["assignment_group_id"] for row in original}
+        assert result["checklist_overrides"] == []
+        assert {row["user_id"] for row in original} == {10, 20}
+        return source
+
+    _run(run)
+
+
+def test_copy_includes_only_selected_tasks_and_skips_another_shift():
+    def run(conn, cursor):
+        source = _source(cursor)
+        cursor.roles.append(
+            {
+                "organization_id": 1,
+                "code": "floor_cleaning",
+                "name": "Floor Cleaning",
+                "role_group": None,
+                "display_order": 40,
+                "active": 1,
+                "uses_time_slots": 0,
+                "remarks_enabled": 1,
+            }
+        )
+        with patch("backend.payroll_schedule.worker_exists_in_schedule_grid", return_value=True):
+            create_entry(
+                conn,
+                cursor,
+                1,
+                week_start=WEEK,
+                data={"user_id": 10, "day_of_week": 1, "role": "fold", "start_time": "17:00", "end_time": "21:00"},
+            )
+        _tasks(cursor)
+        _tasks(cursor, role="floor_cleaning", timing_mode="anytime", start_time=None, remarks="Day floors")
+        _tasks(cursor, role="washer_cleaning", timing_mode="specific_time", start_time="18:00", remarks="Evening machines")
+        preview, err = preview_copy_shift(conn, cursor, 1, source["id"], user_ids=[20], days_of_week=[3])
+        assert err is None, err
+        by_role = {task["role"]: task for task in preview["source"]["tasks"]}
+        assert by_role["lint_cleaning"]["selected_by_default"] is True
+        assert by_role["floor_cleaning"]["selected_by_default"] is False
+        assert by_role["washer_cleaning"]["selected_by_default"] is False
+        assert "another shift" in by_role["washer_cleaning"]["selection_note"]
+        result, err = apply_copy_shift(conn, cursor, 1, source["id"], user_ids=[20], days_of_week=[3])
+        assert err is None, err
+        copied = [
+            row
+            for row in list_week_responsibilities(cursor, 1, week_start=WEEK)
+            if row["user_id"] == 20 and row["day_of_week"] == 3
+        ]
+        assert [row["role"] for row in copied] == ["lint_cleaning"]
+        flagged, err = preview_copy_shift(
+            conn,
+            cursor,
+            1,
+            source["id"],
+            user_ids=[30],
+            days_of_week=[4],
+            task_roles=["washer_cleaning"],
+        )
+        assert err is None, err
+        assert flagged["counts"]["needs_resolution"] == 1
+        refused, err = apply_copy_shift(
+            conn,
+            cursor,
+            1,
+            source["id"],
+            user_ids=[30],
+            days_of_week=[4],
+            task_roles=["washer_cleaning"],
+        )
+        assert refused is None and "Resolve flagged" in err
+        evening, err = apply_copy_shift(
+            conn,
+            cursor,
+            1,
+            source["id"],
+            user_ids=[30],
+            days_of_week=[4],
+            task_roles=["floor_cleaning"],
+        )
+        assert err is None, err
+        cara = [
+            row
+            for row in list_week_responsibilities(cursor, 1, week_start=WEEK)
+            if row["user_id"] == 30 and row["day_of_week"] == 4
+        ]
+        assert [row["role"] for row in cara] == ["floor_cleaning"]
+        assert cara[0]["remarks"] == "Day floors"
+        none, err = apply_copy_shift(
+            conn,
+            cursor,
+            1,
+            source["id"],
+            user_ids=[20],
+            days_of_week=[5],
+            task_roles=[],
+        )
+        assert err is None, err
+        friday = [
+            row
+            for row in list_week_responsibilities(cursor, 1, week_start=WEEK)
+            if row["user_id"] == 20 and row["day_of_week"] == 5
+        ]
+        assert friday == []
+        assert get_entry(cursor, 1, source["id"], conn=conn)["start_time"] == "08:00"
+        return result
+
+    _run(run)
 
 
 def test_source_day_is_never_replaced():

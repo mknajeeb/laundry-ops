@@ -63,11 +63,14 @@ export default function WeeklyScheduleCopyShiftDialog({
   const [conflictMode, setConflictMode] = useState("skip");
   const [confirmReplace, setConfirmReplace] = useState(false);
   const [resolutions, setResolutions] = useState({});
+  const [selectedRoles, setSelectedRoles] = useState(null);
+  const [activityModes, setActivityModes] = useState({});
   const [preview, setPreview] = useState(null);
   const [previewError, setPreviewError] = useState("");
   const [previewing, setPreviewing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState(null);
+  const [previewNonce, setPreviewNonce] = useState(0);
   const [saveError, setSaveError] = useState("");
 
   useEffect(() => {
@@ -77,6 +80,8 @@ export default function WeeklyScheduleCopyShiftDialog({
     setConflictMode("skip");
     setConfirmReplace(false);
     setResolutions({});
+    setSelectedRoles(null);
+    setActivityModes({});
     setPreview(null);
     setPreviewError("");
     setResult(null);
@@ -97,6 +102,37 @@ export default function WeeklyScheduleCopyShiftDialog({
   const assignments = source?.assignments || entry?.assignments || [];
   const breaks = entry ? entryBreakLines(entry) : [];
   const taskRows = source?.tasks?.length ? source.tasks : sourceTasks;
+  const taskRoleKey = selectedRoles
+    ? `chosen:${[...selectedRoles].sort().join(",")}`
+    : source?.tasks
+      ? `auto:${source.tasks
+          .filter((task) => task.selected_by_default)
+          .map((task) => task.role)
+          .sort()
+          .join(",")}`
+      : "auto";
+  const activityModeKey = JSON.stringify(activityModes);
+
+  const requestBody = (extra = {}) => {
+    const body = {
+      user_ids: selectedEmployees.map((employee) => Number(employee.user_id)),
+      days_of_week: days,
+      conflict_mode: conflictMode,
+      resolutions: Object.entries(resolutions).map(([key, action]) => {
+        const [userId, day] = key.split(":");
+        return { user_id: Number(userId), day_of_week: Number(day), action };
+      }),
+      ...extra,
+    };
+    if (selectedRoles) {
+      body.task_roles = selectedRoles;
+    } else if (source?.tasks) {
+      body.task_roles = source.tasks.filter((task) => task.selected_by_default).map((task) => task.role);
+    }
+    const modes = Object.entries(activityModes).map(([role, mode]) => ({ role, mode }));
+    if (modes.length) body.activity_modes = modes;
+    return body;
+  };
 
   useEffect(() => {
     if (!open || !entry?.id || !selectedEmployees.length || !days.length) {
@@ -109,15 +145,7 @@ export default function WeeklyScheduleCopyShiftDialog({
       setPreviewing(true);
       setPreviewError("");
       try {
-        const data = await previewRef.current({
-          user_ids: selectedEmployees.map((employee) => Number(employee.user_id)),
-          days_of_week: days,
-          conflict_mode: conflictMode,
-          resolutions: Object.entries(resolutions).map(([key, action]) => {
-            const [userId, day] = key.split(":");
-            return { user_id: Number(userId), day_of_week: Number(day), action };
-          }),
-        });
+        const data = await previewRef.current(requestBody());
         if (!cancelled) setPreview(data);
       } catch (error) {
         if (!cancelled) {
@@ -132,7 +160,7 @@ export default function WeeklyScheduleCopyShiftDialog({
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [open, entry?.id, selectedEmployees, days, conflictMode, resolutions]);
+  }, [open, entry?.id, selectedEmployees, days, conflictMode, resolutions, taskRoleKey, activityModeKey, previewNonce]);
 
   const counts = preview?.counts || { create: 0, replace: 0, skip: 0, needs_resolution: 0 };
   const needsReplaceConfirm = conflictMode === "replace" && counts.replace > 0;
@@ -156,17 +184,9 @@ export default function WeeklyScheduleCopyShiftDialog({
     setSaving(true);
     setSaveError("");
     try {
-      const copy = await onCopy({
-        user_ids: selectedEmployees.map((employee) => Number(employee.user_id)),
-        days_of_week: days,
-        conflict_mode: conflictMode,
-        confirm_replace: confirmReplace,
-        resolutions: Object.entries(resolutions).map(([key, action]) => {
-          const [userId, day] = key.split(":");
-          return { user_id: Number(userId), day_of_week: Number(day), action };
-        }),
-      });
+      const copy = await onCopy(requestBody({ confirm_replace: confirmReplace }));
       setResult(copy);
+      setPreviewNonce((value) => value + 1);
     } catch (error) {
       setSaveError(error?.response?.data?.error || "Could not copy this shift.");
     } finally {
@@ -175,6 +195,21 @@ export default function WeeklyScheduleCopyShiftDialog({
   };
 
   const skipped = (preview?.targets || []).filter((target) => target.action === "skip" && target.reason !== "Source shift");
+
+  const taskChecked = (task) => {
+    if (selectedRoles) return selectedRoles.includes(task.role);
+    if (task.selected_by_default !== undefined) return Boolean(task.selected_by_default);
+    return true;
+  };
+
+  const toggleTask = (role) => {
+    const current = taskRows.filter((task) => taskChecked(task)).map((task) => task.role);
+    setSelectedRoles(current.includes(role) ? current.filter((item) => item !== role) : [...current, role]);
+  };
+
+  const sharedActivities = (preview?.activities || []).filter((activity) =>
+    taskRows.some((task) => task.role === activity.role && taskChecked(task)),
+  );
 
   const dialogBody = (
     <>
@@ -209,24 +244,74 @@ export default function WeeklyScheduleCopyShiftDialog({
                 ))}
               </Stack>
             ) : null}
-            {taskRows.length ? (
-              <Stack spacing={0.25} sx={{ mt: 0.75 }}>
-                {taskRows.map((task) => (
-                  <Box key={task.id || task.role}>
-                    <Typography variant="body2">{taskLine(task)}</Typography>
-                    {(task.checklist_items || []).map((item) => (
-                      <Typography key={item.task_code || item.group_item_id} variant="caption" color="text.secondary" display="block">
-                        {item.task_name}: {item.responsibility_label || "Anyone on Team"}
-                      </Typography>
-                    ))}
-                  </Box>
-                ))}
-              </Stack>
-            ) : (
-              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                No tasks on this day
+            <Box sx={{ mt: 0.75 }}>
+              <Typography variant="subtitle2" fontWeight={800}>
+                Tasks to copy
               </Typography>
-            )}
+              {taskRows.length ? (
+                <Stack spacing={0.25} sx={{ mt: 0.25 }}>
+                  {taskRows.map((task) => (
+                    <Box key={task.id || task.role}>
+                      <FormControlLabel
+                        sx={{ alignItems: "flex-start", ml: 0 }}
+                        control={
+                          <Checkbox
+                            size="small"
+                            checked={taskChecked(task)}
+                            onChange={() => toggleTask(task.role)}
+                          />
+                        }
+                        label={<Typography variant="body2">{taskLine(task)}</Typography>}
+                      />
+                      {task.selection_note ? (
+                        <Typography variant="caption" color="text.secondary" display="block" sx={{ pl: 4 }}>
+                          {task.selection_note}
+                        </Typography>
+                      ) : null}
+                      {(task.checklist_items || []).map((item) => (
+                        <Typography
+                          key={item.task_code || item.group_item_id}
+                          variant="caption"
+                          color="text.secondary"
+                          display="block"
+                          sx={{ pl: 4 }}
+                        >
+                          {item.task_name}: {item.responsibility_label || "Anyone on Team"}
+                        </Typography>
+                      ))}
+                    </Box>
+                  ))}
+                </Stack>
+              ) : (
+                <Typography variant="body2" color="text.secondary">
+                  No tasks on this day
+                </Typography>
+              )}
+            </Box>
+            {sharedActivities.map((activity) => (
+              <Box key={activity.role}>
+                <Typography variant="subtitle2" fontWeight={800}>
+                  {activity.label}
+                </Typography>
+                <RadioGroup
+                  value={activityModes[activity.role] || activity.mode || "independent"}
+                  onChange={(event) =>
+                    setActivityModes((current) => ({ ...current, [activity.role]: event.target.value }))
+                  }
+                >
+                  <FormControlLabel
+                    value="join"
+                    disabled={!activity.join_available}
+                    control={<Radio size="small" />}
+                    label="Join existing activity"
+                  />
+                  <FormControlLabel value="independent" control={<Radio size="small" />} label="Separate assignment" />
+                </RadioGroup>
+                <Typography variant="caption" color="text.secondary">
+                  {activity.note}
+                </Typography>
+              </Box>
+            ))}
           </Box>
 
           <Autocomplete
@@ -389,7 +474,14 @@ export default function WeeklyScheduleCopyShiftDialog({
   }
 
   return (
-    <Dialog open={open} onClose={saving ? undefined : onClose} maxWidth="sm" fullWidth data-testid="copy-shift-dialog">
+    <Dialog
+      open={open}
+      onClose={saving ? undefined : onClose}
+      maxWidth="sm"
+      fullWidth
+      data-testid="copy-shift-dialog"
+      slotProps={{ root: { sx: { zIndex: (theme) => theme.zIndex.tooltip + 10 } } }}
+    >
       {dialogBody}
     </Dialog>
   );

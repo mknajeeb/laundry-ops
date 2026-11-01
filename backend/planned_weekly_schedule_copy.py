@@ -2,7 +2,8 @@
 
 The copy is scheduled data only: shift times, breaks, role segments, task
 participation, activity-group membership, and checklist responsibility for the
-destination date. Each destination row is its own assignment. Attendance,
+destination date. A shared activity can join the shared assignment already on
+the destination date, or become that employee's own assignment. Attendance,
 completed check-offs, activity timers, verification, and payroll are not read
 for copying and are not written.
 
@@ -28,12 +29,19 @@ from backend.planned_weekly_schedule import (
 )
 from backend.planned_weekly_schedule_responsibilities import (
     EXECUTION_INDIVIDUAL,
+    EXECUTION_SHARED,
     TABLE as RESP_TABLE,
     _insert_member,
     delete_responsibility,
     list_week_responsibilities,
 )
-from backend.planned_weekly_schedule_task_timing import TIMING_ANYTIME, evaluate_task_timing
+from backend.planned_weekly_schedule_task_timing import (
+    TIMING_ANYTIME,
+    TIMING_SPECIFIC,
+    _minutes,
+    _on_shift,
+    evaluate_task_timing,
+)
 
 CONFLICT_SKIP = "skip"
 CONFLICT_REPLACE = "replace"
@@ -43,6 +51,10 @@ RESOLUTION_SKIP = "skip"
 RESOLUTION_CHECKLIST = "copy_schedule_only"
 RESOLUTION_WITHOUT_CHECKLIST = "copy_without_checklist"
 RESOLUTIONS = frozenset({RESOLUTION_SKIP, RESOLUTION_CHECKLIST, RESOLUTION_WITHOUT_CHECKLIST})
+
+ACTIVITY_JOIN = "join"
+ACTIVITY_INDEPENDENT = "independent"
+ACTIVITY_MODES = frozenset({ACTIVITY_JOIN, ACTIVITY_INDEPENDENT})
 
 _COMPLETED_SESSION = frozenset({"completed", "approved", "verified"})
 
@@ -98,6 +110,34 @@ def _parse_targets(
     if not days:
         return [], [], "Choose at least one day."
     return users, days, None
+
+
+def _parse_task_roles(task_roles: Sequence[Any] | None) -> tuple[set[str] | None, str | None]:
+    """``None`` means the shift's own tasks. A list, including empty, is explicit."""
+    if task_roles is None:
+        return None, None
+    if not isinstance(task_roles, (list, tuple)):
+        return None, "task_roles must be a list of task roles"
+    chosen: set[str] = set()
+    for raw in task_roles:
+        role = str(raw or "").strip()
+        if not role:
+            return None, "task_roles must be a list of task roles"
+        chosen.add(role)
+    return chosen, None
+
+
+def _parse_activity_modes(activity_modes: Sequence[Mapping[str, Any]] | None) -> tuple[dict[str, str], str | None]:
+    out: dict[str, str] = {}
+    for item in activity_modes or []:
+        if not isinstance(item, Mapping):
+            return {}, "activity_modes must list role and mode"
+        role = str(item.get("role") or "").strip()
+        mode = str(item.get("mode") or "").strip().lower()
+        if not role or mode not in ACTIVITY_MODES:
+            return {}, "activity mode must be join or independent"
+        out[role] = mode
+    return out, None
 
 
 def _role_label(catalog: Mapping[str, Mapping[str, Any]], code: str) -> str:
@@ -196,6 +236,7 @@ def plan_checklist_transfer(
     source_items: Sequence[Mapping[str, Any]],
     dest_items: Sequence[Mapping[str, Any]],
     dest_roster: Sequence[int],
+    retain_dest_names: bool = False,
 ) -> dict[str, Any]:
     """Date overrides that name the destination where the source is specifically responsible.
 
@@ -215,7 +256,7 @@ def plan_checklist_transfer(
         dest_item = dest_by_id.get(int(item.get("group_item_id") or 0)) or {}
         if same_date:
             current = list(named)
-        elif dest_item.get("date_override"):
+        elif dest_item.get("date_override") or retain_dest_names:
             current = [int(uid) for uid in (dest_item.get("responsibility_user_ids") or [])]
         else:
             current = []
@@ -288,9 +329,124 @@ def _persist_checklist_overrides(
         )
 
 
-def _task_summary(task: Mapping[str, Any], catalog: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+def _is_shared_activity(task: Mapping[str, Any]) -> bool:
+    users = {int(uid) for uid in (task.get("user_ids") or []) if int(uid or 0) > 0}
+    return str(task.get("execution_mode") or "") == EXECUTION_SHARED and len(users) >= 2
+
+
+def _name_list(names: Mapping[int, str], user_ids: Sequence[int]) -> str:
+    labels = [names.get(int(uid)) or f"User #{int(uid)}" for uid in user_ids]
+    if not labels:
+        return "the existing team"
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]} and {labels[1]}"
+    return ", ".join(labels[:-1]) + f", and {labels[-1]}"
+
+
+def _point_on_shift(point: int, shift: Mapping[str, Any]) -> bool:
+    start = _minutes(shift.get("start_time"))
+    end = _minutes(shift.get("end_time"))
+    if start is None or end is None:
+        return False
+    return _on_shift(point, start, end) is not None
+
+
+def _task_selection(task: Mapping[str, Any], source: Mapping[str, Any], day_shifts: Sequence[Mapping[str, Any]]) -> tuple[bool, str]:
+    """Tasks live on the employee-day. Only this shift's tasks are selected until a manager opts in."""
+    others = [row for row in day_shifts if int(row.get("id") or 0) != int(source.get("id") or 0)]
+    if not others:
+        return True, ""
+    mode = str(task.get("timing_mode") or TIMING_ANYTIME)
+    if mode == TIMING_SPECIFIC:
+        point = _minutes(task.get("start_time"))
+        if point is None:
+            return False, "This task has no time on this shift."
+        on_this = _point_on_shift(point, source)
+        on_other = any(_point_on_shift(point, row) for row in others)
+        if on_this and on_other:
+            return True, "This time also falls in another shift on this day."
+        if on_this:
+            return True, ""
+        if on_other:
+            return False, "Scheduled during another shift on this day."
+        return False, "Scheduled outside this shift."
+    return False, "Also on this day, and not tied to this shift."
+
+
+def _shared_groups(
+    responsibilities: Sequence[Mapping[str, Any]],
+    *,
+    day: int,
+    role: str,
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in responsibilities:
+        if int(row.get("day_of_week") or 0) != int(day) or str(row.get("role") or "") != role:
+            continue
+        group_id = str(row.get("assignment_group_id") or "").strip()
+        if not group_id:
+            continue
+        grouped.setdefault(group_id, []).append(dict(row))
+    found: list[tuple[str, list[dict[str, Any]]]] = []
+    for group_id, members in grouped.items():
+        user_ids = {int(member.get("user_id") or 0) for member in members}
+        shared = any(str(member.get("execution_mode") or "") == EXECUTION_SHARED for member in members)
+        if shared and len(user_ids) >= 2:
+            found.append((group_id, members))
+    return found
+
+
+def _compatible_group(
+    responsibilities: Sequence[Mapping[str, Any]],
+    *,
+    day: int,
+    role: str,
+    prefer_group_id: str | None,
+) -> tuple[str, list[dict[str, Any]]] | None:
+    groups = _shared_groups(responsibilities, day=day, role=role)
+    if not groups:
+        return None
+    if prefer_group_id:
+        for group_id, members in groups:
+            if group_id == prefer_group_id:
+                return group_id, members
+    groups.sort(key=lambda item: (-len({int(member.get("user_id") or 0) for member in item[1]}), item[0]))
+    return groups[0]
+
+
+def _activity_mode_for_target(
+    role: str,
+    modes: Mapping[str, str],
+    *,
+    any_compatible: bool,
+) -> str:
+    """Join stays join even when this day has no shared group.
+
+    The planner then says so and creates a separate assignment for that day only.
+    Collapsing the choice here made the preview look like the manager had asked
+    for an independent copy.
+    """
+    requested = modes.get(role)
+    if requested == ACTIVITY_INDEPENDENT:
+        return ACTIVITY_INDEPENDENT
+    if requested == ACTIVITY_JOIN or any_compatible:
+        return ACTIVITY_JOIN
+    return ACTIVITY_INDEPENDENT
+
+
+def _task_summary(
+    task: Mapping[str, Any],
+    catalog: Mapping[str, Mapping[str, Any]],
+    *,
+    included: bool,
+    selected_by_default: bool,
+    selection_note: str,
+) -> dict[str, Any]:
     role = str(task.get("role") or "")
     return {
+        "id": task.get("id"),
         "role": role,
         "label": _role_label(catalog, role),
         "remarks": task.get("remarks"),
@@ -298,9 +454,14 @@ def _task_summary(task: Mapping[str, Any], catalog: Mapping[str, Mapping[str, An
         "start_time": task.get("start_time"),
         "timing_label": task.get("timing_label") or "",
         "execution_mode": task.get("execution_mode") or EXECUTION_INDIVIDUAL,
-        "shared": str(task.get("execution_mode") or "") == "shared" and len(task.get("user_ids") or []) >= 2,
+        "user_ids": [int(uid) for uid in (task.get("user_ids") or [])],
+        "assignment_group_id": task.get("assignment_group_id"),
+        "shared": _is_shared_activity(task),
         "activity_group": role.startswith("agroup_"),
         "checklist_items": list(task.get("checklist_items") or []),
+        "included": included,
+        "selected_by_default": selected_by_default,
+        "selection_note": selection_note,
     }
 
 
@@ -321,7 +482,7 @@ def _source_summary(source: Mapping[str, Any], tasks: Sequence[Mapping[str, Any]
         "unscheduled_break_minutes": int(source.get("unscheduled_break_minutes") or 0),
         "assignments": list(source.get("assignments") or []),
         "employer_affiliation": source.get("employer_affiliation"),
-        "tasks": [_task_summary(task, catalog) for task in tasks],
+        "tasks": [dict(task) for task in tasks],
     }
 
 
@@ -340,6 +501,69 @@ def _merge_choices(issues: Sequence[Mapping[str, Any]]) -> list[str]:
     return [choice for choice in order if choice in allowed]
 
 
+def _plan_shared_activity(
+    task: Mapping[str, Any],
+    *,
+    user_id: int,
+    day: int,
+    mode: str,
+    responsibilities: Sequence[Mapping[str, Any]],
+    names: Mapping[int, str],
+    label: str,
+) -> dict[str, Any]:
+    role = str(task.get("role") or "")
+    employee = names.get(int(user_id)) or "the employee"
+    prefer = str(task.get("assignment_group_id") or "").strip() or None
+    if mode == ACTIVITY_JOIN:
+        found = _compatible_group(responsibilities, day=day, role=role, prefer_group_id=prefer)
+        if found:
+            group_id, members = found
+            member_ids: list[int] = []
+            for member in members:
+                member_id = int(member.get("user_id") or 0)
+                if member_id and member_id not in member_ids:
+                    member_ids.append(member_id)
+            already = int(user_id) in member_ids
+            others = [member_id for member_id in member_ids if member_id != int(user_id)]
+            sample = members[0]
+            if already:
+                note = f"{employee} is already on {label}. That activity is left as it is."
+            else:
+                note = (
+                    f"Adds {employee} to {label} with {_name_list(names, others)}. "
+                    "One shared checklist and one supervisor verification. Existing check-offs stay."
+                )
+            return {
+                "role": role,
+                "label": label,
+                "mode": ACTIVITY_JOIN,
+                "assignment_group_id": group_id,
+                "already_member": already,
+                "timing_mode": sample.get("timing_mode") or TIMING_ANYTIME,
+                "start_time": sample.get("start_time"),
+                "remarks": sample.get("remarks"),
+                "display_order": int(sample.get("display_order") or 0),
+                "member_user_ids": member_ids,
+                "note": note,
+            }
+        note = f"No shared {label} on this day, so {employee} gets a separate assignment."
+    else:
+        note = f"{label} is a separate assignment for {employee}. The original team is unchanged."
+    return {
+        "role": role,
+        "label": label,
+        "mode": ACTIVITY_INDEPENDENT,
+        "assignment_group_id": None,
+        "already_member": False,
+        "timing_mode": task.get("timing_mode") or TIMING_ANYTIME,
+        "start_time": task.get("start_time"),
+        "remarks": task.get("remarks"),
+        "display_order": int(task.get("display_order") or 0),
+        "member_user_ids": [],
+        "note": note,
+    }
+
+
 def preview_copy_shift(
     conn,
     cursor,
@@ -350,6 +574,8 @@ def preview_copy_shift(
     days_of_week: Sequence[Any],
     conflict_mode: str = CONFLICT_SKIP,
     resolutions: Sequence[Mapping[str, Any]] | None = None,
+    task_roles: Sequence[Any] | None = None,
+    activity_modes: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     mode = str(conflict_mode or CONFLICT_SKIP).strip().lower()
     if mode not in CONFLICT_MODES:
@@ -378,11 +604,56 @@ def preview_copy_shift(
         tasks = attach_checklist_responsibilities(cursor, organization_id, tasks)
     except Exception:
         pass
-    everyone = users + [source_user]
-    names = _worker_names(conn, organization_id, everyone)
+    explicit_roles, role_err = _parse_task_roles(task_roles)
+    if role_err:
+        return None, role_err
+    modes, mode_err = _parse_activity_modes(activity_modes)
+    if mode_err:
+        return None, mode_err
+    known_roles = {str(task.get("role") or "") for task in tasks}
+    if explicit_roles is not None:
+        unknown = sorted(explicit_roles - known_roles)
+        if unknown:
+            return None, f"Task {unknown[0]} is not on this day."
+    day_shifts = _entries_for(entries, user_id=source_user, day=source_day, week_start=week_start)
+    selection = [(task, *_task_selection(task, source, day_shifts)) for task in tasks]
+    chosen_roles = (
+        explicit_roles
+        if explicit_roles is not None
+        else {str(task.get("role") or "") for task, selected, _note in selection if selected}
+    )
+    included = [task for task, _selected, _note in selection if str(task.get("role") or "") in chosen_roles]
+    included_roles = [str(task.get("role") or "") for task in included]
+    name_ids = set(users)
+    name_ids.add(source_user)
+    for row in responsibilities:
+        name_ids.add(int(row.get("user_id") or 0))
+    names = _worker_names(conn, organization_id, [uid for uid in name_ids if uid])
     chosen = _resolution_map(resolutions)
     from backend.planned_weekly_schedule import _assert_worker_in_org, _assert_worker_schedulable
 
+    any_compatible: dict[str, bool] = {}
+    for task in included:
+        if not _is_shared_activity(task):
+            continue
+        role = str(task.get("role") or "")
+        prefer = str(task.get("assignment_group_id") or "").strip() or None
+        any_compatible[role] = any(
+            _compatible_group(responsibilities, day=day, role=role, prefer_group_id=prefer) is not None
+            for uid in users
+            for day in days
+            if not (uid == source_user and day == source_day)
+        )
+    task_summaries = [
+        _task_summary(
+            task,
+            catalog,
+            included=str(task.get("role") or "") in chosen_roles,
+            selected_by_default=selected,
+            selection_note=note,
+        )
+        for task, selected, note in selection
+    ]
     targets: list[dict[str, Any]] = []
     for uid in users:
         worker_err = _assert_worker_in_org(conn, organization_id, uid)
@@ -397,11 +668,12 @@ def preview_copy_shift(
             colliding = [
                 row
                 for row in existing_tasks
-                if str(row.get("role") or "") in {str(task.get("role") or "") for task in tasks}
+                if str(row.get("role") or "") in set(included_roles)
             ]
             issues: list[dict[str, Any]] = []
             notes: list[str] = []
             checklist_overrides: list[dict[str, Any]] = []
+            activity_plan: list[dict[str, Any]] = []
             if uid == source_user and day == source_day:
                 targets.append(
                     _target_row(
@@ -414,6 +686,7 @@ def preview_copy_shift(
                         issues=[],
                         notes=[],
                         checklist_overrides=[],
+                        task_roles=included_roles,
                     )
                 )
                 continue
@@ -425,7 +698,7 @@ def preview_copy_shift(
                         [RESOLUTION_SKIP],
                     )
                 )
-            for task in tasks:
+            for task in included:
                 role = str(task.get("role") or "")
                 label = _role_label(catalog, role)
                 task_err = role_assignment_error(role, catalog, timed=False, already_assigned=False)
@@ -440,11 +713,25 @@ def preview_copy_shift(
                     notes.append(warning)
                 for timing_err in timing_errors:
                     issues.append(_issue("timing", f"{label}: {timing_err}", [RESOLUTION_SKIP]))
-                if task.get("execution_mode") == "shared" and len(task.get("user_ids") or []) >= 2:
-                    notes.append(
-                        f"{label} is copied as {names.get(uid) or 'the employee'}'s own assignment. "
-                        "The original team is unchanged."
+                activity_mode = ACTIVITY_INDEPENDENT
+                if _is_shared_activity(task):
+                    activity_mode = _activity_mode_for_target(
+                        role,
+                        modes,
+                        any_compatible=any_compatible.get(role, False),
                     )
+                    plan = _plan_shared_activity(
+                        task,
+                        user_id=uid,
+                        day=day,
+                        mode=activity_mode,
+                        responsibilities=responsibilities,
+                        names=names,
+                        label=label,
+                    )
+                    activity_plan.append(plan)
+                    notes.append(plan["note"])
+                    activity_mode = str(plan["mode"])
                 if role.startswith("agroup_"):
                     source_date = business_date_for_week(week_start, source_day)
                     dest_date = business_date_for_week(week_start, day)
@@ -472,16 +759,36 @@ def preview_copy_shift(
                             and int(row.get("user_id") or 0) != uid
                         ]
                         roster.append(uid)
+                        same_date = dest_date == source_date
                         planned = plan_checklist_transfer(
                             source_user_id=source_user,
                             dest_user_id=uid,
-                            same_date=dest_date == source_date,
+                            same_date=same_date,
                             source_items=source_loaded.get("items") or [],
                             dest_items=dest_loaded.get("items") or [],
                             dest_roster=roster,
+                            retain_dest_names=activity_mode == ACTIVITY_JOIN and not same_date,
+                        )
+                        issues.extend(planned["issues"])
+                        dest_has_names = any(item.get("date_override") for item in (dest_loaded.get("items") or []))
+                        dest_has_assignment = any(
+                            int(row.get("day_of_week") or 0) == day and str(row.get("role") or "") == role
+                            for row in responsibilities
                         )
                         checklist_overrides.extend(planned["overrides"])
-                        issues.extend(planned["issues"])
+                        if (
+                            activity_mode == ACTIVITY_INDEPENDENT
+                            and planned["overrides"]
+                            and (same_date or dest_has_names or dest_has_assignment)
+                        ):
+                            issues.append(
+                                _issue(
+                                    "shared_checklist",
+                                    f"{label} already has a checklist on this date. "
+                                    "A separate assignment leaves those names unchanged unless you allow the update.",
+                                    [RESOLUTION_SKIP, RESOLUTION_WITHOUT_CHECKLIST, RESOLUTION_CHECKLIST],
+                                )
+                            )
                         if dest_loaded.get("open_session") and planned["overrides"]:
                             issues.append(
                                 _issue(
@@ -513,6 +820,8 @@ def preview_copy_shift(
                     notes=list(dict.fromkeys(notes)),
                     checklist_overrides=checklist_overrides,
                     choices=_merge_choices(issues) if issues else [],
+                    task_roles=included_roles,
+                    activity_plan=activity_plan,
                 )
             )
     counts = {
@@ -521,9 +830,35 @@ def preview_copy_shift(
         "skip": sum(1 for row in targets if row["action"] == "skip"),
         "needs_resolution": sum(1 for row in targets if row["action"] == "needs_resolution"),
     }
+    activities = []
+    for task in included:
+        if not _is_shared_activity(task):
+            continue
+        role = str(task.get("role") or "")
+        label = _role_label(catalog, role)
+        available = any_compatible.get(role, False)
+        requested = modes.get(role)
+        if requested == ACTIVITY_INDEPENDENT or not available:
+            shown = ACTIVITY_INDEPENDENT
+        else:
+            shown = ACTIVITY_JOIN
+        activities.append(
+            {
+                "role": role,
+                "label": label,
+                "join_available": available,
+                "mode": shown,
+                "note": (
+                    "Selected days that already share this activity add the employee to that checklist and verification."
+                    if shown == ACTIVITY_JOIN
+                    else "Each destination gets a separate assignment. The original team stays unchanged."
+                ),
+            }
+        )
     return {
         "conflict_mode": mode,
-        "source": _source_summary(source, tasks, catalog, names),
+        "source": _source_summary(source, task_summaries, catalog, names),
+        "activities": activities,
         "counts": counts,
         "targets": targets,
         "message": format_copy_message(
@@ -552,10 +887,14 @@ def _classify(
             remaining = [
                 issue
                 for issue in remaining
-                if issue.get("code") not in {"checklist_unreadable", "checklist_ineligible"}
+                if issue.get("code") not in {"checklist_unreadable", "checklist_ineligible", "shared_checklist"}
             ]
         elif resolution == RESOLUTION_CHECKLIST:
-            remaining = [issue for issue in remaining if issue.get("code") != "open_checklist"]
+            remaining = [
+                issue
+                for issue in remaining
+                if issue.get("code") not in {"open_checklist", "shared_checklist"}
+            ]
     if remaining:
         return "needs_resolution", str(remaining[0].get("message") or "Resolve this assignment before copying.")
     conflict = bool(existing_shifts or colliding)
@@ -586,6 +925,8 @@ def _target_row(
     notes: Sequence[str],
     checklist_overrides: Sequence[Mapping[str, Any]],
     choices: Sequence[str] | None = None,
+    task_roles: Sequence[str] | None = None,
+    activity_plan: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "user_id": uid,
@@ -599,6 +940,8 @@ def _target_row(
         "choices": list(choices or []),
         "notes": list(notes),
         "checklist_overrides": [dict(item) for item in checklist_overrides],
+        "task_roles": list(task_roles or []),
+        "activity_plan": [dict(item) for item in (activity_plan or [])],
     }
 
 
@@ -629,6 +972,8 @@ def apply_copy_shift(
     conflict_mode: str = CONFLICT_SKIP,
     confirm_replace: bool = False,
     resolutions: Sequence[Mapping[str, Any]] | None = None,
+    task_roles: Sequence[Any] | None = None,
+    activity_modes: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     preview, err = preview_copy_shift(
         conn,
@@ -639,6 +984,8 @@ def apply_copy_shift(
         days_of_week=days_of_week,
         conflict_mode=conflict_mode,
         resolutions=resolutions,
+        task_roles=task_roles,
+        activity_modes=activity_modes,
     )
     if err or preview is None:
         return None, err or "Could not preview this copy"
@@ -679,14 +1026,15 @@ def apply_copy_shift(
             continue
         if action != "create" and action != "replace":
             return None, "Resolve flagged assignments before copying."
+        included_roles = [str(role) for role in (target.get("task_roles") or [])]
+        plans = {str(item.get("role") or ""): item for item in (target.get("activity_plan") or [])}
         if action == "replace":
             replaced += 1
             for row in _entries_for(entries, user_id=uid, day=day, week_start=week_start):
                 if int(row.get("id") or 0) != int(source.get("id") or 0):
                     delete_entry(cursor, organization_id, int(row["id"]))
-            source_roles = {str(task.get("role") or "") for task in tasks}
             for row in _source_tasks(responsibilities, user_id=uid, day=day):
-                if str(row.get("role") or "") in source_roles:
+                if str(row.get("role") or "") in included_roles:
                     delete_responsibility(cursor, organization_id, int(row["id"]))
         entry, create_err = create_entry(
             conn,
@@ -701,19 +1049,40 @@ def apply_copy_shift(
         created_ids.append(int(entry["id"]))
         chosen = _resolution_map(resolutions).get((uid, day))
         write_checklist = chosen != RESOLUTION_WITHOUT_CHECKLIST
-        for task in tasks:
+        tasks_by_role = {str(task.get("role") or ""): task for task in tasks}
+        for role in included_roles:
+            task = tasks_by_role.get(role)
+            if not task:
+                return None, "A selected task is no longer on this day."
+            plan = plans.get(role)
+            if plan and plan.get("already_member") and action != "replace":
+                continue
+            if plan and plan.get("mode") == ACTIVITY_JOIN and plan.get("assignment_group_id"):
+                group_id = str(plan["assignment_group_id"])
+                remarks = plan.get("remarks")
+                timing_mode = str(plan.get("timing_mode") or TIMING_ANYTIME)
+                start_time = plan.get("start_time")
+                execution_mode = EXECUTION_SHARED
+                display_order = int(plan.get("display_order") or 0)
+            else:
+                group_id = uuid.uuid4().hex
+                remarks = task.get("remarks")
+                timing_mode = str(task.get("timing_mode") or TIMING_ANYTIME)
+                start_time = task.get("start_time")
+                execution_mode = EXECUTION_INDIVIDUAL
+                display_order = int(task.get("display_order") or 0)
             new_id = _insert_member(
                 cursor,
                 organization_id,
                 week_start=week_start,
                 user_id=uid,
                 day_of_week=day,
-                role=str(task.get("role") or ""),
-                remarks=task.get("remarks"),
-                assignment_group_id=uuid.uuid4().hex,
-                timing_mode=str(task.get("timing_mode") or TIMING_ANYTIME),
-                start_time=task.get("start_time"),
-                execution_mode=EXECUTION_INDIVIDUAL,
+                role=role,
+                remarks=remarks,
+                assignment_group_id=group_id,
+                timing_mode=timing_mode,
+                start_time=start_time,
+                execution_mode=execution_mode,
             )
             cursor.execute(
                 f"""
@@ -722,7 +1091,7 @@ def apply_copy_shift(
                 WHERE organization_id=%s AND id=%s AND user_id=%s AND day_of_week=%s
                 """,
                 (
-                    int(task.get("display_order") or 0),
+                    display_order,
                     int(organization_id),
                     int(new_id),
                     uid,

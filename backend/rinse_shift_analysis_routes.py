@@ -2155,6 +2155,8 @@ def register_rinse_shift_analysis_routes(
                 "days_of_week": body.get("days_of_week") or [],
                 "conflict_mode": body.get("conflict_mode") or "skip",
                 "resolutions": body.get("resolutions") or [],
+                "task_roles": body.get("task_roles") if "task_roles" in body else None,
+                "activity_modes": body.get("activity_modes") if "activity_modes" in body else None,
             }
             if not apply:
                 preview, err = preview_copy_shift(conn, cursor, tenant_oid, entry_id, **kwargs)

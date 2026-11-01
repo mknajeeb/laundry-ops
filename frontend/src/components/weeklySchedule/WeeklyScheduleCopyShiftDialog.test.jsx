@@ -51,6 +51,7 @@ describe("Copy shift dialog", () => {
     expect(html).toContain("Clear all");
     expect(html).toContain("Skip existing shifts");
     expect(html).toContain("Replace existing shifts");
+    expect(html).toContain("Tasks to copy");
     expect(html).toContain("Early wash");
     expect(html).toContain("Lint traps");
     expect(html).toContain("Copy shifts");
