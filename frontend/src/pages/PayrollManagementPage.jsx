@@ -29,6 +29,7 @@ import ShiftTaskHistoryPanel from "../components/ShiftTaskHistoryPanel";
 import PayrollSchedulingPanel from "../components/PayrollSchedulingPanel";
 import PayrollPeriodSearchBar from "../components/PayrollPeriodSearchBar";
 import PayrollReportPanel from "../components/PayrollReportPanel";
+import LaborCostAnalysisPanel from "../components/LaborCostAnalysisPanel";
 import { defaultPayPeriodRange } from "../payroll/payPeriodDefaults";
 
 export default function PayrollManagementPage() {
@@ -77,6 +78,7 @@ export default function PayrollManagementPage() {
     () => [
       { key: "reports", label: "Dashboard" },
       { key: "reports_detail", label: "Reports" },
+      { key: "labor_cost", label: "Labor Cost Analysis" },
     ],
     [],
   );
@@ -332,6 +334,7 @@ export default function PayrollManagementPage() {
         ) : null}
         {active?.key === "accountant_payroll" ? <AccountantPayrollPanel /> : null}
         {active?.key === "reports" ? <PayrollReportPanel viewMode="dashboard" /> : null}
+        {active?.key === "labor_cost" ? <LaborCostAnalysisPanel /> : null}
         {active?.key === "reports_detail" ? (
           dashboardOnly ? (
             <Alert severity="warning">

@@ -59,7 +59,7 @@ const RANGE_MODES = [
   },
   {
     value: "labor_cost",
-    label: "Labor Cost Analysis (coming soon)",
+    label: "Labor Cost Analysis — open the Labor Cost Analysis tab",
     reportType: "labor_cost",
     disabled: true,
   },

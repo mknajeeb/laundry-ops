@@ -337,6 +337,7 @@ def analyze_employee_hourly_cost(
     base_earnings: Any = 0,
     ot_premium: Any = 0,
     other_earnings: Any = 0,
+    ot_earnings: Any = None,
     gross_pay: Any = 0,
     total_payroll_cost: Any = None,
     employer_taxes: Any = None,
@@ -357,6 +358,8 @@ def analyze_employee_hourly_cost(
       estimated — historical burden applied to time-record earnings
       contractor — no W-2 burden; stored extras only, otherwise cost equals gross
     """
+    # ot_earnings is the full overtime-hour wage. Employer cost uses ot_premium only.
+    del ot_earnings
     cat = str(worker_category or "").strip() or "unknown"
     hours = _money(payable_hours)
     premium = max(0.0, _money(ot_premium))
@@ -710,6 +713,7 @@ def economics_from_time_records(
     cumulative = Decimal("0")
     base = Decimal("0")
     premium = Decimal("0")
+    ot_wages = Decimal("0")
     reg_h = Decimal("0")
     ot_h = Decimal("0")
     rates: list[float] = []
@@ -727,6 +731,7 @@ def economics_from_time_records(
             overtime = max(Decimal("0"), hrs - regular)
             base += hrs * rate
             premium += overtime * max(Decimal("0"), rate * multiplier_d - rate)
+            ot_wages += overtime * rate * multiplier_d
             rates.append(float(rate))
         else:
             regular = hrs
@@ -743,6 +748,7 @@ def economics_from_time_records(
         "ot_hours": float(_q2_dec(ot_h)),
         "base_earnings": base_r,
         "ot_premium": premium_r,
+        "ot_earnings": float(_q2_dec(ot_wages)),
         "other_earnings": 0.0,
         "gross_pay": _money(base_r + premium_r),
         "regular_rates": rates,

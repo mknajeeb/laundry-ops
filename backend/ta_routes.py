@@ -7583,6 +7583,50 @@ _EMPLOYEE_PAYROLL_DETAIL_FORBIDDEN = {
 }
 
 
+@ta_bp.route("/payroll/labor-cost-analysis", methods=["GET"])
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit", "payroll.analytics.view", "ta.monitor")
+def payroll_labor_cost_analysis():
+    """Read-only Labor Cost Analysis. Does not change payroll amounts."""
+    conn = get_db()
+    try:
+        from backend.labor_cost_analysis import load_labor_cost_analysis
+        from backend.ta_helpers import json_safe
+
+        oid = _tenant_id()
+        can_detail = _can_view_employee_payroll_detail(conn, g.ta_user["id"])
+        user_ids = []
+        for part in str(request.args.get("user_ids") or "").split(","):
+            text = part.strip()
+            if text:
+                user_ids.append(int(text))
+        if user_ids and not can_detail:
+            return jsonify(_EMPLOYEE_PAYROLL_DETAIL_FORBIDDEN), 403
+        report = load_labor_cost_analysis(
+            conn,
+            oid,
+            preset=request.args.get("preset") or "current_week",
+            start=request.args.get("start") or request.args.get("date_from"),
+            end=request.args.get("end") or request.args.get("date_to"),
+            frequency=request.args.get("frequency") or "weekly",
+            compare=request.args.get("compare") or "none",
+            compare_start=request.args.get("compare_start"),
+            compare_end=request.args.get("compare_end"),
+            classification=request.args.get("classification") or "all",
+            user_ids=user_ids,
+            status=request.args.get("status") or "finalized",
+            include_employee_detail=can_detail,
+        )
+        return jsonify(json_safe(report))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_labor_cost_analysis failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/report", methods=["GET"])
 @require_auth
 @require_any_perm("ta.settings", "users.view", "users.edit", "payroll.analytics.view")
