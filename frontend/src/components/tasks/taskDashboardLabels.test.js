@@ -1,4 +1,8 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { addDaysYmd, weekStartFromDate } from "../../utils/businessTime";
 import {
   checklistItemLabel,
   completionChipColor,
@@ -8,8 +12,10 @@ import {
   overallLabel,
   participationLabel,
   dashboardHeadlineMetrics,
+  formatDurationHm,
   participationStatusOf,
   participationSummary,
+  showPerEmployeeChecklist,
   statusChipColor,
   verificationChipColor,
   verificationLabel,
@@ -45,6 +51,7 @@ describe("taskDashboardLabels", () => {
     expect(checklistItemLabel("pending")).toBe("Not checked off");
     expect(checklistItemLabel("completed")).toBe("Checked off");
     expect(checklistItemLabel("approved")).toBe("Verified");
+    expect(checklistItemLabel("pending_verification")).toBe("Waiting for Verification");
     expect(isChecklistTimestamp({ activity_kind: "group_item" })).toBe(true);
     expect(isChecklistTimestamp({ timestamp_kind: "checklist_checkoff" })).toBe(true);
     expect(isChecklistTimestamp({ activity_kind: "group" })).toBe(false);
@@ -62,7 +69,7 @@ describe("taskDashboardLabels", () => {
     expect(overallLabel("pending_verification")).toBe("Pending Verification");
     expect(
       participationSummary({ finished: 1, assigned: 2, checklistDone: 0, checklistRequired: 2 })
-    ).toBe("1 of 2 employees finished · 0 of 2 checklist items completed");
+    ).toBe("1/2 employees finished · 0/2 checklist items completed");
   });
 
   it("counts employees separately from completed activities", () => {
@@ -77,12 +84,69 @@ describe("taskDashboardLabels", () => {
         ],
       },
     ]);
-    expect(counts).toEqual({
-      employeesAssigned: 2,
-      employeesStarted: 2,
-      completedActivities: 1,
-      verifiedActivities: 1,
-      pendingVerification: 0,
-    });
+    expect(counts.employeesAssigned).toBe(2);
+    expect(counts.employeesStarted).toBe(2);
+    expect(counts.employeesFinished).toBe(2);
+    expect(counts.activitiesAssigned).toBe(1);
+    expect(counts.completedActivities).toBe(1);
+    expect(counts.verifiedActivities).toBe(1);
+    expect(counts.pendingVerification).toBe(0);
+    expect(counts.overdue).toBe(0);
+  });
+
+  it("formats durations in hours and minutes and sums participation without checklist rows", () => {
+    expect(formatDurationHm(45 * 60)).toBe("45m");
+    expect(formatDurationHm(75 * 60)).toBe("1h 15m");
+    expect(formatDurationHm(125 * 60)).toBe("2h 05m");
+    const counts = dashboardHeadlineMetrics([
+      {
+        completion_status: "completed",
+        contributions: [
+          { participation_status: "finished", activity: { duration_seconds: 1527 } },
+          {
+            participation_status: "finished",
+            activity: { duration_seconds: 60, activity_kind: "group_item" },
+          },
+          { participation_status: "finished", activity: { duration_seconds: 1466 } },
+        ],
+      },
+    ]);
+    expect(counts.totalTimeLabel).toBe("50m");
+    expect(counts.employeesAssigned).toBe(3);
+    expect(counts.activitiesAssigned).toBe(1);
+  });
+
+  it("hides per-employee checklist badges when the shared checklist is complete", () => {
+    const row = {
+      shared_checklist_items: [
+        { task_code: "custom_check_washer_residue", status: "completed", completed_by_name: "Gabriela" },
+        { task_code: "floor_cleaning", status: "completed", completed_by_name: "Yesenia" },
+      ],
+    };
+    const yesenia = {
+      employee_name: "Yesenia",
+      group_items: [{ task_code: "floor_cleaning", display_status: "pending_verification" }],
+    };
+    expect(showPerEmployeeChecklist(row, yesenia)).toBe(false);
+    expect(checklistItemLabel("pending_verification")).not.toBe("Not checked off");
+    expect(showPerEmployeeChecklist({ shared_checklist_items: [] }, yesenia)).toBe(true);
+  });
+
+  it("keeps Sunday and daylight-saving calendar dates in America/New_York", () => {
+    expect(addDaysYmd("2026-11-01", 0)).toBe("2026-11-01");
+    expect(addDaysYmd("2026-11-01", 6)).toBe("2026-11-07");
+    expect(addDaysYmd("2026-03-08", 1)).toBe("2026-03-09");
+    expect(weekStartFromDate("2026-11-01", 6)).toBe("2026-11-01");
+    expect(weekStartFromDate("2026-11-02", 6)).toBe("2026-11-01");
+  });
+
+  it("prints the selected dashboard with branding and without navigation", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const page = readFileSync(resolve(here, "../../pages/ManagementTasksPage.jsx"), "utf8");
+    expect(page).toContain("VeeWash Task Dashboard");
+    expect(page).toContain("@media print");
+    expect(page).toContain("break-inside: avoid");
+    expect(page).toContain(".no-print");
+    expect(page).toContain("task-print-card");
   });
 });

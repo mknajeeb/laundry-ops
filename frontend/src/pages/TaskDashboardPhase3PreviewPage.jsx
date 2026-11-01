@@ -4,7 +4,7 @@
  * Not linked from production nav.
  */
 import { useMemo, useState } from "react";
-import { Box, Button, Stack, Typography } from "@mui/material";
+import { Box, Button, Stack, TextField, Tooltip, Typography } from "@mui/material";
 import TaskAssignmentCard from "../components/tasks/TaskAssignmentCard";
 import TaskRecordDialog from "../components/tasks/TaskRecordDialog";
 import TaskManualCompletionDialog from "../components/tasks/TaskManualCompletionDialog";
@@ -12,6 +12,7 @@ import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import { formatDashboardDate } from "../components/tasks/taskDashboardFormat";
 import { dashboardHeadlineMetrics } from "../components/tasks/taskDashboardLabels";
 import TaskVerificationReviewCard from "../components/tasks/TaskVerificationReviewCard";
+import TaskDashboardMonthlyChart from "../components/tasks/TaskDashboardMonthlyChart";
 
 const MOCK_SHARED = {
   assignment_key: "g:2026-10-30:floor-washer",
@@ -20,44 +21,70 @@ const MOCK_SHARED = {
   execution_mode: "shared",
   shared: true,
   timing_label: "Anytime",
-  assigned_employees: ["Maria Perez", "Rocio"],
-  overall_status: "in_progress",
-  completion_status: "in_progress",
-  verification_status: "not_required",
-  verification_eligible: false,
-  checklist_complete: false,
-  checklist_status: "not_started",
-  employees_finished: 1,
+  assigned_employees: ["Gabriela", "Yesenia"],
+  instructions: "Check washer residue, then broom the floor. Leave the mop by the washers.",
+  overall_status: "pending_verification",
+  completion_status: "completed",
+  verification_status: "waiting",
+  verification_eligible: true,
+  checklist_complete: true,
+  checklist_status: "completed",
+  employees_finished: 2,
   employees_assigned: 2,
-  checklist_done: 0,
+  checklist_done: 2,
   checklist_required: 2,
   has_manual_completion: false,
   shared_checklist_items: [
-    { task_code: "floor_cleaning", task_name: "Floor Cleaning", required: true, status: "pending" },
-    { task_code: "washer_cleaning", task_name: "Washer Cleaning", required: true, status: "pending" },
+    {
+      task_code: "custom_check_washer_residue",
+      task_name: "Check Washer Residue",
+      required: true,
+      status: "completed",
+      completed_by_name: "Gabriela",
+      completed_at: "2026-11-01 09:24:58",
+    },
+    {
+      task_code: "floor_cleaning",
+      task_name: "Floor Brooming",
+      required: true,
+      status: "completed",
+      completed_by_name: "Yesenia",
+      completed_at: "2026-11-01 09:25:20",
+    },
   ],
   contributions: [
     {
-      employee_id: 11,
-      employee_name: "Maria Perez",
+      employee_id: 56,
+      employee_name: "Gabriela",
       status: "completed",
       participation_status: "finished",
       activity: {
-        id: 77,
-        started_at: "2026-10-30 09:00:00",
-        ended_at: "2026-10-30 09:35:00",
-        duration_seconds: 2100,
+        id: 105,
+        started_at: "2026-11-01 09:00:11",
+        ended_at: "2026-11-01 09:25:38",
+        duration_seconds: 1527,
         completion_source: "pin",
-        business_date: "2026-10-30",
+        business_date: "2026-11-01",
+        employee_remark: { text: "Residue was light.", author_user_id: 56, at: "2026-11-01 09:25:38" },
       },
-      can_manual_complete: true,
     },
     {
-      employee_id: 12,
-      employee_name: "Rocio",
-      status: "pending",
-      participation_status: "not_started",
-      activity: null,
+      employee_id: 36,
+      employee_name: "Yesenia",
+      status: "completed",
+      participation_status: "finished",
+      group_items: [
+        { task_code: "floor_cleaning", task_name: "Floor Brooming", display_status: "pending_verification" },
+      ],
+      activity: {
+        id: 106,
+        started_at: "2026-11-01 09:01:14",
+        ended_at: "2026-11-01 09:25:41",
+        duration_seconds: 1466,
+        completion_source: "pin",
+        business_date: "2026-11-01",
+        employee_remark: { text: "Floor is dry.", author_user_id: 36, at: "2026-11-01 09:25:41" },
+      },
     },
   ],
 };
@@ -93,32 +120,25 @@ const MOCK_SOLO = {
   ],
 };
 
-function Metric({ label, value, accent, hint }) {
+function Metric({ label, value, hint }) {
   return (
-    <Box
-      sx={{
-        p: 1.25,
-        minWidth: 100,
-        flex: "1 1 100px",
-        borderRadius: 2,
-        bgcolor: "#fff",
-        border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
-        borderLeft: `3px solid ${accent || VEEWASH_DASHBOARD.primaryBlue}`,
-        boxShadow: VEEWASH_DASHBOARD.cardShadow,
-      }}
-    >
-      <Typography variant="caption" color="text.secondary" display="block">
-        {label}
-      </Typography>
-      <Typography variant="h5" sx={{ fontWeight: 800, color: VEEWASH_DASHBOARD.wfCharcoal }}>
-        {value}
-      </Typography>
-      {hint ? (
-        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25, lineHeight: 1.25 }}>
-          {hint}
+    <Tooltip title={hint || ""} enterTouchDelay={0} arrow>
+      <Box
+        sx={{
+          px: 1,
+          py: 0.6,
+          minWidth: 88,
+          borderRadius: 1.5,
+          bgcolor: "#fff",
+          border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
+        }}
+      >
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.1 }}>
+          {label}
         </Typography>
-      ) : null}
-    </Box>
+        <Typography sx={{ fontWeight: 800, fontSize: "1.05rem", lineHeight: 1.2 }}>{value}</Typography>
+      </Box>
+    </Tooltip>
   );
 }
 
@@ -126,27 +146,27 @@ const REVIEW_CARD = {
   assignment_key: "g:floor",
   role_label: "Floor & Washer",
   timing_label: "9:00 AM",
-  assigned_employees: ["Maria Perez", "Rocio"],
+  assigned_employees: ["Gabriela", "Yesenia"],
   overall_label: "Pending Verification",
   overall_status: "pending_verification",
   can_approve_all: true,
   pending_activity_ids: [97, 98, 99, 100],
   participation: [
     {
-      employee_id: 31,
-      employee_name: "Maria Perez",
+      employee_id: 56,
+      employee_name: "Gabriela",
       participation_status: "finished",
       participation_label: "Finished",
-      started_at: "2026-10-31 09:05:00",
-      finished_at: "2026-10-31 09:36:00",
+      started_at: "2026-11-01 09:00:11",
+      finished_at: "2026-11-01 09:25:38",
     },
     {
-      employee_id: 57,
-      employee_name: "Rocio",
+      employee_id: 36,
+      employee_name: "Yesenia",
       participation_status: "finished",
       participation_label: "Finished",
-      started_at: "2026-10-31 09:05:12",
-      finished_at: "2026-10-31 09:36:44",
+      started_at: "2026-11-01 09:01:14",
+      finished_at: "2026-11-01 09:25:41",
     },
   ],
   checklist: [
@@ -156,15 +176,9 @@ const REVIEW_CARD = {
       checked_off: true,
       records: [
         {
-          activity_id: 99,
-          employee_name: "Maria Perez",
-          checked_off_at: "2026-10-31 09:35:55",
-          status: "pending_approval",
-        },
-        {
-          activity_id: 97,
-          employee_name: "Rocio",
-          checked_off_at: "2026-10-31 09:36:39",
+          activity_id: 107,
+          employee_name: "Gabriela",
+          checked_off_at: "2026-11-01 09:24:58",
           status: "pending_approval",
         },
       ],
@@ -175,15 +189,9 @@ const REVIEW_CARD = {
       checked_off: true,
       records: [
         {
-          activity_id: 100,
-          employee_name: "Maria Perez",
-          checked_off_at: "2026-10-31 09:37:06",
-          status: "pending_approval",
-        },
-        {
-          activity_id: 98,
-          employee_name: "Rocio",
-          checked_off_at: "2026-10-31 09:36:05",
+          activity_id: 108,
+          employee_name: "Yesenia",
+          checked_off_at: "2026-11-01 09:25:20",
           status: "pending_approval",
         },
       ],
@@ -192,6 +200,7 @@ const REVIEW_CARD = {
 };
 
 function DashboardShell({ title, readOnly, hideLabor, children, extraActions, rows = [MOCK_SHARED, MOCK_SOLO] }) {
+  const metrics = dashboardHeadlineMetrics(rows);
   return (
     <Box sx={{ bgcolor: VEEWASH_DASHBOARD.pageBackground, minHeight: "100vh", pb: 4 }}>
       <Box sx={{ maxWidth: 1100, mx: "auto", px: { xs: 1.5, sm: 2 }, pt: 2 }}>
@@ -201,44 +210,31 @@ function DashboardShell({ title, readOnly, hideLabor, children, extraActions, ro
               {title}
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              {formatDashboardDate("2026-10-30")}
+              {formatDashboardDate("2026-11-01")}
               {readOnly ? " · Read-only" : ""}
             </Typography>
           </Box>
           {extraActions}
         </Stack>
-        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
-          <Metric
-            label="Employees Assigned"
-            value={dashboardHeadlineMetrics(rows).employeesAssigned}
-            hint="One count per employee on each activity."
-          />
-          <Metric
-            label="Employees Started"
-            value={dashboardHeadlineMetrics(rows).employeesStarted}
-            accent={VEEWASH_DASHBOARD.primaryBlue}
-            hint="Participations that have started."
-          />
-          <Metric
-            label="Completed Activities"
-            value={dashboardHeadlineMetrics(rows).completedActivities}
-            accent={VEEWASH_DASHBOARD.teal}
-            hint="Assignments whose work is finished. Verified and pending verification are included."
-          />
-          <Metric
-            label="Verified Activities"
-            value={dashboardHeadlineMetrics(rows).verifiedActivities}
-            accent={VEEWASH_DASHBOARD.tealDark}
-            hint="Supervisor approved. Included in Completed Activities."
-          />
-          <Metric
-            label="Pending Verification"
-            value={dashboardHeadlineMetrics(rows).pendingVerification}
-            accent={VEEWASH_DASHBOARD.pending}
-            hint="Finished assignments awaiting approval. Included in Completed Activities."
-          />
+        <Typography variant="caption" sx={{ fontWeight: 700, color: "text.secondary" }}>
+          Activities
+        </Typography>
+        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mb: 0.75 }}>
+          <Metric label="Assigned" value={metrics.activitiesAssigned} hint="Shared assignments count once." />
+          <Metric label="Completed" value={metrics.completedActivities} hint="Finished assignments. Includes pending verification and verified." />
+          <Metric label="Pending Verification" value={metrics.pendingVerification} hint="Finished and waiting for a supervisor." />
+          <Metric label="Verified" value={metrics.verifiedActivities} hint="Supervisor approved. Also included in Completed." />
+          <Metric label="Overdue" value={metrics.overdue} hint="Not finished after the planned time." />
+        </Stack>
+        <Typography variant="caption" sx={{ fontWeight: 700, color: "text.secondary" }}>
+          Employee participation
+        </Typography>
+        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mb: 1.25 }}>
+          <Metric label="Assigned" value={metrics.employeesAssigned} hint="Each employee on each assignment." />
+          <Metric label="Started" value={metrics.employeesStarted} hint="Participations that have started." />
+          <Metric label="Finished" value={metrics.employeesFinished} hint="Participations that have finished." />
           {!hideLabor ? (
-            <Metric label="Time spent" value="1h 8m" accent={VEEWASH_DASHBOARD.wfCharcoal} />
+            <Metric label="Total Time" value={metrics.totalTimeLabel} hint="Sum of each employee's participation time." />
           ) : null}
         </Stack>
         {children}
@@ -284,6 +280,56 @@ export default function TaskDashboardPhase3PreviewPage() {
           busy={false}
         />
       </DashboardShell>
+    );
+  }
+
+  if (view === "pin") {
+    return (
+      <Box sx={{ bgcolor: "#f4f7fb", minHeight: "100vh", p: 1.5 }}>
+        <Box sx={{ maxWidth: 390, mx: "auto", bgcolor: "#fff", borderRadius: 2, p: 2 }}>
+          <Typography sx={{ fontWeight: 900, color: "#0f2744" }}>Floor & Washer</Typography>
+          <Typography variant="body2" color="text.secondary">Anytime · Gabriela + Yesenia</Typography>
+          <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", my: 1.5 }}>
+            {MOCK_SHARED.instructions}
+          </Typography>
+          <Typography variant="body2">Check Washer Residue · Gabriela · 9:24 AM</Typography>
+          <Typography variant="body2" sx={{ mb: 1.5 }}>Floor Brooming · Yesenia · 9:25 AM</Typography>
+          <TextField size="small" fullWidth label="Remark (optional)" defaultValue="Residue was light." sx={{ mb: 1.5 }} />
+          <Button fullWidth variant="contained" color="success" sx={{ fontWeight: 800, textTransform: "none" }}>
+            Finish My Participation
+          </Button>
+        </Box>
+      </Box>
+    );
+  }
+
+  if (view === "print") {
+    return (
+      <Box className="print-preview" sx={{ bgcolor: "#fff", minHeight: "100vh", p: 2, maxWidth: 800, mx: "auto" }}>
+        <style>{`
+          .print-preview button, .print-preview .MuiIconButton-root { display: none !important; }
+        `}</style>
+        <Typography sx={{ fontWeight: 900 }}>VeeWash Task Dashboard</Typography>
+        <Typography variant="body2" sx={{ mb: 1 }}>2026-11-01 – 2026-11-01 ET · All · daily</Typography>
+        <DashboardShell title="Task Dashboard" readOnly hideLabor={false} rows={[MOCK_SHARED]}>
+          <TaskDashboardMonthlyChart
+            data={{
+              buckets: [
+                { label: "Nov 1", chart: { not_started: 0, in_progress: 0, pending_verification: 1, verified: 0, overdue: 0, needs_correction: 0 } },
+              ],
+            }}
+          />
+          <TaskAssignmentCard
+            row={MOCK_SHARED}
+            expanded
+            onToggle={() => {}}
+            readOnly
+            hideLabor={false}
+            canApprove={false}
+            canManual={false}
+          />
+        </DashboardShell>
+      </Box>
     );
   }
 
@@ -344,6 +390,13 @@ export default function TaskDashboardPhase3PreviewPage() {
         ) : null
       }
     >
+      <TaskDashboardMonthlyChart
+        data={{
+          buckets: [
+            { label: "Nov 1", chart: { not_started: 0, in_progress: 0, pending_verification: 2, verified: 0, overdue: 0, needs_correction: 0 } },
+          ],
+        }}
+      />
       <Stack spacing={1.25} data-testid="assignment-list">
         <TaskAssignmentCard
           row={MOCK_SHARED}
@@ -367,10 +420,6 @@ export default function TaskDashboardPhase3PreviewPage() {
           canManual={!readOnly}
         />
       </Stack>
-      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
-        Floor &amp; Washer is In Progress and is not included in Completed or Pending verification.
-        Those totals are Lint Cleaning only. Phase 3 preview · view={view}
-      </Typography>
     </DashboardShell>
   );
 }

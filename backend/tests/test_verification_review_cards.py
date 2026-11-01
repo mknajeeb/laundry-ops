@@ -180,7 +180,7 @@ def test_repeated_approval_does_not_verify_twice(monkeypatch):
     def fake_get(cursor, org, activity_id):
         return dict(store[int(activity_id)])
 
-    def fake_approve(cursor, *, organization_id, activity_id, supervisor_user_id):
+    def fake_approve(cursor, *, organization_id, activity_id, supervisor_user_id, supervisor_remark=None):
         calls.append(int(activity_id))
         store[int(activity_id)]["status"] = "approved"
         return {"id": int(activity_id), "status": "approved"}

@@ -6,6 +6,7 @@ import {
   Button,
   CircularProgress,
   Stack,
+  TextField,
   Typography,
 } from "@mui/material";
 import {
@@ -139,6 +140,11 @@ function TaskCard({ task, onStart, onCompleteUntimed, busy }) {
       <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
         {task.role_label || task.role}
       </Typography>
+      {task.instructions || task.remarks ? (
+        <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", mt: 0.5 }}>
+          {task.instructions || task.remarks}
+        </Typography>
+      ) : null}
       <Typography variant="body2" color="text.secondary">
         {isGroup ? "Activity Group" : task.category_name || task.category_code || "Task"}
         {" · "}
@@ -206,6 +212,7 @@ export default function CleaningTasksPinPage() {
   const [inputValues, setInputValues] = useState({});
   const [inputRemarks, setInputRemarks] = useState("");
   const [checkoffCode, setCheckoffCode] = useState(null);
+  const [workRemark, setWorkRemark] = useState("");
 
   const activeSchema = active?.input_schema || inputDraftTask?.input_schema || [];
 
@@ -372,6 +379,7 @@ export default function CleaningTasksPinPage() {
         hubToken: hub.token,
         responsibility_id: task.responsibility_id,
         completion_input: payload,
+        remark: workRemark,
       });
       const body = res?.data || {};
       if (!body.ok) throw new Error(body.error || "Could not complete task");
@@ -442,6 +450,7 @@ export default function CleaningTasksPinPage() {
         hubToken: hub.token,
         activity_id: active.id,
         completion_input,
+        remark: workRemark,
       });
       const body = res?.data || {};
       if (!body.ok) throw new Error(body.error || "Could not complete task");
@@ -506,6 +515,7 @@ export default function CleaningTasksPinPage() {
       const res = await attendancePinCleaningTasksCompleteGroup(slug, hub.pin, {
         hubToken: hub.token,
         activity_id: active.id,
+        remark: workRemark,
       });
       const body = res?.data || {};
       if (!body.ok) throw new Error(body.error || "Could not complete group");
@@ -712,6 +722,18 @@ export default function CleaningTasksPinPage() {
           <Typography variant="body2" color="text.secondary">
             Enter required information to complete this task.
           </Typography>
+          {inputDraftTask.instructions || inputDraftTask.remarks ? (
+            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+              {inputDraftTask.instructions || inputDraftTask.remarks}
+            </Typography>
+          ) : null}
+          <TextField
+            size="small"
+            fullWidth
+            label="Remark (optional)"
+            value={workRemark}
+            onChange={(e) => setWorkRemark(e.target.value)}
+          />
           <TaskCompletionInputs
             schema={inputDraftTask.input_schema || []}
             values={inputValues}
@@ -743,6 +765,11 @@ export default function CleaningTasksPinPage() {
               ? "Shared Activity · your timer · one checklist"
               : "Activity Group · your timer"}
           </Typography>
+          {active.instructions || active.remarks ? (
+            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+              {active.instructions || active.remarks}
+            </Typography>
+          ) : null}
           <PartnerLines
             partners={active.partners}
             executionMode={active.execution_mode || active.group?.execution_mode}
@@ -816,10 +843,22 @@ export default function CleaningTasksPinPage() {
             })}
           </Stack>
           {active.checklist_followup_only ? null : (
+            <>
+            <TextField
+              size="small"
+              fullWidth
+              label="Remark (optional)"
+              value={workRemark}
+              onChange={(e) => setWorkRemark(e.target.value)}
+            />
             <Button
               variant="contained"
               color="success"
-              disabled={busy || !active.group?.can_complete_group}
+              disabled={
+                busy ||
+                active.group?.can_finish_participation === false ||
+                active.group?.can_complete_group === false
+              }
               onClick={completeGroup}
               sx={{ fontWeight: 800, textTransform: "none", py: 1.5 }}
             >
@@ -827,6 +866,7 @@ export default function CleaningTasksPinPage() {
                 ? "Finish My Participation"
                 : "Complete Group"}
             </Button>
+            </>
           )}
         </Stack>
       ) : active ? (
@@ -837,6 +877,18 @@ export default function CleaningTasksPinPage() {
           <Typography variant="body2" color="text.secondary">
             {active.timing_label || "Anytime"}
           </Typography>
+          {active.instructions || active.remarks ? (
+            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+              {active.instructions || active.remarks}
+            </Typography>
+          ) : null}
+          <TextField
+            size="small"
+            fullWidth
+            label="Remark (optional)"
+            value={workRemark}
+            onChange={(e) => setWorkRemark(e.target.value)}
+          />
           <Typography sx={{ fontSize: "2.4rem", fontWeight: 900, textAlign: "center", color: OPS_MOBILE.navy }}>
             {formatElapsed(active.started_at, nowMs)}
           </Typography>

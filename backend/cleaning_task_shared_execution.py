@@ -234,6 +234,32 @@ def serialize_shared_item(
     }
 
 
+def _employee_remark_input(remark: str | None, user_id: int, at) -> dict | None:
+    text = str(remark or "").strip()
+    if not text:
+        return None
+    stamp = at.strftime("%Y-%m-%d %H:%M:%S") if hasattr(at, "strftime") else str(at)[:19]
+    return {
+        "employee_remark": {
+            "text": text[:1000],
+            "author_user_id": int(user_id),
+            "at": stamp,
+        }
+    }
+
+
+def _shared_finish_allowed(group_cfg, required_items, checklist_complete: bool) -> bool:
+    """Required items block finish unless the group explicitly turns that rule off."""
+    from backend.task_activity_groups import participation_finish_allowed_with_open_checklist
+
+    allowed_open = participation_finish_allowed_with_open_checklist(
+        None if not group_cfg else group_cfg.get("require_checklist_before_completion"),
+        shared=True,
+        has_required_items=len(required_items or []) > 0,
+    )
+    return bool(allowed_open or checklist_complete)
+
+
 def enrich_shared_group_activity(
     cursor,
     organization_id: int,
@@ -284,9 +310,8 @@ def enrich_shared_group_activity(
         "items": serialized,
         "required_count": len(required),
         "completed_required_count": len(done_req),
-        # Shared: employee may finish participation anytime; checklist completeness is separate.
-        "can_complete_group": True,
-        "can_finish_participation": True,
+        "can_complete_group": _shared_finish_allowed(group_cfg, required, checklist_complete),
+        "can_finish_participation": _shared_finish_allowed(group_cfg, required, checklist_complete),
         "checklist_complete": checklist_complete,
     }
     from backend.cleaning_task_activity import partners_for_activity
@@ -515,6 +540,7 @@ def finish_shared_participation(
     organization_id: int,
     user_id: int,
     activity_id: int,
+    remark: str | None = None,
 ) -> dict[str, Any]:
     """End this employee's timer without stopping peers.
 
@@ -587,7 +613,7 @@ def finish_shared_participation(
         row=row,
         at=at,
         duration=duration,
-        completion_input=None,
+        completion_input=_employee_remark_input(remark, uid, at),
         interrupt_role=True,
         force_status=STATUS_COMPLETED,
         force_verify=False,

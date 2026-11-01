@@ -5,10 +5,12 @@ import {
   Box,
   Button,
   CircularProgress,
+  MenuItem,
   Stack,
   Tab,
   Tabs,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import PrintIcon from "@mui/icons-material/Print";
@@ -30,35 +32,37 @@ import {
   updateManagementTaskRecord,
   voidManagementTaskActivity,
 } from "../api";
-import { businessTodayYmd } from "../utils/businessTime";
+import { addDaysYmd, businessTodayYmd } from "../utils/businessTime";
 import { formatDashboardDate } from "../components/tasks/taskDashboardFormat";
 
-function Metric({ label, value, accent, hint }) {
+function rangeForPreset(preset, today, customStart, customEnd) {
+  if (preset === "7") return { start: addDaysYmd(today, -6), end: today };
+  if (preset === "30") return { start: addDaysYmd(today, -29), end: today };
+  if (preset === "month") return { start: `${today.slice(0, 8)}01`, end: today };
+  if (preset === "custom") return { start: customStart || today, end: customEnd || today };
+  return { start: today, end: today };
+}
+
+function Metric({ label, value, hint }) {
   return (
-    <Box
-      sx={{
-        p: 1.25,
-        minWidth: 100,
-        flex: "1 1 100px",
-        borderRadius: 2,
-        bgcolor: "#fff",
-        border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
-        borderLeft: `3px solid ${accent || VEEWASH_DASHBOARD.primaryBlue}`,
-        boxShadow: VEEWASH_DASHBOARD.cardShadow,
-      }}
-    >
-      <Typography variant="caption" color="text.secondary" display="block">
-        {label}
-      </Typography>
-      <Typography variant="h5" sx={{ fontWeight: 800, color: VEEWASH_DASHBOARD.wfCharcoal }}>
-        {value ?? 0}
-      </Typography>
-      {hint ? (
-        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25, lineHeight: 1.25 }}>
-          {hint}
+    <Tooltip title={hint || ""} enterTouchDelay={0} arrow>
+      <Box
+        className="task-metric"
+        sx={{
+          px: 1,
+          py: 0.6,
+          minWidth: 88,
+          borderRadius: 1.5,
+          bgcolor: "#fff",
+          border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
+        }}
+      >
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.1 }}>
+          {label}
         </Typography>
-      ) : null}
-    </Box>
+        <Typography sx={{ fontWeight: 800, fontSize: "1.05rem", lineHeight: 1.2 }}>{value}</Typography>
+      </Box>
+    </Tooltip>
   );
 }
 
@@ -77,6 +81,10 @@ export default function ManagementTasksPage() {
   const [reason, setReason] = useState("");
   const [openKeys, setOpenKeys] = useState(() => new Set());
   const [categoryTab, setCategoryTab] = useState("all");
+  const [rangePreset, setRangePreset] = useState("today");
+  const [groupBy, setGroupBy] = useState("daily");
+  const [customStart, setCustomStart] = useState(today);
+  const [customEnd, setCustomEnd] = useState(today);
   const [manageOpen, setManageOpen] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualMode, setManualMode] = useState("record");
@@ -106,14 +114,21 @@ export default function ManagementTasksPage() {
     }
   }, [date]);
 
+  const activeRange = rangeForPreset(rangePreset, date, customStart, customEnd);
   const loadMonthly = useCallback(async () => {
     try {
-      const res = await getManagementTaskDashboardMonthly({ months: 6, as_of: date });
+      const res = await getManagementTaskDashboardMonthly({
+        start: activeRange.start,
+        end: activeRange.end,
+        group_by: groupBy,
+        category: categoryTab === "all" ? "" : categoryTab,
+        include_assignments: rangePreset === "today" ? 0 : 1,
+      });
       setMonthly(res.data || null);
     } catch {
       setMonthly(null);
     }
-  }, [date]);
+  }, [activeRange.start, activeRange.end, groupBy, categoryTab, rangePreset]);
 
   useEffect(() => {
     load();
@@ -134,10 +149,15 @@ export default function ManagementTasksPage() {
   }, [data]);
 
   const filteredAssignments = useMemo(() => {
-    const rows = data?.shared_assignments || [];
+    const rows =
+      rangePreset === "today"
+        ? data?.shared_assignments || []
+        : Array.isArray(monthly?.assignments)
+          ? monthly.assignments
+          : [];
     if (categoryTab === "all") return rows;
     return rows.filter((r) => String(r.category_code || "intra_day") === categoryTab);
-  }, [data, categoryTab]);
+  }, [data, categoryTab, monthly, rangePreset]);
 
   const categoryMetrics = useMemo(
     () => dashboardHeadlineMetrics(filteredAssignments),
@@ -153,11 +173,14 @@ export default function ManagementTasksPage() {
     });
   };
 
-  const approve = async (activityId) => {
+  const approve = async (activityId, supervisorRemark = "") => {
     setBusy(true);
     setError("");
     try {
-      await approveManagementTaskDashboard({ activity_id: activityId });
+      await approveManagementTaskDashboard({
+        activity_id: activityId,
+        supervisor_remark: supervisorRemark || "",
+      });
       await load();
     } catch (err) {
       setError(err?.response?.data?.error || err?.message || "Approve failed");
@@ -241,9 +264,27 @@ export default function ManagementTasksPage() {
   const printReport = () => window.print();
 
   return (
-    <Box sx={{ bgcolor: VEEWASH_DASHBOARD.pageBackground, minHeight: "100%", pb: 4 }}>
+    <Box className="task-dashboard-print-root" sx={{ bgcolor: VEEWASH_DASHBOARD.pageBackground, minHeight: "100%", pb: 4 }}>
+      <style>{`
+        @media print {
+          .no-print, nav, button, .MuiTabs-root, .MuiIconButton-root { display: none !important; }
+          .task-dashboard-print-root { background: #fff !important; padding-bottom: 0 !important; }
+          .task-print-card, .task-metric, .task-dashboard-chart { break-inside: avoid; page-break-inside: avoid; }
+          .MuiCollapse-root, .MuiCollapse-wrapper, .MuiCollapse-wrapperInner { height: auto !important; visibility: visible !important; }
+        }
+      `}</style>
       <Box sx={{ maxWidth: 1100, mx: "auto", px: { xs: 1.5, sm: 2 }, pt: 2 }}>
-        {!readOnly ? <ManagementHubNav /> : null}
+        <Box className="print-only" sx={{ display: "none", "@media print": { display: "block", mb: 1 } }}>
+          <Typography sx={{ fontWeight: 900 }}>VeeWash Task Dashboard</Typography>
+          <Typography variant="body2">
+            {activeRange.start} – {activeRange.end} ET · {categoryTab === "all" ? "All" : categoryTab} · {groupBy}
+          </Typography>
+        </Box>
+        {!readOnly ? (
+          <Box className="no-print">
+            <ManagementHubNav />
+          </Box>
+        ) : null}
 
         <Stack
           direction={{ xs: "column", sm: "row" }}
@@ -260,11 +301,14 @@ export default function ManagementTasksPage() {
               Task Dashboard
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              {formatDashboardDate(date)}
+              {activeRange.start === activeRange.end
+                ? formatDashboardDate(activeRange.start)
+                : `${activeRange.start} – ${activeRange.end}`}
               {readOnly ? " · Read-only" : ""}
             </Typography>
           </Box>
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap className="no-print">
+            {rangePreset === "today" ? (
             <TextField
               type="date"
               size="small"
@@ -273,6 +317,7 @@ export default function ManagementTasksPage() {
               InputLabelProps={{ shrink: true }}
               sx={{ bgcolor: "#fff", borderRadius: 1, minWidth: 150 }}
             />
+            ) : null}
             <Button
               size="small"
               startIcon={<PrintIcon />}
@@ -320,42 +365,76 @@ export default function ManagementTasksPage() {
           </Box>
         ) : (
           <>
-            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
-              <Metric
-                label="Employees Assigned"
-                value={categoryMetrics.employeesAssigned}
-                hint="One count per employee on each activity. Two activities count the same person twice."
-              />
-              <Metric
-                label="Employees Started"
-                value={categoryMetrics.employeesStarted}
-                accent={VEEWASH_DASHBOARD.primaryBlue}
-                hint="Assigned participations that have started."
-              />
-              <Metric
-                label="Completed Activities"
-                value={categoryMetrics.completedActivities}
-                accent={VEEWASH_DASHBOARD.teal}
-                hint="Assignments whose work is finished. A shared group counts once. Verified and pending verification are included here."
-              />
-              <Metric
-                label="Verified Activities"
-                value={categoryMetrics.verifiedActivities}
-                accent={VEEWASH_DASHBOARD.tealDark}
-                hint="Supervisor approved. Included in Completed Activities, not an extra completion."
-              />
-              <Metric
-                label="Pending Verification"
-                value={categoryMetrics.pendingVerification}
-                accent={VEEWASH_DASHBOARD.pending}
-                hint="Finished assignments awaiting approval. Included in Completed Activities."
-              />
-              {!hideLabor && data?.metrics?.time_spent_seconds != null ? (
-                <Metric
-                  label="Time on tasks"
-                  value={`${Math.round((data.metrics.time_spent_seconds || 0) / 60)}m`}
-                  accent={VEEWASH_DASHBOARD.monitoringText}
-                />
+            <Stack direction={{ xs: "column", md: "row" }} spacing={1} sx={{ mb: 1 }} className="no-print">
+              <TextField
+                select
+                size="small"
+                label="Range"
+                value={rangePreset}
+                onChange={(e) => setRangePreset(e.target.value)}
+                sx={{ minWidth: 140 }}
+              >
+                <MenuItem value="today">Today</MenuItem>
+                <MenuItem value="7">7 Days</MenuItem>
+                <MenuItem value="30">30 Days</MenuItem>
+                <MenuItem value="month">This Month</MenuItem>
+                <MenuItem value="custom">Custom</MenuItem>
+              </TextField>
+              <TextField
+                select
+                size="small"
+                label="Grouping"
+                value={groupBy}
+                onChange={(e) => setGroupBy(e.target.value)}
+                sx={{ minWidth: 130 }}
+              >
+                <MenuItem value="daily">Daily</MenuItem>
+                <MenuItem value="weekly">Weekly</MenuItem>
+                <MenuItem value="monthly">Monthly</MenuItem>
+              </TextField>
+              {rangePreset === "custom" ? (
+                <>
+                  <TextField
+                    size="small"
+                    type="date"
+                    label="Start"
+                    value={customStart}
+                    onChange={(e) => setCustomStart(e.target.value)}
+                    InputLabelProps={{ shrink: true }}
+                  />
+                  <TextField
+                    size="small"
+                    type="date"
+                    label="End"
+                    value={customEnd}
+                    onChange={(e) => setCustomEnd(e.target.value)}
+                    InputLabelProps={{ shrink: true }}
+                  />
+                </>
+              ) : null}
+              <Typography variant="caption" color="text.secondary" sx={{ alignSelf: "center" }}>
+                {activeRange.start} – {activeRange.end} ET
+              </Typography>
+            </Stack>
+            <Typography variant="caption" sx={{ fontWeight: 700, color: "text.secondary" }}>
+              Activities
+            </Typography>
+            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mb: 0.75 }}>
+              <Metric label="Assigned" value={categoryMetrics.activitiesAssigned} hint="Shared assignments count once." />
+              <Metric label="Completed" value={categoryMetrics.completedActivities} hint="Finished assignments. Includes pending verification and verified." />
+              <Metric label="Pending Verification" value={categoryMetrics.pendingVerification} hint="Finished and waiting for a supervisor. Also included in Completed." />
+              <Metric label="Verified" value={categoryMetrics.verifiedActivities} hint="Supervisor approved. Also included in Completed." />
+              <Metric label="Overdue" value={categoryMetrics.overdue} hint="Not finished after the planned time." />
+            </Stack>
+            <Typography variant="caption" sx={{ fontWeight: 700, color: "text.secondary" }}>
+              Employee participation
+            </Typography>
+            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mb: 1.25 }}>
+              <Metric label="Assigned" value={categoryMetrics.employeesAssigned} hint="Each employee on each assignment." />
+              <Metric label="Started" value={categoryMetrics.employeesStarted} hint="Participations that have started." />
+              <Metric label="Finished" value={categoryMetrics.employeesFinished} hint="Participations that have finished." />
+              {!hideLabor ? (
+                <Metric label="Total Time" value={categoryMetrics.totalTimeLabel} hint="Sum of each employee's participation time." />
               ) : null}
             </Stack>
 
@@ -395,7 +474,7 @@ export default function ManagementTasksPage() {
                     border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
                   }}
                 >
-                  <Typography color="text.secondary">No assignments for this day.</Typography>
+                  <Typography color="text.secondary">No assignments in this range.</Typography>
                 </Box>
               ) : (
                 filteredAssignments.map((row) => {
@@ -432,7 +511,7 @@ export default function ManagementTasksPage() {
             {/* Management history: expandable per assignment only — no duplicate Activity Log for Rinse.
                 For managers, correct/edit history lives in record dialogs + revisions API. */}
             {!readOnly && (data?.activity_log || []).length > 0 ? (
-              <Box sx={{ mt: 3 }}>
+              <Box className="no-print" sx={{ mt: 3 }}>
                 <Typography
                   variant="subtitle2"
                   sx={{ fontWeight: 800, color: VEEWASH_DASHBOARD.wfCharcoal, mb: 0.5 }}

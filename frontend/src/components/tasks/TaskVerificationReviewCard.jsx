@@ -27,6 +27,7 @@ export default function TaskVerificationReviewCard({
   const [reason, setReason] = useState("");
   const [itemRejectId, setItemRejectId] = useState(null);
   const [itemReason, setItemReason] = useState("");
+  const [supervisorRemark, setSupervisorRemark] = useState("");
   const assigned = (card?.assigned_employees || []).join(" + ");
 
   return (
@@ -108,7 +109,11 @@ export default function TaskVerificationReviewCard({
                   {(item.records || []).map((rec) => (
                     <Box key={rec.activity_id || `${item.task_code}-${rec.employee_id}`} sx={{ pl: 1 }}>
                       <Typography variant="caption" color="text.secondary" display="block">
-                        {clock(rec.checked_off_at) ? `Checked off: ${clock(rec.checked_off_at)}` : "Not checked off"}
+                        {clock(rec.checked_off_at)
+                          ? `Checked off: ${clock(rec.checked_off_at)}`
+                          : item.checked_off
+                            ? "Checked off"
+                            : "Not checked off"}
                         {rec.employee_name ? ` · By: ${rec.employee_name}` : ""}
                       </Typography>
                       {rec.rejection_reason ? (
@@ -156,12 +161,19 @@ export default function TaskVerificationReviewCard({
       ) : null}
 
       {card.can_approve_all ? (
-        <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+        <Stack spacing={1} sx={{ mt: 1 }}>
+          <TextField
+            size="small"
+            label="Supervisor remark (optional)"
+            value={supervisorRemark}
+            onChange={(e) => setSupervisorRemark(e.target.value)}
+          />
+          <Stack direction="row" spacing={1}>
           <Button
             size="small"
             variant="contained"
             disabled={busy}
-            onClick={() => onApproveAll?.(card.pending_activity_ids || [])}
+            onClick={() => onApproveAll?.(card.pending_activity_ids || [], { remark: supervisorRemark })}
             sx={{ textTransform: "none", fontWeight: 800 }}
           >
             Approve All
@@ -179,6 +191,7 @@ export default function TaskVerificationReviewCard({
           >
             Needs Redo
           </Button>
+          </Stack>
         </Stack>
       ) : null}
 

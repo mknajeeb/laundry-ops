@@ -449,6 +449,7 @@ def complete_group_activity(
     organization_id: int,
     user_id: int,
     activity_id: int,
+    remark: str | None = None,
 ) -> dict[str, Any]:
     ensure_group_activity_schema(cursor)
     oid = int(organization_id)
@@ -468,6 +469,7 @@ def complete_group_activity(
             organization_id=oid,
             user_id=uid,
             activity_id=int(activity_id),
+            remark=remark,
         )
 
     items = list_activity_items(cursor, oid, int(activity_id))
@@ -583,6 +585,8 @@ def complete_group_activity(
         )
 
     # Close parent as completed (verification lives on children).
+    from backend.cleaning_task_shared_execution import _employee_remark_input
+
     activity = _finalize_completion(
         cursor,
         oid=oid,
@@ -591,7 +595,7 @@ def complete_group_activity(
         row=row,
         at=at,
         duration=duration,
-        completion_input=None,
+        completion_input=_employee_remark_input(remark, uid, at),
         interrupt_role=True,
         force_status=STATUS_COMPLETED,
         force_verify=False,

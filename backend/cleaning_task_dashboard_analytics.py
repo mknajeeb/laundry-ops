@@ -26,6 +26,75 @@ from backend.cleaning_task_activity import (
 from backend.task_catalog import list_categories
 
 
+def chart_status(row: Mapping[str, Any]) -> str:
+    """One status per assignment so a stacked chart does not count the same activity twice."""
+    from backend.cleaning_task_activity import (
+        COMPLETION_IN_PROGRESS,
+        COMPLETION_NOT_STARTED,
+        VERIFICATION_PARTIAL,
+        VERIFICATION_WAITING,
+        assignment_is_completed,
+        assignment_is_started,
+        assignment_is_verified,
+        assignment_needs_correction,
+    )
+
+    if assignment_needs_correction(row):
+        return "needs_correction"
+    if str(row.get("status") or "") == DISPLAY_OVERDUE and not assignment_is_completed(row):
+        return "overdue"
+    if assignment_is_verified(row):
+        return "verified"
+    verification = str(row.get("verification_status") or "")
+    overall = str(row.get("overall_status") or "")
+    if verification in {VERIFICATION_WAITING, VERIFICATION_PARTIAL} or overall == "pending_verification":
+        return "pending_verification"
+    if assignment_is_completed(row):
+        return "pending_verification"
+    if assignment_is_started(row) or str(row.get("completion_status") or "") == COMPLETION_IN_PROGRESS:
+        return "in_progress"
+    if str(row.get("overall_status") or "") == COMPLETION_NOT_STARTED:
+        return "not_started"
+    return "not_started"
+
+
+def bucket_label(day: date, group_by: str) -> str:
+    """Sunday-start weeks in America/New_York calendar dates. DST does not move the date."""
+    mode = str(group_by or "daily").strip().lower()
+    if mode == "monthly":
+        return f"{day.year:04d}-{day.month:02d}"
+    if mode == "weekly":
+        start = day - timedelta(days=(day.weekday() + 1) % 7)
+        return str(start)
+    return str(day)
+
+
+def stack_chart_buckets(days: list[Mapping[str, Any]], group_by: str = "daily") -> list[dict[str, Any]]:
+    order: list[str] = []
+    grouped: dict[str, dict[str, int]] = {}
+    for row in days or []:
+        raw = str(row.get("business_date") or "")[:10]
+        try:
+            parsed = date.fromisoformat(raw)
+        except ValueError:
+            continue
+        key = bucket_label(parsed, group_by)
+        if key not in grouped:
+            order.append(key)
+            grouped[key] = {
+                "not_started": 0,
+                "in_progress": 0,
+                "pending_verification": 0,
+                "verified": 0,
+                "overdue": 0,
+                "needs_correction": 0,
+            }
+        chart = row.get("chart") if isinstance(row.get("chart"), Mapping) else {}
+        for name in grouped[key]:
+            grouped[key][name] += int(chart.get(name) or 0)
+    return [{"label": key, **grouped[key]} for key in order]
+
+
 def _month_bounds(year: int, month: int) -> tuple[date, date]:
     last = monthrange(year, month)[1]
     return date(year, month, 1), date(year, month, last)
@@ -39,6 +108,10 @@ def monthly_task_performance(
     month: int | None = None,
     category_code: str | None = None,
     rinse_eligible_only: bool = False,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    group_by: str = "daily",
+    include_assignments: bool = False,
 ) -> dict[str, Any]:
     """Daily assigned / completed / overdue / verified for a calendar month (ET business dates).
 
@@ -53,12 +126,20 @@ def monthly_task_performance(
     today = business_today()
     y = int(year or today.year)
     m = int(month or today.month)
-    start, end = _month_bounds(y, m)
+    if start_date is not None and end_date is not None:
+        start, end = start_date, end_date
+        if end < start:
+            start, end = end, start
+        if (end - start).days > 62:
+            end = start + timedelta(days=62)
+    else:
+        start, end = _month_bounds(y, m)
     oid = int(organization_id)
     catalog = _role_catalog(cursor, oid)
     cat_filter = (str(category_code or "").strip() or None)
 
     days: list[dict[str, Any]] = []
+    collected: list[dict[str, Any]] = []
     totals = {
         "assigned": 0,
         "completed": 0,
@@ -113,9 +194,22 @@ def monthly_task_performance(
         verified = 0
         pending_verification = 0
         rejected = 0
+        exclusive = {
+            "not_started": 0,
+            "in_progress": 0,
+            "pending_verification": 0,
+            "verified": 0,
+            "overdue": 0,
+            "needs_correction": 0,
+        }
         # Same assignment rules as the day dashboard. A group is one assignment and is
         # verified only when every required item is verified, not when the parent timer closes.
         for row in shared:
+            exclusive[chart_status(row)] += 1
+            if include_assignments:
+                stamped = dict(row)
+                stamped["business_date"] = str(cur)
+                collected.append(stamped)
             if assignment_is_completed(row):
                 completed += 1
             else:
@@ -139,6 +233,7 @@ def monthly_task_performance(
             "verified": verified,
             "pending_verification": pending_verification,
             "rejected": rejected,
+            "chart": exclusive,
             "completion_rate": round((completed / assigned) * 100, 1) if assigned else None,
         }
         days.append(day_row)
@@ -161,6 +256,9 @@ def monthly_task_performance(
         "month_end": str(end),
         "category_code": cat_filter,
         "categories": [{"code": c["code"], "name": c["name"]} for c in categories],
+        "assignments": collected if include_assignments else [],
         "days": days,
+        "buckets": stack_chart_buckets(days, group_by),
+        "group_by": str(group_by or "daily"),
         "totals": {**totals, "completion_rate": overall_rate},
     }

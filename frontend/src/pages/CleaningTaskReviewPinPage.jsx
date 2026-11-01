@@ -88,7 +88,7 @@ export default function CleaningTaskReviewPinPage() {
     load();
   }, [load]);
 
-  const approveIds = async (ids, approveAll = false) => {
+  const approveIds = async (ids, approveAll = false, supervisorRemark = "") => {
     const list = (ids || []).filter(Boolean);
     if (!list.length) return;
     setBusy(true);
@@ -99,6 +99,7 @@ export default function CleaningTaskReviewPinPage() {
         hubToken: hub.token,
         activity_ids: list,
         approve_all: approveAll,
+        supervisor_remark: supervisorRemark || "",
       });
       const body = res?.data || {};
       if (!body.ok) throw new Error(body.error || "Could not approve");
@@ -204,7 +205,7 @@ export default function CleaningTaskReviewPinPage() {
                     key={card.assignment_key}
                     card={card}
                     busy={busy}
-                    onApproveAll={(ids) => approveIds(ids, true)}
+                    onApproveAll={(ids, extra) => approveIds(ids, true, extra?.remark || "")}
                     onNeedsRedo={(ids, redoReason) => rejectIds(ids, redoReason)}
                     onRejectItem={(id, itemReason) => rejectIds([id], itemReason)}
                   />

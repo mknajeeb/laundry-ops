@@ -362,6 +362,7 @@ def register_cleaning_task_activity_routes(
                 organization_id=int(ctx["org_id"]),
                 user_id=int(ctx["user_id"]),
                 activity_id=int(activity_id),
+                remark=data.get("remark") or data.get("employee_remark"),
             )
             conn.commit()
             return jsonify({"ok": True, "activity": activity})
@@ -412,6 +413,7 @@ def register_cleaning_task_activity_routes(
                 user_id=int(ctx["user_id"]),
                 activity_id=int(activity_id),
                 completion_input=data.get("completion_input") or data.get("input"),
+                remark=data.get("remark") or data.get("employee_remark"),
             )
             conn.commit()
             return jsonify({"ok": True, "activity": activity})
@@ -463,6 +465,7 @@ def register_cleaning_task_activity_routes(
                 responsibility_id=int(rid),
                 shift_session_id=ctx.get("shift_id"),
                 completion_input=data.get("completion_input") or data.get("input"),
+                remark=data.get("remark") or data.get("employee_remark"),
             )
             conn.commit()
             return jsonify({"ok": True, "activity": activity})
@@ -779,6 +782,7 @@ def register_cleaning_task_activity_routes(
                 activity_ids=ordered,
                 supervisor_user_id=int(ctx["user_id"]),
                 approve_all=bool(data.get("approve_all")),
+                supervisor_remark=data.get("supervisor_remark") or data.get("remark"),
             )
             conn.commit()
             return jsonify({"ok": True, "activities": approved})
@@ -959,6 +963,7 @@ def register_cleaning_task_activity_routes(
                 cursor,
                 organization_id=int(org_id),
                 activity_ids=ids,
+                supervisor_remark=data.get("supervisor_remark") or data.get("remark"),
                 supervisor_user_id=uid,
                 approve_all=bool(data.get("approve_all")),
             )
@@ -1092,6 +1097,17 @@ def register_cleaning_task_activity_routes(
                     return jsonify({"error": "Forbidden"}), 403
             year = request.args.get("year")
             month = request.args.get("month")
+            start_raw = (request.args.get("start") or "").strip()
+            end_raw = (request.args.get("end") or "").strip()
+            start_date = end_date = None
+            if start_raw and end_raw:
+                from datetime import date as date_cls
+
+                try:
+                    start_date = date_cls.fromisoformat(start_raw[:10])
+                    end_date = date_cls.fromisoformat(end_raw[:10])
+                except ValueError:
+                    return jsonify({"error": "start and end must be YYYY-MM-DD"}), 400
             payload = monthly_task_performance(
                 cursor,
                 int(org_id),
@@ -1100,7 +1116,17 @@ def register_cleaning_task_activity_routes(
                 category_code=(request.args.get("category") or request.args.get("category_code") or "").strip()
                 or None,
                 rinse_eligible_only=bool(rinse_only),
+                start_date=start_date,
+                end_date=end_date,
+                group_by=(request.args.get("group_by") or "daily"),
+                include_assignments=str(request.args.get("include_assignments") or "") in {"1", "true", "yes"},
             )
+            if rinse_only and payload.get("assignments"):
+                from backend.cleaning_task_activity import _strip_rinse_management_fields
+
+                payload["assignments"] = [
+                    _strip_rinse_management_fields(row) for row in payload["assignments"]
+                ]
             payload["read_only"] = bool(rinse_only)
             if rinse_only:
                 # Monthly chart has no labor fields; still flag for clients.

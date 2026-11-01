@@ -179,6 +179,7 @@ export default function ManagementTaskConfigPage() {
               verification_timing: groupDraft.verification_timing || "same_shift",
               verifier_config: groupDraft.verifier_config || {},
             }),
+        instructions: groupDraft.instructions || "",
         items,
       });
       setGroupDraft(null);
@@ -681,6 +682,7 @@ export default function ManagementTaskConfigPage() {
                 onClick={() =>
                   setGroupDraft({
                     name: "",
+                    instructions: "",
                     category_code: categories[0]?.code || "intra_day",
                     display_order: 0,
                     active: true,
@@ -758,6 +760,14 @@ export default function ManagementTaskConfigPage() {
                   size="small"
                   value={groupDraft.name || ""}
                   onChange={(e) => setGroupDraft({ ...groupDraft, name: e.target.value })}
+                />
+                <TextField
+                  label="Instructions"
+                  size="small"
+                  multiline
+                  minRows={2}
+                  value={groupDraft.instructions || ""}
+                  onChange={(e) => setGroupDraft({ ...groupDraft, instructions: e.target.value })}
                 />
                 <TextField
                   select

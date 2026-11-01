@@ -251,6 +251,56 @@ def friendly_status_label(status: str | None, *, overdue: bool = False) -> str:
     }.get(key, "Not Started")
 
 
+def _merge_supervisor_remark(raw: Any, remark: str | None, supervisor_user_id: int, at: datetime) -> dict[str, Any] | None:
+    text = str(remark or "").strip()
+    if not text:
+        return None
+    current: dict[str, Any] = {}
+    if isinstance(raw, Mapping):
+        current = dict(raw)
+    elif isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                current = parsed
+        except (TypeError, ValueError, json.JSONDecodeError):
+            current = {}
+    current["supervisor_remark"] = {
+        "text": text[:1000],
+        "author_user_id": int(supervisor_user_id),
+        "at": at.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    return current
+
+
+def _with_employee_remark(validated: Any, remark: str | None, user_id: int, at) -> Any:
+    from backend.cleaning_task_shared_execution import _employee_remark_input
+
+    extra = _employee_remark_input(remark, int(user_id), at)
+    if not extra:
+        return validated
+    merged = dict(validated or {})
+    merged.update(extra)
+    return merged
+
+
+def _stored_remark(completion_input: Any, key: str) -> dict[str, Any] | None:
+    if not isinstance(completion_input, Mapping):
+        return None
+    raw = completion_input.get(key)
+    if not isinstance(raw, Mapping):
+        return None
+    text = str(raw.get("text") or "").strip()
+    if not text:
+        return None
+    return {
+        "text": text[:1000],
+        "author_user_id": int(raw["author_user_id"]) if raw.get("author_user_id") is not None else None,
+        "author_name": (str(raw.get("author_name") or "").strip() or None),
+        "at": str(raw.get("at") or "")[:19] or None,
+    }
+
+
 def serialize_activity(row: Mapping[str, Any], *, catalog: Mapping[str, Any] | None = None) -> dict[str, Any]:
     mode = str(row.get("timing_mode") or "anytime")
     start = _serialize_time(row.get("planned_start_time"))
@@ -309,6 +359,8 @@ def serialize_activity(row: Mapping[str, Any], *, catalog: Mapping[str, Any] | N
         else None,
         "manual_reason": (str(row.get("manual_reason") or "").strip() or None),
         "manual_remarks": (str(row.get("manual_remarks") or "").strip() or None),
+        "employee_remark": _stored_remark(completion_input, "employee_remark"),
+        "supervisor_remark": _stored_remark(completion_input, "supervisor_remark"),
         "times_manual": bool(row.get("times_manual")),
         "is_manual_completion": str(row.get("completion_source") or "pin").lower()
         in {"manual", "corrected"},
@@ -713,6 +765,7 @@ def list_employee_day_tasks(
             or timing_display(item.get("timing_mode"), item.get("start_time")),
             "planned_start_time": item.get("start_time"),
             "remarks": item.get("remarks"),
+            "instructions": _assignment_instructions(cursor, int(organization_id), item),
             "user_ids": member_ids,
             "assigned_employees": member_names_sorted,
             "shared": len(member_ids) > 1,
@@ -1041,6 +1094,7 @@ def complete_task(
     user_id: int,
     activity_id: int,
     completion_input: Any = None,
+    remark: str | None = None,
 ) -> dict[str, Any]:
     ensure_cleaning_task_activity_tables(cursor)
     oid = int(organization_id)
@@ -1073,7 +1127,7 @@ def complete_task(
         row=row,
         at=at,
         duration=duration,
-        completion_input=validated,
+        completion_input=_with_employee_remark(validated, remark, uid, at),
         interrupt_role=True,
     )
 
@@ -1087,6 +1141,7 @@ def complete_untimed_task(
     responsibility_id: int,
     shift_session_id: int | None,
     completion_input: Any = None,
+    remark: str | None = None,
 ) -> dict[str, Any]:
     """Mark an untimed task complete without pausing the production role."""
     ensure_cleaning_task_activity_tables(cursor)
@@ -1117,6 +1172,7 @@ def complete_untimed_task(
         raise CleaningTaskError(exc.message, status=exc.status) from exc
 
     at = eastern_now_naive()
+    validated = _with_employee_remark(validated, remark, uid, at)
     from backend.task_verification_policy import resolve_verification_policy, snapshot_columns
 
     policy = resolve_verification_policy(
@@ -1241,6 +1297,7 @@ def approve_activity(
     organization_id: int,
     activity_id: int,
     supervisor_user_id: int,
+    supervisor_remark: str | None = None,
 ) -> dict[str, Any]:
     catalog = _role_catalog(cursor, int(organization_id))
     row = get_activity(cursor, organization_id, int(activity_id))
@@ -1255,13 +1312,22 @@ def approve_activity(
         verifier_user_id=int(supervisor_user_id),
     )
     at = eastern_now_naive()
+    merged_input = _merge_supervisor_remark(row.get("completion_input_json"), supervisor_remark, int(supervisor_user_id), at)
     cursor.execute(
         f"""
         UPDATE {TABLE}
-        SET status = %s, approved_by_user_id = %s, approved_at = %s, rejection_reason = NULL
+        SET status = %s, approved_by_user_id = %s, approved_at = %s, rejection_reason = NULL,
+            completion_input_json = %s
         WHERE id = %s AND organization_id = %s
         """,
-        (STATUS_APPROVED, int(supervisor_user_id), at, int(activity_id), int(organization_id)),
+        (
+            STATUS_APPROVED,
+            int(supervisor_user_id),
+            at,
+            json.dumps(merged_input, default=str) if merged_input is not None else row.get("completion_input_json"),
+            int(activity_id),
+            int(organization_id),
+        ),
     )
     _record_event(
         cursor,
@@ -1332,6 +1398,7 @@ def approve_activity_ids(
     activity_ids: Sequence[Any],
     supervisor_user_id: int,
     approve_all: bool = False,
+    supervisor_remark: str | None = None,
 ) -> list[dict[str, Any]]:
     """Verify each id once. Already-approved rows are returned without a new event."""
     ordered: list[int] = []
@@ -1361,6 +1428,7 @@ def approve_activity_ids(
                 organization_id=int(organization_id),
                 activity_id=int(row["id"]),
                 supervisor_user_id=int(supervisor_user_id),
+                supervisor_remark=supervisor_remark,
             )
         )
     return approved
@@ -1779,7 +1847,9 @@ def _group_shared_assignments(
                     and int(a.get("parent_activity_id") or 0) == int(act.get("id") or 0)
                     and int(a.get("user_id") or 0) == int(member.get("user_id") or 0)
                 ]
-                entry["group_items"] = children
+                # Shared checklist is one list for the assignment. Per-employee
+                # copies hide a partner's check-off and look like "Not checked off".
+                entry["group_items"] = [] if act.get("shared_session_id") is not None else children
                 entry["is_activity_group"] = True
                 entry["execution_mode"] = (
                     "shared" if act.get("shared_session_id") is not None else "individual"
@@ -1922,6 +1992,7 @@ def _group_shared_assignments(
                 "has_manual_completion": any(
                     (c.get("activity") or {}).get("is_manual_completion") for c in contributions
                 ),
+                "instructions": _assignment_instructions(cursor, int(organization_id), sample),
                 "activity_group_items": _activity_group_item_templates(
                     cursor, int(organization_id), str(sample.get("role") or "")
                 ),
@@ -1937,6 +2008,23 @@ def _group_shared_assignments(
             )
         )
     return out
+
+
+def _assignment_instructions(cursor, organization_id: int, sample: Mapping[str, Any]) -> str | None:
+    """Group instructions, otherwise the assignment instructions already stored on the schedule."""
+    role = str(sample.get("role") or "")
+    try:
+        from backend.task_activity_groups import get_activity_group, is_activity_group_code
+
+        if is_activity_group_code(role):
+            group = get_activity_group(cursor, int(organization_id), role_code=role)
+            text = str((group or {}).get("instructions") or "").strip()
+            if text:
+                return text
+    except Exception:
+        pass
+    text = str(sample.get("remarks") or "").strip()
+    return text or None
 
 
 def _activity_group_item_templates(cursor, organization_id: int, role: str) -> list[dict[str, Any]]:
@@ -2442,12 +2530,14 @@ def build_verification_review_cards(
         ]
         checked_states = done_states | {STATUS_REJECTED}
         per_employee_copies = False
-        for code in codes_to_check:
-            records = list((by_code.get(code) or {}).get("records") or [])
-            recorders = {int(rec.get("employee_id") or 0) for rec in records}
-            if len(recorders) > 1 or (member_ids and member_ids <= recorders):
-                per_employee_copies = True
-                break
+        shared_logical = any(child.get("shared_session_id") is not None for child in children)
+        if not shared_logical:
+            for code in codes_to_check:
+                records = list((by_code.get(code) or {}).get("records") or [])
+                recorders = {int(rec.get("employee_id") or 0) for rec in records}
+                if len(recorders) > 1 or (member_ids and member_ids <= recorders):
+                    per_employee_copies = True
+                    break
         for code in codes_to_check:
             records = list((by_code.get(code) or {}).get("records") or [])
             done = [rec for rec in records if str(rec.get("status")) in checked_states]
@@ -3061,6 +3151,8 @@ _RINSE_HIDDEN_KEYS = frozenset(
         "recorded_by_user_id",
         "manual_reason",
         "manual_remarks",
+        "employee_remark",
+        "supervisor_remark",
         "times_manual",
         "is_manual_completion",
         "has_manual_completion",

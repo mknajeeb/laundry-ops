@@ -99,6 +99,7 @@ export const CHECKLIST_ITEM_LABELS = {
   completed: "Checked off",
   in_progress: "In Progress",
   pending_approval: "Waiting for Verification",
+  pending_verification: "Waiting for Verification",
   approved: "Verified",
   verified: "Verified",
   rejected: "Needs Correction",
@@ -156,17 +157,39 @@ export function overallLabel(status) {
   );
 }
 
-/** Headline counts: employees for participation, assignments for completion. */
+/** Hours and minutes. Checklist check-off rows are not added. */
+export function formatDurationHm(seconds) {
+  if (seconds == null || Number.isNaN(Number(seconds))) return "0m";
+  const total = Math.max(0, Math.round(Number(seconds) / 60));
+  const hours = Math.floor(total / 60);
+  const minutes = total % 60;
+  if (hours <= 0) return `${minutes}m`;
+  return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+}
+
+function contributionSeconds(contrib) {
+  const act = contrib?.activity || {};
+  if (isChecklistTimestamp(act)) return 0;
+  const raw = act.duration_seconds;
+  if (raw == null || raw === "") return 0;
+  return Math.max(0, Number(raw) || 0);
+}
+
+/** Headline counts: assignments once, each employee participation separately. */
 export function dashboardHeadlineMetrics(rows) {
   const list = Array.isArray(rows) ? rows : [];
   let employeesAssigned = 0;
   let employeesStarted = 0;
+  let employeesFinished = 0;
+  let totalSeconds = 0;
   for (const row of list) {
     const contribs = Array.isArray(row?.contributions) ? row.contributions : [];
     employeesAssigned += contribs.length;
     for (const contrib of contribs) {
       const part = participationStatusOf(contrib);
       if (part === "in_progress" || part === "finished") employeesStarted += 1;
+      if (part === "finished") employeesFinished += 1;
+      totalSeconds += contributionSeconds(contrib);
     }
   }
   const completedActivities = list.filter(
@@ -182,21 +205,36 @@ export function dashboardHeadlineMetrics(rows) {
     const overall = String(row?.overall_status || "");
     return verification === "waiting" || verification === "partial" || overall === "pending_verification";
   }).length;
+  const overdue = list.filter((row) => {
+    const overall = String(row?.overall_status || row?.status || "");
+    return overall === "overdue";
+  }).length;
   return {
+    activitiesAssigned: list.length,
+    completedActivities,
+    pendingVerification,
+    verifiedActivities,
+    overdue,
     employeesAssigned,
     employeesStarted,
-    completedActivities,
-    verifiedActivities,
-    pendingVerification,
+    employeesFinished,
+    totalSeconds,
+    totalTimeLabel: formatDurationHm(totalSeconds),
   };
 }
 
 export function participationSummary({ finished, assigned, checklistDone, checklistRequired }) {
-  const people = `${finished} of ${assigned} employees finished`;
+  const people = `${finished}/${assigned} employees finished`;
   if (Number(checklistRequired) > 0) {
-    return `${people} · ${checklistDone} of ${checklistRequired} checklist items completed`;
+    return `${people} · ${checklistDone}/${checklistRequired} checklist items completed`;
   }
   return people;
+}
+
+/** Shared assignments show one checklist. Do not repeat per-employee Not checked off badges. */
+export function showPerEmployeeChecklist(row, contribution) {
+  if ((row?.shared_checklist_items || []).length > 0) return false;
+  return (contribution?.group_items || []).length > 0;
 }
 
 export function isChecklistTimestamp(activity) {

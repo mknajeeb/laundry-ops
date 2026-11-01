@@ -101,6 +101,10 @@ def ensure_task_activity_group_tables(cursor) -> None:
     except Exception:
         pass
     if table_exists(cursor, GROUPS_TABLE) and not table_has_column(
+        cursor, GROUPS_TABLE, "instructions"
+    ):
+        cursor.execute(f"ALTER TABLE {GROUPS_TABLE} ADD COLUMN instructions TEXT NULL")
+    if table_exists(cursor, GROUPS_TABLE) and not table_has_column(
         cursor, GROUPS_TABLE, "require_checklist_before_completion"
     ):
         # NULL preserves existing groups. New groups set the flag explicitly.
@@ -230,6 +234,7 @@ def _serialize_group(
         "verification_policy_label": (
             "Inherited from global default" if inherits else "Group override"
         ),
+        "instructions": (str(row.get("instructions") or "").strip() or None),
         "require_checklist_before_completion": _serialize_require_checklist_flag(
             row.get("require_checklist_before_completion")
         ),
@@ -548,6 +553,13 @@ def upsert_activity_group(
             ),
         )
         gid = int(cursor.lastrowid)
+
+    if "instructions" in payload and table_has_column(cursor, GROUPS_TABLE, "instructions"):
+        text = str(payload.get("instructions") or "").strip()[:2000] or None
+        cursor.execute(
+            f"UPDATE {GROUPS_TABLE} SET instructions=%s WHERE organization_id=%s AND id=%s",
+            (text, oid, gid),
+        )
 
     cursor.execute(
         f"DELETE FROM {GROUP_ITEMS_TABLE} WHERE organization_id=%s AND group_id=%s",

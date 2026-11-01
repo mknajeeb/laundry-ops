@@ -1,13 +1,17 @@
+import { useState } from "react";
 import {
   Box,
   Button,
   Collapse,
   IconButton,
   Stack,
+  TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import {
   CompletionBadge,
@@ -22,18 +26,17 @@ import {
   participationTimeLine,
 } from "./taskDashboardFormat";
 import {
+  formatDurationHm,
   friendlyStatusLabel,
   participationLabel,
   participationStatusOf,
   participationSummary,
+  showPerEmployeeChecklist,
 } from "./taskDashboardLabels";
 
 function formatDuration(seconds) {
   if (seconds == null) return null;
-  const sec = Math.max(0, Number(seconds) || 0);
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+  return formatDurationHm(seconds);
 }
 
 /**
@@ -58,10 +61,10 @@ export default function TaskAssignmentCard({
   onConfirmReject,
   onCancelReject,
 }) {
-  const employees = (row.assigned_employees || []).join(", ") || "Unassigned";
-  const modeLabel =
-    row.execution_mode === "shared" ? "Shared" : row.shared ? "Group" : null;
+  const [supervisorRemark, setSupervisorRemark] = useState("");
+  const employees = (row.assigned_employees || []).join(" + ") || "Unassigned";
   const checklistItems = row.shared_checklist_items || [];
+  const instructions = String(row.instructions || "").trim();
   const showParticipation = Boolean(row.shared || row.execution_mode === "shared" || row.overall_status);
   const requiredItems = checklistItems.filter((item) => item.required !== false);
   const checklistDone = requiredItems.filter((item) =>
@@ -86,7 +89,10 @@ export default function TaskAssignmentCard({
         bgcolor: "#fff",
         boxShadow: VEEWASH_DASHBOARD.cardShadow,
         overflow: "hidden",
+        breakInside: "avoid",
+        pageBreakInside: "avoid",
       }}
+      className="task-print-card"
     >
       <Stack
         direction={{ xs: "column", sm: "row" }}
@@ -104,11 +110,12 @@ export default function TaskAssignmentCard({
             >
               {row.role_label || row.role}
             </Typography>
-            {modeLabel ? (
-              <TaskStatusBadge
-                label={modeLabel}
-                sx={{ bgcolor: VEEWASH_DASHBOARD.snapshotBg, color: VEEWASH_DASHBOARD.primaryBlueDark }}
-              />
+            {instructions ? (
+              <Tooltip title={instructions} placement="top" enterTouchDelay={0} arrow>
+                <IconButton size="small" aria-label="Instructions" onClick={(e) => e.stopPropagation()}>
+                  <InfoOutlinedIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
             ) : null}
             {row.has_manual_completion && !readOnly ? (
               <TaskStatusBadge label="Manual entry" />
@@ -146,7 +153,7 @@ export default function TaskAssignmentCard({
         </Stack>
       </Stack>
 
-      <Collapse in={expanded} timeout="auto" unmountOnExit>
+      <Collapse in={expanded} timeout="auto">
         <Box
           sx={{
             px: 1.5,
@@ -156,6 +163,17 @@ export default function TaskAssignmentCard({
             bgcolor: VEEWASH_DASHBOARD.pageBackground,
           }}
         >
+          {!readOnly && canApprove ? (
+            <TextField
+              className="no-print"
+              size="small"
+              fullWidth
+              label="Supervisor remark (optional)"
+              value={supervisorRemark}
+              onChange={(e) => setSupervisorRemark(e.target.value)}
+              sx={{ mb: 1, bgcolor: "#fff" }}
+            />
+          ) : null}
           {checklistItems.length > 0 ? (
             <Box sx={{ mb: 1.25 }}>
               <Typography
@@ -190,11 +208,6 @@ export default function TaskAssignmentCard({
                   </Stack>
                 ))}
               </Stack>
-              {row.checklist_complete === false ? (
-                <Typography variant="caption" color="warning.dark" sx={{ display: "block", mt: 0.5 }}>
-                  Required checklist items are not all checked off — assignment stays In Progress.
-                </Typography>
-              ) : null}
             </Box>
           ) : null}
 
@@ -251,7 +264,7 @@ export default function TaskAssignmentCard({
                       />
                       {!readOnly && canApprove && !verifyLocked && String(c.status) === "pending_approval" && act.id ? (
                         <>
-                          <Button size="small" variant="contained" onClick={() => onApprove(act.id)}
+                          <Button size="small" variant="contained" onClick={() => onApprove(act.id, supervisorRemark)}
                             sx={{ bgcolor: VEEWASH_DASHBOARD.teal, "&:hover": { bgcolor: VEEWASH_DASHBOARD.tealDark } }}>
                             Approve
                           </Button>
@@ -283,7 +296,17 @@ export default function TaskAssignmentCard({
                     </Stack>
                   </Stack>
 
-                  {(c.group_items || []).length > 0 ? (
+                  {c.activity?.employee_remark?.text ? (
+                    <Typography variant="caption" display="block" sx={{ mt: 0.5 }}>
+                      Employee remark: {c.activity.employee_remark.text}
+                    </Typography>
+                  ) : null}
+                  {c.activity?.supervisor_remark?.text ? (
+                    <Typography variant="caption" display="block">
+                      Supervisor remark: {c.activity.supervisor_remark.text}
+                    </Typography>
+                  ) : null}
+                  {showPerEmployeeChecklist(row, c) ? (
                     <Stack spacing={0.35} sx={{ mt: 0.75, pl: 0.5 }}>
                       {c.group_items.map((gi) => (
                         <Stack
