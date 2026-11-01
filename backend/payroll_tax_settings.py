@@ -66,6 +66,8 @@ DEFAULT_PAYROLL_TAX_SETTINGS: dict[str, Any] = {
     "health_credit_flat_amount_per_period": 0,
     "health_credit_cap_per_period": None,
     "health_credit_cap_per_year": None,
+    # Reporting only. Does not change wages, overtime, taxes, or payments.
+    "labor_cost_target_per_hour": 19.0,
 }
 
 # Keys accepted on save beyond the static default map (allows future fields).

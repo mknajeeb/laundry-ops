@@ -1959,6 +1959,9 @@ export const deleteContractorPaymentRecord = (recordId) =>
 export const getPayrollTimeRecords = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/time-records`, { params });
 
+export const postPayrollHourlyCostAnalysis = (body) =>
+  axios.post(`${API_BASE}/api/ta/payroll/hourly-cost-analysis`, body);
+
 export const postPayrollTimeRecord = (body) =>
   axios.post(`${API_BASE}/api/ta/payroll/time-records`, body);
 

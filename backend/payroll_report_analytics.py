@@ -684,7 +684,11 @@ def category_breakdown(rows: list[dict]) -> list[dict[str, Any]]:
 
 
 def employee_summaries_by_category(
-    rows: list[dict], *, include_identities: bool = True
+    rows: list[dict],
+    *,
+    include_identities: bool = True,
+    tax_settings: Optional[dict] = None,
+    labor_cost_target: Optional[float] = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Per-category employee rollups for dashboard drill-down.
 
@@ -709,6 +713,13 @@ def employee_summaries_by_category(
         for key, emp_rows in employees.items():
             metrics = aggregate_period_metrics(emp_rows)
             name = emp_rows[0].get("employee_name") or "Employee"
+            from backend.payroll_hourly_cost import hourly_cost_from_report_rows
+
+            hourly_cost = hourly_cost_from_report_rows(
+                emp_rows,
+                tax_settings=tax_settings,
+                labor_cost_target=labor_cost_target,
+            )
             summaries.append(
                 {
                     "user_id": emp_rows[0].get("user_id"),
@@ -730,6 +741,7 @@ def employee_summaries_by_category(
                     "avg_cost_per_hour": metrics.get("avg_cost_per_hour"),
                     "is_supplemental": all(bool(r.get("is_supplemental")) for r in emp_rows),
                     "includes_supplemental": any(bool(r.get("is_supplemental")) for r in emp_rows),
+                    "hourly_cost": hourly_cost,
                 }
             )
         summaries.sort(
@@ -1381,8 +1393,22 @@ def build_report_analytics(
     )
 
     include_identities = bool(filters.get("include_employee_detail", True))
+    tax_settings = None
+    labor_target = None
+    try:
+        from backend.payroll_hourly_cost import labor_cost_target_from_settings
+        from backend.payroll_tax_settings import fetch_payroll_tax_settings
+
+        tax_settings = fetch_payroll_tax_settings(conn, int(organization_id))
+        labor_target = labor_cost_target_from_settings(tax_settings)
+    except Exception:
+        tax_settings = None
+        labor_target = None
     employee_summaries = employee_summaries_by_category(
-        detail_rows, include_identities=include_identities
+        detail_rows,
+        include_identities=include_identities,
+        tax_settings=tax_settings,
+        labor_cost_target=labor_target,
     )
 
     compare_options = (
@@ -1422,6 +1448,7 @@ def build_report_analytics(
         "workforce_totals": workforce_totals,
         "employment_mix": employment_mix,
         "employee_summaries_by_category": employee_summaries,
+        "labor_cost_target_per_hour": labor_target,
         "access": {
             "can_view_employee_detail": include_identities,
             "layout": "executive_v4",

@@ -5791,6 +5791,51 @@ def payroll_time_records():
         conn.close()
 
 
+@ta_bp.route("/payroll/hourly-cost-analysis", methods=["POST"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings", "users.view")
+def payroll_hourly_cost_analysis():
+    """Read-only employer hourly cost for one employee and payroll period."""
+    conn = get_db()
+    try:
+        body = request.get_json(silent=True) or {}
+        if not isinstance(body, dict):
+            return jsonify({"error": "JSON body must be an object"}), 400
+        uid = body.get("user_id")
+        start = str(body.get("from_date") or body.get("pay_period_start") or "")[:10]
+        end = str(body.get("to_date") or body.get("pay_period_end") or "")[:10]
+        if not uid or not start or not end:
+            return jsonify({"error": "user_id, from_date, and to_date are required"}), 400
+        oid = _tenant_id()
+        if not _user_belongs_to_tenant(conn, int(uid)):
+            return jsonify({"error": "Invalid user"}), 400
+        records = body.get("records") or []
+        if not isinstance(records, list):
+            return jsonify({"error": "records must be a list"}), 400
+        if len(records) > 500:
+            return jsonify({"error": "Too many time records"}), 400
+        from backend.payroll_hourly_cost import build_hourly_cost_for_time_records
+
+        analysis = build_hourly_cost_for_time_records(
+            conn,
+            oid,
+            int(uid),
+            period_start=start,
+            period_end=end,
+            records=records,
+            ot_threshold=body.get("ot_threshold"),
+            ot_multiplier=body.get("ot_multiplier"),
+        )
+        return jsonify(analysis)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_hourly_cost_analysis failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 def _payroll_time_record_update(conn, oid: int, rid: int, body: dict):
     from backend.payroll_operations import update_time_record
 

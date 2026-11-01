@@ -41,6 +41,7 @@ import {
   getPayrollScheduleSettings,
   getPayrollScheduleWorkers,
   getPayrollTimeRecords,
+  postPayrollHourlyCostAnalysis,
   getTaUsers,
   getTaskTrackingSelectionTree,
   patchPayrollTimeRecord,
@@ -79,6 +80,7 @@ import {
   payrollBreakRowActions,
 } from "../payroll/payrollBreakActions";
 import { PayrollDateField, PayrollDateTimeField } from "./PayrollDateTimeField";
+import { HourlyCostPanel } from "./HourlyCostAnalysis";
 
 const STATUS_OPTIONS = [
   { value: "all", label: "All statuses" },
@@ -276,6 +278,9 @@ export default function PayrollTimeRecordsPanel({
   const [breakConflict, setBreakConflict] = useState(null);
   const [saving, setSaving] = useState(false);
   const [bulkApproving, setBulkApproving] = useState(false);
+  const [hourlyCost, setHourlyCost] = useState(null);
+  const [hourlyLoading, setHourlyLoading] = useState(false);
+  const [hourlyError, setHourlyError] = useState("");
 
   useEffect(() => {
     getTaUsers()
@@ -360,6 +365,53 @@ export default function PayrollTimeRecordsPanel({
       setLoading(false);
     }
   }, [fromDate, toDate, category, status, userId]);
+
+  const selectedRate = userId ? rateMap[String(userId)] : null;
+
+  useEffect(() => {
+    if (!userId || !fromDate || !toDate) {
+      setHourlyCost(null);
+      setHourlyError("");
+      setHourlyLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setHourlyLoading(true);
+    const records = displayRows.map((row) => ({
+      id: row.id,
+      approved_hours: row.approved_hours,
+      clock_in_at: row.clock_in_at,
+      work_date: row.work_date,
+      hourly_rate: row.regular_rate ?? row.hourly_rate,
+      worker_category: row.worker_category,
+    }));
+    const regular = Number(selectedRate?.regular_rate || 0);
+    const overtime = Number(selectedRate?.ot_rate || 0);
+    postPayrollHourlyCostAnalysis({
+      user_id: userId,
+      from_date: fromDate,
+      to_date: toDate,
+      ot_threshold: selectedRate?.ot_threshold,
+      ot_multiplier: regular > 0 && overtime > 0 ? overtime / regular : undefined,
+      records,
+    })
+      .then((res) => {
+        if (cancelled) return;
+        setHourlyCost(res.data || null);
+        setHourlyError("");
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setHourlyCost(null);
+        setHourlyError(e.response?.data?.error || e.message || "Hourly cost could not be loaded");
+      })
+      .finally(() => {
+        if (!cancelled) setHourlyLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, fromDate, toDate, displayRows, selectedRate]);
 
   useEffect(() => {
     load();
@@ -989,6 +1041,10 @@ export default function PayrollTimeRecordsPanel({
             gradient={`linear-gradient(135deg, ${alpha(theme.palette.success.main, 0.1)} 0%, ${alpha(theme.palette.success.main, 0.02)} 100%)`}
           />
         </Box>
+
+        {userId && fromDate && toDate ? (
+          <HourlyCostPanel analysis={hourlyCost} loading={hourlyLoading} error={hourlyError} />
+        ) : null}
 
       <TableContainer sx={{ width: "100%", overflowX: "auto", borderRadius: 1.5 }}>
         <Table size="small" sx={{ minWidth: 980 }}>

@@ -386,6 +386,12 @@ def build_report_row(batch: dict, line: dict, *, report_type: Optional[str] = No
         period_label = str(ps or pe)[:10]
 
     total_payroll_cost = round(_money(gross_pay) + employer_taxes, 2)
+    er_raw = details.get("employer_taxes") if isinstance(details, dict) else None
+    employer_tax_components = {}
+    if isinstance(er_raw, dict):
+        employer_tax_components = {
+            str(k): round(_money(v), 2) for k, v in er_raw.items()
+        }
 
     payment_st = _effective_payment_status(batch, line, outstanding=outstanding)
     paid_for_totals = amount_paid if amount_paid is not None else 0.0
@@ -428,7 +434,14 @@ def build_report_row(batch: dict, line: dict, *, report_type: Optional[str] = No
         "amount_paid": paid_for_totals,
         "outstanding_balance": outstanding,
         "employer_taxes": employer_taxes,
+        "employer_tax_components": employer_tax_components,
+        "employer_cost_recorded": isinstance(er_raw, dict),
         "total_payroll_cost": total_payroll_cost,
+        "details_finalized_at": (
+            batch.get("payout_details_finalized_at").isoformat()
+            if hasattr(batch.get("payout_details_finalized_at"), "isoformat")
+            else (str(batch.get("payout_details_finalized_at")) if batch.get("payout_details_finalized_at") else "")
+        ),
         "payment_status": _payment_status_label(payment_st),
         "payment_status_key": payment_st,
         "payroll_status": DISPLAY_STATUS_LABELS.get(display_status, display_status),

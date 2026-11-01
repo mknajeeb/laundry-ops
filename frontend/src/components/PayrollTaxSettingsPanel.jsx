@@ -231,6 +231,28 @@ export default function PayrollTaxSettingsPanel() {
         </Stack>
       </Paper>
       <Paper sx={{ p: 2 }}>
+        <Typography variant="h6" sx={{ mb: 1 }}>
+          Labor cost target (reporting only)
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          Compares effective employer cost per hour on the payroll dashboard and time records.
+          Does not change wages, overtime, taxes, or payments.
+        </Typography>
+        <TextField
+          size="small"
+          label="Target employer cost per hour"
+          type="number"
+          value={settings.labor_cost_target_per_hour ?? 19}
+          onChange={(e) =>
+            setSettings((s) => ({
+              ...s,
+              labor_cost_target_per_hour: e.target.value === "" ? "" : Number(e.target.value),
+            }))
+          }
+          sx={{ maxWidth: 520 }}
+        />
+      </Paper>
+      <Paper sx={{ p: 2 }}>
         <Stack spacing={1.5} sx={{ maxWidth: 520 }}>
           <TextField
             size="small"

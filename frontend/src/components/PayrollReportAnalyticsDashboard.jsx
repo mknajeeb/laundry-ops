@@ -41,6 +41,14 @@ import {
   YAxis,
 } from "recharts";
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
+import { HourlyCostInfo } from "./HourlyCostAnalysis";
+import {
+  burdenCaption,
+  formatBurdenPercent,
+  formatHourlyCost,
+  formatOtImpact,
+  hourlyTargetColor,
+} from "../payroll/hourlyCostDisplay";
 
 function money(v) {
   if (v == null || v === "") return "—";
@@ -198,6 +206,10 @@ const EMPLOYEE_HEADERS = [
   "OT Premium",
   "Gross",
   "Total Cost",
+  "Base Cost/hr",
+  "Effective Cost/hr",
+  "OT Impact/hr",
+  "Burden",
 ];
 
 function pctDelta(v) {
@@ -432,7 +444,7 @@ export default function PayrollReportAnalyticsDashboard({
           ) : (
             <Paper variant="outlined" sx={{ borderColor: VEEWASH_BRAND.borderSoft }}>
               <TableContainer sx={{ overflowX: "auto" }}>
-                <Table size="small">
+                <Table size="small" sx={{ minWidth: 1180 }}>
                   <TableHead>
                     <TableRow>
                       {EMPLOYEE_HEADERS.map((h) => (
@@ -443,7 +455,10 @@ export default function PayrollReportAnalyticsDashboard({
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {drillEmployees.map((emp) => (
+                    {drillEmployees.map((emp) => {
+                      const hc = emp.hourly_cost;
+                      const targetDelta = hc?.target_delta_per_hour;
+                      return (
                       <TableRow
                         key={emp.user_id ?? emp.employee_name}
                         hover
@@ -466,8 +481,45 @@ export default function PayrollReportAnalyticsDashboard({
                         <TableCell align="right">{money(emp.ot_premium)}</TableCell>
                         <TableCell align="right">{money(emp.gross_pay)}</TableCell>
                         <TableCell align="right">{money(emp.total_payroll_cost)}</TableCell>
+                        <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                          {formatHourlyCost(hc?.base_cost_per_hour)}
+                        </TableCell>
+                        <TableCell
+                          align="right"
+                          sx={{ color: hourlyTargetColor(hc), fontWeight: 700, whiteSpace: "nowrap" }}
+                        >
+                          {formatHourlyCost(hc?.effective_cost_per_hour)}
+                          {targetDelta != null && hc?.effective_cost_per_hour != null ? (
+                            <Typography
+                              variant="caption"
+                              display="block"
+                              sx={{ color: hourlyTargetColor(hc), fontWeight: 600 }}
+                            >
+                              {Number(targetDelta) > 0.004
+                                ? `+$${Number(targetDelta).toFixed(2)}`
+                                : Number(targetDelta) < -0.004
+                                  ? `-$${Math.abs(Number(targetDelta)).toFixed(2)}`
+                                  : "$0.00"}
+                            </Typography>
+                          ) : null}
+                        </TableCell>
+                        <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                          {formatOtImpact(hc?.ot_impact_per_hour)}
+                        </TableCell>
+                        <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                          <Stack direction="row" spacing={0.25} justifyContent="flex-end" alignItems="center">
+                            <Box>
+                              <div>{formatBurdenPercent(hc?.burden_percent)}</div>
+                              <Typography variant="caption" color="text.secondary" display="block">
+                                {burdenCaption(hc)}
+                              </Typography>
+                            </Box>
+                            <HourlyCostInfo analysis={hc} />
+                          </Stack>
+                        </TableCell>
                       </TableRow>
-                    ))}
+                      );
+                    })}
                     {drillEmployees.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={EMPLOYEE_HEADERS.length} sx={{ color: VEEWASH_BRAND.inkSoft }}>
