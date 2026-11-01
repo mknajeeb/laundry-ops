@@ -18,6 +18,7 @@ import {
   Typography,
 } from "@mui/material";
 import { formatTime12 } from "../datetime/scheduleTimeUi";
+import { copyShiftDialogZIndex, copyShiftEmployeeMenuZIndex } from "./copyShiftDialogLayers";
 import { DAY_LABELS, DISPLAY_DAY_ORDER } from "./weeklyScheduleDates";
 import { entryBreakLines, scheduleRoleInfo } from "./weeklyScheduleRoles";
 import { taskTimingLabel } from "./weeklyScheduleTaskTiming";
@@ -322,6 +323,20 @@ export default function WeeklyScheduleCopyShiftDialog({
             onChange={(_event, value) => setSelectedEmployees(value)}
             getOptionLabel={(employee) => employee.display_name || `User #${employee.user_id}`}
             isOptionEqualToValue={(left, right) => Number(left.user_id) === Number(right.user_id)}
+            slotProps={{
+              popper: {
+                sx: { zIndex: copyShiftEmployeeMenuZIndex },
+                modifiers: [
+                  {
+                    name: "preventOverflow",
+                    options: { altAxis: true, padding: 8, boundary: "viewport" },
+                  },
+                ],
+              },
+              listbox: {
+                sx: { maxHeight: "min(320px, 40vh)", overflow: "auto" },
+              },
+            }}
             renderInput={(params) => <TextField {...params} label="Assign to" placeholder="Search employees" />}
             renderTags={(value, getTagProps) =>
               value.map((employee, index) => (
@@ -480,7 +495,7 @@ export default function WeeklyScheduleCopyShiftDialog({
       maxWidth="sm"
       fullWidth
       data-testid="copy-shift-dialog"
-      slotProps={{ root: { sx: { zIndex: (theme) => theme.zIndex.tooltip + 10 } } }}
+      slotProps={{ root: { sx: { zIndex: copyShiftDialogZIndex } } }}
     >
       {dialogBody}
     </Dialog>
