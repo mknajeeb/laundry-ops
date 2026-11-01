@@ -8,7 +8,7 @@ Completed check-offs keep ``responsibility_snapshot_json`` and are not rewritten
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
 from backend.ta_helpers import table_exists, table_has_column
@@ -200,13 +200,16 @@ def incomplete_items_naming_users(
     removed_user_ids: Sequence[int],
     session_items: Sequence[Mapping[str, Any]] | None = None,
     overrides_by_item_id: Mapping[int, Mapping[str, Any]] | None = None,
+    eligible_user_ids: Sequence[int] | None = None,
 ) -> list[dict[str, Any]]:
-    """Incomplete items whose resolved responsibility still includes a removed employee.
+    """Incomplete items still naming someone who is not on this date's roster.
 
     Completed session rows are ignored so their snapshots stay historical.
+    When ``eligible_user_ids`` is omitted, only explicit removals are checked.
     """
     removed = {int(uid) for uid in removed_user_ids}
-    if not removed:
+    eligible = None if eligible_user_ids is None else {int(uid) for uid in eligible_user_ids}
+    if not removed and eligible is None:
         return []
     by_code = {}
     for row in session_items or []:
@@ -228,7 +231,8 @@ def incomplete_items_naming_users(
             resolved = resolve_responsibility(item, None)
         named = set(resolved.get("responsibility_user_ids") or [])
         hit = sorted(named & removed)
-        if not hit:
+        outside = sorted(named - eligible) if eligible is not None else []
+        if not hit and not outside:
             continue
         conflicts.append(
             {
@@ -238,6 +242,7 @@ def incomplete_items_naming_users(
                 "responsibility_mode": resolved.get("responsibility_mode"),
                 "responsibility_user_ids": list(resolved.get("responsibility_user_ids") or []),
                 "removed_user_ids": hit,
+                "ineligible_user_ids": outside,
             }
         )
     return conflicts
@@ -432,9 +437,78 @@ def apply_roster_responsibility(
         removed_user_ids=removed_user_ids,
         session_items=session_items,
         overrides_by_item_id=override_rows,
+        eligible_user_ids=eligible_user_ids,
     )
     if conflicts:
         raise ItemResponsibilityConflict(conflicts)
+
+
+def _as_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "")[:10]
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def attach_checklist_responsibilities(
+    cursor,
+    organization_id: int,
+    responsibilities: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Resolved checklist responsibility for each assignment date.
+
+    A saved date override replaces the master names. The master row is not changed.
+    """
+    from backend.task_activity_groups import get_activity_group
+
+    rows = [dict(item) for item in responsibilities or []]
+    groups: dict[str, dict[str, Any]] = {}
+    for item in rows:
+        role = str(item.get("role") or "")
+        if not role.startswith("agroup_") or role in groups:
+            continue
+        try:
+            group = get_activity_group(cursor, int(organization_id), role_code=role)
+        except Exception:
+            group = None
+        groups[role] = group or {}
+    for item in rows:
+        group = groups.get(str(item.get("role") or ""))
+        members = list((group or {}).get("items") or [])
+        if not members:
+            continue
+        week = _as_date(item.get("week_start"))
+        if week is None:
+            continue
+        business_date = business_date_for_week(week, int(item.get("day_of_week") or 0))
+        overrides = load_overrides_for_items(
+            cursor,
+            int(organization_id),
+            [int(member.get("id") or 0) for member in members],
+            business_date,
+        )
+        resolved = []
+        for member in members:
+            override = overrides.get(int(member.get("id") or 0))
+            payload = resolve_responsibility(member, override)
+            resolved.append(
+                {
+                    "group_item_id": int(member.get("id") or 0),
+                    "task_code": member.get("task_code"),
+                    "task_name": member.get("task_name") or member.get("task_code"),
+                    "responsibility_mode": payload.get("responsibility_mode"),
+                    "responsibility_user_ids": list(payload.get("responsibility_user_ids") or []),
+                    "responsibility_label": payload.get("responsibility_label"),
+                    "date_override": bool(override),
+                }
+            )
+        item["checklist_items"] = resolved
+    return rows
 
 
 def split_items_for_employee(items: Sequence[Mapping[str, Any]], user_id: int) -> dict[str, list]:

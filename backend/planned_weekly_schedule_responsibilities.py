@@ -629,6 +629,54 @@ def _with_warnings(item: dict[str, Any] | None, warnings: Sequence[str]) -> dict
     return item
 
 
+def _guard_activity_item_roster(
+    cursor,
+    organization_id: int,
+    *,
+    role: str,
+    week_start: date,
+    day_of_week: int,
+    removed_user_ids: Sequence[int],
+    eligible_user_ids: Sequence[int],
+    overrides: Sequence[Mapping[str, Any]] | None,
+) -> str | None:
+    """Block a date save while an open item names someone off that date's roster."""
+    if not str(role or "").startswith("agroup_"):
+        return None
+    try:
+        from backend.task_activity_groups import get_activity_group
+        from backend.task_activity_item_responsibility import (
+            ItemResponsibilityConflict,
+            ItemResponsibilityError,
+            apply_roster_responsibility,
+            business_date_for_week,
+        )
+
+        group = get_activity_group(cursor, organization_id, role_code=role)
+        items = list((group or {}).get("items") or [])
+        if not items:
+            return None
+        apply_roster_responsibility(
+            cursor,
+            organization_id,
+            role=role,
+            business_date=business_date_for_week(week_start, int(day_of_week)),
+            removed_user_ids=removed_user_ids,
+            eligible_user_ids=eligible_user_ids,
+            overrides=overrides or [],
+            group_items=items,
+        )
+    except ItemResponsibilityConflict:
+        raise
+    except ItemResponsibilityError as exc:
+        return exc.message
+    except Exception:
+        if hasattr(cursor, "_resp_id") or getattr(cursor, "tables", None) is not None:
+            return None
+        raise
+    return None
+
+
 def create_responsibility(
     conn,
     cursor,
@@ -663,6 +711,18 @@ def create_responsibility(
     )
     if errors:
         return None, "; ".join(errors)
+    roster_err = _guard_activity_item_roster(
+        cursor,
+        organization_id,
+        role=str(payload.get("role") or ""),
+        week_start=week_start,
+        day_of_week=int(payload["day_of_week"]),
+        removed_user_ids=[],
+        eligible_user_ids=payload["user_ids"],
+        overrides=data.get("item_responsibility_overrides") or [],
+    )
+    if roster_err:
+        return None, roster_err
     group_id = uuid.uuid4().hex
     first_id = None
     for uid in payload["user_ids"]:
@@ -752,39 +812,18 @@ def update_responsibility(
         return None, guard
     removed_users = [uid for uid in existing_users if uid not in payload["user_ids"]]
     role = str(payload.get("role") or existing.get("role") or "")
-    if role.startswith("agroup_"):
-        try:
-            from backend.task_activity_groups import get_activity_group
-            from backend.task_activity_item_responsibility import (
-                ItemResponsibilityConflict,
-                ItemResponsibilityError,
-                apply_roster_responsibility,
-                business_date_for_week,
-            )
-
-            group = get_activity_group(cursor, organization_id, role_code=role)
-            items = list((group or {}).get("items") or [])
-            if items:
-                business_date = business_date_for_week(week_start, int(payload["day_of_week"]))
-                apply_roster_responsibility(
-                    cursor,
-                    organization_id,
-                    role=role,
-                    business_date=business_date,
-                    removed_user_ids=removed_users,
-                    eligible_user_ids=payload["user_ids"],
-                    overrides=data.get("item_responsibility_overrides") or [],
-                    group_items=items,
-                )
-        except ItemResponsibilityConflict:
-            raise
-        except ItemResponsibilityError as exc:
-            return None, exc.message
-        except Exception:
-            if hasattr(cursor, "_resp_id") or getattr(cursor, "tables", None) is not None:
-                pass
-            else:
-                raise
+    roster_err = _guard_activity_item_roster(
+        cursor,
+        organization_id,
+        role=role,
+        week_start=week_start,
+        day_of_week=int(payload["day_of_week"]),
+        removed_user_ids=removed_users,
+        eligible_user_ids=payload["user_ids"],
+        overrides=data.get("item_responsibility_overrides") or [],
+    )
+    if roster_err:
+        return None, roster_err
     group_id = str(existing.get("assignment_group_id") or "").strip() or uuid.uuid4().hex
     by_user = {int(member["user_id"]): int(member["id"]) for member in member_rows}
     kept_id = None

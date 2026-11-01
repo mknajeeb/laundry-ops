@@ -468,7 +468,9 @@ export const attendancePinCleaningTasksReject = (organization_slug, pin, options
   axios.post(
     `${API_BASE}/api/public/attendance/pin-cleaning-tasks/reject`,
     _pinCleaningBody(organization_slug, pin, options, {
-      activity_id: options.activity_id,
+      ...(options.activity_ids
+        ? { activity_ids: options.activity_ids }
+        : { activity_id: options.activity_id }),
       reason: options.reason,
     }),
     _pinCleaningOpts,

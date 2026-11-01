@@ -1756,7 +1756,7 @@ def list_supervisor_queue(
         ),
         "verification_cards": build_verification_review_cards(
             buckets["pending_approval"],
-            assignments=assignments,
+            assignments=_with_shared_checklists(cursor, int(organization_id), assignments, activities),
             activities=activities,
             by_resp=by_resp,
             names=names,
@@ -2397,6 +2397,66 @@ def _review_wall(value: Any) -> str | None:
     return str(value).replace("T", " ")[:19]
 
 
+def _with_shared_checklists(
+    cursor,
+    organization_id: int,
+    assignments: Sequence[Mapping[str, Any]],
+    activities: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach the one shared checklist so review cards can show responsibility."""
+    session_by_group: dict[str, int] = {}
+    for act in activities or []:
+        session_id = act.get("shared_session_id")
+        group_id = str(act.get("assignment_group_id") or "").strip()
+        if session_id is not None and group_id and group_id not in session_by_group:
+            session_by_group[group_id] = int(session_id)
+    if not session_by_group:
+        return [dict(row) for row in assignments or []]
+    from backend.cleaning_task_shared_execution import list_shared_session_items, serialize_shared_item
+    from backend.task_activity_item_responsibility import parse_user_ids
+
+    serialized: dict[str, list[dict[str, Any]]] = {}
+    for group_id, session_id in session_by_group.items():
+        try:
+            shared_items = list_shared_session_items(cursor, int(organization_id), session_id)
+        except Exception:
+            continue
+        name_ids = {
+            int(it["completed_by_user_id"])
+            for it in shared_items
+            if it.get("completed_by_user_id") is not None
+        }
+        for it in shared_items:
+            raw = it.get("responsibility_snapshot_json")
+            if not raw:
+                continue
+            try:
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, dict):
+                name_ids.update(parse_user_ids(parsed.get("user_ids")))
+        item_names = _employee_names(cursor, int(organization_id), sorted(name_ids)) if name_ids else {}
+        serialized[group_id] = [
+            serialize_shared_item(
+                it,
+                catalog=_role_catalog(cursor, int(organization_id)),
+                meta=_task_meta_for_role(cursor, int(organization_id), str(it.get("task_code") or "")),
+                names=item_names,
+            )
+            for it in shared_items
+        ]
+    out = []
+    for row in assignments or []:
+        item = dict(row)
+        item["assignment_key"] = assignment_key(item)
+        group_id = str(item.get("assignment_group_id") or "").strip()
+        if group_id in serialized:
+            item["shared_checklist_items"] = serialized[group_id]
+        out.append(item)
+    return out
+
+
 def _review_item_from_shared(item: Mapping[str, Any], shared: Mapping[str, Any]) -> dict[str, Any]:
     """One shared check-off. Responsibility and the actual checker both stay visible."""
     checked = str(shared.get("status") or "") in {"completed", "approved", "verified"}
@@ -2639,8 +2699,13 @@ def build_verification_review_cards(
                 code = str(item.get("task_code") or "")
                 shared = shared_by_code.get(code)
                 if shared:
-                    item = _review_item_from_shared(item, shared)
                     seen_codes.add(code)
+                    if item.get("records"):
+                        item["responsibility_label"] = shared.get("responsibility_label") or "Anyone on Team"
+                        item["responsibility_mode"] = shared.get("responsibility_mode") or "team"
+                        item["completed_by_name"] = shared.get("completed_by_name") or item.get("completed_by_name")
+                    else:
+                        item = _review_item_from_shared(item, shared)
                 merged.append(item)
             for code, shared in shared_by_code.items():
                 if code in seen_codes:

@@ -2597,7 +2597,13 @@ def register_rinse_shift_analysis_routes(
             )
             return jsonify(json_safe_rinse(payload)), 201
         except Exception as exc:
+            from backend.task_activity_item_responsibility import ItemResponsibilityConflict
+
             conn.rollback()
+            if isinstance(exc, ItemResponsibilityConflict):
+                return jsonify(
+                    {"error": str(exc), "code": "item_responsibility", "items": exc.items}
+                ), 409
             return jsonify({"error": str(exc)}), 500
         finally:
             cursor.close()
@@ -2640,7 +2646,13 @@ def register_rinse_shift_analysis_routes(
             )
             return jsonify(json_safe_rinse(payload)), 201
         except Exception as exc:
+            from backend.task_activity_item_responsibility import ItemResponsibilityConflict
+
             conn.rollback()
+            if isinstance(exc, ItemResponsibilityConflict):
+                return jsonify(
+                    {"error": str(exc), "code": "item_responsibility", "items": exc.items}
+                ), 409
             return jsonify({"error": str(exc)}), 500
         finally:
             cursor.close()

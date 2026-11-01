@@ -264,6 +264,20 @@ export default function WeeklyScheduleEntryDialog({
       setActivityItems([]);
       return undefined;
     }
+    const attached = responsibility?.checklist_items;
+    if (Array.isArray(attached) && attached.length) {
+      setActivityItems(
+        attached.map((item) => ({
+          group_item_id: item.group_item_id,
+          task_code: item.task_code,
+          task_name: item.task_name || item.task_code,
+          responsibility_mode: item.responsibility_mode === "named" ? "named" : "team",
+          user_ids: (item.responsibility_user_ids || []).map(Number),
+          dirty: false,
+        })),
+      );
+      return undefined;
+    }
     let cancelled = false;
     getManagementTaskCatalog()
       .then((res) => {
@@ -287,7 +301,7 @@ export default function WeeklyScheduleEntryDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, kind, respRole, previewActivityItems]);
+  }, [open, kind, respRole, previewActivityItems, responsibility]);
   const canChooseSharedExecution = !isShift && respIsActivityGroup && userIds.length >= 2;
   useEffect(() => {
     if (!canChooseSharedExecution && executionMode === "shared") {
@@ -426,8 +440,17 @@ export default function WeeklyScheduleEntryDialog({
     if (!canSave) return;
     if (!isShift) {
       const rosterIds = userIds.map(Number);
+      const outsideRoster = (item) =>
+        item.responsibility_mode === "named" &&
+        (!(item.user_ids || []).length ||
+          (item.user_ids || []).some((id) => !rosterIds.includes(Number(id))));
       const itemOverrides = activityItems
-        .filter((item) => item.dirty || (responsibilityConflicts || []).some((conflict) => conflict.task_code === item.task_code))
+        .filter(
+          (item) =>
+            item.dirty ||
+            outsideRoster(item) ||
+            (responsibilityConflicts || []).some((conflict) => conflict.task_code === item.task_code)
+        )
         .map((item) => ({
           group_item_id: item.group_item_id,
           task_code: item.task_code,
@@ -858,7 +881,14 @@ export default function WeeklyScheduleEntryDialog({
                     </Alert>
                   ) : null}
                   {activityItems.map((item, index) => {
-                    const conflict = (responsibilityConflicts || []).some((row) => row.task_code === item.task_code);
+                    const rosterIds = userIds.map(Number);
+                    const outsideRoster =
+                      item.responsibility_mode === "named" &&
+                      (!(item.user_ids || []).length ||
+                        (item.user_ids || []).some((id) => !rosterIds.includes(Number(id))));
+                    const conflict =
+                      outsideRoster ||
+                      (responsibilityConflicts || []).some((row) => row.task_code === item.task_code);
                     return (
                       <Stack key={item.task_code} spacing={0.5} sx={{ p: 1, border: "1px solid", borderColor: conflict ? "warning.main" : "divider", borderRadius: 1 }}>
                         <Typography variant="body2" sx={{ fontWeight: 700 }}>{item.task_name}</Typography>

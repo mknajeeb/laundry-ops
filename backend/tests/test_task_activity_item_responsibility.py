@@ -53,6 +53,32 @@ def test_removing_employee_requires_resolution_for_open_items_only():
     assert resolved == []
 
 
+def test_master_name_off_the_date_roster_conflicts_until_reassigned():
+    items = [
+        {
+            "id": 4,
+            "task_code": "lint",
+            "task_name": "Dryer lint",
+            "responsibility_mode": "named",
+            "responsibility_user_ids": [99],
+        }
+    ]
+    conflicts = incomplete_items_naming_users(
+        items,
+        removed_user_ids=[],
+        eligible_user_ids=[7, 9],
+    )
+    assert [row["task_code"] for row in conflicts] == ["lint"]
+    assert conflicts[0]["ineligible_user_ids"] == [99]
+    cleared = incomplete_items_naming_users(
+        items,
+        removed_user_ids=[],
+        eligible_user_ids=[7, 9],
+        overrides_by_item_id={4: {"responsibility_mode": "team", "user_ids": []}},
+    )
+    assert cleared == []
+
+
 def test_completed_snapshot_is_not_the_conflict_source():
     items = [{"id": 1, "task_code": "done_item", "responsibility_mode": "team", "responsibility_user_ids": []}]
     session = [

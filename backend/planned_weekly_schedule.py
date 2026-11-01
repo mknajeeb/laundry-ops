@@ -2381,6 +2381,9 @@ def build_week_payload(
             allowed_user_ids=schedulable_uids,
         ),
     )
+    from backend.task_activity_item_responsibility import attach_checklist_responsibilities
+
+    responsibilities = attach_checklist_responsibilities(cursor, organization_id, responsibilities)
 
     payload = {
         "week_start": str(week_start),
