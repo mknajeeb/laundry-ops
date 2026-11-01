@@ -291,7 +291,7 @@ describe("schedule exports", () => {
       employeesById,
       responsibilities,
     });
-    const lines = buildHourlyCoverageCsvRows({ days, weekStart: "2026-06-14", columns: coverageColumns(days) });
+    const lines = buildHourlyCoverageCsvRows({ days, weekStart: "2026-06-15", columns: coverageColumns(days) });
     expect(lines.slice(0, 8)).toEqual([
       "Day,Date,Hour,Role,People,Role hours,Cumulative role hours,Employees and coverage",
       "Mon,Jun 15,2-3 AM,Sort,2,1.5,1.5,Employee A; Employee B: 2:30-3",
@@ -307,7 +307,7 @@ describe("schedule exports", () => {
   it("appends employee and role hour summaries to the hourly export", () => {
     const days = buildHourlyCoverage([splitShift], { dayIndices: [1], employeesById });
     const summary = summarizeScheduleHours([splitShift], new Map([[1, employeesById[1]]]));
-    const lines = buildHourlyCoverageCsvRows({ days, weekStart: "2026-06-14", columns: coverageColumns(days), hoursSummary: summary });
+    const lines = buildHourlyCoverageCsvRows({ days, weekStart: "2026-06-15", columns: coverageColumns(days), hoursSummary: summary });
     expect(lines).toContain("Mon,Jun 15,5-6 AM,Fold,1,1,1,Employee A");
     expect(lines).toContain("Employee A,6,6,0");
     expect(lines).toContain("Total (1 employees),6,6,0");

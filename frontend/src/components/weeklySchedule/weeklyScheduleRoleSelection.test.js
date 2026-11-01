@@ -270,7 +270,7 @@ describe("role-scoped shifts, print, and export", () => {
 
   it("labels hourly role coverage gross and lists the unallocated break in the hourly export", () => {
     const days = buildHourlyCoverage(entries, { dayIndices: [1], employeesById, roles: ["fold"] });
-    const csv = buildHourlyCoverageCsvRows({ days, weekStart: "2026-06-14", columns: ["fold"] });
+    const csv = buildHourlyCoverageCsvRows({ days, weekStart: "2026-06-15", columns: ["fold"] });
     expect(csv).toContain(
       "Mon,Jun 15,Day total,Fold,4,14.5,,Gross of breaks without a time; 0.5h break without a time not allocated to a role / Net hours by role unresolved until the break is scheduled",
     );

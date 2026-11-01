@@ -116,6 +116,28 @@ def test_copy_message_counts_created_replaced_and_skipped():
     assert format_copy_message(created=1, replaced=1, skipped=1) == "2 shifts copied (1 replaced), 1 skipped."
 
 
+def test_copy_to_sunday_lands_on_the_displayed_sunday():
+    def run(conn, cursor):
+        source = _source(cursor)
+        result, err = apply_copy_shift(
+            conn,
+            cursor,
+            1,
+            source["id"],
+            user_ids=[20],
+            days_of_week=[0],
+            conflict_mode="skip",
+        )
+        assert err is None, err
+        copied = get_entry(cursor, 1, result["entry_ids"][0], conn=conn)
+        assert copied["day_of_week"] == 0
+        assert str(copied["week_start"])[:10] == (WEEK + timedelta(days=7)).isoformat()
+        assert str(get_entry(cursor, 1, source["id"], conn=conn)["week_start"])[:10] == WEEK.isoformat()
+        assert result["week_start"] == (WEEK + timedelta(days=1)).isoformat()
+
+    _run(run)
+
+
 def test_copy_one_employee_one_day_keeps_breaks_roles_and_tasks():
     def run(conn, cursor):
         source = _source(cursor)

@@ -1,6 +1,10 @@
 import { businessTodayYmd } from "../../utils/businessTime";
 
+/** Storage indexes: 0=Sunday … 6=Saturday. Do not reorder; columns use DISPLAY_DAY_ORDER. */
 export const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** Monday through Sunday, still addressed by the stored weekday index. */
+export const DISPLAY_DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
 
 function ymdFromLocalDate(d) {
   const y = d.getFullYear();
@@ -9,16 +13,32 @@ function ymdFromLocalDate(d) {
   return `${y}-${m}-${day}`;
 }
 
+/** Days from the Monday week start to this stored weekday. Sunday is the last column. */
+export function dayOffset(dayOfWeek) {
+  const dow = Number(dayOfWeek);
+  return dow === 0 ? 6 : dow - 1;
+}
+
+/** Monday of the Monday–Sunday week that contains this calendar date. */
 export function normalizeWeekStart(isoDate) {
   const d = new Date(`${isoDate}T12:00:00`);
   const dow = d.getDay();
-  d.setDate(d.getDate() - dow);
+  d.setDate(d.getDate() - (dow === 0 ? 6 : dow - 1));
   return ymdFromLocalDate(d);
 }
 
-/** Current Sunday-start week in America/New_York (not UTC). */
+/**
+ * Week the schedule opens on in America/New_York.
+ * Sunday opens the following Monday. Every other day opens the week that contains it.
+ */
 export function currentWeekStart() {
-  return normalizeWeekStart(businessTodayYmd());
+  const today = businessTodayYmd();
+  const d = new Date(`${today}T12:00:00`);
+  if (d.getDay() === 0) {
+    d.setDate(d.getDate() + 1);
+    return ymdFromLocalDate(d);
+  }
+  return normalizeWeekStart(today);
 }
 
 export function shiftWeek(isoDate, deltaWeeks) {
@@ -38,6 +58,6 @@ export function formatWeekRange(weekStart) {
 
 export function formatDayDate(weekStart, dayOfWeek) {
   const d = new Date(`${weekStart}T12:00:00`);
-  d.setDate(d.getDate() + Number(dayOfWeek));
+  d.setDate(d.getDate() + dayOffset(dayOfWeek));
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }

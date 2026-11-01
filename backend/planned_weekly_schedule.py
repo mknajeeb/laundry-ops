@@ -1765,6 +1765,25 @@ def update_entry(
             int(entry_id),
         ),
     )
+    from backend.weekly_schedule_week import (
+        display_monday_for_storage,
+        parse_schedule_date,
+        storage_week_for_dow,
+    )
+
+    old_storage = parse_schedule_date(existing.get("week_start"))
+    if old_storage is not None:
+        shown = display_monday_for_storage(old_storage, int(existing.get("day_of_week") or 0))
+        new_storage = storage_week_for_dow(shown, int(payload["day_of_week"]))
+        if new_storage != old_storage:
+            cursor.execute(
+                """
+                UPDATE planned_weekly_schedule_entries
+                SET week_start=%s
+                WHERE organization_id=%s AND id=%s
+                """,
+                (new_storage, int(organization_id), int(entry_id)),
+            )
     return get_entry(cursor, organization_id, entry_id, conn=conn), None
 
 
@@ -1837,6 +1856,17 @@ def duplicate_entry(
         "break_minutes": existing["break_minutes"],
         "break_slots": existing.get("break_slots") or [],
     }
+    from backend.weekly_schedule_week import (
+        display_monday_for_storage,
+        parse_schedule_date,
+        storage_week_for_dow,
+    )
+
+    source_storage = parse_schedule_date(existing.get("week_start"))
+    if source_storage is None:
+        return None, "schedule entry not found"
+    shown = display_monday_for_storage(source_storage, int(existing["day_of_week"]))
+    target_storage = storage_week_for_dow(shown, int(target_day))
     if existing.get("employer_affiliation"):
         duplicate_data["employer_affiliation"] = existing["employer_affiliation"]
     else:
@@ -1851,7 +1881,7 @@ def duplicate_entry(
         conn,
         cursor,
         organization_id,
-        week_start=date.fromisoformat(str(existing["week_start"])),
+        week_start=target_storage,
         data=duplicate_data,
         preserve_assignments=duplicate_data["assignments"],
     )
@@ -2224,6 +2254,7 @@ def bulk_set_week_entry_employer_affiliation(
     *,
     week_start: date,
     employer_affiliation: str,
+    days: Sequence[int] | None = None,
 ) -> tuple[int, str | None, list[dict[str, Any]]]:
     """Move this week's shifts to ``employer_affiliation``.
 
@@ -2245,6 +2276,9 @@ def bulk_set_week_entry_employer_affiliation(
         return 0, "employer_affiliation must be washpro, washmate, veewash, or rinse_exclusive", []
 
     rows = list_week_entries(cursor, organization_id, week_start=week_start, conn=conn)
+    if days is not None:
+        allowed_days = {int(day) for day in days}
+        rows = [row for row in rows if int(row.get("day_of_week") or -1) in allowed_days]
     if not rows:
         return 0, None, []
 
@@ -2272,13 +2306,19 @@ def bulk_set_week_entry_employer_affiliation(
         )
 
     placeholders = ",".join(["%s"] * len(user_ids))
+    day_sql = ""
+    day_params: tuple[Any, ...] = ()
+    if days is not None:
+        allowed_days = tuple(sorted({int(day) for day in days}))
+        day_sql = f" AND day_of_week IN ({','.join(['%s'] * len(allowed_days))})"
+        day_params = allowed_days
     cursor.execute(
         f"""
         UPDATE planned_weekly_schedule_entries
         SET employer_affiliation=%s
-        WHERE organization_id=%s AND week_start=%s AND user_id IN ({placeholders})
+        WHERE organization_id=%s AND week_start=%s AND user_id IN ({placeholders}){day_sql}
         """,
-        (aff, int(organization_id), week_start, *user_ids),
+        (aff, int(organization_id), week_start, *user_ids, *day_params),
     )
     updated = int(getattr(cursor, "rowcount", 0) or 0)
     # Some connectors report 0 when values were already equal; fall back to row count.
@@ -2294,6 +2334,7 @@ def build_week_payload(
     *,
     week_start: date,
     user_roles: Sequence[str] | None = None,
+    display_week: bool = False,
 ) -> dict[str, Any]:
     from backend.business_entity import entity_scope_payload
     from backend.payroll_employer_affiliation import (
@@ -2303,12 +2344,32 @@ def build_week_payload(
     )
     from backend.weekly_schedule_display_settings import effective_weekly_schedule_view, apply_rinse_viewer_scope
 
+    display_monday = None
+    storage_weeks = (week_start,)
+    exclusion_week = week_start
+    if display_week:
+        from backend.weekly_schedule_week import (
+            display_week_storage,
+            row_in_display_week,
+            schedule_monday_containing,
+        )
+
+        display_monday = schedule_monday_containing(week_start) or week_start
+        mon_sat_storage, sunday_storage = display_week_storage(display_monday)
+        storage_weeks = (mon_sat_storage, sunday_storage)
+        exclusion_week = mon_sat_storage
+
     org_slug = _organization_slug(conn, organization_id)
     workers = _load_workers(conn, organization_id)
     workers_by_uid = _workers_index(workers)
     schedulable_uids = schedulable_worker_user_ids(conn, organization_id, workers)
+    loaded_entries: list[dict[str, Any]] = []
+    for storage in storage_weeks:
+        loaded_entries.extend(list_week_entries(cursor, organization_id, week_start=storage, conn=conn))
+    if display_monday is not None:
+        loaded_entries = [row for row in loaded_entries if row_in_display_week(row, display_monday)]
     raw_entries = enrich_entries_with_employer_affiliation(
-        list_week_entries(cursor, organization_id, week_start=week_start, conn=conn),
+        loaded_entries,
         workers_by_uid,
         organization_slug=org_slug,
     )
@@ -2316,7 +2377,7 @@ def build_week_payload(
     entries = [e for e in raw_entries if int(e.get("user_id") or 0) in schedulable_uids]
     excluded_user_ids = [
         uid
-        for uid in list_excluded_user_ids(cursor, organization_id, week_start=week_start)
+        for uid in list_excluded_user_ids(cursor, organization_id, week_start=exclusion_week)
         if int(uid) in schedulable_uids
     ]
     excluded_set = set(excluded_user_ids)
@@ -2371,22 +2432,37 @@ def build_week_payload(
         filter_responsibilities_for_view,
         list_week_responsibilities,
     )
-    from backend.weekly_schedule_template import schedule_template_payload
+    from backend.weekly_schedule_template import display_schedule_template_payload, schedule_template_payload
 
+    loaded_responsibilities: list[dict[str, Any]] = []
+    for storage in storage_weeks:
+        loaded_responsibilities.extend(
+            list_week_responsibilities(cursor, organization_id, week_start=storage)
+        )
+    if display_monday is not None:
+        loaded_responsibilities = [
+            row for row in loaded_responsibilities if row_in_display_week(row, display_monday)
+        ]
     responsibilities = annotate_responsibility_activity(
         cursor,
         organization_id,
         filter_responsibilities_for_view(
-            list_week_responsibilities(cursor, organization_id, week_start=week_start),
+            loaded_responsibilities,
             allowed_user_ids=schedulable_uids,
         ),
     )
     from backend.task_activity_item_responsibility import attach_checklist_responsibilities
 
     responsibilities = attach_checklist_responsibilities(cursor, organization_id, responsibilities)
+    shown_week = display_monday or week_start
+    template_payload = (
+        display_schedule_template_payload(cursor, organization_id, shown_week)
+        if display_monday is not None
+        else schedule_template_payload(cursor, organization_id, week_start)
+    )
 
     payload = {
-        "week_start": str(week_start),
+        "week_start": str(shown_week),
         "day_labels": list(DAY_LABELS),
         "employees": employee_rows,
         "entries": entries,
@@ -2397,7 +2473,7 @@ def build_week_payload(
         "excluded_user_ids": excluded_user_ids,
         "display": view,
         "entity_scope": entity_scope_payload(organization_id, org_slug, user_roles),
-        "schedule_template": schedule_template_payload(cursor, organization_id, week_start),
+        "schedule_template": template_payload,
     }
     if view.get("lock_employer_tab"):
         return apply_rinse_viewer_scope(

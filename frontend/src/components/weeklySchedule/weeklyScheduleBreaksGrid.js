@@ -37,7 +37,7 @@ export function filterResponsibilitiesByTaskSelection(responsibilities, selectio
  */
 export function buildBreaksTasksGrid({
   days = [],
-  dayIndices = [0, 1, 2, 3, 4, 5, 6],
+  dayIndices = [1, 2, 3, 4, 5, 6, 0],
   shiftEntries = [],
   timingEntries = null,
   responsibilities = [],

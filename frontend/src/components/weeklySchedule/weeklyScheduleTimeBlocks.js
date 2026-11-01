@@ -1,3 +1,4 @@
+import { dayOffset } from "./weeklyScheduleDates";
 import {
   scheduleDayTimelines,
   scheduleRoleLabel,
@@ -25,7 +26,7 @@ export const HOURLY_COVERAGE_EXPLANATION =
 export function dayDateLabel(weekStart, dow) {
   const [y, m, d] = String(weekStart || "").split("-").map(Number);
   if (!y || !m || !d) return "";
-  return new Date(Date.UTC(y, m - 1, d + dow)).toLocaleDateString("en-US", {
+  return new Date(Date.UTC(y, m - 1, d + dayOffset(dow))).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     timeZone: "UTC",
@@ -173,7 +174,7 @@ function clockRangeLabel(start, end) {
  */
 export function buildHourlyCoverage(
   entries,
-  { dayIndices = [0, 1, 2, 3, 4, 5, 6], employeesById = {}, responsibilities = [], roles = null, timingEntries = null } = {},
+  { dayIndices = [1, 2, 3, 4, 5, 6, 0], employeesById = {}, responsibilities = [], roles = null, timingEntries = null } = {},
 ) {
   const roleFilter = Array.isArray(roles) ? new Set(roles) : null;
   const timelines = [...scheduleDayTimelines(entries).values()];

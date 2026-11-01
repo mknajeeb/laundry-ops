@@ -200,7 +200,7 @@ export function buildWeeklyScheduleCsvRows({
   roleFilter = null,
   entryScopes = null,
 }) {
-  const columnDays = dayIndices || [0, 1, 2, 3, 4, 5, 6];
+  const columnDays = dayIndices || [1, 2, 3, 4, 5, 6, 0];
   const columnLabels = dayLabels || columnDays.map((dow) => DAY_LABELS[dow]);
   const breakColumns = scheduleEndTimeEnabled && showBreaks;
   const headers = [

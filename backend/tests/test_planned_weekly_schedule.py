@@ -141,6 +141,13 @@ class _FakeCursor:
             )
             self._id = self._resp_id
             return
+        if sql_norm.startswith("update") and "set week_start=%s" in sql_norm and "user_id=%s" not in sql_norm:
+            week_start, org_id, rid = params
+            for r in self.responsibilities:
+                if r["organization_id"] == org_id and r["id"] == rid:
+                    r["week_start"] = week_start
+            self._rowcount = 1
+            return
         if sql_norm.startswith("update") and "display_order=%s" in sql_norm:
             display_order, org_id, rid, user_id, dow = params
             for r in self.responsibilities:
@@ -365,16 +372,31 @@ class _FakeCursor:
             self._rowcount = 1
             return
         if "update planned_weekly_schedule_entries" in sql_norm:
+            if "set week_start=%s" in sql_norm and "employer_affiliation" not in sql_norm:
+                week_start, org_id, entry_id = params
+                for row in self.rows:
+                    if row["organization_id"] == org_id and row["id"] == entry_id:
+                        row["week_start"] = week_start
+                self._rowcount = 1
+                return
             if "set employer_affiliation=%s" in sql_norm and "week_start=%s" in sql_norm:
                 aff = params[0]
                 org_id = params[1]
                 week_start = params[2]
-                user_ids = set(params[3:]) if len(params) > 3 else None
+                rest = list(params[3:])
+                day_filter = None
+                if "day_of_week in" in sql_norm:
+                    day_ph = sql_norm.split("day_of_week in (")[1].split(")")[0].count("%s")
+                    day_filter = {int(day) for day in rest[-day_ph:]} if day_ph else set()
+                    rest = rest[:-day_ph] if day_ph else rest
+                user_ids = set(rest) if rest else None
                 count = 0
                 for row in self.rows:
                     if row["organization_id"] != org_id or row["week_start"] != week_start:
                         continue
                     if user_ids is not None and row["user_id"] not in user_ids:
+                        continue
+                    if day_filter is not None and int(row["day_of_week"]) not in day_filter:
                         continue
                     row["employer_affiliation"] = aff
                     count += 1
@@ -2373,6 +2395,59 @@ def test_template_source_cannot_be_a_past_week():
     with a, b, c:
         _, err = enable_template(MagicMock(), cursor, 1, source_week_start=WEEK, user_id=7)
     assert err and "current week" in err
+
+
+def test_display_week_groups_monday_through_sunday_without_moving_dates():
+    from backend.planned_weekly_schedule import build_week_payload
+
+    cursor = _FakeCursor()
+    nov1 = date(2026, 11, 1)
+    nov8 = date(2026, 11, 8)
+    cursor.rows = [
+        _row(1, nov1, 10, 0, role="fold"),
+        _row(2, nov1, 10, 1, role="wash"),
+        _row(3, nov8, 20, 0, role="sort"),
+        _row(4, nov8, 20, 1, role="fold"),
+    ]
+    a, b, c = _template_patches()
+    with a, b, c:
+        shown = build_week_payload(MagicMock(), cursor, 1, week_start=date(2026, 11, 2), display_week=True)
+        previous = build_week_payload(MagicMock(), cursor, 1, week_start=date(2026, 10, 26), display_week=True)
+    assert shown["week_start"] == "2026-11-02"
+    assert sorted((row["user_id"], row["day_of_week"]) for row in shown["entries"]) == [(10, 1), (20, 0)]
+    assert sorted((row["user_id"], row["day_of_week"]) for row in previous["entries"]) == [(10, 0)]
+    assert [row["week_start"] for row in cursor.rows if row["id"] == 1] == [nov1]
+
+
+def test_monday_template_repeats_the_displayed_sunday_not_the_previous_one():
+    monday = date(2026, 6, 15)
+    storage = date(2026, 6, 14)
+    shown_sunday = date(2026, 6, 21)
+    later_mon_sat = date(2026, 6, 21)
+    later_sunday = date(2026, 6, 28)
+    cursor = _FakeCursor()
+    cursor._id = 10
+    cursor.rows = [
+        _row(1, storage, 10, 0, role="fold"),
+        _row(2, storage, 10, 1, role="wash"),
+        _row(3, shown_sunday, 10, 0, role="sort"),
+        _row(4, later_mon_sat, 20, 3, role="fold"),
+    ]
+    conn = MagicMock()
+    a, b, c = _template_patches(current_week=storage)
+    with a, b, c:
+        result, err = enable_template(conn, cursor, 1, source_week_start=monday, user_id=7)
+    assert err is None, err
+    assert result["source_week_start"] == monday.isoformat()
+    assert [row for row in cursor.rows if row["week_start"] == storage and row["day_of_week"] == 0][0]["role"] == "fold"
+    later_sunday_rows = [row for row in cursor.rows if row["week_start"] == later_sunday and row["day_of_week"] == 0]
+    assert [row["role"] for row in later_sunday_rows] == ["sort"]
+    later_weekdays = sorted(
+        (row["day_of_week"], row["role"])
+        for row in cursor.rows
+        if row["week_start"] == later_mon_sat and row["day_of_week"] != 0
+    )
+    assert later_weekdays == [(1, "wash")]
 
 
 def test_selected_weeks_copy_once_and_stop_template():

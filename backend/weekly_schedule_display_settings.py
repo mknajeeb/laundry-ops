@@ -174,10 +174,10 @@ def is_rinse_schedule_viewer(user_roles: Sequence[str] | None) -> bool:
 
 
 def current_schedule_week_start() -> date:
-    from backend.planned_weekly_schedule import normalize_week_start
-    from backend.rinse_scheduled_scrape import _today_et
+    from backend.business_time import business_today
+    from backend.weekly_schedule_week import current_schedule_monday
 
-    return normalize_week_start(_today_et())  # type: ignore[return-value]
+    return current_schedule_monday(business_today())
 
 
 def validate_schedule_week_access(

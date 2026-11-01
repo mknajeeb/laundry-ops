@@ -74,7 +74,7 @@ function byName(a, b) {
  * any shown day collapse into one `gap` row. Breaks without a time are never placed in a row; they stay
  * in each day's `untimed` list. Overnight breaks stay on the day the shift starts (minutes past 24:00).
  */
-export function buildBreaksByTime({ days = [], dayIndices = [0, 1, 2, 3, 4, 5, 6], interval = 30, includeBreaks = true } = {}) {
+export function buildBreaksByTime({ days = [], dayIndices = [1, 2, 3, 4, 5, 6, 0], interval = 30, includeBreaks = true } = {}) {
   const step = BREAK_INTERVAL_OPTIONS.includes(Number(interval)) ? Number(interval) : 30;
   const dayByDow = new Map((days || []).map((day) => [day.dow, day]));
   const perDay = dayIndices.map((dow) => {

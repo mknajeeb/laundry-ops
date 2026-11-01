@@ -18,11 +18,11 @@ import {
   Typography,
 } from "@mui/material";
 import { formatTime12 } from "../datetime/scheduleTimeUi";
-import { DAY_LABELS } from "./weeklyScheduleDates";
+import { DAY_LABELS, DISPLAY_DAY_ORDER } from "./weeklyScheduleDates";
 import { entryBreakLines, scheduleRoleInfo } from "./weeklyScheduleRoles";
 import { taskTimingLabel } from "./weeklyScheduleTaskTiming";
 
-const DAY_INDEXES = [0, 1, 2, 3, 4, 5, 6];
+const DAY_INDEXES = DISPLAY_DAY_ORDER;
 
 function roleName(code) {
   return scheduleRoleInfo(code)?.name || code;
@@ -350,10 +350,10 @@ export default function WeeklyScheduleCopyShiftDialog({
               </Stack>
             </Stack>
             <Stack direction="row" useFlexGap flexWrap="wrap" spacing={0.5} sx={{ mt: 0.5 }}>
-              {DAY_LABELS.map((label, day) => (
+              {DISPLAY_DAY_ORDER.map((day) => (
                 <Chip
-                  key={label}
-                  label={label}
+                  key={DAY_LABELS[day]}
+                  label={DAY_LABELS[day]}
                   size="small"
                   color={days.includes(day) ? "primary" : "default"}
                   variant={days.includes(day) ? "filled" : "outlined"}

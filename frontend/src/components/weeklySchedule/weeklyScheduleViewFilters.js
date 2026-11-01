@@ -1,6 +1,6 @@
 /** Role / day view filters for weekly schedule visibility. */
 
-import { DAY_LABELS } from "./weeklyScheduleDates";
+import { DAY_LABELS, DISPLAY_DAY_ORDER } from "./weeklyScheduleDates";
 import {
   entryRoleAssignments,
   parseEntryRoles,
@@ -196,10 +196,10 @@ export function filterResponsibilitiesByRoleView(responsibilities, selectedRoles
 export function buildDayViewTabs(entries, { compact = false, responsibilities = [] } = {}) {
   const items = [...(entries || []), ...(responsibilities || [])];
   const tabs = [{ value: SCHEDULE_VIEW_ALL, label: compact ? "All" : "All Days", count: distinctUsers(items) }];
-  DAY_LABELS.forEach((label, dow) => {
+  DISPLAY_DAY_ORDER.forEach((dow) => {
     tabs.push({
       value: String(dow),
-      label: compact ? COMPACT_DAY_LABELS[dow] : label,
+      label: compact ? COMPACT_DAY_LABELS[dow] : DAY_LABELS[dow],
       count: distinctUsers(items.filter((item) => Number(item.day_of_week) === dow)),
     });
   });
@@ -207,9 +207,9 @@ export function buildDayViewTabs(entries, { compact = false, responsibilities = 
 }
 
 export function visibleDayIndices(dayTab) {
-  if (!dayTab || dayTab === SCHEDULE_VIEW_ALL) return [0, 1, 2, 3, 4, 5, 6];
+  if (!dayTab || dayTab === SCHEDULE_VIEW_ALL) return [...DISPLAY_DAY_ORDER];
   const dow = Number(dayTab);
-  if (!Number.isInteger(dow) || dow < 0 || dow > 6) return [0, 1, 2, 3, 4, 5, 6];
+  if (!Number.isInteger(dow) || dow < 0 || dow > 6) return [...DISPLAY_DAY_ORDER];
   return [dow];
 }
 

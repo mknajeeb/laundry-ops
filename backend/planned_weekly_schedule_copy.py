@@ -153,6 +153,35 @@ def _source_tasks(responsibilities: Sequence[Mapping[str, Any]], *, user_id: int
     ]
 
 
+def _display_schedule(cursor, organization_id: int, source: Mapping[str, Any], conn):
+    """Rows on the Monday–Sunday week that contains this shift, still stored by Sunday."""
+    from backend.weekly_schedule_week import (
+        display_monday_for_storage,
+        display_week_storage,
+        row_in_display_week,
+    )
+
+    storage = date.fromisoformat(str(source["week_start"])[:10])
+    monday = display_monday_for_storage(storage, int(source["day_of_week"]))
+    mon_sat, sunday = display_week_storage(monday)
+    entries: list[dict[str, Any]] = []
+    responsibilities: list[dict[str, Any]] = []
+    for week in (mon_sat, sunday):
+        entries.extend(list_week_entries(cursor, organization_id, week_start=week, conn=conn))
+        responsibilities.extend(list_week_responsibilities(cursor, organization_id, week_start=week))
+    return (
+        monday,
+        [row for row in entries if row_in_display_week(row, monday)],
+        [row for row in responsibilities if row_in_display_week(row, monday)],
+    )
+
+
+def _storage_for(monday: date, day: int) -> date:
+    from backend.weekly_schedule_week import storage_week_for_dow
+
+    return storage_week_for_dow(monday, int(day))
+
+
 def _entries_for(
     entries: Sequence[Mapping[str, Any]],
     *,
@@ -586,15 +615,13 @@ def preview_copy_shift(
     source = get_entry(cursor, organization_id, int(entry_id), conn=conn)
     if not source:
         return None, "schedule entry not found"
-    week_start = date.fromisoformat(str(source["week_start"])[:10])
     from backend.planned_weekly_schedule import _load_role_catalog_index
     from backend.planned_weekly_schedule_responsibilities import _worker_names
     from backend.task_activity_item_responsibility import business_date_for_week
     from backend.weekly_schedule_roles import role_assignment_error
 
     catalog = _load_role_catalog_index(cursor, organization_id)
-    responsibilities = list_week_responsibilities(cursor, organization_id, week_start=week_start)
-    entries = list_week_entries(cursor, organization_id, week_start=week_start, conn=conn)
+    monday, entries, responsibilities = _display_schedule(cursor, organization_id, source, conn)
     source_day = int(source["day_of_week"])
     source_user = int(source["user_id"])
     tasks = _source_tasks(responsibilities, user_id=source_user, day=source_day)
@@ -615,7 +642,9 @@ def preview_copy_shift(
         unknown = sorted(explicit_roles - known_roles)
         if unknown:
             return None, f"Task {unknown[0]} is not on this day."
-    day_shifts = _entries_for(entries, user_id=source_user, day=source_day, week_start=week_start)
+    day_shifts = _entries_for(
+        entries, user_id=source_user, day=source_day, week_start=_storage_for(monday, source_day)
+    )
     selection = [(task, *_task_selection(task, source, day_shifts)) for task in tasks]
     chosen_roles = (
         explicit_roles
@@ -661,7 +690,7 @@ def preview_copy_shift(
         for day in days:
             existing_shifts = [
                 row
-                for row in _entries_for(entries, user_id=uid, day=day, week_start=week_start)
+                for row in _entries_for(entries, user_id=uid, day=day, week_start=_storage_for(monday, day))
                 if int(row.get("id") or 0) != int(source.get("id") or 0)
             ]
             existing_tasks = _source_tasks(responsibilities, user_id=uid, day=day)
@@ -733,8 +762,8 @@ def preview_copy_shift(
                     notes.append(plan["note"])
                     activity_mode = str(plan["mode"])
                 if role.startswith("agroup_"):
-                    source_date = business_date_for_week(week_start, source_day)
-                    dest_date = business_date_for_week(week_start, day)
+                    source_date = business_date_for_week(_storage_for(monday, source_day), source_day)
+                    dest_date = business_date_for_week(_storage_for(monday, day), day)
                     source_loaded = _checklist_for_role_date(cursor, organization_id, role, source_date)
                     dest_loaded = (
                         source_loaded
@@ -996,15 +1025,13 @@ def apply_copy_shift(
     source = get_entry(cursor, organization_id, int(entry_id), conn=conn)
     if not source:
         return None, "schedule entry not found"
-    week_start = date.fromisoformat(str(source["week_start"])[:10])
     source_user = int(source["user_id"])
     source_day = int(source["day_of_week"])
     from backend.planned_weekly_schedule import create_entry
     from backend.task_activity_item_responsibility import business_date_for_week
 
-    responsibilities = list_week_responsibilities(cursor, organization_id, week_start=week_start)
+    monday, entries, responsibilities = _display_schedule(cursor, organization_id, source, conn)
     tasks = _source_tasks(responsibilities, user_id=source_user, day=source_day)
-    entries = list_week_entries(cursor, organization_id, week_start=week_start, conn=conn)
     created_ids: list[int] = []
     replaced = 0
     skipped_targets: list[dict[str, Any]] = []
@@ -1030,7 +1057,7 @@ def apply_copy_shift(
         plans = {str(item.get("role") or ""): item for item in (target.get("activity_plan") or [])}
         if action == "replace":
             replaced += 1
-            for row in _entries_for(entries, user_id=uid, day=day, week_start=week_start):
+            for row in _entries_for(entries, user_id=uid, day=day, week_start=_storage_for(monday, day)):
                 if int(row.get("id") or 0) != int(source.get("id") or 0):
                     delete_entry(cursor, organization_id, int(row["id"]))
             for row in _source_tasks(responsibilities, user_id=uid, day=day):
@@ -1040,7 +1067,7 @@ def apply_copy_shift(
             conn,
             cursor,
             organization_id,
-            week_start=week_start,
+            week_start=_storage_for(monday, day),
             data=_copy_entry_data(source, user_id=uid, day=day),
             preserve_assignments=list(source.get("assignments") or []),
         )
@@ -1074,7 +1101,7 @@ def apply_copy_shift(
             new_id = _insert_member(
                 cursor,
                 organization_id,
-                week_start=week_start,
+                week_start=_storage_for(monday, day),
                 user_id=uid,
                 day_of_week=day,
                 role=role,
@@ -1099,7 +1126,7 @@ def apply_copy_shift(
                 ),
             )
         if write_checklist and target.get("checklist_overrides"):
-            business_date = business_date_for_week(week_start, day)
+            business_date = business_date_for_week(_storage_for(monday, day), day)
             _persist_checklist_overrides(
                 cursor,
                 organization_id,
@@ -1109,8 +1136,7 @@ def apply_copy_shift(
             for item in target["checklist_overrides"]:
                 checklist_written.append({**item, "business_date": business_date.isoformat(), "user_id": uid, "day_of_week": day})
         # Refresh local snapshots so a later target in this batch sees the new rows.
-        responsibilities = list_week_responsibilities(cursor, organization_id, week_start=week_start)
-        entries = list_week_entries(cursor, organization_id, week_start=week_start, conn=conn)
+        monday, entries, responsibilities = _display_schedule(cursor, organization_id, source, conn)
     created = len(created_ids)
     skipped = len(skipped_targets)
     return {
@@ -1121,5 +1147,5 @@ def apply_copy_shift(
         "skipped_targets": skipped_targets,
         "checklist_overrides": checklist_written,
         "message": format_copy_message(created=created - replaced, replaced=replaced, skipped=skipped),
-        "week_start": week_start.isoformat(),
+        "week_start": monday.isoformat(),
     }, None

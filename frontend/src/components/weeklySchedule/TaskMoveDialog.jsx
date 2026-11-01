@@ -14,7 +14,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { DAY_LABELS, formatDayDate } from "./weeklyScheduleDates";
+import { DAY_LABELS, DISPLAY_DAY_ORDER, formatDayDate } from "./weeklyScheduleDates";
 import { scheduleEmployeeName, taskGroupLabel } from "./weeklyScheduleTaskTiming";
 import { scheduleRoleLabel } from "./weeklyScheduleRoles";
 import { isSharedAssignment, unscheduledNames } from "./weeklyScheduleTaskMove";
@@ -86,11 +86,14 @@ export default function TaskMoveDialog({
           <FormControl size="small" fullWidth>
             <InputLabel>Day</InputLabel>
             <Select label="Day" value={day} onChange={(e) => setDay(Number(e.target.value))}>
-              {DAY_LABELS.map((label, dow) => (
+              {DISPLAY_DAY_ORDER.map((dow) => {
+                const label = DAY_LABELS[dow];
+                return (
                 <MenuItem key={label} value={dow}>
                   {`${label}${weekStart ? ` · ${formatDayDate(weekStart, dow)}` : ""}`}
                 </MenuItem>
-              ))}
+                );
+              })}
             </Select>
           </FormControl>
           {missing.length ? (

@@ -236,7 +236,7 @@ describe("totals reconcile across views", () => {
     expect(lines.at(-1)).toContain("Gross 16 / Break 1.25 / Net 14.75");
 
     const days = buildHourlyCoverage(entries, { dayIndices: [1, 3], employeesById });
-    const hourly = buildHourlyCoverageCsvRows({ days, weekStart: "2026-06-14", columns: ["wash", "sort", "fold"] });
+    const hourly = buildHourlyCoverageCsvRows({ days, weekStart: "2026-06-15", columns: ["wash", "sort", "fold"] });
     expect(hourly).toContain("Mon,Jun 15,11 AM-12 PM,On break,1,0.5,0.5,Employee A: 11-11:30");
     expect(hourly).toContain(
       "Wed,Jun 17,Break without a time,Not scheduled,1,0.25,,Employee B: not placed in any hour; deducted from shift time without a role",

@@ -775,7 +775,11 @@ def update_responsibility(
     )
     if err or payload is None:
         return None, err
-    week_start = date.fromisoformat(str(existing["week_start"])[:10])
+    stored_week = date.fromisoformat(str(existing["week_start"])[:10])
+    from backend.weekly_schedule_week import display_monday_for_storage, storage_week_for_dow
+
+    shown = display_monday_for_storage(stored_week, int(existing.get("day_of_week") or 0))
+    week_start = storage_week_for_dow(shown, int(payload["day_of_week"]))
     names = _worker_names(conn, organization_id, payload["user_ids"])
     for uid in payload["user_ids"]:
         if _duplicate_exists(
@@ -844,6 +848,11 @@ def update_responsibility(
             )
             if kept_id is None:
                 kept_id = by_user[uid]
+            if week_start != stored_week:
+                cursor.execute(
+                    f"UPDATE {TABLE} SET week_start=%s WHERE organization_id=%s AND id=%s",
+                    (week_start, int(organization_id), int(by_user[uid])),
+                )
         else:
             rid = _insert_member(
                 cursor,
@@ -1111,7 +1120,11 @@ def move_task_assignment(
     target_day = normalize_day_of_week(data.get("day_of_week"))
     if target_day is None:
         return None, "day_of_week must be 0-6 (Sun-Sat)"
-    week_start = date.fromisoformat(str(existing["week_start"])[:10])
+    stored_week = date.fromisoformat(str(existing["week_start"])[:10])
+    from backend.weekly_schedule_week import display_monday_for_storage, storage_week_for_dow
+
+    shown = display_monday_for_storage(stored_week, int(existing.get("day_of_week") or 0))
+    week_start = storage_week_for_dow(shown, int(target_day))
     if shared:
         if int(target_day) == int(existing.get("day_of_week") or 0):
             return None, "Shared assignments stay together. Use Edit Participants to change who is assigned."
@@ -1174,7 +1187,11 @@ def _move_one_membership(
     target_day: int,
     data: Mapping[str, Any],
 ) -> tuple[dict[str, Any] | None, str | None]:
-    week_start = date.fromisoformat(str(existing["week_start"])[:10])
+    stored_week = date.fromisoformat(str(existing["week_start"])[:10])
+    from backend.weekly_schedule_week import display_monday_for_storage, storage_week_for_dow
+
+    shown = display_monday_for_storage(stored_week, int(existing.get("day_of_week") or 0))
+    week_start = storage_week_for_dow(shown, int(target_day))
     if _duplicate_exists(
         cursor,
         organization_id,
@@ -1218,6 +1235,11 @@ def _move_one_membership(
         start_time=existing.get("start_time"),
         execution_mode=EXECUTION_INDIVIDUAL,
     )
+    if week_start != stored_week:
+        cursor.execute(
+            f"UPDATE {TABLE} SET week_start=%s WHERE organization_id=%s AND id=%s",
+            (week_start, int(organization_id), int(existing["id"])),
+        )
     return get_responsibility(cursor, organization_id, int(existing["id"])), None
 
 

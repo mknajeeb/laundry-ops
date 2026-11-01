@@ -16,7 +16,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { DAY_LABELS, formatDayDate } from "./weeklyScheduleDates";
+import { DAY_LABELS, DISPLAY_DAY_ORDER, formatDayDate } from "./weeklyScheduleDates";
 import { scheduleRoleCatalog, scheduleRoleLabel } from "./weeklyScheduleRoles";
 import { TASK_TIMING, TASK_TIMING_OPTIONS } from "./weeklyScheduleTaskTiming";
 import PlanningTimePicker from "../datetime/PlanningTimePicker";
@@ -90,7 +90,9 @@ export default function AssignTasksDialog({
             The activity group definition stays the same.
           </Typography>
           <Stack direction="row" flexWrap="wrap" gap={0.5}>
-            {DAY_LABELS.map((label, dow) => (
+            {DISPLAY_DAY_ORDER.map((dow) => {
+              const label = DAY_LABELS[dow];
+              return (
               <Button
                 key={label}
                 size="small"
@@ -104,7 +106,8 @@ export default function AssignTasksDialog({
                   {weekStart ? formatDayDate(weekStart, dow).replace(/, \d{4}$/, "") : ""}
                 </Typography>
               </Button>
-            ))}
+              );
+            })}
           </Stack>
           <Autocomplete
             options={options}
