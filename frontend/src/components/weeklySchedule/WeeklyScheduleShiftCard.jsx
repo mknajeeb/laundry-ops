@@ -14,6 +14,7 @@ import {
   useTheme,
 } from "@mui/material";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
+import FileCopyOutlinedIcon from "@mui/icons-material/FileCopyOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
@@ -55,6 +56,7 @@ export default function WeeklyScheduleShiftCard({
   onEdit,
   onDelete,
   onDuplicate,
+  onCopyShift,
   onSetEmployer,
   onDragStart,
   onDragEnd,
@@ -109,7 +111,7 @@ export default function WeeklyScheduleShiftCard({
       (a) => (!scoped || roles.includes(a.role)) && (a.remarks || (!scoped && !a.full_shift && scheduleEndTimeEnabled)),
     )
     : [];
-  const hasActions = Boolean((onEdit || onDuplicate || onDelete || onSetEmployer) && !muted);
+  const hasActions = Boolean((onEdit || onDuplicate || onCopyShift || onDelete || onSetEmployer) && !muted);
   const shiftEmployer = resolveEntryEmployerAffiliation(entry, employee, organizationSlug);
   const canSetEmployer = Boolean(onSetEmployer && !muted);
   const shiftEntityOptions = shiftEntityOptionsForOrg(organizationSlug);
@@ -324,7 +326,7 @@ export default function WeeklyScheduleShiftCard({
                       </MenuItem>
                     );
                   })}
-                  {(onEdit || onDuplicate || onDelete) ? (
+                  {(onEdit || onDuplicate || onCopyShift || onDelete) ? (
                     <Box sx={{ my: 0.5, borderTop: "1px solid", borderColor: "divider" }} />
                   ) : null}
                 </>
@@ -357,6 +359,21 @@ export default function WeeklyScheduleShiftCard({
                   </ListItemIcon>
                   <ListItemText primaryTypographyProps={{ fontSize: "0.875rem", fontWeight: 600 }}>
                     Duplicate
+                  </ListItemText>
+                </MenuItem>
+              ) : null}
+              {onCopyShift ? (
+                <MenuItem
+                  onClick={() => {
+                    closeMenu();
+                    onCopyShift(entry);
+                  }}
+                >
+                  <ListItemIcon>
+                    <FileCopyOutlinedIcon fontSize="small" />
+                  </ListItemIcon>
+                  <ListItemText primaryTypographyProps={{ fontSize: "0.875rem", fontWeight: 600 }}>
+                    Copy shift
                   </ListItemText>
                 </MenuItem>
               ) : null}

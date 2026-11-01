@@ -1101,6 +1101,20 @@ export const moveWeeklyScheduleEntry = (entryId, body) =>
 export const duplicateWeeklyScheduleEntry = (entryId, body = {}) =>
   axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/${encodeURIComponent(entryId)}/duplicate`, body, { timeout: 30000 });
 
+export const previewWeeklyScheduleCopy = (entryId, body = {}) =>
+  axios.post(
+    `${API_BASE}/rinse/shift-analysis/weekly-schedule/${encodeURIComponent(entryId)}/copy-preview`,
+    body,
+    { timeout: 30000 },
+  );
+
+export const copyWeeklyScheduleShift = (entryId, body = {}) =>
+  axios.post(
+    `${API_BASE}/rinse/shift-analysis/weekly-schedule/${encodeURIComponent(entryId)}/copy`,
+    body,
+    { timeout: 30000 },
+  );
+
 export const setWeeklyScheduleExclusion = (body) =>
   axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/exclusions`, body, { timeout: 30000 });
 

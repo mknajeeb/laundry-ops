@@ -41,6 +41,8 @@ import {
   reorderWeeklyScheduleTasks,
   disableWeeklyScheduleTemplate,
   duplicateWeeklyScheduleEntry,
+  previewWeeklyScheduleCopy,
+  copyWeeklyScheduleShift,
   enableWeeklyScheduleTemplate,
   getWeeklySchedule,
   moveWeeklyScheduleEntry,
@@ -51,6 +53,7 @@ import {
 } from "../api";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import WeeklyScheduleCascadeDialog from "../components/weeklySchedule/WeeklyScheduleCascadeDialog";
+import WeeklyScheduleCopyShiftDialog from "../components/weeklySchedule/WeeklyScheduleCopyShiftDialog";
 import AssignTasksDialog from "../components/weeklySchedule/AssignTasksDialog";
 import TaskMoveDialog from "../components/weeklySchedule/TaskMoveDialog";
 import WeeklyScheduleEntryDialog from "../components/weeklySchedule/WeeklyScheduleEntryDialog";
@@ -198,6 +201,7 @@ function ScheduleDayCell({
   openEdit,
   handleDelete,
   handleDuplicate,
+  onCopyShift,
   handleSetEmployer,
   organizationSlug = null,
   compact = false,
@@ -288,6 +292,7 @@ function ScheduleDayCell({
           onEdit={canEdit ? openEdit : undefined}
           onDelete={canEdit ? handleDelete : undefined}
           onDuplicate={canEdit ? handleDuplicate : undefined}
+          onCopyShift={canEdit ? onCopyShift : undefined}
           onSetEmployer={canEdit ? handleSetEmployer : undefined}
           organizationSlug={organizationSlug}
           duplicating={duplicatingId === entry.id}
@@ -363,6 +368,7 @@ export default function WeeklySchedulePage() {
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [copyShiftEntry, setCopyShiftEntry] = useState(null);
   const [editingEntry, setEditingEntry] = useState(null);
   const [dialogDefaults, setDialogDefaults] = useState({ userId: null, day: 0 });
   const [editingResponsibility, setEditingResponsibility] = useState(null);
@@ -1252,6 +1258,7 @@ export default function WeeklySchedulePage() {
     openEdit,
     handleDelete,
     handleDuplicate,
+    onCopyShift: canEdit ? setCopyShiftEntry : undefined,
     handleSetEmployer,
     organizationSlug,
     openEditResponsibility,
@@ -2133,6 +2140,26 @@ export default function WeeklySchedulePage() {
         groups={roleGroups}
         onCatalogChange={handleCatalogChange}
         onGroupsChange={handleGroupsChange}
+      />
+      <WeeklyScheduleCopyShiftDialog
+        open={Boolean(copyShiftEntry) && canEdit}
+        entry={copyShiftEntry}
+        employeeName={
+          employeesById[copyShiftEntry?.user_id]?.display_name ||
+          employeesById[String(copyShiftEntry?.user_id || "")]?.display_name
+        }
+        responsibilities={data?.daily_responsibilities || []}
+        employees={pickerEmployees}
+        onClose={() => setCopyShiftEntry(null)}
+        onPreview={async (body) => {
+          const res = await previewWeeklyScheduleCopy(copyShiftEntry.id, body);
+          return res.data;
+        }}
+        onCopy={async (body) => {
+          const res = await copyWeeklyScheduleShift(copyShiftEntry.id, body);
+          setData(res.data);
+          return res.data?.copy;
+        }}
       />
       <WeeklyScheduleCascadeDialog
         open={cascadeOpen && canEdit}

@@ -2131,6 +2131,73 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    def _copy_shift_response(entry_id: int, *, apply: bool):
+        from backend.planned_weekly_schedule import build_week_payload, get_entry
+        from backend.planned_weekly_schedule_copy import apply_copy_shift, preview_copy_shift
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            existing = get_entry(cursor, tenant_oid, entry_id)
+            if not existing:
+                return jsonify({"error": "schedule entry not found"}), 404
+            body = request.get_json(silent=True) or {}
+            kwargs = {
+                "user_ids": body.get("user_ids") or [],
+                "days_of_week": body.get("days_of_week") or [],
+                "conflict_mode": body.get("conflict_mode") or "skip",
+                "resolutions": body.get("resolutions") or [],
+            }
+            if not apply:
+                preview, err = preview_copy_shift(conn, cursor, tenant_oid, entry_id, **kwargs)
+                if err:
+                    return jsonify({"error": err}), 400
+                return jsonify(json_safe_rinse(preview))
+            result, err = apply_copy_shift(
+                conn,
+                cursor,
+                tenant_oid,
+                entry_id,
+                confirm_replace=bool(body.get("confirm_replace")),
+                **kwargs,
+            )
+            if err:
+                conn.rollback()
+                preview, _preview_err = preview_copy_shift(conn, cursor, tenant_oid, entry_id, **kwargs)
+                status = 409 if err.startswith("Resolve flagged") or err.startswith("Confirm replacement") else 400
+                return jsonify({"error": err, "preview": preview}), status
+            week_start = date.fromisoformat(str(existing["week_start"])[:10])
+            sync = _sync_schedule_template(conn, cursor, tenant_oid, week_start)
+            conn.commit()
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
+            if sync and sync.get("weeks"):
+                result["message"] += f" This week is the template, so {len(sync['weeks'])} later week(s) were updated."
+            result["template_sync"] = sync
+            payload["copy"] = result
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/<int:entry_id>/copy-preview", methods=["POST"])
+    def rinse_shift_analysis_weekly_schedule_copy_preview(entry_id: int):
+        return _copy_shift_response(entry_id, apply=False)
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/<int:entry_id>/copy", methods=["POST"])
+    def rinse_shift_analysis_weekly_schedule_copy(entry_id: int):
+        return _copy_shift_response(entry_id, apply=True)
+
     @app.route("/rinse/shift-analysis/weekly-schedule/exclusions", methods=["POST"])
     def rinse_shift_analysis_weekly_schedule_exclusion():
         from backend.planned_weekly_schedule import (
