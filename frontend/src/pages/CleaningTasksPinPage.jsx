@@ -635,8 +635,8 @@ export default function CleaningTasksPinPage() {
   if (!hub?.token) {
     return (
       <OpsMobileShell>
-        <Alert severity="warning">Enter your PIN again.</Alert>
-        <Button onClick={lock}>Back to PIN</Button>
+        <Alert severity="warning">{t("tasks.pin.enterPin")}</Alert>
+        <Button onClick={lock}>{t("tasks.pin.backToPin")}</Button>
       </OpsMobileShell>
     );
   }
