@@ -140,13 +140,14 @@ describe("taskDashboardLabels", () => {
     expect(weekStartFromDate("2026-11-02", 6)).toBe("2026-11-01");
   });
 
-  it("prints the selected dashboard with branding and without navigation", () => {
+  it("prints the selected dashboard from an isolated letter document", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const page = readFileSync(resolve(here, "../../pages/ManagementTasksPage.jsx"), "utf8");
-    expect(page).toContain("VeeWash Task Dashboard");
-    expect(page).toContain("@media print");
-    expect(page).toContain("break-inside: avoid");
-    expect(page).toContain(".no-print");
-    expect(page).toContain("task-print-card");
+    const printer = readFileSync(resolve(here, "./taskDashboardPrint.js"), "utf8");
+    expect(page).toContain("printTaskDashboard");
+    expect(page).not.toContain("window.print");
+    expect(printer).toContain("VeeWash Task Dashboard");
+    expect(printer).toContain("letter portrait");
+    expect(printer).not.toContain("window.print");
   });
 });

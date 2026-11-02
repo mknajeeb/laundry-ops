@@ -34,6 +34,7 @@ import {
 } from "../api";
 import { addDaysYmd, businessTodayYmd } from "../utils/businessTime";
 import { formatDashboardDate } from "../components/tasks/taskDashboardFormat";
+import { printTaskDashboard } from "../components/tasks/taskDashboardPrint";
 
 function rangeForPreset(preset, today, customStart, customEnd) {
   if (preset === "7") return { start: addDaysYmd(today, -6), end: today };
@@ -261,25 +262,24 @@ export default function ManagementTasksPage() {
     }
   };
 
-  const printReport = () => window.print();
+  const printReport = () => {
+    const categoryLabel =
+      categoryTab === "all"
+        ? "All"
+        : categoryTabs.find((tab) => tab.code === categoryTab)?.name || categoryTab;
+    printTaskDashboard({
+      rangeStart: activeRange.start,
+      rangeEnd: activeRange.end,
+      categoryLabel,
+      groupBy,
+      rows: filteredAssignments,
+      hideLabor,
+    });
+  };
 
   return (
     <Box className="task-dashboard-print-root" sx={{ bgcolor: VEEWASH_DASHBOARD.pageBackground, minHeight: "100%", pb: 4 }}>
-      <style>{`
-        @media print {
-          .no-print, nav, button, .MuiTabs-root, .MuiIconButton-root { display: none !important; }
-          .task-dashboard-print-root { background: #fff !important; padding-bottom: 0 !important; }
-          .task-print-card, .task-metric, .task-dashboard-chart { break-inside: avoid; page-break-inside: avoid; }
-          .MuiCollapse-root, .MuiCollapse-wrapper, .MuiCollapse-wrapperInner { height: auto !important; visibility: visible !important; }
-        }
-      `}</style>
       <Box sx={{ maxWidth: 1100, mx: "auto", px: { xs: 1.5, sm: 2 }, pt: 2 }}>
-        <Box className="print-only" sx={{ display: "none", "@media print": { display: "block", mb: 1 } }}>
-          <Typography sx={{ fontWeight: 900 }}>VeeWash Task Dashboard</Typography>
-          <Typography variant="body2">
-            {activeRange.start} – {activeRange.end} ET · {categoryTab === "all" ? "All" : categoryTab} · {groupBy}
-          </Typography>
-        </Box>
         {!readOnly ? (
           <Box className="no-print">
             <ManagementHubNav />
