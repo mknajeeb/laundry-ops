@@ -11,10 +11,13 @@ Rejection reasons stay on the activity row and are not remarks.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
-from backend.payroll_identity import eastern_now_naive
-from backend.ta_helpers import table_exists
+from backend.ta_helpers import table_exists, table_has_column
+
+ET = ZoneInfo("America/New_York")
 
 TABLE = "task_activity_remarks"
 ROLES = frozenset({"employee", "supervisor", "management"})
@@ -23,9 +26,17 @@ LEGACY_SUPERVISOR = "supervisor_remark"
 BODY_MAX = 1000
 
 
+def _relax_schema(cursor, sql: str) -> None:
+    try:
+        cursor.execute(sql)
+    except Exception as exc:
+        text = str(exc).lower()
+        if "duplicate" in text or "exists" in text or "check that column" in text:
+            return
+        raise
+
+
 def ensure_task_activity_remarks_table(cursor) -> None:
-    if table_exists(cursor, TABLE):
-        return
     cursor.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {TABLE} (
@@ -35,22 +46,86 @@ def ensure_task_activity_remarks_table(cursor) -> None:
           assignment_group_id VARCHAR(64) NULL,
           task_code VARCHAR(64) NULL,
           author_user_id INT NOT NULL,
-          author_name VARCHAR(120) NOT NULL,
+          author_name VARCHAR(120) NULL,
           author_role VARCHAR(32) NOT NULL,
           body VARCHAR(1000) NOT NULL,
-          created_at DATETIME NOT NULL,
+          created_at DATETIME NULL,
+          created_at_utc DATETIME NULL,
           legacy_source VARCHAR(32) NULL,
           INDEX idx_tar_activity (organization_id, activity_id, id),
-          INDEX idx_tar_assignment (organization_id, assignment_group_id, id)
+          INDEX idx_tar_assignment (organization_id, assignment_group_id, id),
+          UNIQUE KEY uq_tar_legacy (organization_id, activity_id, legacy_source)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
+    )
+    if table_exists(cursor, TABLE) and not table_has_column(cursor, TABLE, "created_at_utc"):
+        _relax_schema(cursor, f"ALTER TABLE {TABLE} ADD COLUMN created_at_utc DATETIME NULL")
+    _relax_schema(
+        cursor,
+        f"ALTER TABLE {TABLE} MODIFY author_name VARCHAR(120) NULL, MODIFY created_at DATETIME NULL",
     )
 
 
 def _stamp(at) -> str:
+    if at is None or at == "":
+        return ""
     if hasattr(at, "strftime"):
         return at.strftime("%Y-%m-%d %H:%M:%S")
-    return str(at or "")[:19]
+    return str(at)[:19]
+
+
+def et_wall_to_utc(wall: datetime) -> datetime | None:
+    """Convert an Eastern wall time to naive UTC when the instant is unique.
+
+    The November fallback hour and the March gap have no single UTC instant.
+    Those return None so a migration does not invent one.
+    """
+    if wall.tzinfo is not None:
+        return wall.astimezone(timezone.utc).replace(tzinfo=None)
+    first = wall.replace(tzinfo=ET)
+    second = wall.replace(tzinfo=ET, fold=1)
+    utc_first = first.astimezone(timezone.utc).replace(tzinfo=None)
+    utc_second = second.astimezone(timezone.utc).replace(tzinfo=None)
+    if utc_first != utc_second:
+        return None
+    # A spring-forward gap maps both folds onto the same later instant.
+    back = utc_first.replace(tzinfo=timezone.utc).astimezone(ET).replace(tzinfo=None)
+    if back != wall:
+        return None
+    return utc_first
+
+
+def parse_et_wall(value: Any) -> datetime | None:
+    text = _stamp(value)
+    if len(text) < 19:
+        return None
+    try:
+        return datetime.strptime(text[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def remark_now() -> tuple[datetime, datetime]:
+    """Current Eastern wall time and its UTC instant."""
+    from backend.rinse_folding_et import eastern_now
+
+    aware = eastern_now()
+    if aware.tzinfo is None:
+        aware = aware.replace(tzinfo=ET)
+    wall = aware.astimezone(ET).replace(tzinfo=None)
+    utc = aware.astimezone(timezone.utc).replace(tzinfo=None)
+    return wall, utc
+
+
+def remark_time_label(wall: Any, utc_value: Any = None) -> str | None:
+    utc = utc_value
+    if isinstance(utc, datetime) and utc.tzinfo is not None:
+        utc = utc.astimezone(timezone.utc).replace(tzinfo=None)
+    if utc:
+        shown = datetime.strptime(_stamp(utc), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).astimezone(ET)
+        return f"{shown.strftime('%Y-%m-%d %H:%M:%S')} ET ({_stamp(utc)} UTC)"
+    text = _stamp(wall)
+    return f"{text} ET" if text else None
 
 
 def _parse_input(raw: Any) -> dict[str, Any]:
@@ -91,12 +166,13 @@ def _row_out(row: Mapping[str, Any]) -> dict[str, Any]:
         "activity_id": int(row.get("activity_id") or 0),
         "assignment_group_id": (str(row.get("assignment_group_id") or "").strip() or None),
         "task_code": (str(row.get("task_code") or "").strip() or None),
-        "author_user_id": int(row.get("author_user_id") or 0),
-        "author_name": str(row.get("author_name") or ""),
+        "author_user_id": int(row["author_user_id"]) if row.get("author_user_id") is not None else None,
+        "author_name": (str(row.get("author_name") or "").strip() or None),
         "author_role": str(row.get("author_role") or ""),
         "body": str(row.get("body") or ""),
-        "created_at": _stamp(created) if created else None,
-        "created_at_label": f"{_stamp(created)} ET" if created else None,
+        "created_at": _stamp(created) or None,
+        "created_at_utc": _stamp(row.get("created_at_utc")) or None,
+        "created_at_label": remark_time_label(created, row.get("created_at_utc")),
         "legacy_source": (str(row.get("legacy_source") or "").strip() or None),
     }
 
@@ -108,7 +184,7 @@ def _virtual_legacy(activity: Mapping[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for key in (LEGACY_EMPLOYEE, LEGACY_SUPERVISOR):
         legacy = _legacy_payload(raw, key)
-        if not legacy or legacy.get("author_user_id") is None:
+        if not legacy:
             continue
         out.append(
             {
@@ -116,11 +192,12 @@ def _virtual_legacy(activity: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "activity_id": int(activity.get("id") or 0),
                 "assignment_group_id": (str(activity.get("assignment_group_id") or "").strip() or None),
                 "task_code": None,
-                "author_user_id": int(legacy["author_user_id"]),
-                "author_name": legacy.get("author_name") or f"User #{legacy['author_user_id']}",
+                "author_user_id": int(legacy["author_user_id"]) if legacy.get("author_user_id") is not None else None,
+                "author_name": legacy.get("author_name"),
                 "author_role": legacy["role"],
                 "body": legacy["text"],
                 "created_at": legacy.get("at"),
+                "created_at_utc": None,
                 "created_at_label": f"{legacy['at']} ET" if legacy.get("at") else None,
                 "legacy_source": key,
             }
@@ -155,9 +232,16 @@ def list_remarks_for_activity(cursor, organization_id: int, activity: Mapping[st
     else:
         return []
     rows = [_row_out(row) for row in cursor.fetchall() or [] if isinstance(row, Mapping)]
-    if rows:
-        return rows
-    return _virtual_legacy(activity)
+    present = {
+        (int(row.get("activity_id") or 0), row.get("legacy_source"))
+        for row in rows
+        if row.get("legacy_source")
+    }
+    for legacy in _virtual_legacy(activity):
+        key = (int(legacy.get("activity_id") or 0), legacy.get("legacy_source"))
+        if key not in present:
+            rows.append(legacy)
+    return rows
 
 
 def remarks_index_for_assignments(
@@ -254,9 +338,16 @@ def attach_remarks(assignments: Sequence[dict[str, Any]], index: Mapping[str, Se
                     if rid:
                         seen.add(rid)
                     remarks.append(dict(remark))
-                if not index.get(f"activity:{activity_id}") and isinstance(act, Mapping):
+                if isinstance(act, Mapping):
+                    present = {
+                        (int(remark.get("activity_id") or 0), remark.get("legacy_source"))
+                        for remark in remarks
+                        if remark.get("legacy_source")
+                    }
                     for legacy in _virtual_legacy(act):
-                        remarks.append(legacy)
+                        key = (int(legacy.get("activity_id") or 0), legacy.get("legacy_source"))
+                        if key not in present:
+                            remarks.append(legacy)
         row["remarks"] = remarks
         row["remark_count"] = len(remarks)
 
@@ -274,7 +365,13 @@ def _legacy_already_imported(cursor, organization_id: int, activity_id: int, sou
 
 
 def import_legacy_remarks(cursor, organization_id: int, activity: Mapping[str, Any], names: Mapping[int, str] | None = None) -> int:
-    """Copy the single stored remarks into the log once. Later JSON edits do not replace them."""
+    """Copy stored employee and supervisor remarks into the log once.
+
+    Missing author ids are left in the JSON cache and still shown from there.
+    Missing names and timestamps stay empty. ``names`` is ignored so a current
+    profile cannot replace a historical author who was not recorded.
+    """
+    del names
     ensure_task_activity_remarks_table(cursor)
     activity_id = int(activity.get("id") or 0)
     if not activity_id:
@@ -289,30 +386,58 @@ def import_legacy_remarks(cursor, organization_id: int, activity: Mapping[str, A
             continue
         if _legacy_already_imported(cursor, organization_id, activity_id, key):
             continue
-        author_id = int(legacy["author_user_id"])
-        author_name = legacy.get("author_name") or (names or {}).get(author_id) or f"User #{author_id}"
+        wall = parse_et_wall(legacy.get("at"))
+        utc = et_wall_to_utc(wall) if wall is not None else None
         cursor.execute(
             f"""
             INSERT INTO {TABLE}
               (organization_id, activity_id, assignment_group_id, task_code,
-               author_user_id, author_name, author_role, body, created_at, legacy_source)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               author_user_id, author_name, author_role, body, created_at, created_at_utc, legacy_source)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 int(organization_id),
                 activity_id,
                 (str(activity.get("assignment_group_id") or "").strip() or None),
                 None,
-                author_id,
-                str(author_name)[:120],
+                int(legacy["author_user_id"]),
+                legacy.get("author_name"),
                 legacy["role"],
                 legacy["text"],
-                legacy.get("at") or _stamp(eastern_now_naive()),
+                wall,
+                utc,
                 key,
             ),
         )
         inserted += 1
     return inserted
+
+
+def migrate_legacy_remarks(cursor, organization_id: int | None = None) -> dict[str, int]:
+    """Copy every historical remark into the log. Repeating the call inserts nothing."""
+    ensure_task_activity_remarks_table(cursor)
+    sql = """
+        SELECT id, organization_id, assignment_group_id, completion_input_json, rejection_reason
+        FROM cleaning_task_activities
+    """
+    params: tuple[Any, ...] = ()
+    if organization_id is not None:
+        sql += " WHERE organization_id=%s"
+        params = (int(organization_id),)
+    cursor.execute(sql, params)
+    rows = list(cursor.fetchall() or [])
+    inserted = 0
+    held_for_display = 0
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        inserted += import_legacy_remarks(cursor, int(row["organization_id"]), row)
+        raw = row.get("completion_input_json")
+        for key in (LEGACY_EMPLOYEE, LEGACY_SUPERVISOR):
+            legacy = _legacy_payload(raw, key)
+            if legacy and legacy.get("author_user_id") is None:
+                held_for_display += 1
+    return {"inserted": inserted, "held_for_display": held_for_display}
 
 
 def append_remark(
@@ -337,14 +462,15 @@ def append_remark(
     if len(text) > BODY_MAX:
         raise ValueError("Remark is too long")
     import_legacy_remarks(cursor, organization_id, activity, names)
-    at = eastern_now_naive()
+    wall, utc = remark_now()
     code = (str(task_code or "").strip() or None)
+    stored_name = (str(author_name or "").strip() or None)
     cursor.execute(
         f"""
         INSERT INTO {TABLE}
           (organization_id, activity_id, assignment_group_id, task_code,
-           author_user_id, author_name, author_role, body, created_at, legacy_source)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+           author_user_id, author_name, author_role, body, created_at, created_at_utc, legacy_source)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             int(organization_id),
@@ -352,10 +478,11 @@ def append_remark(
             (str(activity.get("assignment_group_id") or "").strip() or None),
             code,
             int(author_user_id),
-            (str(author_name or "").strip() or f"User #{int(author_user_id)}")[:120],
+            stored_name[:120] if stored_name else None,
             role,
             text[:BODY_MAX],
-            at,
+            wall,
+            utc,
             None,
         ),
     )
@@ -367,10 +494,11 @@ def append_remark(
             "assignment_group_id": activity.get("assignment_group_id"),
             "task_code": code,
             "author_user_id": int(author_user_id),
-            "author_name": (str(author_name or "").strip() or f"User #{int(author_user_id)}")[:120],
+            "author_name": stored_name[:120] if stored_name else None,
             "author_role": role,
             "body": text[:BODY_MAX],
-            "created_at": at,
+            "created_at": wall,
+            "created_at_utc": utc,
             "legacy_source": None,
         }
     )

@@ -43,7 +43,7 @@ export default function ActivityRemarks({
             remarks.map((remark, index) => (
               <Box key={remarkKey(remark, index)}>
                 <Typography variant="caption" sx={{ fontWeight: 800 }} display="block">
-                  {remark.author_name || "User"} · {remark.author_role || "employee"}
+                  {remark.author_name || "Author not recorded"} · {remark.author_role || "employee"}
                   {remark.task_code ? ` · ${remark.task_code}` : ""}
                   {remark.created_at_label ? ` · ${remark.created_at_label}` : ""}
                 </Typography>

@@ -9,6 +9,7 @@ from backend.end_of_day_closing_template import (
     end_of_day_closing_payload,
     proposed_end_of_day_closing_payload,
 )
+from backend.dryer_lint_transition import preview_lily_dryer_lint
 from backend.intra_day_activity_groups import (
     DRYER_ROLE,
     FLOOR_ROLE,
@@ -17,13 +18,23 @@ from backend.intra_day_activity_groups import (
     competing_new_assignment_error,
     intra_day_activity_group_payloads,
 )
-from backend.task_activity_remarks import append_remark, list_remarks_for_activity
+from backend.task_activity_remarks import (
+    append_remark,
+    et_wall_to_utc,
+    list_remarks_for_activity,
+    migrate_legacy_remarks,
+)
+from backend.cleaning_task_activity import (
+    apply_shared_item_verification,
+    verification_status_from_subjects,
+)
 from backend.task_section_verification import section_rollups
 
 
 class _MemoryCursor:
     def __init__(self):
         self.rows = []
+        self.activities = []
         self.lastrowid = 0
         self._fetch = None
         self.tables = set()
@@ -37,6 +48,14 @@ class _MemoryCursor:
         if text.startswith("create table"):
             self.tables.add("task_activity_remarks")
             self._fetch = None
+            return
+        if "from cleaning_task_activities" in text:
+            org = params[0] if params else None
+            self._fetch = [
+                row
+                for row in self.activities
+                if org is None or row.get("organization_id") == org
+            ]
             return
         if text.startswith("select id from task_activity_remarks"):
             org, activity_id, source = params
@@ -81,7 +100,8 @@ class _MemoryCursor:
                     "author_role": params[6],
                     "body": params[7],
                     "created_at": params[8],
-                    "legacy_source": params[9],
+                    "created_at_utc": params[9] if len(params) > 10 else None,
+                    "legacy_source": params[10] if len(params) > 10 else params[9],
                 }
             )
             self._fetch = None
@@ -253,8 +273,8 @@ def test_proposed_end_of_day_removes_routine_duplicates_without_changing_the_edi
 def test_remark_timestamp_uses_the_supplied_eastern_wall_clock(monkeypatch):
     cursor = _MemoryCursor()
     monkeypatch.setattr(
-        "backend.task_activity_remarks.eastern_now_naive",
-        lambda: datetime(2026, 11, 1, 21, 5, 0),
+        "backend.task_activity_remarks.remark_now",
+        lambda: (datetime(2026, 11, 1, 21, 5, 0), datetime(2026, 11, 2, 2, 5, 0)),
     )
     remark = append_remark(
         cursor,
@@ -266,4 +286,113 @@ def test_remark_timestamp_uses_the_supplied_eastern_wall_clock(monkeypatch):
         body="Starting the dryers",
     )
     assert remark["created_at"] == "2026-11-01 21:05:00"
-    assert remark["created_at_label"] == "2026-11-01 21:05:00 ET"
+    assert remark["created_at_utc"] == "2026-11-02 02:05:00"
+    assert remark["created_at_label"] == "2026-11-01 21:05:00 ET (2026-11-02 02:05:00 UTC)"
+
+
+def test_daylight_saving_transitions_are_not_invented():
+    fallback = datetime(2026, 11, 1, 1, 30, 0)
+    assert et_wall_to_utc(fallback) is None
+    spring_gap = datetime(2026, 3, 8, 2, 30, 0)
+    assert et_wall_to_utc(spring_gap) is None
+    clear = et_wall_to_utc(datetime(2026, 11, 1, 12, 0, 0))
+    assert clear == datetime(2026, 11, 1, 17, 0, 0)
+
+
+def test_historical_remarks_stay_visible_and_migrate_once():
+    cursor = _MemoryCursor()
+    activity = {
+        "id": 9,
+        "organization_id": 3,
+        "assignment_group_id": "old",
+        "rejection_reason": "Redo the gasket",
+        "completion_input_json": {
+            "employee_remark": {"text": "Lint was heavy", "author_user_id": 8, "author_name": "Lily Chen", "at": "2026-11-01 01:30:00"},
+            "supervisor_remark": {"text": "Checked the door", "author_user_id": 4, "at": "2026-10-31 18:00:00"},
+        },
+    }
+    before = list_remarks_for_activity(cursor, 3, activity)
+    assert [row["body"] for row in before] == ["Lint was heavy", "Checked the door"]
+    assert before[0]["author_name"] == "Lily Chen"
+    assert before[0]["created_at_utc"] is None
+    assert before[1]["author_name"] is None
+    assert before[1]["created_at_label"] == "2026-10-31 18:00:00 ET"
+    unnamed = {
+        "id": 10,
+        "organization_id": 3,
+        "completion_input_json": {"employee_remark": {"text": "No author recorded"}},
+    }
+    visible = list_remarks_for_activity(cursor, 3, unnamed)
+    assert visible[0]["body"] == "No author recorded"
+    assert visible[0]["author_user_id"] is None
+    assert visible[0]["author_name"] is None
+    assert visible[0]["created_at"] is None
+
+    cursor.activities = [activity, unnamed]
+    first = migrate_legacy_remarks(cursor, 3)
+    second = migrate_legacy_remarks(cursor, 3)
+    assert first["inserted"] == 2
+    assert first["held_for_display"] == 1
+    assert second["inserted"] == 0
+    assert activity["rejection_reason"] == "Redo the gasket"
+    stored = [row for row in cursor.rows if row["activity_id"] == 9]
+    assert stored[0]["created_at_utc"] is None
+    assert stored[1]["created_at_utc"] == datetime(2026, 10, 31, 22, 0, 0)
+
+
+def test_approved_shared_item_marks_the_section_verified():
+    items = apply_shared_item_verification(
+        [
+            {
+                "task_code": "custom_check_washer_residue",
+                "status": "completed",
+                "required": True,
+                "verification_required": True,
+                "verification_method": "supervisor",
+                "section_label": "Machines",
+                "child_activity_id": 4,
+            },
+            {
+                "task_code": "washer_cleaning",
+                "status": "completed",
+                "required": True,
+                "verification_required": True,
+                "verification_method": "supervisor",
+                "section_label": "Machines",
+                "child_activity_id": 6,
+            },
+        ],
+        [{"id": 4, "status": "approved"}, {"id": 6, "status": "approved"}],
+    )
+    assert verification_status_from_subjects(items) == "verified"
+    assert section_rollups(items)[0]["status_label"] == "Verified"
+
+
+def test_lily_dryer_lint_preview_converts_only_the_eight_sundays():
+    rows = [
+        {"id": 191, "employee_name": "Amna", "role": "lint_cleaning", "week_start": "2026-11-01", "day_of_week": 1, "timing_mode": "specific_time", "start_time": "08:30"},
+        {"id": 7, "employee_name": "Lily Chen", "role": "lint_cleaning", "week_start": "2026-11-08", "day_of_week": 0, "timing_mode": "anytime"},
+        {"id": 190, "employee_name": "Angelica", "role": "agroup_floor_washer", "week_start": "2026-11-08", "day_of_week": 0, "timing_mode": "anytime"},
+    ]
+    sundays = ["2026-11-15", "2026-11-22", "2026-11-29", "2026-12-06", "2026-12-13", "2026-12-20", "2026-12-27", "2027-01-03"]
+    for index, day in enumerate(sundays, start=8):
+        rows.append(
+            {
+                "id": index,
+                "employee_name": "Lily Chen",
+                "role": "lint_cleaning",
+                "week_start": day,
+                "day_of_week": 0,
+                "timing_mode": "anytime",
+            }
+        )
+    preview = preview_lily_dryer_lint(rows)
+    assert preview["transition_date"] == "2026-11-09"
+    assert [row["id"] for row in preview["converted"]] == list(range(8, 16))
+    assert all(row["after_role"] == "agroup_dryer_lint" for row in preview["converted"])
+    assert all(row["scheduled_time"] == "anytime" for row in preview["converted"])
+    left = {row["id"]: row["scheduled_date"] for row in preview["untouched"]}
+    assert left[191] == "2026-11-02"
+    assert left[7] == "2026-11-08"
+    assert left[190] == "2026-11-08"
+    assert all(row["after_role"] == row["before_role"] for row in preview["untouched"])

@@ -547,6 +547,8 @@ def complete_group_activity(
     for it in items:
         if str(it.get("status")) != ITEM_COMPLETED:
             continue
+        if it.get("child_activity_id"):
+            continue
         code = str(it.get("task_code") or "")
         meta = _task_meta_for_role(cursor, oid, code)
         policy = resolve_verification_policy(

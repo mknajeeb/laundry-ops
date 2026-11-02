@@ -1911,17 +1911,20 @@ def _group_shared_assignments(
                             if it.get("completed_by_user_id") is not None
                         }
                         item_names = _employee_names(cursor, int(organization_id), sorted(name_ids))
-                        entry["shared_checklist_items"] = [
-                            serialize_shared_item(
-                                it,
-                                catalog=catalog,
-                                meta=_task_meta_for_role(
-                                    cursor, int(organization_id), str(it.get("task_code") or "")
-                                ),
-                                names=item_names,
-                            )
-                            for it in shared_items
-                        ]
+                        entry["shared_checklist_items"] = apply_shared_item_verification(
+                            [
+                                serialize_shared_item(
+                                    it,
+                                    catalog=catalog,
+                                    meta=_task_meta_for_role(
+                                        cursor, int(organization_id), str(it.get("task_code") or "")
+                                    ),
+                                    names=item_names,
+                                )
+                                for it in shared_items
+                            ],
+                            activities_all,
+                        )
                         entry["shared_session_id"] = int(act["shared_session_id"])
                     except Exception:
                         pass
@@ -2311,10 +2314,42 @@ def verification_status_from_subjects(subjects: Sequence[Mapping[str, Any]]) -> 
     return VERIFICATION_WAITING
 
 
+def apply_shared_item_verification(
+    items: Sequence[Mapping[str, Any]],
+    activities: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Copy each checklist item's approval row onto the shared item.
+
+    The shared item row stays ``completed`` after check-off. The child activity
+    is the verification record.
+    """
+    status_by_id = {
+        int(row["id"]): str(row.get("status") or "")
+        for row in activities or []
+        if isinstance(row, Mapping) and row.get("id") is not None
+    }
+    out: list[dict[str, Any]] = []
+    for item in items or []:
+        copied = dict(item)
+        child_id = copied.get("child_activity_id")
+        child_status = status_by_id.get(int(child_id)) if child_id is not None else None
+        if child_status:
+            copied["records"] = [{"activity_id": int(child_id), "status": child_status}]
+            if child_status in {STATUS_APPROVED, STATUS_REJECTED, STATUS_PENDING_APPROVAL}:
+                copied["status"] = child_status
+        out.append(copied)
+    return out
+
+
 def verification_subjects_for_contribution(contrib: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     items = [item for item in (contrib.get("group_items") or []) if isinstance(item, Mapping)]
     if items:
         return items
+    shared = [
+        item for item in (contrib.get("shared_checklist_items") or []) if isinstance(item, Mapping)
+    ]
+    if shared:
+        return shared
     activity = contrib.get("activity") or {}
     if activity:
         return [activity]
