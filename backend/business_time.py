@@ -23,6 +23,7 @@ __all__ = [
     "RINSE_SCAN_SOURCE_TIMEZONE",
     "business_now",
     "business_today",
+    "eastern_elapsed_seconds",
     "format_business_datetime_display",
     "serialize_rinse_scan_datetime_for_api",
     "serialize_system_datetime_for_api",
@@ -32,6 +33,24 @@ __all__ = [
 # Aliases for Laundry Ops business calendar (America/New_York).
 business_today = eastern_today
 business_now = eastern_now
+
+
+def eastern_elapsed_seconds(start: datetime, end: datetime) -> int | None:
+    """Elapsed seconds between America/New_York wall times.
+
+    Unambiguous walls, including midnight and daylight-saving changes, convert
+    to UTC before subtraction. A wall time in the November overlap or the March
+    gap has no single instant, so the result is empty instead of a guessed offset.
+    """
+    from backend.task_activity_remarks import et_wall_to_utc
+
+    start_wall = start.replace(tzinfo=None) if start.tzinfo is not None else start
+    end_wall = end.replace(tzinfo=None) if end.tzinfo is not None else end
+    start_utc = et_wall_to_utc(start_wall)
+    end_utc = et_wall_to_utc(end_wall)
+    if start_utc is None or end_utc is None or end_utc < start_utc:
+        return None
+    return int((end_utc - start_utc).total_seconds())
 
 
 def format_business_datetime_display(

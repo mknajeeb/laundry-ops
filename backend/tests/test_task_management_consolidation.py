@@ -9,6 +9,7 @@ from backend.end_of_day_closing_template import (
     end_of_day_closing_payload,
     proposed_end_of_day_closing_payload,
 )
+from backend.business_time import eastern_elapsed_seconds
 from backend.dryer_lint_transition import preview_lily_dryer_lint
 from backend.intra_day_activity_groups import (
     DRYER_ROLE,
@@ -56,6 +57,20 @@ class _MemoryCursor:
                 for row in self.activities
                 if org is None or row.get("organization_id") == org
             ]
+            return
+        if "author_role=%s and body=%s" in text:
+            org, activity_id, role, body = params
+            self._fetch = next(
+                (
+                    row
+                    for row in self.rows
+                    if row["organization_id"] == org
+                    and row["activity_id"] == activity_id
+                    and row["author_role"] == role
+                    and row["body"] == body
+                ),
+                None,
+            )
             return
         if text.startswith("select id from task_activity_remarks"):
             org, activity_id, source = params
@@ -338,6 +353,52 @@ def test_historical_remarks_stay_visible_and_migrate_once():
     stored = [row for row in cursor.rows if row["activity_id"] == 9]
     assert stored[0]["created_at_utc"] is None
     assert stored[1]["created_at_utc"] == datetime(2026, 10, 31, 22, 0, 0)
+
+
+def test_participation_duration_handles_midnight_and_daylight_saving():
+    assert eastern_elapsed_seconds(datetime(2026, 11, 1, 10, 0, 0), datetime(2026, 11, 1, 10, 25, 0)) == 25 * 60
+    assert eastern_elapsed_seconds(datetime(2026, 11, 1, 10, 10, 0), datetime(2026, 11, 1, 10, 40, 0)) == 30 * 60
+    assert eastern_elapsed_seconds(datetime(2026, 11, 1, 23, 50, 0), datetime(2026, 11, 2, 0, 20, 0)) == 30 * 60
+    # The fallback hour is repeated, so 12:30 AM to 3:00 AM is three and a half hours.
+    assert eastern_elapsed_seconds(datetime(2026, 11, 1, 0, 30, 0), datetime(2026, 11, 1, 3, 0, 0)) == 12600
+    # Spring forward removes 2:00–3:00 AM, so 1:30 AM to 3:30 AM is one hour.
+    assert eastern_elapsed_seconds(datetime(2026, 3, 8, 1, 30, 0), datetime(2026, 3, 8, 3, 30, 0)) == 3600
+    assert eastern_elapsed_seconds(datetime(2026, 11, 1, 1, 30, 0), datetime(2026, 11, 1, 1, 45, 0)) is None
+
+
+def test_legacy_cache_is_not_copied_when_the_log_already_has_the_remark():
+    cursor = _MemoryCursor()
+    cursor.rows.append(
+        {
+            "id": 1,
+            "organization_id": 3,
+            "activity_id": 4,
+            "assignment_group_id": "g",
+            "task_code": None,
+            "author_user_id": 1,
+            "author_name": "VeeWash Admin",
+            "author_role": "supervisor",
+            "body": "Machines verified",
+            "created_at": datetime(2026, 11, 1, 10, 46, 0),
+            "created_at_utc": datetime(2026, 11, 1, 15, 46, 0),
+            "legacy_source": None,
+        }
+    )
+    activity = {
+        "id": 4,
+        "organization_id": 3,
+        "assignment_group_id": "g",
+        "completion_input_json": {
+            "supervisor_remark": {
+                "text": "Machines verified",
+                "author_user_id": 1,
+                "at": "2026-11-01 10:46:00",
+            }
+        },
+    }
+    cursor.activities = [activity]
+    assert migrate_legacy_remarks(cursor, 3)["inserted"] == 0
+    assert len(cursor.rows) == 1
 
 
 def test_approved_shared_item_marks_the_section_verified():

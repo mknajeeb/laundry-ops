@@ -712,12 +712,12 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
           {phase === "menu" ? (
             <Box sx={{ width: "100%", textAlign: "center", px: 0.5 }}>
               <Typography sx={{ fontWeight: 800, fontSize: "1rem", color: VW.navy }}>
-                Current Role:{" "}
+                {t("mobileOps.currentRole")}:{" "}
                 {(hub?.attendance?.clocked_in && hub?.attendance?.current_display_label) || "—"}
               </Typography>
               {!hub?.attendance?.clocked_in ? (
                 <Typography sx={{ mt: 0.25, fontWeight: 600, fontSize: "0.9rem", color: alpha(VW.navy, 0.72) }}>
-                  Not clocked in
+                  {t("mobileOps.notClockedIn")}
                 </Typography>
               ) : null}
             </Box>

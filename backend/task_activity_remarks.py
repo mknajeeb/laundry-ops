@@ -352,6 +352,22 @@ def attach_remarks(assignments: Sequence[dict[str, Any]], index: Mapping[str, Se
         row["remark_count"] = len(remarks)
 
 
+def _same_body_logged(cursor, organization_id: int, activity_id: int, role: str, body: str) -> bool:
+    """True when this activity already has the same remark in the log.
+
+    The latest-value JSON cache is not a second historical remark.
+    """
+    cursor.execute(
+        f"""
+        SELECT id FROM {TABLE}
+        WHERE organization_id=%s AND activity_id=%s AND author_role=%s AND body=%s
+        LIMIT 1
+        """,
+        (int(organization_id), int(activity_id), role, body),
+    )
+    return cursor.fetchone() is not None
+
+
 def _legacy_already_imported(cursor, organization_id: int, activity_id: int, source: str) -> bool:
     cursor.execute(
         f"""
@@ -385,6 +401,8 @@ def import_legacy_remarks(cursor, organization_id: int, activity: Mapping[str, A
         if not legacy or legacy.get("author_user_id") is None:
             continue
         if _legacy_already_imported(cursor, organization_id, activity_id, key):
+            continue
+        if _same_body_logged(cursor, organization_id, activity_id, legacy["role"], legacy["text"]):
             continue
         wall = parse_et_wall(legacy.get("at"))
         utc = et_wall_to_utc(wall) if wall is not None else None

@@ -237,8 +237,11 @@ def test_rinse_does_not_count_unchecked_assignment():
     visible = scoped["shared_assignments"]
     assert len(visible) == 1
     assert visible[0]["overall_status"] == COMPLETION_IN_PROGRESS
-    assert visible[0]["contributions"][0]["activity"]["started_at"] == "2026-10-30 09:00:00"
-    assert "duration_seconds" not in visible[0]["contributions"][0]["activity"]
+    assert visible[0]["activity_started_at"] == "2026-10-30 09:00:00"
+    activity = visible[0]["contributions"][0]["activity"]
+    assert "started_at" not in activity
+    assert "ended_at" not in activity
+    assert "duration_seconds" not in activity
     assert scoped["metrics"]["total_assigned"] == 1
     assert scoped["metrics"]["completed"] == 0
     assert scoped["metrics"]["pending_verification"] == 0

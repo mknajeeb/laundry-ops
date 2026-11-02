@@ -1,7 +1,27 @@
 import { describe, expect, it } from "vitest";
+import { TRANSLATIONS } from "../../i18n/translations";
+import { PIN_LAUNCHER_I18N } from "../../opsMobile/buildPinLauncherTiles";
 import { buildTaskDashboardPrintDocument } from "./taskDashboardPrint";
 import { hiddenRoutineAssignmentCodes, routineAssignmentOptions } from "./routineAssignmentOptions";
 import { sectionRollups } from "./sectionVerification";
+
+describe("PIN task labels", () => {
+  it("translates the cleaning task tiles in English and Spanish", () => {
+    for (const key of Object.values(PIN_LAUNCHER_I18N)) {
+      expect(TRANSLATIONS.en[key], key).toBeTruthy();
+      expect(TRANSLATIONS.es[key], key).toBeTruthy();
+      expect(TRANSLATIONS.en[key]).not.toBe(key);
+      expect(TRANSLATIONS.es[key]).not.toBe(key);
+    }
+    expect(TRANSLATIONS.en["mobileOps.tile.cleaningTasks"]).toBe("Cleaning & Tasks");
+    expect(TRANSLATIONS.es["mobileOps.tile.cleaningTasks"]).toBe("Limpieza y tareas");
+    expect(TRANSLATIONS.en["mobileOps.tile.taskReview"]).toBe("Task Review");
+    expect(TRANSLATIONS.es["mobileOps.tile.taskReview"]).toBe("Revisión de tareas");
+    expect(TRANSLATIONS.en["mobileOps.currentRole"]).toBe("Current Role");
+    expect(TRANSLATIONS.es["mobileOps.currentRole"]).toBe("Función actual");
+    expect(TRANSLATIONS.es["mobileOps.notClockedIn"]).toBe("Sin fichar entrada");
+  });
+});
 
 describe("routine assignment options", () => {
   const catalog = [

@@ -1130,7 +1130,9 @@ def complete_task(
             started = datetime.fromisoformat(started[:19])
         except ValueError:
             started = at
-    duration = max(0, int((at - started).total_seconds())) if isinstance(started, datetime) else 0
+    from backend.business_time import eastern_elapsed_seconds
+
+    duration = eastern_elapsed_seconds(started, at) if isinstance(started, datetime) else 0
     if str(remark or "").strip():
         from backend.task_activity_remarks import append_remark
 
@@ -1456,19 +1458,24 @@ def approve_activity_ids(
         _assert_approve_all_ready(cursor, int(organization_id), rows)
     catalog = _role_catalog(cursor, int(organization_id))
     approved: list[dict[str, Any]] = []
+    wrote_remark = False
     for row in rows:
         if str(row.get("status")) == STATUS_APPROVED:
             approved.append(serialize_activity(row, catalog=catalog))
             continue
+        # One section note for the batch. Each item still receives its own approval.
+        remark = supervisor_remark if not wrote_remark else None
         approved.append(
             approve_activity(
                 cursor,
                 organization_id=int(organization_id),
                 activity_id=int(row["id"]),
                 supervisor_user_id=int(supervisor_user_id),
-                supervisor_remark=supervisor_remark,
+                supervisor_remark=remark,
             )
         )
+        if str(remark or "").strip():
+            wrote_remark = True
     return approved
 
 
@@ -3367,6 +3374,17 @@ _RINSE_TASK_DURATION_KEYS = (
     "duration_seconds",
     "group_duration_seconds",
     "time_spent_seconds",
+    "total_time_seconds",
+)
+
+_RINSE_CLOCK_KEYS = frozenset(
+    {
+        "started_at",
+        "ended_at",
+        "finished_at",
+        "completed_at",
+        "checked_off_at",
+    }
 )
 
 
@@ -3434,16 +3452,37 @@ def _activity_mapping_rinse_eligible(row: Mapping[str, Any] | None) -> bool:
         return True
 
 
+def _earliest_activity_start(row: Mapping[str, Any]) -> str | None:
+    stamps: list[str] = []
+    for contrib in row.get("contributions") or []:
+        if not isinstance(contrib, Mapping):
+            continue
+        act = contrib.get("activity") if isinstance(contrib.get("activity"), Mapping) else {}
+        for source in (act, contrib):
+            raw = source.get("started_at") if isinstance(source, Mapping) else None
+            text = str(raw or "").strip()
+            if text:
+                stamps.append(text[:19])
+    if not stamps:
+        return None
+    return min(stamps)
+
+
 def _strip_rinse_management_fields(row: Any) -> Any:
     if isinstance(row, list):
         return [_strip_rinse_management_fields(item) for item in row]
     if not isinstance(row, Mapping):
         return row
+    activity_start = None
+    if "contributions" in row or "shared_checklist_items" in row:
+        activity_start = _earliest_activity_start(row)
     out: dict[str, Any] = {}
     for key, value in row.items():
-        if key in _RINSE_HIDDEN_KEYS or key in _RINSE_TASK_DURATION_KEYS:
+        if key in _RINSE_HIDDEN_KEYS or key in _RINSE_TASK_DURATION_KEYS or key in _RINSE_CLOCK_KEYS:
             continue
         out[key] = _strip_rinse_management_fields(value)
+    if activity_start:
+        out["activity_started_at"] = activity_start
     return out
 
 

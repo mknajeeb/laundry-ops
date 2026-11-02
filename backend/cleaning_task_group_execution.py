@@ -539,7 +539,9 @@ def complete_group_activity(
             started = datetime.fromisoformat(started[:19])
         except ValueError:
             started = at
-    duration = max(0, int((at - started).total_seconds())) if isinstance(started, datetime) else 0
+    from backend.business_time import eastern_elapsed_seconds
+
+    duration = eastern_elapsed_seconds(started, at) if isinstance(started, datetime) else 0
 
     # Spawn verification child activities (no duration) for items that need verify.
     catalog = _role_catalog(cursor, oid)

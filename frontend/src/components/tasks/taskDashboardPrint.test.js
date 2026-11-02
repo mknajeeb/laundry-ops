@@ -19,6 +19,7 @@ const SAMPLE = {
       completion_status: "completed",
       verification_status: "waiting",
       overall_status: "pending_verification",
+      activity_started_at: "2026-11-01 09:10:00",
       shared: true,
       instructions: "Check washers, then broom the floor.",
       employees_finished: 2,
@@ -184,6 +185,12 @@ describe("task dashboard print document", () => {
     expect(shown).toContain("35m");
     expect(hidden).not.toContain("Total time");
     expect(hidden).not.toContain("35m");
+    expect(hidden).not.toContain("9:24 AM");
+    expect(hidden).not.toContain("9:45 AM");
+    expect(hidden).not.toContain("9:50 AM");
+    expect(hidden).toContain("9:10 AM");
+    expect(hidden).toContain("Gabriela");
+    expect(hidden).toContain("Check Washer Residue");
   });
 
   it("writes the report into a child document and does not print the app window", () => {

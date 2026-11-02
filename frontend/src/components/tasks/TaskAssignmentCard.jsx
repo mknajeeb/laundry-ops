@@ -126,6 +126,11 @@ export default function TaskAssignmentCard({
               {summary}
             </Typography>
           ) : null}
+          {hideLabor && row.activity_started_at ? (
+            <Typography variant="caption" color="text.secondary" display="block">
+              Started {formatDashboardDateTime(row.activity_started_at)}
+            </Typography>
+          ) : null}
         </Box>
         <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
           {row.overall_status ? (
@@ -224,7 +229,7 @@ export default function TaskAssignmentCard({
                       {item.completed_by_name ? (
                         <Typography variant="caption" color="text.secondary">
                           {item.completed_by_name}
-                          {item.completed_at
+                          {!hideLabor && item.completed_at
                             ? ` · ${formatDashboardTime(item.completed_at)}`
                             : ""}
                         </Typography>
@@ -282,6 +287,7 @@ export default function TaskAssignmentCard({
                       <Typography variant="body2" sx={{ fontWeight: 800 }}>
                         {c.employee_name}
                       </Typography>
+                      {hideLabor ? null : (
                       <Typography variant="caption" color="text.secondary">
                         {showParticipation
                           ? participationTimeLine(c)
@@ -292,6 +298,7 @@ export default function TaskAssignmentCard({
                               )}`}
                         {duration ? ` · ${duration}` : ""}
                       </Typography>
+                      )}
                     </Box>
                     <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
                       <TaskStatusBadge

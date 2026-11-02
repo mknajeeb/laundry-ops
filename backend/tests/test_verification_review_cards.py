@@ -1,5 +1,7 @@
 """Shared-assignment review cards and employee-vs-activity metrics."""
 
+import json
+
 from backend.cleaning_task_activity import (
     CleaningTaskError,
     apply_rinse_task_dashboard_scope,
@@ -219,8 +221,11 @@ def test_rinse_counts_employees_and_hides_labor_and_audit():
                             "activity": {
                                 "id": 1,
                                 "completion_source": "pin",
-                                "duration_seconds": 100,
+                                "duration_seconds": 1500,
+                                "started_at": "2026-11-01 10:00:00",
+                                "ended_at": "2026-11-01 10:25:00",
                                 "status": "approved",
+                                "employee_remark": {"text": "secret note"},
                             },
                         },
                         {
@@ -229,7 +234,9 @@ def test_rinse_counts_employees_and_hides_labor_and_audit():
                             "activity": {
                                 "id": 2,
                                 "completion_source": "pin",
-                                "duration_seconds": 90,
+                                "duration_seconds": 1800,
+                                "started_at": "2026-11-01 10:10:00",
+                                "ended_at": "2026-11-01 10:40:00",
                                 "status": "approved",
                             },
                         },
@@ -247,7 +254,19 @@ def test_rinse_counts_employees_and_hides_labor_and_audit():
     assert out["metrics"]["total_assigned"] == 1
     assert out["activity_log"] == []
     assert out["durations"] == []
-    assert "duration_seconds" not in out["shared_assignments"][0]["contributions"][0]["activity"]
+    card = out["shared_assignments"][0]
+    activity = card["contributions"][0]["activity"]
+    assert "duration_seconds" not in activity
+    assert "ended_at" not in activity
+    assert "started_at" not in activity
+    assert "employee_remark" not in activity
+    assert card["activity_started_at"] == "2026-11-01 10:00:00"
+    assert card["completion_status"] == "completed"
+    assert card["verification_status"] == "verified"
+    blob = json.dumps(out)
+    assert "10:25" not in blob
+    assert "10:40" not in blob
+    assert "secret note" not in blob
 
 
 def test_needs_redo_requires_a_reason():

@@ -9,6 +9,7 @@ document only.
 import { formatCompletionInput } from "../../opsMobile/TaskCompletionInputs";
 import {
   formatDashboardDate,
+  formatDashboardDateTime,
   formatDashboardTime,
   participationTimeLine,
 } from "./taskDashboardFormat";
@@ -106,7 +107,7 @@ function metricCells(metrics, hideLabor) {
     .join("");
 }
 
-function checklistTable(items, sections) {
+function checklistTable(items, sections, hideLabor = false) {
   const groups = checklistGroups(items);
   const showSections = groups.some((group) => group.label);
   return groups
@@ -124,7 +125,7 @@ function checklistTable(items, sections) {
           const detail = formatCompletionInput(item.completion_input, item.input_schema);
           const who = [
             item.completed_by_name || "",
-            item.completed_at ? formatDashboardTime(item.completed_at) : "",
+            !hideLabor && item.completed_at ? formatDashboardTime(item.completed_at) : "",
           ]
             .filter(Boolean)
             .join(" · ");
@@ -178,7 +179,7 @@ function participantLines(row, hideLabor, hideRemarks) {
       return `<li>
         <b>${escapeHtml(contribution.employee_name || "Employee")}</b>
         · ${escapeHtml(participationLabel(participationStatusOf(contribution)))}
-        · ${escapeHtml(participationTimeLine(contribution))}
+        ${hideLabor ? "" : ` · ${escapeHtml(participationTimeLine(contribution))}`}
         ${showDuration ? ` · ${escapeHtml(duration)}` : ""}
         ${remarks.length ? `<div class="detail">${escapeHtml(remarks.join(" · "))}</div>` : ""}
       </li>`;
@@ -199,6 +200,11 @@ function assignmentCard(row, hideLabor, hideRemarks) {
       <div>
         <h3>${escapeHtml(title)}</h3>
         <div class="meta">${escapeHtml(when)}</div>
+        ${
+          hideLabor && row?.activity_started_at
+            ? `<div class="meta">Started ${escapeHtml(formatDashboardDateTime(row.activity_started_at))}</div>`
+            : ""
+        }
         <div>${escapeHtml(assignmentSummary(row))}</div>
       </div>
       <div class="status">
@@ -212,7 +218,7 @@ function assignmentCard(row, hideLabor, hideRemarks) {
       </div>
     </div>
     ${instructions ? `<div class="detail">${escapeHtml(instructions)}</div>` : ""}
-    ${checklist.length ? checklistTable(checklist, row?.checklist_sections) : ""}
+    ${checklist.length ? checklistTable(checklist, row?.checklist_sections, hideLabor) : ""}
     ${remarksBlock(row, hideRemarks)}
     ${participantLines(row, hideLabor, hideRemarks)}
   </article>`;
