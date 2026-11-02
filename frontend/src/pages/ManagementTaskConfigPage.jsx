@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import {
   Alert,
@@ -18,6 +18,11 @@ import ActivityChecklistEditor, {
   itemsFromGroup,
   itemsToPayload,
 } from "../components/tasks/ActivityChecklistEditor";
+import {
+  checklistSections,
+  groupActivitiesByCategory,
+  visibleCatalogRows,
+} from "../components/tasks/taskManagementLists";
 import {
   getEndOfDayClosingTemplate,
   getManagementTaskAssignees,
@@ -77,6 +82,7 @@ export default function ManagementTaskConfigPage() {
   const [globalDraft, setGlobalDraft] = useState(null);
   const [busy, setBusy] = useState(false);
   const [assignees, setAssignees] = useState([]);
+  const [showInactive, setShowInactive] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -367,6 +373,16 @@ export default function ManagementTaskConfigPage() {
     });
   };
 
+  const visibleTasks = useMemo(
+    () => visibleCatalogRows(tasks, { showInactive }),
+    [tasks, showInactive]
+  );
+  const activityBuckets = useMemo(
+    () =>
+      groupActivitiesByCategory(visibleCatalogRows(activityGroups, { showInactive }), categories),
+    [activityGroups, categories, showInactive]
+  );
+
   return (
     <Box sx={{ p: { xs: 1.5, md: 2.5 }, maxWidth: 1100, mx: "auto" }}>
       <ManagementHubNav />
@@ -376,8 +392,9 @@ export default function ManagementTaskConfigPage() {
             Task Management
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Configure verification policy, categories, tasks, activity groups, inputs, and checklists.
-            Assign on Weekly Schedule. Policy changes apply to new activity only.
+            Activity Groups and their checklists come first. Standalone Tasks stay available for
+            assignments that are not part of a group. Assign on Weekly Schedule. Policy changes apply
+            to new activity only.
           </Typography>
         </Box>
         <Button component={RouterLink} to="/management/tasks" size="small" variant="outlined">
@@ -508,9 +525,277 @@ export default function ManagementTaskConfigPage() {
             </Stack>
           </Paper>
 
+                    <Paper variant="outlined" sx={{ p: 1.5 }}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+              <Typography sx={{ fontWeight: 800 }}>Activity Groups</Typography>
+              <Stack direction="row" spacing={1}>
+                <Button size="small" variant="contained" disabled={busy} onClick={startEndOfDay}>
+                  End of Day Closing
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  disabled={busy}
+                  onClick={() =>
+                    setGroupDraft({
+                      name: "",
+                      instructions: "",
+                      category_code: categories[0]?.code || "intra_day",
+                      display_order: 0,
+                      active: true,
+                      verification_inherits: true,
+                      verification_method: "supervisor",
+                      verification_timing: "same_shift",
+                      itemRows: [],
+                      require_checklist_before_completion: true,
+                      requireChecklistTouched: false,
+                    })
+                  }
+                >
+                  Add activity
+                </Button>
+              </Stack>
+            </Stack>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              Each group has one timer and a checklist. End of Day Closing opens the template here.
+              Nothing is saved until you click Save activity group.
+            </Typography>
+            <FormControlLabel
+              control={
+                <Switch checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+              }
+              label="Show inactive records"
+            />
+            <Stack spacing={1.5}>
+              {activityBuckets.length ? (
+                activityBuckets.map((bucket) => (
+                  <Box key={bucket.code}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 0.5 }}>
+                      {bucket.name}
+                    </Typography>
+                    <Stack spacing={1}>
+                      {bucket.groups.map((g) => (
+                        <Paper key={g.id || g.code} variant="outlined" sx={{ p: 1.25 }}>
+                          <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography sx={{ fontWeight: 800 }}>
+                                {g.name}
+                                {!g.active ? <Chip size="small" label="Inactive" sx={{ ml: 0.5 }} /> : null}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary" display="block">
+                                Schedule code {g.role_code}
+                                {" · "}
+                                {g.verification_inherits !== false
+                                  ? "verify:inherited"
+                                  : g.verification_required
+                                    ? `verify:${g.verification_method}/${g.verification_timing}`
+                                    : "no verification (override)"}
+                              </Typography>
+                              {checklistSections(g.items).map((section) => (
+                                <Box key={section.label} sx={{ mt: 0.75 }}>
+                                  <Typography variant="caption" sx={{ fontWeight: 800 }}>
+                                    {section.label}
+                                  </Typography>
+                                  {section.items.map((item) => (
+                                    <Typography
+                                      key={item.task_code || item.id}
+                                      variant="caption"
+                                      color="text.secondary"
+                                      display="block"
+                                    >
+                                      {item.task_name || item.task_code}
+                                      {item.required === false ? " · optional" : " · required"}
+                                    </Typography>
+                                  ))}
+                                </Box>
+                              ))}
+                            </Box>
+                            <Button
+                              size="small"
+                              onClick={() =>
+                                setGroupDraft({
+                                  ...g,
+                                  itemRows: itemsFromGroup(g.items),
+                                  requireChecklistTouched: false,
+                                })
+                              }
+                            >
+                              Edit
+                            </Button>
+                          </Stack>
+                        </Paper>
+                      ))}
+                    </Stack>
+                  </Box>
+                ))
+              ) : (
+                <Typography variant="body2" color="text.secondary">
+                  No activity groups yet. End of Day Closing can be opened from the button above and
+                  saved when you are ready.
+                </Typography>
+              )}
+            </Stack>
+          </Paper>
+
+          {groupDraft ? (
+            <Paper variant="outlined" sx={{ p: 1.5 }}>
+              <Typography sx={{ fontWeight: 800, mb: 1 }}>Edit activity group</Typography>
+              <Stack spacing={1.25}>
+                <TextField
+                  label="Name"
+                  size="small"
+                  value={groupDraft.name || ""}
+                  onChange={(e) => setGroupDraft({ ...groupDraft, name: e.target.value })}
+                />
+                <TextField
+                  label="Instructions"
+                  size="small"
+                  multiline
+                  minRows={2}
+                  value={groupDraft.instructions || ""}
+                  onChange={(e) => setGroupDraft({ ...groupDraft, instructions: e.target.value })}
+                />
+                <TextField
+                  select
+                  label="Category"
+                  size="small"
+                  value={groupDraft.category_code || "intra_day"}
+                  onChange={(e) => setGroupDraft({ ...groupDraft, category_code: e.target.value })}
+                >
+                  {categories.map((c) => (
+                    <MenuItem key={c.code} value={c.code}>
+                      {c.name}
+                    </MenuItem>
+                  ))}
+                </TextField>
+                <TextField
+                  label="Display order"
+                  size="small"
+                  type="number"
+                  value={groupDraft.display_order ?? 0}
+                  onChange={(e) => setGroupDraft({ ...groupDraft, display_order: e.target.value })}
+                />
+                <ActivityChecklistEditor
+                  items={groupDraft.itemRows || []}
+                  assignees={assignees}
+                  onChange={(itemRows) => setGroupDraft({ ...groupDraft, itemRows })}
+                />
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={groupDraft.active !== false}
+                      onChange={(e) => setGroupDraft({ ...groupDraft, active: e.target.checked })}
+                    />
+                  }
+                  label="Active"
+                />
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={(() => {
+                        if (groupDraft.requireChecklistTouched) {
+                          return groupDraft.require_checklist_before_completion === true;
+                        }
+                        if (groupDraft.require_checklist_before_completion === false) return false;
+                        if (groupDraft.require_checklist_before_completion === true) return true;
+                        const rows = groupDraft.itemRows || [];
+                        if (!rows.length) return !groupDraft.id;
+                        return rows.some((row) => row.required !== false);
+                      })()}
+                      onChange={(e) =>
+                        setGroupDraft({
+                          ...groupDraft,
+                          require_checklist_before_completion: e.target.checked,
+                          requireChecklistTouched: true,
+                        })
+                      }
+                    />
+                  }
+                  label="Require Checklist Before Completion"
+                />
+                <Typography variant="caption" color="text.secondary">
+                  Groups with required checklist items use this requirement, including existing groups
+                  whose setting is still unset. Saving other fields does not rewrite that unset value.
+                  Turn it off to let an employee finish while required items are still open. Groups with
+                  no required items complete normally. An open required checklist stays In Progress on
+                  the dashboard either way.
+                </Typography>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={groupDraft.verification_inherits !== false}
+                      onChange={(e) =>
+                        setGroupDraft({
+                          ...groupDraft,
+                          verification_inherits: e.target.checked,
+                        })
+                      }
+                    />
+                  }
+                  label={
+                    groupDraft.verification_inherits !== false
+                      ? "Inherit global verification (default)"
+                      : "Override verification for this group"
+                  }
+                />
+                {groupDraft.verification_inherits === false ? (
+                  <>
+                    <TextField
+                      select
+                      label="Group verification"
+                      size="small"
+                      value={
+                        groupDraft.verification_required === false ||
+                        groupDraft.verification_method === "none"
+                          ? "none"
+                          : groupDraft.verification_method || "supervisor"
+                      }
+                      onChange={(e) => {
+                        const method = e.target.value;
+                        setGroupDraft({
+                          ...groupDraft,
+                          verification_inherits: false,
+                          verification_method: method,
+                          verification_required: method !== "none",
+                        });
+                      }}
+                      helperText="Same options as standalone tasks. Member tasks may still override."
+                    >
+                      <MenuItem value="none">No verification</MenuItem>
+                      <MenuItem value="employee">Employee / peer</MenuItem>
+                      <MenuItem value="supervisor">Supervisor</MenuItem>
+                      <MenuItem value="role">Role-based</MenuItem>
+                    </TextField>
+                    <TextField
+                      select
+                      label="Verification timing"
+                      size="small"
+                      value={groupDraft.verification_timing || "same_shift"}
+                      onChange={(e) =>
+                        setGroupDraft({ ...groupDraft, verification_timing: e.target.value })
+                      }
+                    >
+                      <MenuItem value="same_shift">Same shift</MenuItem>
+                      <MenuItem value="later_shift">Later shift</MenuItem>
+                      <MenuItem value="next_day">Next day</MenuItem>
+                    </TextField>
+                  </>
+                ) : null}
+                <Stack direction="row" spacing={1}>
+                  <Button variant="contained" disabled={busy} onClick={saveGroup}>
+                    Save activity group
+                  </Button>
+                  <Button disabled={busy} onClick={() => setGroupDraft(null)}>
+                    Cancel
+                  </Button>
+                </Stack>
+              </Stack>
+            </Paper>
+          ) : null}
+
           <Paper variant="outlined" sx={{ p: 1.5 }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-              <Typography sx={{ fontWeight: 800 }}>Tasks</Typography>
+              <Typography sx={{ fontWeight: 800 }}>Standalone Tasks</Typography>
               <Button
                 size="small"
                 variant="outlined"
@@ -536,8 +821,17 @@ export default function ManagementTaskConfigPage() {
                 Add task
               </Button>
             </Stack>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              These codes stay on existing assignments. Inactive rows stay in the catalog and appear
+              when Show inactive records is on.
+            </Typography>
             <Stack spacing={1}>
-              {tasks.map((task) => (
+              {visibleTasks.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">
+                  No active standalone tasks.
+                </Typography>
+              ) : null}
+              {visibleTasks.map((task) => (
                 <Paper key={task.code} variant="outlined" sx={{ p: 1.25 }}>
                   <Stack direction="row" justifyContent="space-between" alignItems="center">
                     <Box>
@@ -745,244 +1039,6 @@ export default function ManagementTaskConfigPage() {
                     Save
                   </Button>
                   <Button disabled={busy} onClick={() => setDraft(null)}>
-                    Cancel
-                  </Button>
-                </Stack>
-              </Stack>
-            </Paper>
-          ) : null}
-
-                    <Paper variant="outlined" sx={{ p: 1.5 }}>
-            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-              <Typography sx={{ fontWeight: 800 }}>Activities</Typography>
-              <Stack direction="row" spacing={1}>
-                <Button size="small" variant="contained" disabled={busy} onClick={startEndOfDay}>
-                  End of Day Closing
-                </Button>
-                <Button
-                  size="small"
-                  variant="outlined"
-                  disabled={busy}
-                  onClick={() =>
-                    setGroupDraft({
-                      name: "",
-                      instructions: "",
-                      category_code: categories[0]?.code || "intra_day",
-                      display_order: 0,
-                      active: true,
-                      verification_inherits: true,
-                      verification_method: "supervisor",
-                      verification_timing: "same_shift",
-                      itemRows: [],
-                      require_checklist_before_completion: true,
-                      requireChecklistTouched: false,
-                    })
-                  }
-                >
-                  Add activity
-                </Button>
-              </Stack>
-            </Stack>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-              An Activity has one timer and its checklist items. Verification checklists stay separate.
-            </Typography>
-            <Stack spacing={1}>
-              {activityGroups.length ? (
-                activityGroups.map((g) => (
-                  <Paper key={g.id} variant="outlined" sx={{ p: 1.25 }}>
-                    <Stack direction="row" justifyContent="space-between" alignItems="center">
-                      <Box>
-                        <Typography sx={{ fontWeight: 800 }}>{g.name}</Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          {g.category_code} · {(g.items || []).map((i) => i.task_name || i.task_code).join(", ")} · assign as {g.role_code}
-                          {" · "}
-                          {g.verification_inherits !== false
-                            ? "verify:inherited"
-                            : g.verification_required
-                              ? `verify:${g.verification_method}/${g.verification_timing}`
-                              : "no verification (override)"}
-                          {g.require_checklist_before_completion === false
-                            ? " · finish allowed with open checklist"
-                            : g.require_checklist_before_completion === true ||
-                                (g.require_checklist_before_completion == null &&
-                                  (g.items || []).some((item) => item.required !== false))
-                              ? " · checklist required before finish"
-                              : ""}
-                          {!g.active ? " · inactive" : ""}
-                        </Typography>
-                      </Box>
-                      <Button
-                        size="small"
-                        onClick={() =>
-                          setGroupDraft({
-                            ...g,
-                            itemRows: itemsFromGroup(g.items),
-                            requireChecklistTouched: false,
-                          })
-                        }
-                      >
-                        Edit
-                      </Button>
-                    </Stack>
-                  </Paper>
-                ))
-              ) : (
-                <Typography variant="body2" color="text.secondary">
-                  No activity groups yet. Example: Routine Cleaning with Floor Brooming + Dryer Lint + Washer Wipe Down.
-                </Typography>
-              )}
-            </Stack>
-          </Paper>
-
-          {groupDraft ? (
-            <Paper variant="outlined" sx={{ p: 1.5 }}>
-              <Typography sx={{ fontWeight: 800, mb: 1 }}>Edit activity group</Typography>
-              <Stack spacing={1.25}>
-                <TextField
-                  label="Name"
-                  size="small"
-                  value={groupDraft.name || ""}
-                  onChange={(e) => setGroupDraft({ ...groupDraft, name: e.target.value })}
-                />
-                <TextField
-                  label="Instructions"
-                  size="small"
-                  multiline
-                  minRows={2}
-                  value={groupDraft.instructions || ""}
-                  onChange={(e) => setGroupDraft({ ...groupDraft, instructions: e.target.value })}
-                />
-                <TextField
-                  select
-                  label="Category"
-                  size="small"
-                  value={groupDraft.category_code || "intra_day"}
-                  onChange={(e) => setGroupDraft({ ...groupDraft, category_code: e.target.value })}
-                >
-                  {categories.map((c) => (
-                    <MenuItem key={c.code} value={c.code}>
-                      {c.name}
-                    </MenuItem>
-                  ))}
-                </TextField>
-                <TextField
-                  label="Display order"
-                  size="small"
-                  type="number"
-                  value={groupDraft.display_order ?? 0}
-                  onChange={(e) => setGroupDraft({ ...groupDraft, display_order: e.target.value })}
-                />
-                <ActivityChecklistEditor
-                  items={groupDraft.itemRows || []}
-                  assignees={assignees}
-                  onChange={(itemRows) => setGroupDraft({ ...groupDraft, itemRows })}
-                />
-                <FormControlLabel
-                  control={
-                    <Switch
-                      checked={groupDraft.active !== false}
-                      onChange={(e) => setGroupDraft({ ...groupDraft, active: e.target.checked })}
-                    />
-                  }
-                  label="Active"
-                />
-                <FormControlLabel
-                  control={
-                    <Switch
-                      checked={(() => {
-                        if (groupDraft.requireChecklistTouched) {
-                          return groupDraft.require_checklist_before_completion === true;
-                        }
-                        if (groupDraft.require_checklist_before_completion === false) return false;
-                        if (groupDraft.require_checklist_before_completion === true) return true;
-                        const rows = groupDraft.itemRows || [];
-                        if (!rows.length) return !groupDraft.id;
-                        return rows.some((row) => row.required !== false);
-                      })()}
-                      onChange={(e) =>
-                        setGroupDraft({
-                          ...groupDraft,
-                          require_checklist_before_completion: e.target.checked,
-                          requireChecklistTouched: true,
-                        })
-                      }
-                    />
-                  }
-                  label="Require Checklist Before Completion"
-                />
-                <Typography variant="caption" color="text.secondary">
-                  Groups with required checklist items use this requirement, including existing groups
-                  whose setting is still unset. Saving other fields does not rewrite that unset value.
-                  Turn it off to let an employee finish while required items are still open. Groups with
-                  no required items complete normally. An open required checklist stays In Progress on
-                  the dashboard either way.
-                </Typography>
-                <FormControlLabel
-                  control={
-                    <Switch
-                      checked={groupDraft.verification_inherits !== false}
-                      onChange={(e) =>
-                        setGroupDraft({
-                          ...groupDraft,
-                          verification_inherits: e.target.checked,
-                        })
-                      }
-                    />
-                  }
-                  label={
-                    groupDraft.verification_inherits !== false
-                      ? "Inherit global verification (default)"
-                      : "Override verification for this group"
-                  }
-                />
-                {groupDraft.verification_inherits === false ? (
-                  <>
-                    <TextField
-                      select
-                      label="Group verification"
-                      size="small"
-                      value={
-                        groupDraft.verification_required === false ||
-                        groupDraft.verification_method === "none"
-                          ? "none"
-                          : groupDraft.verification_method || "supervisor"
-                      }
-                      onChange={(e) => {
-                        const method = e.target.value;
-                        setGroupDraft({
-                          ...groupDraft,
-                          verification_inherits: false,
-                          verification_method: method,
-                          verification_required: method !== "none",
-                        });
-                      }}
-                      helperText="Same options as standalone tasks. Member tasks may still override."
-                    >
-                      <MenuItem value="none">No verification</MenuItem>
-                      <MenuItem value="employee">Employee / peer</MenuItem>
-                      <MenuItem value="supervisor">Supervisor</MenuItem>
-                      <MenuItem value="role">Role-based</MenuItem>
-                    </TextField>
-                    <TextField
-                      select
-                      label="Verification timing"
-                      size="small"
-                      value={groupDraft.verification_timing || "same_shift"}
-                      onChange={(e) =>
-                        setGroupDraft({ ...groupDraft, verification_timing: e.target.value })
-                      }
-                    >
-                      <MenuItem value="same_shift">Same shift</MenuItem>
-                      <MenuItem value="later_shift">Later shift</MenuItem>
-                      <MenuItem value="next_day">Next day</MenuItem>
-                    </TextField>
-                  </>
-                ) : null}
-                <Stack direction="row" spacing={1}>
-                  <Button variant="contained" disabled={busy} onClick={saveGroup}>
-                    Save activity group
-                  </Button>
-                  <Button disabled={busy} onClick={() => setGroupDraft(null)}>
                     Cancel
                   </Button>
                 </Stack>

@@ -20,7 +20,7 @@ import TaskManualCompletionDialog from "../components/tasks/TaskManualCompletion
 import TaskManageDialog from "../components/tasks/TaskManageDialog";
 import TaskAssignmentCard from "../components/tasks/TaskAssignmentCard";
 import TaskRecordDialog from "../components/tasks/TaskRecordDialog";
-import { DEFAULT_CATEGORY_TABS, dashboardHeadlineMetrics } from "../components/tasks/taskDashboardLabels";
+import { DEFAULT_CATEGORY_TABS } from "../components/tasks/taskDashboardLabels";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import {
   approveManagementTaskDashboard,
@@ -32,17 +32,19 @@ import {
   updateManagementTaskRecord,
   voidManagementTaskActivity,
 } from "../api";
-import { addDaysYmd, businessTodayYmd } from "../utils/businessTime";
+import { businessTodayYmd } from "../utils/businessTime";
 import { formatDashboardDate } from "../components/tasks/taskDashboardFormat";
+import { formatDurationHm } from "../components/tasks/taskDashboardLabels";
 import { printTaskDashboard } from "../components/tasks/taskDashboardPrint";
+import {
+  MAX_TASK_RANGE_DAYS,
+  TASK_RANGE_PRESETS,
+  inclusiveSpanDays,
+  taskDashboardRange,
+} from "../components/tasks/taskDashboardRange";
 
-function rangeForPreset(preset, today, customStart, customEnd) {
-  if (preset === "7") return { start: addDaysYmd(today, -6), end: today };
-  if (preset === "30") return { start: addDaysYmd(today, -29), end: today };
-  if (preset === "month") return { start: `${today.slice(0, 8)}01`, end: today };
-  if (preset === "custom") return { start: customStart || today, end: customEnd || today };
-  return { start: today, end: today };
-}
+const ASSIGNMENT_PAGE_SIZE = 25;
+const HISTORY_PAGE_SIZE = 40;
 
 function Metric({ label, value, hint }) {
   return (
@@ -73,7 +75,6 @@ function Metric({ label, value, hint }) {
  */
 export default function ManagementTasksPage() {
   const today = businessTodayYmd();
-  const [date, setDate] = useState(today);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [data, setData] = useState(null);
@@ -86,6 +87,8 @@ export default function ManagementTasksPage() {
   const [groupBy, setGroupBy] = useState("daily");
   const [customStart, setCustomStart] = useState(today);
   const [customEnd, setCustomEnd] = useState(today);
+  const [assignmentPage, setAssignmentPage] = useState(0);
+  const [historyPage, setHistoryPage] = useState(0);
   const [manageOpen, setManageOpen] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualMode, setManualMode] = useState("record");
@@ -103,9 +106,8 @@ export default function ManagementTasksPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    setError("");
     try {
-      const res = await getManagementTaskDashboard({ business_date: date });
+      const res = await getManagementTaskDashboard({ business_date: today });
       setData(res.data || null);
     } catch (err) {
       setError(err?.response?.data?.error || err?.message || "Failed to load");
@@ -113,23 +115,45 @@ export default function ManagementTasksPage() {
     } finally {
       setLoading(false);
     }
-  }, [date]);
+  }, [today]);
 
-  const activeRange = rangeForPreset(rangePreset, date, customStart, customEnd);
+  const activeRange = taskDashboardRange(rangePreset, today, customStart, customEnd);
+  const rangeSpan = inclusiveSpanDays(activeRange.start, activeRange.end);
   const loadMonthly = useCallback(async () => {
+    if (rangeSpan > MAX_TASK_RANGE_DAYS) {
+      setMonthly(null);
+      setError(
+        `This range is ${rangeSpan} days. Choose ${MAX_TASK_RANGE_DAYS} days or fewer.`
+      );
+      return;
+    }
     try {
       const res = await getManagementTaskDashboardMonthly({
         start: activeRange.start,
         end: activeRange.end,
         group_by: groupBy,
         category: categoryTab === "all" ? "" : categoryTab,
-        include_assignments: rangePreset === "today" ? 0 : 1,
+        include_assignments: 1,
+        assignment_offset: assignmentPage * ASSIGNMENT_PAGE_SIZE,
+        assignment_limit: ASSIGNMENT_PAGE_SIZE,
+        history_offset: historyPage * HISTORY_PAGE_SIZE,
+        history_limit: HISTORY_PAGE_SIZE,
       });
       setMonthly(res.data || null);
-    } catch {
+      setError("");
+    } catch (err) {
       setMonthly(null);
+      setError(err?.response?.data?.error || err?.message || "Failed to load this date range");
     }
-  }, [activeRange.start, activeRange.end, groupBy, categoryTab, rangePreset]);
+  }, [
+    activeRange.start,
+    activeRange.end,
+    rangeSpan,
+    groupBy,
+    categoryTab,
+    assignmentPage,
+    historyPage,
+  ]);
 
   useEffect(() => {
     load();
@@ -139,31 +163,40 @@ export default function ManagementTasksPage() {
   // Collapse-by-default for a cleaner first view.
   useEffect(() => {
     setOpenKeys(new Set());
-  }, [date, data?.business_date]);
+  }, [activeRange.start, activeRange.end, data?.business_date]);
 
   const categoryTabs = useMemo(() => {
-    const fromApi = (data?.categories || []).map((c) => ({
-      code: c.code,
-      name: c.name || c.code,
+    const fromApi = (monthly?.categories || data?.categories || []).map((c) => ({
+      code: c.code || c.category_code,
+      name: c.name || c.category_name || c.code,
     }));
     return fromApi.length ? fromApi : DEFAULT_CATEGORY_TABS;
-  }, [data]);
+  }, [data, monthly]);
 
   const filteredAssignments = useMemo(() => {
-    const rows =
-      rangePreset === "today"
-        ? data?.shared_assignments || []
-        : Array.isArray(monthly?.assignments)
-          ? monthly.assignments
-          : [];
+    const rows = Array.isArray(monthly?.assignments) ? monthly.assignments : [];
     if (categoryTab === "all") return rows;
     return rows.filter((r) => String(r.category_code || "intra_day") === categoryTab);
-  }, [data, categoryTab, monthly, rangePreset]);
+  }, [categoryTab, monthly]);
 
-  const categoryMetrics = useMemo(
-    () => dashboardHeadlineMetrics(filteredAssignments),
-    [filteredAssignments]
-  );
+  const categoryMetrics = useMemo(() => {
+    const totals = monthly?.totals || {};
+    const people = monthly?.participation || {};
+    return {
+      activitiesAssigned: totals.assigned ?? 0,
+      completedActivities: totals.completed ?? 0,
+      pendingVerification: totals.pending_verification ?? 0,
+      verifiedActivities: totals.verified ?? 0,
+      overdue: totals.overdue ?? 0,
+      employeesAssigned: people.employees_assigned ?? 0,
+      employeesStarted: people.employees_started ?? 0,
+      employeesFinished: people.employees_finished ?? 0,
+      totalTimeLabel: formatDurationHm(people.total_time_seconds ?? 0),
+    };
+  }, [monthly]);
+  const assignmentTotal = Number(monthly?.assignment_total || 0);
+  const historyRows = Array.isArray(monthly?.history) ? monthly.history : [];
+  const historyTotal = Number(monthly?.history_total || 0);
 
   const toggle = (key) => {
     setOpenKeys((prev) => {
@@ -262,19 +295,39 @@ export default function ManagementTasksPage() {
     }
   };
 
-  const printReport = () => {
+  const printReport = async () => {
     const categoryLabel =
       categoryTab === "all"
         ? "All"
         : categoryTabs.find((tab) => tab.code === categoryTab)?.name || categoryTab;
-    printTaskDashboard({
-      rangeStart: activeRange.start,
-      rangeEnd: activeRange.end,
-      categoryLabel,
-      groupBy,
-      rows: filteredAssignments,
-      hideLabor,
-    });
+    if (rangeSpan > MAX_TASK_RANGE_DAYS) {
+      setError(`This range is ${rangeSpan} days. Choose ${MAX_TASK_RANGE_DAYS} days or fewer.`);
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const res = await getManagementTaskDashboardMonthly({
+        start: activeRange.start,
+        end: activeRange.end,
+        group_by: groupBy,
+        category: categoryTab === "all" ? "" : categoryTab,
+        include_assignments: 1,
+        assignment_limit: 0,
+      });
+      printTaskDashboard({
+        rangeStart: activeRange.start,
+        rangeEnd: activeRange.end,
+        categoryLabel,
+        groupBy,
+        rows: res.data?.assignments || [],
+        hideLabor,
+      });
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || "Could not prepare the print report");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -308,16 +361,6 @@ export default function ManagementTasksPage() {
             </Typography>
           </Box>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap className="no-print">
-            {rangePreset === "today" ? (
-            <TextField
-              type="date"
-              size="small"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              InputLabelProps={{ shrink: true }}
-              sx={{ bgcolor: "#fff", borderRadius: 1, minWidth: 150 }}
-            />
-            ) : null}
             <Button
               size="small"
               startIcon={<PrintIcon />}
@@ -371,14 +414,18 @@ export default function ManagementTasksPage() {
                 size="small"
                 label="Range"
                 value={rangePreset}
-                onChange={(e) => setRangePreset(e.target.value)}
-                sx={{ minWidth: 140 }}
+                onChange={(e) => {
+                  setRangePreset(e.target.value);
+                  setAssignmentPage(0);
+                  setHistoryPage(0);
+                }}
+                sx={{ minWidth: 160 }}
               >
-                <MenuItem value="today">Today</MenuItem>
-                <MenuItem value="7">7 Days</MenuItem>
-                <MenuItem value="30">30 Days</MenuItem>
-                <MenuItem value="month">This Month</MenuItem>
-                <MenuItem value="custom">Custom</MenuItem>
+                {TASK_RANGE_PRESETS.map((preset) => (
+                  <MenuItem key={preset.id} value={preset.id}>
+                    {preset.label}
+                  </MenuItem>
+                ))}
               </TextField>
               <TextField
                 select
@@ -399,7 +446,11 @@ export default function ManagementTasksPage() {
                     type="date"
                     label="Start"
                     value={customStart}
-                    onChange={(e) => setCustomStart(e.target.value)}
+                    onChange={(e) => {
+                      setCustomStart(e.target.value);
+                      setAssignmentPage(0);
+                      setHistoryPage(0);
+                    }}
                     InputLabelProps={{ shrink: true }}
                   />
                   <TextField
@@ -407,7 +458,11 @@ export default function ManagementTasksPage() {
                     type="date"
                     label="End"
                     value={customEnd}
-                    onChange={(e) => setCustomEnd(e.target.value)}
+                    onChange={(e) => {
+                      setCustomEnd(e.target.value);
+                      setAssignmentPage(0);
+                      setHistoryPage(0);
+                    }}
                     InputLabelProps={{ shrink: true }}
                   />
                 </>
@@ -446,7 +501,11 @@ export default function ManagementTasksPage() {
 
             <Tabs
               value={categoryTab}
-              onChange={(_, v) => setCategoryTab(v)}
+                onChange={(_, v) => {
+                  setCategoryTab(v);
+                  setAssignmentPage(0);
+                  setHistoryPage(0);
+                }}
               variant="scrollable"
               scrollButtons="auto"
               sx={{
@@ -464,7 +523,11 @@ export default function ManagementTasksPage() {
             </Tabs>
 
             <Stack spacing={1.25}>
-              {filteredAssignments.length === 0 ? (
+              {monthly == null ? (
+                <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+                  <CircularProgress size={28} />
+                </Box>
+              ) : filteredAssignments.length === 0 ? (
                 <Box
                   sx={{
                     p: 3,
@@ -507,10 +570,30 @@ export default function ManagementTasksPage() {
                 })
               )}
             </Stack>
+            {assignmentTotal > ASSIGNMENT_PAGE_SIZE ? (
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }} className="no-print">
+                <Button
+                  size="small"
+                  disabled={assignmentPage <= 0}
+                  onClick={() => setAssignmentPage((page) => Math.max(0, page - 1))}
+                >
+                  Previous
+                </Button>
+                <Typography variant="caption" color="text.secondary">
+                  Activities {assignmentPage * ASSIGNMENT_PAGE_SIZE + 1}–
+                  {Math.min(assignmentTotal, (assignmentPage + 1) * ASSIGNMENT_PAGE_SIZE)} of {assignmentTotal}
+                </Typography>
+                <Button
+                  size="small"
+                  disabled={(assignmentPage + 1) * ASSIGNMENT_PAGE_SIZE >= assignmentTotal}
+                  onClick={() => setAssignmentPage((page) => page + 1)}
+                >
+                  Next
+                </Button>
+              </Stack>
+            ) : null}
 
-            {/* Management history: expandable per assignment only — no duplicate Activity Log for Rinse.
-                For managers, correct/edit history lives in record dialogs + revisions API. */}
-            {!readOnly && (data?.activity_log || []).length > 0 ? (
+            {!readOnly ? (
               <Box className="no-print" sx={{ mt: 3 }}>
                 <Typography
                   variant="subtitle2"
@@ -519,45 +602,72 @@ export default function ManagementTasksPage() {
                   Management history
                 </Typography>
                 <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-                  Internal audit trail (hidden from Rinse). Prefer editing from the assignment card.
+                  {activeRange.start} – {activeRange.end} ET. Completion and verification stay separate.
+                  {historyTotal ? ` ${historyTotal} records.` : ""}
                 </Typography>
                 <Box
                   sx={{
                     bgcolor: "#fff",
                     borderRadius: 2,
                     border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
-                    maxHeight: 280,
-                    overflow: "auto",
                   }}
                 >
-                  {(data.activity_log || [])
-                    .filter((row) =>
-                      categoryTab === "all"
-                        ? true
-                        : String(row.category_code || "intra_day") === categoryTab
-                    )
-                    .slice(0, 40)
-                    .map((row) => (
+                  {historyRows.length === 0 ? (
+                    <Typography variant="body2" color="text.secondary" sx={{ px: 1.5, py: 1.25 }}>
+                      No management history in this range.
+                    </Typography>
+                  ) : (
+                    historyRows.map((row) => (
                       <Stack
                         key={row.id || `${row.role}-${row.started_at}-${row.employee_name}`}
                         direction={{ xs: "column", sm: "row" }}
                         justifyContent="space-between"
+                        spacing={0.5}
                         sx={{
                           px: 1.5,
                           py: 0.85,
                           borderBottom: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
                         }}
                       >
-                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                          {row.employee_name || "—"} · {row.role_label || row.role}
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          {row.status_label || row.status}
-                          {row.completion_source_label ? ` · ${row.completion_source_label}` : ""}
+                        <Box>
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                            {formatDashboardDate(row.business_date)} · {row.employee_name || "—"} ·{" "}
+                            {row.role_label || row.role}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            Completion: {row.status_label || row.status || "—"}
+                            {row.completion_source_label ? ` · ${row.completion_source_label}` : ""}
+                          </Typography>
+                        </Box>
+                        <Typography variant="caption" sx={{ fontWeight: 700 }}>
+                          Verification: {row.verification_label || "Not verified"}
                         </Typography>
                       </Stack>
-                    ))}
+                    ))
+                  )}
                 </Box>
+                {historyTotal > HISTORY_PAGE_SIZE ? (
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }}>
+                    <Button
+                      size="small"
+                      disabled={historyPage <= 0}
+                      onClick={() => setHistoryPage((page) => Math.max(0, page - 1))}
+                    >
+                      Previous
+                    </Button>
+                    <Typography variant="caption" color="text.secondary">
+                      History {historyPage * HISTORY_PAGE_SIZE + 1}–
+                      {Math.min(historyTotal, (historyPage + 1) * HISTORY_PAGE_SIZE)} of {historyTotal}
+                    </Typography>
+                    <Button
+                      size="small"
+                      disabled={(historyPage + 1) * HISTORY_PAGE_SIZE >= historyTotal}
+                      onClick={() => setHistoryPage((page) => page + 1)}
+                    >
+                      Next
+                    </Button>
+                  </Stack>
+                ) : null}
               </Box>
             ) : null}
           </>
@@ -578,7 +688,7 @@ export default function ManagementTasksPage() {
           open={manualOpen}
           mode={manualMode}
           context={manualContext}
-          businessDate={date}
+          businessDate={activeRange.end}
           onClose={() => setManualOpen(false)}
           onSubmit={submitManual}
           busy={busy}

@@ -1076,7 +1076,10 @@ def register_cleaning_task_activity_routes(
 
     @app.route("/api/management/task-dashboard/monthly", methods=["GET"])
     def management_task_dashboard_monthly():
-        from backend.cleaning_task_dashboard_analytics import monthly_task_performance
+        from backend.cleaning_task_dashboard_analytics import (
+            TaskDashboardRangeError,
+            monthly_task_performance,
+        )
         from backend.db import get_db
         from backend.weekly_schedule_display_settings import is_rinse_schedule_viewer
 
@@ -1108,19 +1111,36 @@ def register_cleaning_task_activity_routes(
                     end_date = date_cls.fromisoformat(end_raw[:10])
                 except ValueError:
                     return jsonify({"error": "start and end must be YYYY-MM-DD"}), 400
-            payload = monthly_task_performance(
-                cursor,
-                int(org_id),
-                year=int(year) if year not in (None, "") else None,
-                month=int(month) if month not in (None, "") else None,
-                category_code=(request.args.get("category") or request.args.get("category_code") or "").strip()
-                or None,
-                rinse_eligible_only=bool(rinse_only),
-                start_date=start_date,
-                end_date=end_date,
-                group_by=(request.args.get("group_by") or "daily"),
-                include_assignments=str(request.args.get("include_assignments") or "") in {"1", "true", "yes"},
-            )
+
+            def _page_int(field: str) -> int | None:
+                raw = request.args.get(field)
+                if raw in (None, ""):
+                    return None
+                try:
+                    return int(raw)
+                except (TypeError, ValueError):
+                    raise TaskDashboardRangeError(f"{field} must be an integer")
+
+            try:
+                payload = monthly_task_performance(
+                    cursor,
+                    int(org_id),
+                    year=int(year) if year not in (None, "") else None,
+                    month=int(month) if month not in (None, "") else None,
+                    category_code=(request.args.get("category") or request.args.get("category_code") or "").strip()
+                    or None,
+                    rinse_eligible_only=bool(rinse_only),
+                    start_date=start_date,
+                    end_date=end_date,
+                    group_by=(request.args.get("group_by") or "daily"),
+                    include_assignments=str(request.args.get("include_assignments") or "") in {"1", "true", "yes"},
+                    assignment_offset=_page_int("assignment_offset") or 0,
+                    assignment_limit=_page_int("assignment_limit"),
+                    history_offset=_page_int("history_offset") or 0,
+                    history_limit=_page_int("history_limit"),
+                )
+            except TaskDashboardRangeError as exc:
+                return jsonify({"error": str(exc)}), 400
             if rinse_only and payload.get("assignments"):
                 from backend.cleaning_task_activity import _strip_rinse_management_fields
 
