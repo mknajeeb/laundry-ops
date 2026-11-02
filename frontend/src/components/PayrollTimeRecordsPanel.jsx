@@ -83,6 +83,9 @@ import {
 import { PayrollDateField, PayrollDateTimeField } from "./PayrollDateTimeField";
 import { HourlyCostPanel } from "./HourlyCostAnalysis";
 import { formatBurdenPercent, targetComparisonText } from "../payroll/hourlyCostDisplay";
+import { useAuth } from "../context/AuthContext";
+import { approvalActionForRecord, canApproveRecord } from "../payroll/timeRecordApproval";
+import { formatOnClockUnassignedNote } from "../payroll/timeRecordGaps";
 
 const STATUS_OPTIONS = [
   { value: "all", label: "All statuses" },
@@ -107,14 +110,6 @@ function statusColor(st) {
   return "default";
 }
 
-function canApproveRecord(row) {
-  if (row?.has_open_break) return false;
-  return (
-    row?.status === "pending_approval" ||
-    row?.status === "completed" ||
-    (row?.status !== "approved" && row?.status !== "open" && !row?.payroll_hours_approved)
-  );
-}
 
 function formatPayableComposition(row) {
   const pc = row?.payable_composition;
@@ -238,6 +233,10 @@ export default function PayrollTimeRecordsPanel({
   onPayPeriodChange,
 }) {
   const theme = useTheme();
+  const { hasPerm, loading: authLoading } = useAuth();
+  const canApproveTime = authLoading
+    ? null
+    : hasPerm("ta.settings") || hasPerm("ta.override") || hasPerm("users.edit");
   const [fromDate, setFromDate] = useState(payPeriodStart || "");
   const [toDate, setToDate] = useState(payPeriodEnd || "");
   const [category, setCategory] = useState(linkedCategory || "all");
@@ -327,7 +326,7 @@ export default function PayrollTimeRecordsPanel({
     return undefined;
   }, [summaryHoursLevel, theme]);
 
-  const approvableRows = rows.filter(canApproveRecord);
+  const approvableRows = rows.filter((row) => canApproveRecord(row, { canApprove: canApproveTime }));
 
   useEffect(() => {
     if (payPeriodStart) setFromDate(payPeriodStart);
@@ -1279,6 +1278,16 @@ export default function PayrollTimeRecordsPanel({
                       {formatPayableComposition(r)}
                     </Typography>
                   ) : null}
+                  {formatOnClockUnassignedNote(r) ? (
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      display="block"
+                      sx={{ fontWeight: 400, maxWidth: 160, whiteSpace: "normal" }}
+                    >
+                      {formatOnClockUnassignedNote(r)}
+                    </Typography>
+                  ) : null}
                 </TableCell>
                 <TableCell align="right" sx={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
                   {formatPayrollRate(r.regular_rate)}
@@ -1324,26 +1333,36 @@ export default function PayrollTimeRecordsPanel({
                   </Stack>
                 </TableCell>
                 <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
-                  {canApproveRecord(r) ? (
-                    <Tooltip title="Approve for payroll">
-                      <IconButton
-                        size="small"
-                        color="success"
-                        onClick={() => approveRecord(r)}
-                        aria-label="Approve"
-                      >
-                        <CheckIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
-                  ) : r.has_open_break && r.status !== "approved" && r.status !== "open" ? (
-                    <Tooltip title="Close or remove the open break before approving">
-                      <span>
-                        <IconButton size="small" color="success" disabled aria-label="Approve blocked">
-                          <CheckIcon fontSize="small" />
-                        </IconButton>
-                      </span>
-                    </Tooltip>
-                  ) : null}
+                  {(() => {
+                    const approval = approvalActionForRecord(r, { canApprove: canApproveTime });
+                    if (approval.action === "approve") {
+                      return (
+                        <Button
+                          size="small"
+                          color="success"
+                          variant="contained"
+                          onClick={() => approveRecord(r)}
+                          aria-label="Approve"
+                          sx={{ textTransform: "none", fontWeight: 700, mr: 0.5, minWidth: 0 }}
+                        >
+                          Approve
+                        </Button>
+                      );
+                    }
+                    if (approval.reason) {
+                      return (
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          display="block"
+                          sx={{ maxWidth: 150, whiteSpace: "normal", textAlign: "right", mb: 0.5 }}
+                        >
+                          {approval.reason}
+                        </Typography>
+                      );
+                    }
+                    return null;
+                  })()}
                   <Tooltip title="Add completed break">
                     <IconButton
                       size="small"

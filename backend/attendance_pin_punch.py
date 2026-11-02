@@ -464,8 +464,10 @@ def kiosk_clock_out(conn, user_id: int, organization_id: int) -> tuple[Optional[
     clock_in = _parse_mysql_dt(sess.get("clock_in_at"))
     if not clock_in:
         return None, "Invalid session", 500
-    elapsed = (now - clock_in).total_seconds()
-    net = int(elapsed) - br
+    from backend.payroll_et_elapsed import et_wall_elapsed_seconds
+
+    elapsed = et_wall_elapsed_seconds(clock_in, now)
+    net = elapsed - br
 
     from backend.category_role_tracking_settings import is_category_role_tracking_enabled
     from backend.shift_job_tracking import get_open_job_segment, on_manual_clock_out

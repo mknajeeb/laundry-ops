@@ -1693,7 +1693,9 @@ def _sum_break_seconds(conn, shift_id: int) -> int:
         start = _parse_dt(row.get("break_start_at"))
         end = _parse_dt(row.get("break_end_at"))
         if start and end:
-            total += int((end - start).total_seconds())
+            from backend.payroll_et_elapsed import et_wall_elapsed_seconds
+
+            total += et_wall_elapsed_seconds(start, end)
     return total
 
 
@@ -1702,7 +1704,9 @@ def _compute_net_seconds(conn, sess: dict, clock_out_at: datetime) -> tuple[int,
     clock_in = _parse_dt(sess.get("clock_in_at"))
     if not clock_in:
         return br, 0
-    elapsed = int((clock_out_at - clock_in).total_seconds())
+    from backend.payroll_et_elapsed import et_wall_elapsed_seconds
+
+    elapsed = et_wall_elapsed_seconds(clock_in, clock_out_at)
     return br, max(0, elapsed - br)
 
 

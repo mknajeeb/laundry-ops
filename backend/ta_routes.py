@@ -878,7 +878,9 @@ def sum_break_seconds(conn, shift_id: int) -> int:
         start = row["break_start_at"]
         end = row["break_end_at"]
         if start and end:
-            total += int((end - start).total_seconds())
+            from backend.payroll_et_elapsed import et_wall_elapsed_seconds
+
+            total += et_wall_elapsed_seconds(start, end)
     return total
 
 
@@ -1073,12 +1075,14 @@ def maybe_auto_close_shift(conn, sess: dict, user_id: int, organization_id: int)
     if not clock_in:
         return None
     now = eastern_now_naive()
-    elapsed = (now - clock_in).total_seconds()
+    from backend.payroll_et_elapsed import et_wall_elapsed_seconds
+
+    elapsed = et_wall_elapsed_seconds(clock_in, now)
     if elapsed <= max_h * 3600:
         return None
 
     br = sum_break_seconds(conn, sess["id"])
-    net = int(elapsed) - br
+    net = elapsed - br
     c = conn.cursor()
     c.execute(
         """
@@ -2086,8 +2090,10 @@ def clock_out():
         clock_in = _parse_mysql_dt(sess.get("clock_in_at"))
         if not clock_in:
             return jsonify({"error": "Invalid session clock_in"}), 400
-        elapsed = (now - clock_in).total_seconds()
-        net = int(elapsed) - br
+        from backend.payroll_et_elapsed import et_wall_elapsed_seconds
+
+        elapsed = et_wall_elapsed_seconds(clock_in, now)
+        net = elapsed - br
 
         plb = None
         if plb_raw is not None and table_has_column(c, "shift_sessions", "personal_laundry_bags"):
@@ -4645,8 +4651,10 @@ def force_clock_out(sid):
         clock_in = _parse_mysql_dt(sess.get("clock_in_at"))
         if not clock_in:
             return jsonify({"error": "Invalid session"}), 400
-        elapsed = (now - clock_in).total_seconds()
-        net = int(elapsed) - br
+        from backend.payroll_et_elapsed import et_wall_elapsed_seconds
+
+        elapsed = et_wall_elapsed_seconds(clock_in, now)
+        net = elapsed - br
 
         c2 = conn.cursor()
         c2.execute(
@@ -4712,11 +4720,9 @@ def adjust_times(sid):
                 ci = datetime.fromisoformat(str(ci).replace("Z", "+00:00"))
             if isinstance(co, str):
                 co = datetime.fromisoformat(str(co).replace("Z", "+00:00"))
-            if ci.tzinfo:
-                ci = ci.replace(tzinfo=None)
-            if co.tzinfo:
-                co = co.replace(tzinfo=None)
-            net = int((co - ci).total_seconds()) - br
+            from backend.payroll_et_elapsed import et_wall_elapsed_seconds
+
+            net = et_wall_elapsed_seconds(ci, co) - br
             c.execute(
                 "UPDATE shift_sessions SET total_break_seconds=%s, net_work_seconds=%s WHERE id=%s",
                 (br, net, sid),

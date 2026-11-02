@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
+from backend.payroll_et_elapsed import et_wall_elapsed_seconds
 from backend.ta_helpers import json_safe, table_exists
 
 
@@ -92,7 +93,7 @@ def completed_break_seconds(breaks: list[dict]) -> int:
         end = _as_naive(row.get("break_end_at"))
         if not start or not end or end <= start:
             continue
-        total += int((end - start).total_seconds())
+        total += et_wall_elapsed_seconds(start, end)
     return total
 
 
@@ -206,7 +207,7 @@ def attach_breaks_to_time_records(conn, items: list[dict]) -> None:
         it["segment_break_conflicts"] = segment_break_conflicts(segs, raw_breaks)
         ci = _as_naive(it.get("clock_in_at"))
         co = _as_naive(it.get("clock_out_at"))
-        elapsed = int((co - ci).total_seconds()) if ci and co and co > ci else None
+        elapsed = et_wall_elapsed_seconds(ci, co) if ci and co and co > ci else None
         break_sec = int(it.get("break_seconds") or completed_break_seconds(raw_breaks))
         it["elapsed_seconds"] = elapsed
         if elapsed is not None and (break_sec > 0 or it["has_open_break"] or it["segment_break_conflicts"]):
@@ -286,7 +287,7 @@ def recompute_session_work_seconds(
     if co is None or ci is None:
         sets.append("net_work_seconds=NULL")
     else:
-        elapsed = int((co - ci).total_seconds())
+        elapsed = et_wall_elapsed_seconds(ci, co)
         net = max(0, elapsed - br)
         sets.append("net_work_seconds=%s")
         params.append(net)

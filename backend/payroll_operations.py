@@ -542,6 +542,18 @@ def list_time_records(
     from backend.payroll_time_record_breaks import attach_breaks_to_time_records
 
     attach_breaks_to_time_records(conn, out)
+    locked: set[int] = set()
+    try:
+        locked = _finalized_payroll_session_ids(
+            conn,
+            int(organization_id),
+            uids,
+            [it.get("id") for it in out],
+        )
+    except Exception:
+        locked = set()
+    for it in out:
+        it["payroll_finalized"] = int(it["id"]) in locked
     return out
 
 
@@ -1229,9 +1241,89 @@ def _payroll_hours_approve_sets(has_manual: bool) -> list[str]:
     return sets
 
 
+def session_ids_locked_by_finalized_payroll(session_ids, payloads) -> set[int]:
+    """Session ids that appear on a finalized payout line payload."""
+    wanted: set[int] = set()
+    for raw_id in session_ids or []:
+        try:
+            wanted.add(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+    found: set[int] = set()
+    for raw in payloads or []:
+        if raw is None or raw == "":
+            continue
+        try:
+            parsed = raw if isinstance(raw, (list, tuple)) else json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(parsed, (list, tuple)):
+            continue
+        for item in parsed:
+            try:
+                sid = int(item)
+            except (TypeError, ValueError):
+                continue
+            if sid in wanted:
+                found.add(sid)
+    return found
+
+
+def _finalized_payroll_session_ids(conn, organization_id: int, user_ids, session_ids) -> set[int]:
+    ids = []
+    for raw_id in session_ids or []:
+        try:
+            ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+    users = []
+    for raw_id in user_ids or []:
+        try:
+            users.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+    if not ids or not users:
+        return set()
+    c = conn.cursor()
+    if not table_exists(c, "payout_batches") or not table_exists(c, "payout_batch_lines"):
+        return set()
+    if not table_has_column(c, "payout_batches", "payout_details_finalized_at"):
+        return set()
+    if not table_has_column(c, "payout_batch_lines", "source_shift_session_ids"):
+        return set()
+    uniq = sorted(set(users))
+    ph = ",".join(["%s"] * len(uniq))
+    cur = conn.cursor(dictionary=True)
+    cur.execute(
+        f"""
+        SELECT l.source_shift_session_ids
+        FROM payout_batch_lines l
+        INNER JOIN payout_batches b ON b.id = l.batch_id
+        WHERE b.organization_id = %s
+          AND b.payout_details_finalized_at IS NOT NULL
+          AND l.user_id IN ({ph})
+          AND l.source_shift_session_ids IS NOT NULL
+        """,
+        tuple([int(organization_id), *uniq]),
+    )
+    payloads = [row.get("source_shift_session_ids") for row in cur.fetchall() or []]
+    return session_ids_locked_by_finalized_payroll(ids, payloads)
+
+
 def approve_time_record(conn, organization_id: int, session_id: int) -> dict:
     if not _session_in_org(conn, organization_id, session_id):
         raise ValueError("Time record not found")
+    who = conn.cursor(dictionary=True)
+    who.execute("SELECT user_id FROM shift_sessions WHERE id=%s", (int(session_id),))
+    owner = who.fetchone() or {}
+    locked = _finalized_payroll_session_ids(
+        conn,
+        int(organization_id),
+        [owner.get("user_id")],
+        [session_id],
+    )
+    if int(session_id) in locked:
+        raise ValueError("Finalized payroll — this time record stays locked")
     from backend.payroll_time_record_breaks import assert_no_open_break_for_approval
 
     assert_no_open_break_for_approval(conn, int(session_id))
