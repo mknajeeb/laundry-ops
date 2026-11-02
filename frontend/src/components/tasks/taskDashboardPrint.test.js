@@ -114,6 +114,69 @@ describe("task dashboard print document", () => {
     expect(html.length).toBeGreaterThan(500);
   });
 
+  it("prints every activity in the range, including past the on-screen page of 25", () => {
+    const rows = Array.from({ length: 26 }, (_, index) => ({
+      role_label: `Activity ${index + 1}`,
+      business_date: "2026-11-01",
+      completion_status: "completed",
+      verification_status: index % 2 === 0 ? "verified" : "pending_verification",
+      assigned_employees: [`Employee ${index + 1}`],
+      contributions: [
+        {
+          employee_name: `Employee ${index + 1}`,
+          participation_status: "finished",
+          activity: {
+            started_at: "2026-11-01 09:00:00",
+            ended_at: "2026-11-01 09:20:00",
+            duration_seconds: 1200,
+          },
+        },
+      ],
+      shared_checklist_items: [
+        {
+          task_name: `Check ${index + 1}`,
+          status: "completed",
+          completed_by_name: `Employee ${index + 1}`,
+          completed_at: "2026-11-01 09:15:00",
+        },
+      ],
+    }));
+    const html = buildTaskDashboardPrintDocument({
+      rangeStart: "2026-10-26",
+      rangeEnd: "2026-11-01",
+      categoryLabel: "Intra-Day",
+      groupBy: "daily",
+      rows,
+    });
+    expect(html).toContain("@page { size: letter portrait;");
+    expect(html).toContain("Oct 26, 2026 – Nov 1, 2026 ET · Intra-Day · Daily");
+    expect(html).toContain("Activity 1");
+    expect(html).toContain("Activity 25");
+    expect(html).toContain("Activity 26");
+    expect(html).toContain("Completion: Completed");
+    expect(html).toContain("Verification: Verified");
+    expect(html).toContain("Verification: Pending Verification");
+    expect(html).toContain("Check 26");
+    expect(html).toContain("9:15 AM");
+    expect(html.match(/<article class="card">/g)).toHaveLength(26);
+    const hidden = buildTaskDashboardPrintDocument({ ...{ rows }, hideLabor: true, rangeStart: "2026-11-01", rangeEnd: "2026-11-01" });
+    expect(hidden).not.toContain("20m");
+  });
+
+  it("requests the full range for print and resets pages when the range changes", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const page = readFileSync(resolve(here, "../../pages/ManagementTasksPage.jsx"), "utf8");
+    const config = readFileSync(resolve(here, "../../pages/ManagementTaskConfigPage.jsx"), "utf8");
+    expect(page).toContain("assignment_limit: 0");
+    expect(page).toContain("setAssignmentPage(0)");
+    expect(page).toContain("setHistoryPage(0)");
+    expect(page).toContain("Completion:");
+    expect(page).toContain("Verification:");
+    expect(config.indexOf(">Activity Groups<")).toBeLessThan(config.indexOf(">Standalone Tasks<"));
+    expect(config).toContain("Show inactive records");
+    expect(config).toContain("Nothing is saved until you click Save activity group.");
+  });
+
   it("omits labor duration when the dashboard hides labor", () => {
     const shown = buildTaskDashboardPrintDocument(SAMPLE);
     const hidden = buildTaskDashboardPrintDocument({ ...SAMPLE, hideLabor: true });

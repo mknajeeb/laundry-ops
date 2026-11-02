@@ -159,3 +159,119 @@ def test_history_pages_across_the_selected_range():
     assert report["history"][0]["business_date"] == "2026-11-01"
     assert report["history"][0]["verification_label"] == "Verified"
     assert report["history"][0]["employee_name"] == "Gabriela"
+
+
+def test_pages_cover_every_record_once_past_the_screen_limits():
+    start = date(2026, 10, 1)
+    end = date(2026, 10, 30)
+    calls = {"n": 0}
+
+    def responsibilities(cursor, organization_id, business_date=None, **kwargs):
+        calls["n"] += 1
+        return [{"id": calls["n"], "user_id": 10, "role": "lint_cleaning"}]
+
+    def activities_for_day(cursor, organization_id, business_date, **kwargs):
+        day_number = business_date.day
+        rows = []
+        for seq in (1, 2) if day_number <= 15 else (1,):
+            rows.append(
+                {
+                    "id": day_number * 10 + seq,
+                    "user_id": 10 + seq,
+                    "status": "approved" if seq == 1 else "pending_approval",
+                    "role": "lint_cleaning",
+                    "verification_required": 1,
+                    "business_date": business_date,
+                    "duration_seconds": 100,
+                }
+            )
+        return rows
+
+    def grouped(assignments, by_resp, **kwargs):
+        day = kwargs["business_date"]
+        return [
+            {
+                "assignment_key": f"solo:{day.isoformat()}",
+                "role": "lint_cleaning",
+                "role_label": "Dryer Lint Cleaning",
+                "shared": False,
+                "business_date": day.isoformat(),
+                "status": "completed",
+                "completion_status": "completed",
+                "verification_status": "verified",
+                "contributions": [
+                    {
+                        "participation_status": "finished",
+                        "employee_name": "Francis",
+                        "activity": {"duration_seconds": 100, "timestamp_kind": "work_interval"},
+                    }
+                ],
+            }
+        ]
+
+    patches = [
+        mock.patch("backend.cleaning_task_dashboard_analytics.business_today", return_value=end),
+        mock.patch("backend.cleaning_task_dashboard_analytics.ensure_cleaning_task_activity_tables"),
+        mock.patch("backend.cleaning_task_dashboard_analytics._role_catalog", return_value={}),
+        mock.patch("backend.cleaning_task_dashboard_analytics._day_responsibilities", side_effect=responsibilities),
+        mock.patch("backend.cleaning_task_dashboard_analytics._activities_for_day", side_effect=activities_for_day),
+        mock.patch("backend.cleaning_task_dashboard_analytics._employee_names", return_value={11: "Francis", 12: "Gabriela"}),
+        mock.patch(
+            "backend.cleaning_task_dashboard_analytics._task_meta_for_role",
+            return_value={"category_code": "intra_day"},
+        ),
+        mock.patch("backend.cleaning_task_dashboard_analytics.list_categories", return_value=[]),
+        mock.patch("backend.cleaning_task_dashboard_analytics._group_shared_assignments", side_effect=grouped),
+        mock.patch("backend.business_time.business_now", return_value=datetime(2026, 10, 30, 18, 0)),
+    ]
+    for patch in patches:
+        patch.start()
+    try:
+        first = monthly_task_performance(
+            _Cur(),
+            3,
+            start_date=start,
+            end_date=end,
+            include_assignments=True,
+            assignment_offset=0,
+            assignment_limit=25,
+            history_offset=0,
+            history_limit=40,
+        )
+        second_activities = monthly_task_performance(
+            _Cur(),
+            3,
+            start_date=start,
+            end_date=end,
+            include_assignments=True,
+            assignment_offset=25,
+            assignment_limit=25,
+            history_offset=40,
+            history_limit=40,
+        )
+        printed = monthly_task_performance(
+            _Cur(),
+            3,
+            start_date=start,
+            end_date=end,
+            include_assignments=True,
+            assignment_limit=0,
+        )
+    finally:
+        for patch in reversed(patches):
+            patch.stop()
+
+    assert first["span_days"] == 30
+    assert first["assignment_total"] == 30
+    assert len(first["assignments"]) == 25
+    assert len(second_activities["assignments"]) == 5
+    keys = [row["assignment_key"] for row in first["assignments"] + second_activities["assignments"]]
+    assert len(keys) == len(set(keys)) == 30
+    assert first["history_total"] == 45
+    assert len(first["history"]) == 40
+    assert len(second_activities["history"]) == 5
+    history_ids = [row["id"] for row in first["history"] + second_activities["history"]]
+    assert len(history_ids) == len(set(history_ids)) == 45
+    assert {row["verification_label"] for row in first["history"]} >= {"Verified", "Pending verification"}
+    assert len(printed["assignments"]) == 30
+    assert printed["totals"]["assigned"] == 30
