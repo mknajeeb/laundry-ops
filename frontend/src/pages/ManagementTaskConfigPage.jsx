@@ -392,8 +392,9 @@ export default function ManagementTaskConfigPage() {
             Task Management
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Activity Groups and their checklists come first. Standalone Tasks stay available for
-            assignments that are not part of a group. Assign on Weekly Schedule. Policy changes apply
+            Activity Groups are the assignment for routine cleaning. Washer Cleaning, Floor Sweeping,
+            and Dryer Lint Cleaning each have one shared checklist. Standalone tasks remain for history
+            and for work that is not one of those groups. Assign on Weekly Schedule. Policy changes apply
             to new activity only.
           </Typography>
         </Box>

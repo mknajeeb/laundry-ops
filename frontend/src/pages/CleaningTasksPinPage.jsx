@@ -10,6 +10,7 @@ import {
   Typography,
 } from "@mui/material";
 import {
+  attendancePinCleaningTasksAddRemark,
   attendancePinCleaningTasksApprove,
   attendancePinCleaningTasksChecklistRejectItem,
   attendancePinCleaningTasksChecklistVerify,
@@ -25,6 +26,8 @@ import {
   attendancePinSwitchRole,
 } from "../api";
 import { OpsMobileShell, OpsTopBar, OPS_MOBILE } from "../opsMobile";
+import ActivityRemarks from "../components/tasks/ActivityRemarks";
+import InstructionHint from "../components/tasks/InstructionHint";
 import SharedActivityChecklist from "../components/tasks/SharedActivityChecklist";
 import TaskCompletionInputs, {
   emptyInputValues,
@@ -138,14 +141,12 @@ function TaskCard({ task, onStart, onCompleteUntimed, busy }) {
         bgcolor: "#fff",
       }}
     >
-      <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-        {task.role_label || task.role}
-      </Typography>
-      {task.instructions || task.remarks ? (
-        <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", mt: 0.5 }}>
-          {task.instructions || task.remarks}
+      <Stack direction="row" alignItems="center" spacing={0.5}>
+        <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
+          {task.role_label || task.role}
         </Typography>
-      ) : null}
+        <InstructionHint text={task.instructions || task.remarks} />
+      </Stack>
       <Typography variant="body2" color="text.secondary">
         {isGroup ? "Activity Group" : task.category_name || task.category_code || "Task"}
         {" · "}
@@ -508,6 +509,29 @@ export default function CleaningTasksPinPage() {
     }
   };
 
+  const addActivityRemark = async (body, taskCode) => {
+    if (!active?.id) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await attendancePinCleaningTasksAddRemark(slug, hub.pin, {
+        hubToken: hub.token,
+        activity_id: active.id,
+        body,
+        task_code: taskCode || "",
+      });
+      const payload = res?.data || {};
+      if (!payload.ok) throw new Error(payload.error || "Could not save the remark");
+      setActive((current) =>
+        current ? { ...current, remarks: payload.remarks || [], remark_count: (payload.remarks || []).length } : current
+      );
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || "Could not save the remark");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const completeGroup = async () => {
     if (!active?.id) return;
     setBusy(true);
@@ -758,19 +782,17 @@ export default function CleaningTasksPinPage() {
         </Stack>
       ) : active?.is_activity_group || active?.activity_kind === "group" ? (
         <Stack spacing={1.5} alignItems="stretch">
-          <Typography variant="h6" sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-            {active.group?.name || active.role_label || active.role}
-          </Typography>
+          <Stack direction="row" alignItems="center" spacing={0.5}>
+            <Typography variant="h6" sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
+              {active.group?.name || active.role_label || active.role}
+            </Typography>
+            <InstructionHint text={active.instructions || active.group?.instructions || active.remarks} />
+          </Stack>
           <Typography variant="body2" color="text.secondary">
             {active.execution_mode === "shared" || active.group?.execution_mode === "shared"
               ? "Shared Activity · your timer · one checklist"
               : "Activity Group · your timer"}
           </Typography>
-          {active.instructions || active.remarks ? (
-            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-              {active.instructions || active.remarks}
-            </Typography>
-          ) : null}
           <PartnerLines
             partners={active.partners}
             executionMode={active.execution_mode || active.group?.execution_mode}
@@ -804,12 +826,11 @@ export default function CleaningTasksPinPage() {
           />
           {active.checklist_followup_only ? null : (
             <>
-            <TextField
-              size="small"
-              fullWidth
-              label="Remark (optional)"
-              value={workRemark}
-              onChange={(e) => setWorkRemark(e.target.value)}
+            <ActivityRemarks
+              remarks={active.remarks || []}
+              items={active.group?.items || []}
+              busy={busy}
+              onAdd={addActivityRemark}
             />
             <Button
               variant="contained"
@@ -831,24 +852,16 @@ export default function CleaningTasksPinPage() {
         </Stack>
       ) : active ? (
         <Stack spacing={1.5} alignItems="stretch">
-          <Typography variant="h6" sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-            {active.role_label || active.role}
-          </Typography>
+          <Stack direction="row" alignItems="center" spacing={0.5}>
+            <Typography variant="h6" sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
+              {active.role_label || active.role}
+            </Typography>
+            <InstructionHint text={active.instructions || active.remarks} />
+          </Stack>
           <Typography variant="body2" color="text.secondary">
             {active.timing_label || "Anytime"}
           </Typography>
-          {active.instructions || active.remarks ? (
-            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-              {active.instructions || active.remarks}
-            </Typography>
-          ) : null}
-          <TextField
-            size="small"
-            fullWidth
-            label="Remark (optional)"
-            value={workRemark}
-            onChange={(e) => setWorkRemark(e.target.value)}
-          />
+          <ActivityRemarks remarks={active.remarks || []} busy={busy} onAdd={addActivityRemark} />
           <Typography sx={{ fontSize: "2.4rem", fontWeight: 900, textAlign: "center", color: OPS_MOBILE.navy }}>
             {formatElapsed(active.started_at, nowMs)}
           </Typography>

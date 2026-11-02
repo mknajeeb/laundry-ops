@@ -851,6 +851,18 @@ def list_employee_day_tasks(
         except Exception:
             shared_checklist_followup = None
 
+    try:
+        from backend.task_activity_remarks import list_remarks_for_activity
+
+        for target, source in ((open_ser, open_row), (shared_checklist_followup, None)):
+            if not target:
+                continue
+            source_row = source if source is not None else target
+            target["remarks"] = list_remarks_for_activity(cursor, int(organization_id), source_row)
+            target["remark_count"] = len(target["remarks"])
+    except Exception:
+        pass
+
     return {
         "business_date": str(day),
         "user_id": int(user_id),
@@ -1119,6 +1131,19 @@ def complete_task(
         except ValueError:
             started = at
     duration = max(0, int((at - started).total_seconds())) if isinstance(started, datetime) else 0
+    if str(remark or "").strip():
+        from backend.task_activity_remarks import append_remark
+
+        names = _employee_names(cursor, oid, [uid])
+        append_remark(
+            cursor,
+            organization_id=oid,
+            activity=row,
+            author_user_id=uid,
+            author_name=names.get(uid) or f"User #{uid}",
+            author_role="employee",
+            body=str(remark),
+        )
     return _finalize_completion(
         cursor,
         oid=oid,
@@ -1312,6 +1337,19 @@ def approve_activity(
         verifier_user_id=int(supervisor_user_id),
     )
     at = eastern_now_naive()
+    if str(supervisor_remark or "").strip():
+        from backend.task_activity_remarks import append_remark
+
+        names = _employee_names(cursor, int(organization_id), [int(supervisor_user_id)])
+        append_remark(
+            cursor,
+            organization_id=int(organization_id),
+            activity=row,
+            author_user_id=int(supervisor_user_id),
+            author_name=names.get(int(supervisor_user_id)) or f"User #{int(supervisor_user_id)}",
+            author_role="supervisor",
+            body=str(supervisor_remark),
+        )
     merged_input = _merge_supervisor_remark(row.get("completion_input_json"), supervisor_remark, int(supervisor_user_id), at)
     cursor.execute(
         f"""
@@ -1996,6 +2034,9 @@ def _group_shared_assignments(
                 "activity_group_items": _activity_group_item_templates(
                     cursor, int(organization_id), str(sample.get("role") or "")
                 ),
+                "checklist_sections": [],
+                "remarks": [],
+                "remark_count": 0,
                 "members": [
                     {
                         "employee_id": int(m["user_id"]),
@@ -2007,6 +2048,16 @@ def _group_shared_assignments(
             }
             )
         )
+    from backend.task_section_verification import section_rollups
+
+    for row in out:
+        row["checklist_sections"] = section_rollups(row.get("shared_checklist_items") or [])
+    try:
+        from backend.task_activity_remarks import attach_remarks, remarks_index_for_assignments
+
+        attach_remarks(out, remarks_index_for_assignments(cursor, int(organization_id), out))
+    except Exception:
+        pass
     return out
 
 
@@ -2481,6 +2532,7 @@ def _review_item_from_shared(item: Mapping[str, Any], shared: Mapping[str, Any])
     out["completion_input"] = shared.get("completion_input")
     out["section_label"] = shared.get("section_label")
     out["section_order"] = shared.get("section_order") or 0
+    out["instructions"] = shared.get("instructions")
     out["display_order"] = shared.get("display_order") or 0
     out["input_schema"] = shared.get("input_schema") or []
     out["records"] = [record] if record else []
@@ -2722,6 +2774,7 @@ def build_verification_review_cards(
                         item["completion_input"] = shared.get("completion_input")
                         item["section_label"] = shared.get("section_label")
                         item["section_order"] = shared.get("section_order") or 0
+                        item["instructions"] = shared.get("instructions")
                         item["display_order"] = shared.get("display_order") or 0
                         item["input_schema"] = shared.get("input_schema") or []
                     else:
@@ -2739,6 +2792,17 @@ def build_verification_review_cards(
                 str(it.get("task_label") or ""),
             )
         )
+        from backend.task_section_verification import section_rollups
+
+        remarks: list[dict[str, Any]] = []
+        group_key = str((members[0].get("assignment_group_id") if members else "") or "")
+        for assignment in assignments or []:
+            same_key = str(assignment.get("assignment_key") or "") == str(key)
+            same_group = group_key and str(assignment.get("assignment_group_id") or "") == group_key
+            if same_key or same_group:
+                remarks = [dict(item) for item in (assignment.get("remarks") or [])]
+                if remarks:
+                    break
         cards.append(
             {
                 "assignment_key": key,
@@ -2748,6 +2812,9 @@ def build_verification_review_cards(
                 "assigned_employees": assigned_names,
                 "participation": participation,
                 "checklist": checklist,
+                "checklist_sections": section_rollups(checklist),
+                "remarks": remarks,
+                "remark_count": len(remarks),
                 "overall_status": overall,
                 "overall_label": overall_label,
                 "pending_activity_ids": pending_ids,
@@ -3292,6 +3359,8 @@ _RINSE_HIDDEN_KEYS = frozenset(
         "manual_remarks",
         "employee_remark",
         "supervisor_remark",
+        "remarks",
+        "remark_count",
         "times_manual",
         "is_manual_completion",
         "has_manual_completion",

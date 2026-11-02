@@ -106,14 +106,19 @@ function metricCells(metrics, hideLabor) {
     .join("");
 }
 
-function checklistTable(items) {
+function checklistTable(items, sections) {
   const groups = checklistGroups(items);
   const showSections = groups.some((group) => group.label);
   return groups
     .map((group) => {
+      const sectionStatus = (sections || []).find((section) => section.section_label === (group.label || "Checklist"));
       const heading = showSections
-        ? `<div class="section">${escapeHtml(group.label || "Checklist")}</div>`
-        : `<div class="section">Checklist</div>`;
+        ? `<div class="section">${escapeHtml(group.label || "Checklist")}${
+            sectionStatus ? ` · ${escapeHtml(sectionStatus.status_label)}` : ""
+          }</div>`
+        : `<div class="section">Checklist${
+            sectionStatus ? ` · ${escapeHtml(sectionStatus.status_label)}` : ""
+          }</div>`;
       const rows = group.items
         .map((item) => {
           const detail = formatCompletionInput(item.completion_input, item.input_schema);
@@ -141,7 +146,22 @@ function checklistTable(items) {
     .join("");
 }
 
-function participantLines(row, hideLabor) {
+function remarksBlock(row, hideRemarks) {
+  if (hideRemarks) return "";
+  const remarks = Array.isArray(row?.remarks) ? row.remarks : [];
+  if (!remarks.length) return "";
+  const lines = remarks
+    .map((remark) => {
+      const who = [remark.author_name, remark.author_role, remark.task_code, remark.created_at_label]
+        .filter(Boolean)
+        .join(" · ");
+      return `<li><b>${escapeHtml(who || "Remark")}</b><div class="detail">${escapeHtml(remark.body || "")}</div></li>`;
+    })
+    .join("");
+  return `<div class="section">Remarks</div><ul>${lines}</ul>`;
+}
+
+function participantLines(row, hideLabor, hideRemarks) {
   const contributions = row?.contributions || [];
   if (!contributions.length) return "";
   const lines = contributions
@@ -149,10 +169,12 @@ function participantLines(row, hideLabor) {
       const activity = contribution.activity || {};
       const duration = hideLabor ? "" : formatDurationHm(activity.duration_seconds || 0);
       const showDuration = !hideLabor && activity.duration_seconds != null && activity.duration_seconds !== "";
-      const remarks = [
-        activity.employee_remark?.text ? `Employee remark: ${activity.employee_remark.text}` : "",
-        activity.supervisor_remark?.text ? `Supervisor remark: ${activity.supervisor_remark.text}` : "",
-      ].filter(Boolean);
+      const remarks = hideRemarks || (row?.remarks || []).length
+        ? []
+        : [
+            activity.employee_remark?.text ? `Employee remark: ${activity.employee_remark.text}` : "",
+            activity.supervisor_remark?.text ? `Supervisor remark: ${activity.supervisor_remark.text}` : "",
+          ].filter(Boolean);
       return `<li>
         <b>${escapeHtml(contribution.employee_name || "Employee")}</b>
         · ${escapeHtml(participationLabel(participationStatusOf(contribution)))}
@@ -165,7 +187,7 @@ function participantLines(row, hideLabor) {
   return `<div class="section">Employees</div><ul>${lines}</ul>`;
 }
 
-function assignmentCard(row, hideLabor) {
+function assignmentCard(row, hideLabor, hideRemarks) {
   const title = row?.role_label || row?.role || "Activity";
   const when = [employeeNames(row), row?.timing_label, row?.business_date ? formatDashboardDate(row.business_date) : ""]
     .filter(Boolean)
@@ -190,8 +212,9 @@ function assignmentCard(row, hideLabor) {
       </div>
     </div>
     ${instructions ? `<div class="detail">${escapeHtml(instructions)}</div>` : ""}
-    ${checklist.length ? checklistTable(checklist) : ""}
-    ${participantLines(row, hideLabor)}
+    ${checklist.length ? checklistTable(checklist, row?.checklist_sections) : ""}
+    ${remarksBlock(row, hideRemarks)}
+    ${participantLines(row, hideLabor, hideRemarks)}
   </article>`;
 }
 
@@ -202,11 +225,12 @@ export function buildTaskDashboardPrintDocument({
   groupBy = "daily",
   rows = [],
   hideLabor = false,
+  hideRemarks = false,
 } = {}) {
   const list = Array.isArray(rows) ? rows : [];
   const metrics = dashboardHeadlineMetrics(list);
   const cards = list.length
-    ? list.map((row) => assignmentCard(row, hideLabor)).join("")
+    ? list.map((row) => assignmentCard(row, hideLabor, hideRemarks)).join("")
     : `<p class="empty">No assignments in this range.</p>`;
   const subtitle = `${rangeText(rangeStart, rangeEnd)} · ${categoryLabel || "All"} · ${groupByLabel(groupBy)}`;
   return `<!DOCTYPE html>

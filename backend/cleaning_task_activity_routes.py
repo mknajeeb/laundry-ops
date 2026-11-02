@@ -384,6 +384,70 @@ def register_cleaning_task_activity_routes(
             except Exception:
                 pass
 
+    @app.route("/api/public/attendance/pin-cleaning-tasks/remarks", methods=["POST"])
+    def public_pin_cleaning_tasks_remarks():
+        ctx, conn, err = _pin_gate("cleaning_remark", require_clocked_in=True)
+        if err:
+            body, status = err
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return jsonify(body), status
+        try:
+            data = request.json or {}
+            activity_id = data.get("activity_id")
+            if activity_id is None:
+                return jsonify({"ok": False, "error": "activity_id is required"}), 400
+            cursor = conn.cursor(dictionary=True)
+            from backend.cleaning_task_activity import _employee_names, get_activity
+            from backend.task_activity_groups import get_activity_group, is_activity_group_code
+            from backend.task_activity_remarks import append_remark, list_remarks_for_activity
+
+            row = get_activity(cursor, int(ctx["org_id"]), int(activity_id))
+            if not row or int(row.get("user_id") or 0) != int(ctx["user_id"]):
+                return jsonify({"ok": False, "error": "That activity is not yours."}), 403
+            task_code = str(data.get("task_code") or "").strip() or None
+            if task_code and is_activity_group_code(row.get("role")):
+                group = get_activity_group(cursor, int(ctx["org_id"]), role_code=str(row.get("role") or ""))
+                codes = {str(item.get("task_code") or "") for item in (group or {}).get("items") or []}
+                if task_code not in codes:
+                    return jsonify({"ok": False, "error": "That checklist item is not on this activity."}), 400
+            names = _employee_names(cursor, int(ctx["org_id"]), [int(ctx["user_id"])])
+            try:
+                remark = append_remark(
+                    cursor,
+                    organization_id=int(ctx["org_id"]),
+                    activity=row,
+                    author_user_id=int(ctx["user_id"]),
+                    author_name=names.get(int(ctx["user_id"])) or f"User #{int(ctx['user_id'])}",
+                    author_role="employee",
+                    body=str(data.get("body") or data.get("remark") or ""),
+                    task_code=task_code,
+                    names=names,
+                )
+            except ValueError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
+            conn.commit()
+            return jsonify(
+                {
+                    "ok": True,
+                    "remark": remark,
+                    "remarks": list_remarks_for_activity(cursor, int(ctx["org_id"]), row),
+                }
+            )
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"ok": False, "error": "Could not save the remark."}), 500
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     @app.route("/api/public/attendance/pin-cleaning-tasks/complete", methods=["POST"])
     def public_pin_cleaning_tasks_complete():
         ctx, conn, err = _pin_gate("cleaning_complete", require_clocked_in=True)
@@ -975,6 +1039,68 @@ def register_cleaning_task_activity_routes(
             except Exception:
                 pass
             return jsonify({"error": exc.message}), exc.status
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @app.route("/api/management/task-dashboard/remarks", methods=["POST"])
+    def management_task_dashboard_remarks():
+        from backend.db import get_db
+        from backend.weekly_schedule_display_settings import is_rinse_schedule_viewer
+
+        conn = get_db()
+        try:
+            cursor = conn.cursor(dictionary=True)
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            org_id = user_org_id(me)
+            if not org_id:
+                return jsonify({"error": "Organization required"}), 400
+            roles = role_set(me)
+            if is_rinse_schedule_viewer(roles) and not (roles & HUB_ROLES):
+                return jsonify({"error": "Rinse access is read-only for the Task Dashboard."}), 403
+            uid = int(me.get("user_id") or me.get("id") or 0)
+            if not (roles & HUB_ROLES) and not employee_allows_module(
+                cursor, int(org_id), uid, "cleaning_task_review"
+            ):
+                return jsonify({"error": "Forbidden"}), 403
+            data = request.json or {}
+            activity_id = data.get("activity_id")
+            if activity_id is None:
+                return jsonify({"error": "activity_id is required"}), 400
+            from backend.cleaning_task_activity import _employee_names, get_activity
+            from backend.task_activity_remarks import append_remark, list_remarks_for_activity
+
+            row = get_activity(cursor, int(org_id), int(activity_id))
+            if not row:
+                return jsonify({"error": "Task activity not found."}), 404
+            names = _employee_names(cursor, int(org_id), [uid])
+            author_role = "management" if roles & HUB_ROLES else "supervisor"
+            try:
+                remark = append_remark(
+                    cursor,
+                    organization_id=int(org_id),
+                    activity=row,
+                    author_user_id=uid,
+                    author_name=names.get(uid) or str(me.get("display_name") or me.get("username") or f"User #{uid}"),
+                    author_role=author_role,
+                    body=str(data.get("body") or data.get("remark") or ""),
+                    task_code=str(data.get("task_code") or "").strip() or None,
+                    names=names,
+                )
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            conn.commit()
+            return jsonify(
+                {
+                    "ok": True,
+                    "remark": remark,
+                    "remarks": list_remarks_for_activity(cursor, int(org_id), row),
+                }
+            )
         finally:
             try:
                 conn.close()

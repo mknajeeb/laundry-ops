@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { Box, Button, Collapse, Stack, TextField, Typography } from "@mui/material";
+import ActivityRemarks from "./ActivityRemarks";
+import InstructionHint from "./InstructionHint";
 import { formatDashboardTime } from "./taskDashboardFormat";
 import { OPS_MOBILE } from "../../opsMobile";
 import { CompletionDetails } from "../../opsMobile/TaskCompletionInputs";
@@ -40,7 +42,10 @@ export default function TaskVerificationReviewCard({
         bgcolor: "#fff",
       }}
     >
-      <Typography sx={{ fontWeight: 900, letterSpacing: 0.2 }}>{card.role_label}</Typography>
+      <Stack direction="row" alignItems="center" spacing={0.5}>
+        <Typography sx={{ fontWeight: 900, letterSpacing: 0.2 }}>{card.role_label}</Typography>
+        <InstructionHint text={card.instructions} />
+      </Stack>
       {assigned ? (
         <Typography variant="body2" color="text.secondary">
           Assigned: {assigned}
@@ -99,6 +104,7 @@ export default function TaskVerificationReviewCard({
             <Stack spacing={0.75} sx={{ mb: 1 }}>
               {card.checklist.map((item) => (
                 <Box key={item.task_code || item.task_label}>
+                  <Stack direction="row" alignItems="center" spacing={0.5}>
                   <Typography variant="body2">
                     {item.task_label} —{" "}
                     {item.needs_correction
@@ -107,6 +113,8 @@ export default function TaskVerificationReviewCard({
                         ? "Checked off"
                         : "Not checked off"}
                   </Typography>
+                  <InstructionHint text={item.instructions} label="Item instructions" />
+                  </Stack>
                   {item.section_label ? (
                     <Typography variant="caption" sx={{ fontWeight: 800 }} display="block">
                       {item.section_label}
@@ -154,6 +162,27 @@ export default function TaskVerificationReviewCard({
           </Collapse>
         </>
       ) : null}
+
+      {(card.checklist_sections || []).map((section) => (
+        <Stack key={section.section_label} direction="row" spacing={1} alignItems="center" sx={{ mt: 0.5 }}>
+          <Typography variant="caption" sx={{ fontWeight: 800 }}>
+            {section.section_label}: {section.status_label}
+          </Typography>
+          {section.pending_activity_ids?.length ? (
+            <Button
+              size="small"
+              disabled={busy}
+              onClick={() =>
+                onApproveAll?.(section.pending_activity_ids, { remark: supervisorRemark, section: true })
+              }
+              sx={{ textTransform: "none", fontWeight: 800 }}
+            >
+              Verify section
+            </Button>
+          ) : null}
+        </Stack>
+      ))}
+      <ActivityRemarks remarks={card.remarks || []} items={card.checklist || []} readOnly />
 
       {card.block_reason ? (
         <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>

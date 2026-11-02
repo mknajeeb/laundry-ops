@@ -4,25 +4,53 @@
  * Not linked from production nav.
  */
 import { useMemo, useState } from "react";
-import { Box, Button, Stack, TextField, Tooltip, Typography } from "@mui/material";
+import { Box, Button, Stack, Tooltip, Typography } from "@mui/material";
 import TaskAssignmentCard from "../components/tasks/TaskAssignmentCard";
 import TaskRecordDialog from "../components/tasks/TaskRecordDialog";
 import TaskManualCompletionDialog from "../components/tasks/TaskManualCompletionDialog";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import { formatDashboardDate } from "../components/tasks/taskDashboardFormat";
 import { dashboardHeadlineMetrics } from "../components/tasks/taskDashboardLabels";
+import ActivityRemarks from "../components/tasks/ActivityRemarks";
+import InstructionHint from "../components/tasks/InstructionHint";
 import TaskVerificationReviewCard from "../components/tasks/TaskVerificationReviewCard";
 import TaskDashboardMonthlyChart from "../components/tasks/TaskDashboardMonthlyChart";
 
 const MOCK_SHARED = {
   assignment_key: "g:2026-10-30:floor-washer",
-  role: "agroup_floor_washer",
-  role_label: "Floor & Washer",
+  role: "agroup_washer_cleaning",
+  role_label: "Washer Cleaning",
   execution_mode: "shared",
   shared: true,
   timing_label: "Anytime",
   assigned_employees: ["Gabriela", "Yesenia"],
-  instructions: "Check washer residue, then broom the floor. Leave the mop by the washers.",
+  instructions: "Shared washer activity. Check residue, then wipe the machines. One checklist. Each person keeps their own timer.",
+  checklist_sections: [
+    {
+      section_label: "Machines",
+      status: "pending_verification",
+      status_label: "Pending Verification",
+      pending_activity_ids: [107, 108],
+    },
+  ],
+  remarks: [
+    {
+      id: 1,
+      author_name: "Gabriela",
+      author_role: "employee",
+      body: "Residue in washer 4.",
+      created_at_label: "2026-11-01 09:20:00 ET",
+    },
+    {
+      id: 2,
+      author_name: "Yesenia",
+      author_role: "employee",
+      task_code: "washer_cleaning",
+      body: "Wiped washer 4 after the residue check.",
+      created_at_label: "2026-11-01 09:26:00 ET",
+    },
+  ],
+  remark_count: 2,
   overall_status: "pending_verification",
   completion_status: "completed",
   verification_status: "waiting",
@@ -38,14 +66,18 @@ const MOCK_SHARED = {
     {
       task_code: "custom_check_washer_residue",
       task_name: "Check Washer Residue",
+      instructions: "Look inside each washer for leftover soap, lint, or debris before the next load.",
+      section_label: "Machines",
       required: true,
       status: "completed",
       completed_by_name: "Gabriela",
       completed_at: "2026-11-01 09:24:58",
     },
     {
-      task_code: "floor_cleaning",
-      task_name: "Floor Brooming",
+      task_code: "washer_cleaning",
+      task_name: "Wipe down washers",
+      instructions: "Wipe washer doors, gaskets, tops, and detergent compartments.",
+      section_label: "Machines",
       required: true,
       status: "completed",
       completed_by_name: "Yesenia",
@@ -144,7 +176,24 @@ function Metric({ label, value, hint }) {
 
 const REVIEW_CARD = {
   assignment_key: "g:floor",
-  role_label: "Floor & Washer",
+  role_label: "Washer Cleaning",
+  instructions: "Shared washer activity. One checklist for the assignment.",
+  checklist_sections: [
+    {
+      section_label: "Machines",
+      status_label: "Pending Verification",
+      pending_activity_ids: [107, 108],
+    },
+  ],
+  remarks: [
+    {
+      id: 1,
+      author_name: "Gabriela",
+      author_role: "employee",
+      body: "Residue in washer 4.",
+      created_at_label: "2026-11-01 09:20:00 ET",
+    },
+  ],
   timing_label: "9:00 AM",
   assigned_employees: ["Gabriela", "Yesenia"],
   overall_label: "Pending Verification",
@@ -184,8 +233,10 @@ const REVIEW_CARD = {
       ],
     },
     {
-      task_code: "floor_cleaning",
-      task_label: "Floor Brooming",
+      task_code: "washer_cleaning",
+      task_label: "Wipe down washers",
+      section_label: "Machines",
+      instructions: "Wipe washer doors, gaskets, tops, and detergent compartments.",
       checked_off: true,
       records: [
         {
@@ -287,14 +338,14 @@ export default function TaskDashboardPhase3PreviewPage() {
     return (
       <Box sx={{ bgcolor: "#f4f7fb", minHeight: "100vh", p: 1.5 }}>
         <Box sx={{ maxWidth: 390, mx: "auto", bgcolor: "#fff", borderRadius: 2, p: 2 }}>
-          <Typography sx={{ fontWeight: 900, color: "#0f2744" }}>Floor & Washer</Typography>
-          <Typography variant="body2" color="text.secondary">Anytime · Gabriela + Yesenia</Typography>
-          <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", my: 1.5 }}>
-            {MOCK_SHARED.instructions}
-          </Typography>
+          <Stack direction="row" alignItems="center" spacing={0.5}>
+            <Typography sx={{ fontWeight: 900, color: "#0f2744" }}>Washer Cleaning</Typography>
+            <InstructionHint text={MOCK_SHARED.instructions} />
+          </Stack>
+          <Typography variant="body2" color="text.secondary">Shared Activity · your timer · one checklist</Typography>
           <Typography variant="body2">Check Washer Residue · Gabriela · 9:24 AM</Typography>
-          <Typography variant="body2" sx={{ mb: 1.5 }}>Floor Brooming · Yesenia · 9:25 AM</Typography>
-          <TextField size="small" fullWidth label="Remark (optional)" defaultValue="Residue was light." sx={{ mb: 1.5 }} />
+          <Typography variant="body2" sx={{ mb: 1.5 }}>Wipe down washers · Yesenia · 9:25 AM</Typography>
+          <ActivityRemarks remarks={MOCK_SHARED.remarks} items={MOCK_SHARED.shared_checklist_items} onAdd={async () => {}} />
           <Button fullWidth variant="contained" color="success" sx={{ fontWeight: 800, textTransform: "none" }}>
             Finish My Participation
           </Button>

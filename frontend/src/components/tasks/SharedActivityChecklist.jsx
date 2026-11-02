@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Box, Button, Collapse, IconButton, Stack, Typography } from "@mui/material";
+import { Box, Button, Collapse, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import { OPS_MOBILE } from "../../opsMobile";
 import TaskCompletionInputs from "../../opsMobile/TaskCompletionInputs";
@@ -69,9 +69,11 @@ function ItemRow({ item, busy, editing, inputValues, inputRemarks, onChangeValue
           </Typography>
         </Box>
         {instructions ? (
-          <IconButton size="small" aria-label="Instructions" onClick={() => setInfo((open) => !open)}>
-            <InfoOutlinedIcon fontSize="small" />
-          </IconButton>
+          <Tooltip title={instructions} enterTouchDelay={0} leaveTouchDelay={4000} arrow>
+            <IconButton size="small" aria-label="Instructions" onClick={() => setInfo((open) => !open)}>
+              <InfoOutlinedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
         ) : null}
       </Stack>
       <Collapse in={info}>

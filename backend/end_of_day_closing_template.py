@@ -356,3 +356,29 @@ def end_of_day_closing_payload() -> dict[str, Any]:
         "require_checklist_before_completion": True,
         "items": items,
     }
+
+
+# Routine washer, dryer, and floor cleaning now live on Intra-Day Activity Groups.
+# This proposal is not loaded by the editor and is not saved as a live activity.
+PROPOSED_REMOVED_ROUTINE_CODES = frozenset({"eod_dryer_lint", "eod_wipe_washers", "eod_sweep"})
+
+
+def proposed_end_of_day_closing_payload() -> dict[str, Any]:
+    payload = end_of_day_closing_payload()
+    kept = [
+        item
+        for item in payload["items"]
+        if item.get("task_code") not in PROPOSED_REMOVED_ROUTINE_CODES
+    ]
+    for index, item in enumerate(kept):
+        item["display_order"] = (index + 1) * 10
+    return {
+        **payload,
+        "instructions": (
+            "Closing checks, supplies, lost and found, pending orders, and handover. "
+            "Washer wiping, dryer lint, and floor sweeping are Intra-Day activities."
+        ),
+        "items": kept,
+        "proposal_only": True,
+        "removed_routine_codes": sorted(PROPOSED_REMOVED_ROUTINE_CODES),
+    }

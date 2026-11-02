@@ -23,6 +23,7 @@ import TaskRecordDialog from "../components/tasks/TaskRecordDialog";
 import { DEFAULT_CATEGORY_TABS } from "../components/tasks/taskDashboardLabels";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import {
+  addManagementTaskRemark,
   approveManagementTaskDashboard,
   correctManagementTaskCompletion,
   getManagementTaskDashboard,
@@ -211,13 +212,38 @@ export default function ManagementTasksPage() {
     setBusy(true);
     setError("");
     try {
+      const ids = Array.isArray(activityId) ? activityId : [activityId];
       await approveManagementTaskDashboard({
-        activity_id: activityId,
+        activity_ids: ids,
         supervisor_remark: supervisorRemark || "",
       });
       await load();
     } catch (err) {
       setError(err?.response?.data?.error || err?.message || "Approve failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addRemark = async (row, body, taskCode) => {
+    const activityId = (row.contributions || [])
+      .map((item) => item.activity?.id || item.activity_id)
+      .find(Boolean);
+    if (!activityId) {
+      setError("Start the activity before adding a remark.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await addManagementTaskRemark({
+        activity_id: activityId,
+        body,
+        task_code: taskCode || "",
+      });
+      await load();
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || "Could not save the remark");
     } finally {
       setBusy(false);
     }
@@ -322,6 +348,7 @@ export default function ManagementTasksPage() {
         groupBy,
         rows: res.data?.assignments || [],
         hideLabor,
+        hideRemarks: Boolean(readOnly),
       });
     } catch (err) {
       setError(err?.response?.data?.error || err?.message || "Could not prepare the print report");
@@ -565,6 +592,7 @@ export default function ManagementTasksPage() {
                       setReason={setReason}
                       onConfirmReject={confirmReject}
                       onCancelReject={() => setRejectId(null)}
+                      onAddRemark={readOnly ? undefined : (body, taskCode) => addRemark(row, body, taskCode)}
                     />
                   );
                 })

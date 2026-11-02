@@ -617,6 +617,20 @@ def complete_group_activity(
         )
 
     # Close parent as completed (verification lives on children).
+    if str(remark or "").strip():
+        from backend.cleaning_task_activity import _employee_names
+        from backend.task_activity_remarks import append_remark
+
+        names = _employee_names(cursor, oid, [uid])
+        append_remark(
+            cursor,
+            organization_id=oid,
+            activity=row,
+            author_user_id=uid,
+            author_name=names.get(uid) or f"User #{uid}",
+            author_role="employee",
+            body=str(remark),
+        )
     from backend.cleaning_task_shared_execution import _employee_remark_input
 
     activity = _finalize_completion(

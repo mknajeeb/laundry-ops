@@ -506,6 +506,12 @@ def _validate_assignment(
     role_err = role_assignment_error(role, catalog, timed=False, already_assigned=unchanged_role)
     if role_err:
         return None, role_err
+    if not unchanged_role:
+        from backend.intra_day_activity_groups import competing_new_assignment_error
+
+        blocked = competing_new_assignment_error(role, catalog)
+        if blocked:
+            return None, blocked
     kept = {int(uid) for uid in (existing_user_ids or [])}
     names = _worker_names(conn, organization_id, user_ids)
     for uid in user_ids:

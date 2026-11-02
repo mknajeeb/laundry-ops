@@ -205,7 +205,7 @@ export default function CleaningTaskReviewPinPage() {
                     key={card.assignment_key}
                     card={card}
                     busy={busy}
-                    onApproveAll={(ids, extra) => approveIds(ids, true, extra?.remark || "")}
+                    onApproveAll={(ids, extra) => approveIds(ids, extra?.section ? false : true, extra?.remark || "")}
                     onNeedsRedo={(ids, redoReason) => rejectIds(ids, redoReason)}
                     onRejectItem={(id, itemReason) => rejectIds([id], itemReason)}
                   />

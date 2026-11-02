@@ -6,12 +6,12 @@ import {
   IconButton,
   Stack,
   TextField,
-  Tooltip,
   Typography,
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
-import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import ActivityRemarks from "./ActivityRemarks";
+import InstructionHint from "./InstructionHint";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import { CompletionDetails } from "../../opsMobile/TaskCompletionInputs";
 import {
@@ -61,6 +61,7 @@ export default function TaskAssignmentCard({
   setReason,
   onConfirmReject,
   onCancelReject,
+  onAddRemark,
 }) {
   const [supervisorRemark, setSupervisorRemark] = useState("");
   const employees = (row.assigned_employees || []).join(" + ") || "Unassigned";
@@ -111,13 +112,7 @@ export default function TaskAssignmentCard({
             >
               {row.role_label || row.role}
             </Typography>
-            {instructions ? (
-              <Tooltip title={instructions} placement="top" enterTouchDelay={0} arrow>
-                <IconButton size="small" aria-label="Instructions" onClick={(e) => e.stopPropagation()}>
-                  <InfoOutlinedIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            ) : null}
+            <InstructionHint text={instructions} />
             {row.has_manual_completion && !readOnly ? (
               <TaskStatusBadge label="Manual entry" />
             ) : null}
@@ -183,6 +178,26 @@ export default function TaskAssignmentCard({
               >
                 CHECKLIST
               </Typography>
+              {(row.checklist_sections || []).length ? (
+                <Stack spacing={0.25} sx={{ mt: 0.5 }}>
+                  {row.checklist_sections.map((section) => (
+                    <Stack key={section.section_label} direction="row" spacing={1} alignItems="center">
+                      <Typography variant="caption" sx={{ fontWeight: 700 }}>
+                        {section.section_label}: {section.status_label}
+                      </Typography>
+                      {canApprove && section.pending_activity_ids?.length ? (
+                        <Button
+                          size="small"
+                          onClick={() => onApprove?.(section.pending_activity_ids, supervisorRemark)}
+                          sx={{ textTransform: "none", fontWeight: 800 }}
+                        >
+                          Verify section
+                        </Button>
+                      ) : null}
+                    </Stack>
+                  ))}
+                </Stack>
+              ) : null}
               <Stack spacing={0.5} sx={{ mt: 0.5 }}>
                 {checklistItems.map((item) => (
                   <Stack
@@ -193,9 +208,12 @@ export default function TaskAssignmentCard({
                     spacing={1}
                   >
                     <Box>
-                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        {item.task_name || item.task_code}
-                      </Typography>
+                      <Stack direction="row" alignItems="center" spacing={0.25}>
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                          {item.task_name || item.task_code}
+                        </Typography>
+                        <InstructionHint text={item.instructions} label="Item instructions" />
+                      </Stack>
                       <Typography variant="caption" color="text.secondary" display="block">
                         Responsible: {item.responsibility_label || "Anyone on Team"}
                       </Typography>
@@ -216,6 +234,20 @@ export default function TaskAssignmentCard({
                 ))}
               </Stack>
             </Box>
+          ) : null}
+
+          {!readOnly || (row.remarks || []).length ? (
+            <ActivityRemarks
+              remarks={readOnly ? [] : row.remarks || []}
+              items={checklistItems}
+              readOnly={readOnly || !onAddRemark}
+              busy={false}
+              onAdd={
+                readOnly || !onAddRemark
+                  ? undefined
+                  : (body, taskCode) => onAddRemark(body, taskCode)
+              }
+            />
           ) : null}
 
           <Typography
@@ -303,12 +335,12 @@ export default function TaskAssignmentCard({
                     </Stack>
                   </Stack>
 
-                  {c.activity?.employee_remark?.text ? (
+                  {!(row.remarks || []).length && c.activity?.employee_remark?.text ? (
                     <Typography variant="caption" display="block" sx={{ mt: 0.5 }}>
                       Employee remark: {c.activity.employee_remark.text}
                     </Typography>
                   ) : null}
-                  {c.activity?.supervisor_remark?.text ? (
+                  {!(row.remarks || []).length && c.activity?.supervisor_remark?.text ? (
                     <Typography variant="caption" display="block">
                       Supervisor remark: {c.activity.supervisor_remark.text}
                     </Typography>

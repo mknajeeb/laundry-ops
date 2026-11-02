@@ -387,6 +387,18 @@ export const attendancePinCleaningTasksCompleteGroup = (organization_slug, pin, 
     `${API_BASE}/api/public/attendance/pin-cleaning-tasks/complete-group`,
     _pinCleaningBody(organization_slug, pin, options, {
       activity_id: options.activity_id,
+      ...(options.remark ? { remark: options.remark } : {}),
+    }),
+    _pinCleaningOpts,
+  );
+
+export const attendancePinCleaningTasksAddRemark = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-cleaning-tasks/remarks`,
+    _pinCleaningBody(organization_slug, pin, options, {
+      activity_id: options.activity_id,
+      body: options.body || options.remark || "",
+      ...(options.task_code ? { task_code: options.task_code } : {}),
     }),
     _pinCleaningOpts,
   );
@@ -484,6 +496,9 @@ export const getManagementTaskDashboardMonthly = (params = {}) =>
 
 export const approveManagementTaskDashboard = (body) =>
   axios.post(`${API_BASE}/api/management/task-dashboard/approve`, body);
+
+export const addManagementTaskRemark = (body) =>
+  axios.post(`${API_BASE}/api/management/task-dashboard/remarks`, body);
 
 export const rejectManagementTaskDashboard = (body) =>
   axios.post(`${API_BASE}/api/management/task-dashboard/reject`, body);

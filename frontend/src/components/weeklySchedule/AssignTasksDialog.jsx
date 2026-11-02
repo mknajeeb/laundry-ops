@@ -18,21 +18,17 @@ import {
 } from "@mui/material";
 import { DAY_LABELS, DISPLAY_DAY_ORDER, formatDayDate } from "./weeklyScheduleDates";
 import { scheduleRoleCatalog, scheduleRoleLabel } from "./weeklyScheduleRoles";
+import { routineAssignmentOptions } from "../tasks/routineAssignmentOptions";
 import { TASK_TIMING, TASK_TIMING_OPTIONS } from "./weeklyScheduleTaskTiming";
 import PlanningTimePicker from "../datetime/PlanningTimePicker";
 
 const NO_DAYS = [];
 
 function taskOptions() {
-  return scheduleRoleCatalog()
-    .filter((role) => role.uses_time_slots === false && role.active !== false)
-    .map((role) => ({
-      value: role.code,
-      label: String(role.code || "").startsWith("agroup_")
-        ? `Group: ${role.name || scheduleRoleLabel(role.code)}`
-        : role.name || scheduleRoleLabel(role.code),
-      group: String(role.code || "").startsWith("agroup_"),
-    }));
+  return routineAssignmentOptions(scheduleRoleCatalog()).map((option) => ({
+    ...option,
+    label: option.group ? option.label : option.label || scheduleRoleLabel(option.value),
+  }));
 }
 
 /**
@@ -56,7 +52,6 @@ export default function AssignTasksDialog({
   const [timingMode, setTimingMode] = useState(TASK_TIMING.ANYTIME);
   const [taskStart, setTaskStart] = useState("");
   const [remarks, setRemarks] = useState("");
-  const [executionMode, setExecutionMode] = useState("individual");
 
   useEffect(() => {
     if (!open) return;
@@ -66,13 +61,11 @@ export default function AssignTasksDialog({
     setTimingMode(TASK_TIMING.ANYTIME);
     setTaskStart("");
     setRemarks("");
-    setExecutionMode("individual");
     // Reset only when the dialog opens. defaultDays is read at that moment.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const isGroup = Boolean(task?.group);
-  const canShare = isGroup && people.length >= 2;
   const names = people.map((person) => person.display_name || `User #${person.user_id}`);
   const canSave = days.length > 0 && task && people.length > 0 && (timingMode !== TASK_TIMING.SPECIFIC || taskStart);
 
@@ -150,17 +143,13 @@ export default function AssignTasksDialog({
           {timingMode === TASK_TIMING.SPECIFIC ? (
             <PlanningTimePicker label="Start time" value={taskStart} onChange={setTaskStart} />
           ) : null}
-          {canShare ? (
-            <FormControl size="small" fullWidth>
-              <InputLabel>Execution mode</InputLabel>
-              <Select label="Execution mode" value={executionMode} onChange={(e) => setExecutionMode(e.target.value)}>
-                <MenuItem value="individual">Individual — separate checklists</MenuItem>
-                <MenuItem value="shared">Shared — one checklist, separate timers</MenuItem>
-              </Select>
-            </FormControl>
+          {isGroup && people.length >= 2 ? (
+            <Typography variant="caption" color="text.secondary">
+              Shared activity: one checklist for this assignment. Each employee keeps a separate timer.
+            </Typography>
           ) : isGroup ? (
             <Typography variant="caption" color="text.secondary">
-              Select two or more employees to choose Shared or Individual execution.
+              Select two or more employees to share one checklist. Each person still has a separate timer.
             </Typography>
           ) : null}
           <TextField
@@ -177,7 +166,7 @@ export default function AssignTasksDialog({
             {days.length
               ? `This creates ${days.length} assignment${days.length === 1 ? "" : "s"}, one per selected date. `
               : "Select at least one date. "}
-            {canShare && executionMode === "shared"
+            {isGroup && people.length >= 2
               ? "Shared execution is one assignment for the group that day, not a copy for each person. "
               : "Each selected employee receives the task. "}
             Task assignments do not add scheduled hours.
@@ -198,7 +187,7 @@ export default function AssignTasksDialog({
               timing_mode: timingMode,
               start_time: timingMode === TASK_TIMING.SPECIFIC ? taskStart : null,
               remarks: remarks.trim() || null,
-              execution_mode: canShare && executionMode === "shared" ? "shared" : "individual",
+              execution_mode: isGroup && people.length >= 2 ? "shared" : "individual",
             })
           }
         >
