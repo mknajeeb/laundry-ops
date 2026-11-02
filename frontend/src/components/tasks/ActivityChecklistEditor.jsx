@@ -99,6 +99,9 @@ function blankItem(sectionLabel, sectionOrder) {
     task_code: "",
     task_name: "",
     instructions: "",
+    instructions_es: "",
+    section_label_es: "",
+    task_name_es: "",
     required: true,
     active: true,
     section_label: sectionLabel || "",
@@ -115,6 +118,9 @@ export function itemsFromGroup(items) {
     task_code: item.task_code,
     task_name: item.task_name || "",
     instructions: item.instructions || "",
+    instructions_es: item.instructions_es || "",
+    section_label_es: item.section_label_es || "",
+    task_name_es: item.task_name_es || "",
     required: item.required !== false,
     active: item.active !== false,
     section_label: item.section_label || "",
@@ -133,6 +139,9 @@ export function itemsToPayload(rows) {
       task_code: row.task_code || "",
       task_name: row.task_name,
       instructions: row.instructions || "",
+      instructions_es: row.instructions_es || "",
+      section_label_es: row.section_label_es || "",
+      task_name_es: row.task_name_es || "",
       required: row.required !== false,
       active: row.active !== false,
       section_label: row.section_label || null,
@@ -208,6 +217,21 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
               value={section.label}
               onChange={(e) => renameSection(section.label, e.target.value)}
             />
+            <TextField
+              size="small"
+              label="Section (Spanish)"
+              value={rows[section.indexes[0]]?.section_label_es || ""}
+              onChange={(e) => {
+                const value = e.target.value;
+                onChange(
+                  rows.map((row) =>
+                    row.section_label === section.label || (!row.section_label && section.label === "General")
+                      ? { ...row, section_label_es: value }
+                      : row,
+                  ),
+                );
+              }}
+            />
             <Button size="small" onClick={() => moveSection(section.label, -1)}>
               Section up
             </Button>
@@ -240,11 +264,25 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                     />
                     <TextField
                       size="small"
+                      label="Label (Spanish)"
+                      value={row.task_name_es || ""}
+                      onChange={(e) => update(index, { task_name_es: e.target.value })}
+                    />
+                    <TextField
+                      size="small"
                       label="Instructions"
                       multiline
                       minRows={2}
                       value={row.instructions || ""}
                       onChange={(e) => update(index, { instructions: e.target.value })}
+                    />
+                    <TextField
+                      size="small"
+                      label="Instructions (Spanish)"
+                      multiline
+                      minRows={2}
+                      value={row.instructions_es || ""}
+                      onChange={(e) => update(index, { instructions_es: e.target.value })}
                     />
                     <Stack direction="row" spacing={1} flexWrap="wrap">
                       <FormControlLabel

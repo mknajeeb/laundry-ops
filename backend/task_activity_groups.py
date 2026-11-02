@@ -104,6 +104,14 @@ def ensure_task_activity_group_tables(cursor) -> None:
         cursor, GROUPS_TABLE, "instructions"
     ):
         cursor.execute(f"ALTER TABLE {GROUPS_TABLE} ADD COLUMN instructions TEXT NULL")
+    for column in ("instructions_es", "name_es"):
+        if table_exists(cursor, GROUPS_TABLE) and not table_has_column(cursor, GROUPS_TABLE, column):
+            cursor.execute(f"ALTER TABLE {GROUPS_TABLE} ADD COLUMN {column} TEXT NULL")
+    for column in ("instructions_es", "section_label_es", "task_name_es"):
+        if table_exists(cursor, GROUP_ITEMS_TABLE) and not table_has_column(
+            cursor, GROUP_ITEMS_TABLE, column
+        ):
+            cursor.execute(f"ALTER TABLE {GROUP_ITEMS_TABLE} ADD COLUMN {column} TEXT NULL")
     if table_exists(cursor, GROUPS_TABLE) and not table_has_column(
         cursor, GROUPS_TABLE, "require_checklist_before_completion"
     ):
@@ -213,6 +221,9 @@ def _serialize_group(
                 or meta.get("description")
                 or meta.get("instructions")
                 or None,
+                "instructions_es": (str(it.get("instructions_es") or "").strip() or None),
+                "section_label_es": (str(it.get("section_label_es") or "").strip() or None),
+                "task_name_es": (str(it.get("task_name_es") or "").strip() or None),
                 "completion_type": meta.get("completion_type"),
                 "timer_enabled": meta.get("timer_enabled"),
                 "verification_required": meta.get("verification_required"),
@@ -258,6 +269,8 @@ def _serialize_group(
             "Inherited from global default" if inherits else "Group override"
         ),
         "instructions": (str(row.get("instructions") or "").strip() or None),
+        "instructions_es": (str(row.get("instructions_es") or "").strip() or None),
+        "name_es": (str(row.get("name_es") or "").strip() or None),
         "require_checklist_before_completion": _serialize_require_checklist_flag(
             row.get("require_checklist_before_completion")
         ),
@@ -491,6 +504,9 @@ def upsert_activity_group(
             section_label = None
             section_order = 0
             instructions = None
+            instructions_es = None
+            section_label_es = None
+            task_name_es = None
             active = True
         else:
             tc = str(item.get("task_code") or item.get("code") or "").strip()
@@ -503,6 +519,21 @@ def upsert_activity_group(
             section_label = (str(item.get("section_label") or "").strip() or None)
             section_order = int(item.get("section_order") or 0)
             instructions = (str(item.get("instructions") or "").strip()[:2000] or None)
+            instructions_es = (
+                (str(item.get("instructions_es") or "").strip()[:2000] or None)
+                if "instructions_es" in item
+                else None
+            )
+            section_label_es = (
+                (str(item.get("section_label_es") or "").strip()[:200] or None)
+                if "section_label_es" in item
+                else None
+            )
+            task_name_es = (
+                (str(item.get("task_name_es") or "").strip()[:200] or None)
+                if "task_name_es" in item
+                else None
+            )
             active = item.get("active", True) not in (0, False, "0")
         if not tc:
             continue
@@ -527,6 +558,12 @@ def upsert_activity_group(
                 "section_label": section_label,
                 "section_order": section_order,
                 "instructions": instructions,
+                "instructions_es": instructions_es if isinstance(item, Mapping) and "instructions_es" in item else None,
+                "section_label_es": section_label_es if isinstance(item, Mapping) and "section_label_es" in item else None,
+                "task_name_es": task_name_es if isinstance(item, Mapping) and "task_name_es" in item else None,
+                "set_instructions_es": isinstance(item, Mapping) and "instructions_es" in item,
+                "set_section_label_es": isinstance(item, Mapping) and "section_label_es" in item,
+                "set_task_name_es": isinstance(item, Mapping) and "task_name_es" in item,
                 "active": active,
             }
         )
@@ -629,6 +666,13 @@ def upsert_activity_group(
             f"UPDATE {GROUPS_TABLE} SET instructions=%s WHERE organization_id=%s AND id=%s",
             (text, oid, gid),
         )
+    for column in ("instructions_es", "name_es"):
+        if column in payload and table_has_column(cursor, GROUPS_TABLE, column):
+            text = str(payload.get(column) or "").strip()[:2000] or None
+            cursor.execute(
+                f"UPDATE {GROUPS_TABLE} SET {column}=%s WHERE organization_id=%s AND id=%s",
+                (text, oid, gid),
+            )
 
     import json as _json
 
@@ -650,6 +694,14 @@ def upsert_activity_group(
                 if has_item_instructions:
                     extra_sql += ", instructions=%s"
                     extra_params.append(item.get("instructions"))
+                for column, flag in (
+                    ("instructions_es", "set_instructions_es"),
+                    ("section_label_es", "set_section_label_es"),
+                    ("task_name_es", "set_task_name_es"),
+                ):
+                    if item.get(flag) and _has_col(cursor, GROUP_ITEMS_TABLE, column):
+                        extra_sql += f", {column}=%s"
+                        extra_params.append(item.get(column))
                 if has_item_active:
                     extra_sql += ", active=%s"
                     extra_params.append(1 if item.get("active", True) else 0)
@@ -707,6 +759,14 @@ def upsert_activity_group(
             if has_item_instructions:
                 columns += ", instructions"
                 values.append(item.get("instructions"))
+            for column, flag in (
+                ("instructions_es", "set_instructions_es"),
+                ("section_label_es", "set_section_label_es"),
+                ("task_name_es", "set_task_name_es"),
+            ):
+                if item.get(flag) and _has_col(cursor, GROUP_ITEMS_TABLE, column):
+                    columns += f", {column}"
+                    values.append(item.get(column))
             if has_item_active:
                 columns += ", active"
                 values.append(1 if item.get("active", True) else 0)

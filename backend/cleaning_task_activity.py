@@ -747,6 +747,7 @@ def list_employee_day_tasks(
         member_ids = [int(x) for x in (item.get("user_ids") or [item["user_id"]])]
         member_names = [names.get(mid, f"User #{mid}") for mid in member_ids]
         member_names_sorted = sorted(member_names, key=lambda s: s.lower())
+        copy = _assignment_copy(cursor, int(organization_id), item)
         base = {
             "responsibility_id": rid,
             "assignment_key": assignment_key(item),
@@ -765,7 +766,9 @@ def list_employee_day_tasks(
             or timing_display(item.get("timing_mode"), item.get("start_time")),
             "planned_start_time": item.get("start_time"),
             "remarks": item.get("remarks"),
-            "instructions": _assignment_instructions(cursor, int(organization_id), item),
+            "instructions": copy.get("instructions"),
+            "instructions_es": copy.get("instructions_es"),
+            "name_es": copy.get("name_es"),
             "user_ids": member_ids,
             "assigned_employees": member_names_sorted,
             "shared": len(member_ids) > 1,
@@ -1351,6 +1354,7 @@ def approve_activity(
             author_name=names.get(int(supervisor_user_id)) or f"User #{int(supervisor_user_id)}",
             author_role="supervisor",
             body=str(supervisor_remark),
+            remark_kind="verification",
         )
     merged_input = _merge_supervisor_remark(row.get("completion_input_json"), supervisor_remark, int(supervisor_user_id), at)
     cursor.execute(
@@ -2002,6 +2006,7 @@ def _group_shared_assignments(
             if checklist_complete and verification_status == VERIFICATION_WAITING:
                 if rollup in {DISPLAY_COMPLETED, DISPLAY_APPROVED}:
                     rollup = DISPLAY_PENDING_APPROVAL
+        copy = _assignment_copy(cursor, int(organization_id), sample)
         out.append(
             apply_assignment_reporting(
             {
@@ -2040,7 +2045,9 @@ def _group_shared_assignments(
                 "has_manual_completion": any(
                     (c.get("activity") or {}).get("is_manual_completion") for c in contributions
                 ),
-                "instructions": _assignment_instructions(cursor, int(organization_id), sample),
+                "instructions": copy.get("instructions"),
+                "instructions_es": copy.get("instructions_es"),
+                "name_es": copy.get("name_es"),
                 "activity_group_items": _activity_group_item_templates(
                     cursor, int(organization_id), str(sample.get("role") or "")
                 ),
@@ -2071,21 +2078,32 @@ def _group_shared_assignments(
     return out
 
 
-def _assignment_instructions(cursor, organization_id: int, sample: Mapping[str, Any]) -> str | None:
-    """Group instructions, otherwise the assignment instructions already stored on the schedule."""
+def _assignment_copy(cursor, organization_id: int, sample: Mapping[str, Any]) -> dict[str, str | None]:
+    """Live group copy. Historical checklist snapshots stay on the session item."""
     role = str(sample.get("role") or "")
     try:
         from backend.task_activity_groups import get_activity_group, is_activity_group_code
 
         if is_activity_group_code(role):
-            group = get_activity_group(cursor, int(organization_id), role_code=role)
-            text = str((group or {}).get("instructions") or "").strip()
-            if text:
-                return text
+            group = get_activity_group(cursor, int(organization_id), role_code=role) or {}
+            text = str(group.get("instructions") or "").strip()
+            spanish = str(group.get("instructions_es") or "").strip()
+            name_es = str(group.get("name_es") or "").strip()
+            if text or spanish or name_es:
+                return {
+                    "instructions": text or None,
+                    "instructions_es": spanish or None,
+                    "name_es": name_es or None,
+                }
     except Exception:
         pass
     text = str(sample.get("remarks") or "").strip()
-    return text or None
+    return {"instructions": text or None, "instructions_es": None, "name_es": None}
+
+
+def _assignment_instructions(cursor, organization_id: int, sample: Mapping[str, Any]) -> str | None:
+    """Group instructions, otherwise the assignment instructions already stored on the schedule."""
+    return _assignment_copy(cursor, organization_id, sample).get("instructions")
 
 
 def _activity_group_item_templates(cursor, organization_id: int, role: str) -> list[dict[str, Any]]:
@@ -2575,6 +2593,9 @@ def _review_item_from_shared(item: Mapping[str, Any], shared: Mapping[str, Any])
     out["section_label"] = shared.get("section_label")
     out["section_order"] = shared.get("section_order") or 0
     out["instructions"] = shared.get("instructions")
+    out["instructions_es"] = shared.get("instructions_es")
+    out["task_name_es"] = shared.get("task_name_es")
+    out["section_label_es"] = shared.get("section_label_es")
     out["display_order"] = shared.get("display_order") or 0
     out["input_schema"] = shared.get("input_schema") or []
     out["records"] = [record] if record else []
@@ -2817,6 +2838,9 @@ def build_verification_review_cards(
                         item["section_label"] = shared.get("section_label")
                         item["section_order"] = shared.get("section_order") or 0
                         item["instructions"] = shared.get("instructions")
+                        item["instructions_es"] = shared.get("instructions_es")
+                        item["task_name_es"] = shared.get("task_name_es")
+                        item["section_label_es"] = shared.get("section_label_es")
                         item["display_order"] = shared.get("display_order") or 0
                         item["input_schema"] = shared.get("input_schema") or []
                     else:
@@ -2837,18 +2861,27 @@ def build_verification_review_cards(
         from backend.task_section_verification import section_rollups
 
         remarks: list[dict[str, Any]] = []
+        instructions = None
+        instructions_es = None
+        name_es = None
         group_key = str((members[0].get("assignment_group_id") if members else "") or "")
         for assignment in assignments or []:
             same_key = str(assignment.get("assignment_key") or "") == str(key)
             same_group = group_key and str(assignment.get("assignment_group_id") or "") == group_key
             if same_key or same_group:
                 remarks = [dict(item) for item in (assignment.get("remarks") or [])]
-                if remarks:
+                instructions = assignment.get("instructions")
+                instructions_es = assignment.get("instructions_es")
+                name_es = assignment.get("name_es")
+                if remarks or instructions or name_es:
                     break
         cards.append(
             {
                 "assignment_key": key,
                 "role_label": title,
+                "name_es": name_es,
+                "instructions": instructions,
+                "instructions_es": instructions_es,
                 "timing_label": (members[0].get("timing_label") if members else None)
                 or entries[0].get("timing_label"),
                 "assigned_employees": assigned_names,

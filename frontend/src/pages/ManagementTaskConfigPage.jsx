@@ -227,6 +227,8 @@ export default function ManagementTaskConfigPage() {
               verifier_config: groupDraft.verifier_config || {},
             }),
         instructions: groupDraft.instructions || "",
+        instructions_es: groupDraft.instructions_es || "",
+        name_es: groupDraft.name_es || "",
         items,
       });
       setGroupDraft(null);
@@ -649,12 +651,26 @@ export default function ManagementTaskConfigPage() {
                   onChange={(e) => setGroupDraft({ ...groupDraft, name: e.target.value })}
                 />
                 <TextField
+                  label="Name (Spanish)"
+                  size="small"
+                  value={groupDraft.name_es || ""}
+                  onChange={(e) => setGroupDraft({ ...groupDraft, name_es: e.target.value })}
+                />
+                <TextField
                   label="Instructions"
                   size="small"
                   multiline
                   minRows={2}
                   value={groupDraft.instructions || ""}
                   onChange={(e) => setGroupDraft({ ...groupDraft, instructions: e.target.value })}
+                />
+                <TextField
+                  label="Instructions (Spanish)"
+                  size="small"
+                  multiline
+                  minRows={2}
+                  value={groupDraft.instructions_es || ""}
+                  onChange={(e) => setGroupDraft({ ...groupDraft, instructions_es: e.target.value })}
                 />
                 <TextField
                   select

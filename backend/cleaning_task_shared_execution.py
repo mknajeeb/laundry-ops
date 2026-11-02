@@ -282,6 +282,8 @@ def serialize_shared_item(
             "completion_type": frozen.get("completion_type") or info.get("completion_type"),
             "input_schema": frozen.get("input_schema") or [],
         }
+        for field in ("instructions_es", "section_label_es", "task_name_es"):
+            info[field] = frozen.get(field) if field in frozen else None
     completed_by = int(row["completed_by_user_id"]) if row.get("completed_by_user_id") is not None else None
     from backend.task_activity_item_responsibility import parse_snapshot, responsibility_payload
 
@@ -305,7 +307,10 @@ def serialize_shared_item(
         "completed_by_user_id": completed_by,
         "completed_by_name": (names or {}).get(completed_by) if completed_by is not None else None,
         "instructions": info.get("description") or info.get("instructions") or None,
+        "instructions_es": info.get("instructions_es"),
+        "task_name_es": info.get("task_name_es"),
         "section_label": (frozen or {}).get("section_label"),
+        "section_label_es": (frozen or {}).get("section_label_es") if frozen and "section_label_es" in frozen else info.get("section_label_es"),
         "section_order": int((frozen or {}).get("section_order") or 0),
         **responsibility,
         "completion_input": completion_input,

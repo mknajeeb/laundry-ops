@@ -3,6 +3,8 @@ import { Box, Button, Collapse, IconButton, Stack, Tooltip, Typography } from "@
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import { OPS_MOBILE } from "../../opsMobile";
 import TaskCompletionInputs from "../../opsMobile/TaskCompletionInputs";
+import { useI18n } from "../../i18n/I18nContext";
+import { localizedConfigured, localizedInstruction } from "./taskEmployeeI18n";
 import { groupChecklistSections, responsibilityLabel, splitSharedChecklist } from "./sharedChecklistOwnership";
 
 function SectionBlock({ title, done, total, items, busy, editingCode, inputValues, inputRemarks, onChangeValues, onChangeRemarks, onCheckoff, startOpen }) {
@@ -41,9 +43,19 @@ function SectionBlock({ title, done, total, items, busy, editingCode, inputValue
 }
 
 function ItemRow({ item, busy, editing, inputValues, inputRemarks, onChangeValues, onChangeRemarks, onCheckoff }) {
+  const { t, locale } = useI18n();
   const [info, setInfo] = useState(false);
   const done = ["completed", "approved", "verified"].includes(String(item.status || "").toLowerCase());
-  const instructions = String(item.instructions || "").trim();
+  const instructions = localizedInstruction(item, locale);
+  const itemName =
+    localizedConfigured(
+      { task_name: item.task_name || item.task_label, task_name_es: item.task_name_es },
+      locale,
+      "task_name",
+      "task_name_es",
+    ) || item.task_code;
+  const responsibility = responsibilityLabel(item);
+  const responsibilityText = responsibility === "Anyone on Team" ? t("tasks.pin.anyone") : responsibility;
   return (
     <Box
       sx={{
@@ -56,21 +68,21 @@ function ItemRow({ item, busy, editing, inputValues, inputRemarks, onChangeValue
       <Stack direction="row" alignItems="flex-start" spacing={0.5}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-            {item.task_name || item.task_label || item.task_code}
-            {item.required === false ? " (optional)" : ""}
+            {itemName}
+            {item.required === false ? ` ${t("tasks.pin.optionalParen")}` : ""}
           </Typography>
           <Typography variant="caption" color="text.secondary" display="block">
-            {responsibilityLabel(item)}
+            {responsibilityText}
             {done
               ? item.completed_by_name
-                ? ` · Checked off by ${item.completed_by_name}`
-                : " · Checked off"
+                ? ` · ${t("tasks.pin.checkedOffBy", { name: item.completed_by_name })}`
+                : ` · ${t("tasks.pin.checkedOff")}`
               : ""}
           </Typography>
         </Box>
         {instructions ? (
           <Tooltip title={instructions} enterTouchDelay={0} leaveTouchDelay={4000} arrow>
-            <IconButton size="small" aria-label="Instructions" onClick={() => setInfo((open) => !open)}>
+            <IconButton size="small" aria-label={t("tasks.pin.instructions")} onClick={() => setInfo((open) => !open)}>
               <InfoOutlinedIcon fontSize="small" />
             </IconButton>
           </Tooltip>
@@ -100,7 +112,7 @@ function ItemRow({ item, busy, editing, inputValues, inputRemarks, onChangeValue
             onClick={() => onCheckoff?.(item)}
             sx={{ mt: 1, fontWeight: 800, textTransform: "none" }}
           >
-            {editing ? "Save check-off" : "Check off"}
+            {editing ? t("tasks.pin.saveCheckoff") : t("tasks.pin.checkOff")}
           </Button>
         </>
       ) : null}
@@ -122,21 +134,24 @@ export default function SharedActivityChecklist({
   onChangeRemarks,
   onCheckoff,
 }) {
+  const { t, locale } = useI18n();
   const [othersOpen, setOthersOpen] = useState(false);
   const split = splitSharedChecklist(items, userId);
+  const sectionTitle = (section) =>
+    (locale === "es" && section.labelEs) || section.label || t("tasks.pin.checklist");
   return (
     <Stack spacing={1}>
       <Typography variant="body2" sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-        Progress: {split.requiredDone}/{split.requiredTotal}
+        {t("tasks.pin.progress", { done: split.requiredDone, total: split.requiredTotal })}
       </Typography>
       <Typography variant="caption" sx={{ fontWeight: 800, color: "text.secondary" }}>
-        My Items
+        {t("tasks.pin.myItems")}
       </Typography>
       {split.myItems.length ? (
         groupChecklistSections(split.myItems).map((section) => (
           <SectionBlock
             key={section.label}
-            title={section.label}
+            title={sectionTitle(section)}
             done={section.done}
             total={section.total}
             items={section.items}
@@ -152,7 +167,7 @@ export default function SharedActivityChecklist({
         ))
       ) : (
         <Typography variant="body2" color="text.secondary">
-          None assigned to you
+          {t("tasks.pin.noneAssigned")}
         </Typography>
       )}
       {split.otherItems.length ? (
@@ -162,14 +177,16 @@ export default function SharedActivityChecklist({
             onClick={() => setOthersOpen((open) => !open)}
             sx={{ textTransform: "none", px: 0, fontWeight: 800, alignSelf: "flex-start" }}
           >
-            {othersOpen ? "Hide other team items" : `Other Team Items (${split.otherItems.length})`}
+            {othersOpen
+              ? t("tasks.pin.hideOthers")
+              : t("tasks.pin.otherItems", { count: split.otherItems.length })}
           </Button>
           <Collapse in={othersOpen}>
             <Stack spacing={1}>
               {groupChecklistSections(split.otherItems).map((section) => (
                 <SectionBlock
                   key={`other-${section.label}`}
-                  title={section.label}
+                  title={sectionTitle(section)}
                   done={section.done}
                   total={section.total}
                   items={section.items}

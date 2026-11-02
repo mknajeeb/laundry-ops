@@ -14,6 +14,7 @@ import {
   Typography,
 } from "@mui/material";
 import PrintIcon from "@mui/icons-material/Print";
+import { useI18n } from "../i18n/I18nContext";
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import TaskDashboardMonthlyChart from "../components/tasks/TaskDashboardMonthlyChart";
 import TaskManualCompletionDialog from "../components/tasks/TaskManualCompletionDialog";
@@ -75,6 +76,7 @@ function Metric({ label, value, hint }) {
  * Rinse: read-only, no activity log, no labor, no edit/add/remove.
  */
 export default function ManagementTasksPage() {
+  const { locale } = useI18n();
   const today = businessTodayYmd();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -349,6 +351,7 @@ export default function ManagementTasksPage() {
         rows: res.data?.assignments || [],
         hideLabor,
         hideRemarks: Boolean(readOnly),
+        locale,
       });
     } catch (err) {
       setError(err?.response?.data?.error || err?.message || "Could not prepare the print report");

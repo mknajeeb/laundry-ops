@@ -46,6 +46,7 @@ def intra_day_activity_group_payloads() -> list[dict[str, Any]]:
         {
             "code": WASHER_GROUP_CODE,
             "name": "Washer Cleaning",
+            "name_es": "Limpieza de lavadoras",
             "category_code": "intra_day",
             "display_order": 10,
             "active": True,
@@ -55,10 +56,16 @@ def intra_day_activity_group_payloads() -> list[dict[str, Any]]:
                 "Shared washer activity. Check residue, then wipe the machines. "
                 "The assignment has one checklist. Each person keeps their own timer."
             ),
+            "instructions_es": (
+                "Actividad compartida de lavadoras. Revisa el residuo y luego limpia las máquinas. "
+                "La asignación tiene una lista. Cada persona conserva su propio tiempo."
+            ),
             "items": [
                 {
                     "task_code": WASHER_RESIDUE_CODE,
                     "section_label": "Machines",
+                    "section_label_es": "Máquinas",
+                    "task_name_es": "Revisar residuo de las lavadoras",
                     "section_order": 10,
                     "display_order": 10,
                     "required": True,
@@ -69,10 +76,16 @@ def intra_day_activity_group_payloads() -> list[dict[str, Any]]:
                         "Look inside each washer for leftover soap, lint, or debris "
                         "before the next load."
                     ),
+                    "instructions_es": (
+                        "Mira dentro de cada lavadora y busca jabón, pelusa o residuos "
+                        "antes de la siguiente carga."
+                    ),
                 },
                 {
                     "task_code": WASHER_WIPE_CODE,
                     "section_label": "Machines",
+                    "section_label_es": "Máquinas",
+                    "task_name_es": "Limpiar las lavadoras",
                     "section_order": 10,
                     "display_order": 20,
                     "required": True,
@@ -80,12 +93,14 @@ def intra_day_activity_group_payloads() -> list[dict[str, Any]]:
                     "responsibility_mode": "team",
                     "responsibility_user_ids": [],
                     "instructions": "Wipe washer doors, gaskets, tops, and detergent compartments.",
+                    "instructions_es": "Limpia las puertas, los empaques, las tapas y los compartimentos de detergente.",
                 },
             ],
         },
         {
             "code": FLOOR_GROUP_CODE,
             "name": "Floor Sweeping",
+            "name_es": "Barrido del piso",
             "category_code": "intra_day",
             "display_order": 20,
             "active": True,
@@ -95,10 +110,16 @@ def intra_day_activity_group_payloads() -> list[dict[str, Any]]:
                 "Shared floor activity. Sweep the production floor once for the assignment. "
                 "Each person keeps their own timer."
             ),
+            "instructions_es": (
+                "Actividad compartida del piso. Barre el piso de producción una vez para la asignación. "
+                "Cada persona conserva su propio tiempo."
+            ),
             "items": [
                 {
                     "task_code": FLOOR_SWEEP_CODE,
                     "section_label": "Floor Cleaning",
+                    "section_label_es": "Limpieza del piso",
+                    "task_name_es": "Barrido del piso",
                     "section_order": 10,
                     "display_order": 10,
                     "required": True,
@@ -108,12 +129,16 @@ def intra_day_activity_group_payloads() -> list[dict[str, Any]]:
                     "instructions": (
                         "Sweep the production floor, including corners and the area around the machines."
                     ),
+                    "instructions_es": (
+                        "Barre el piso de producción, incluidas las esquinas y el área alrededor de las máquinas."
+                    ),
                 },
             ],
         },
         {
             "code": DRYER_GROUP_CODE,
             "name": "Dryer Lint Cleaning",
+            "name_es": "Limpieza de pelusa de secadoras",
             "category_code": "intra_day",
             "display_order": 30,
             "active": True,
@@ -123,10 +148,16 @@ def intra_day_activity_group_payloads() -> list[dict[str, Any]]:
                 "Shared dryer activity. One checklist for the assignment, however many people "
                 "are assigned. Each person keeps their own timer."
             ),
+            "instructions_es": (
+                "Actividad compartida de secadoras. Una lista para la asignación, sin importar cuántas "
+                "personas estén asignadas. Cada persona conserva su propio tiempo."
+            ),
             "items": [
                 {
                     "task_code": DRYER_LINT_CODE,
                     "section_label": "Dryer Cleaning",
+                    "section_label_es": "Limpieza de secadoras",
+                    "task_name_es": "Limpiar pelusa y empaques",
                     "section_order": 10,
                     "display_order": 10,
                     "required": True,
@@ -136,6 +167,10 @@ def intra_day_activity_group_payloads() -> list[dict[str, Any]]:
                     "instructions": (
                         "Clean lint from the dryer lint screens and wipe the door gaskets. "
                         "Do this once for the shared assignment."
+                    ),
+                    "instructions_es": (
+                        "Quita la pelusa de los filtros y limpia los empaques de la puerta. "
+                        "Hazlo una vez para la asignación compartida."
                     ),
                 },
             ],

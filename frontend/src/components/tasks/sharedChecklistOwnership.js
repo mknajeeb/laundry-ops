@@ -43,7 +43,14 @@ export function groupChecklistSections(items) {
   for (const item of items || []) {
     const label = String(item?.section_label || "Checklist");
     const order = Number(item?.section_order || 0);
-    if (!groups.has(label)) groups.set(label, { label, order, items: [] });
+    if (!groups.has(label)) {
+      groups.set(label, {
+        label,
+        labelEs: String(item?.section_label_es || "").trim(),
+        order,
+        items: [],
+      });
+    }
     groups.get(label).items.push(item);
   }
   return [...groups.values()]

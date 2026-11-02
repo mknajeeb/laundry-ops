@@ -26,6 +26,8 @@ import {
   attendancePinSwitchRole,
 } from "../api";
 import { OpsMobileShell, OpsTopBar, OPS_MOBILE } from "../opsMobile";
+import { useI18n } from "../i18n/I18nContext";
+import { categoryLabel, localizedConfigured, localizedInstruction, taskStatusLabel } from "../components/tasks/taskEmployeeI18n";
 import ActivityRemarks from "../components/tasks/ActivityRemarks";
 import InstructionHint from "../components/tasks/InstructionHint";
 import SharedActivityChecklist from "../components/tasks/SharedActivityChecklist";
@@ -64,36 +66,12 @@ function formatElapsed(startedAt, nowMs) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-function statusLabel(status) {
-  switch (status) {
-    case "pending":
-      return "Pending";
-    case "overdue":
-      return "Overdue";
-    case "in_progress":
-      return "In progress";
-    case "pending_approval":
-    case "pending_verification":
-      return "Pending Verification";
-    case "approved":
-    case "verified":
-      return "Verified";
-    case "completed":
-      return "Completed";
-    case "rejected":
-      return "Needs redo";
-    case "not_started":
-      return "Not started";
-    case "incomplete":
-      return "Incomplete";
-    case "partial":
-      return "Needs attention";
-    default:
-      return status || "";
-  }
+function statusLabel(status, t) {
+  return taskStatusLabel(t, status);
 }
 
 function PartnerLines({ partners, executionMode, assignedNames }) {
+  const { t } = useI18n();
   const names = (assignedNames || []).filter(Boolean);
   if (executionMode !== "shared" || (!partners?.length && names.length < 2)) return null;
   const working = (partners || []).filter((partner) => partner.state === "working").map((partner) => partner.name);
@@ -103,21 +81,21 @@ function PartnerLines({ partners, executionMode, assignedNames }) {
   return (
     <Box sx={{ mt: 0.5 }}>
       <Typography variant="body2" sx={{ fontWeight: 700, color: OPS_MOBILE.navy }}>
-        {`Assigned with: ${headline}`}
+        {t("tasks.pin.assignedWith", { names: headline })}
       </Typography>
       {working.length ? (
         <Typography variant="caption" display="block" sx={{ color: "#166534", fontWeight: 700 }}>
-          {`Working now: ${working.join(", ")}`}
+          {t("tasks.pin.workingNow", { names: working.join(", ") })}
         </Typography>
       ) : null}
       {waiting.length ? (
         <Typography variant="caption" display="block" color="text.secondary">
-          {`Not started: ${waiting.join(", ")}`}
+          {t("tasks.pin.notStartedNames", { names: waiting.join(", ") })}
         </Typography>
       ) : null}
       {finished.length ? (
         <Typography variant="caption" display="block" color="text.secondary">
-          {`Finished: ${finished.join(", ")}`}
+          {t("tasks.pin.finishedNames", { names: finished.join(", ") })}
         </Typography>
       ) : null}
     </Box>
@@ -125,6 +103,7 @@ function PartnerLines({ partners, executionMode, assignedNames }) {
 }
 
 function TaskCard({ task, onStart, onCompleteUntimed, busy }) {
+  const { t, locale } = useI18n();
   const names = (task.assigned_employees || []).join(" + ");
   const canAct =
     task.status === "pending" || task.status === "overdue" || task.status === "rejected";
@@ -143,22 +122,33 @@ function TaskCard({ task, onStart, onCompleteUntimed, busy }) {
     >
       <Stack direction="row" alignItems="center" spacing={0.5}>
         <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-          {task.role_label || task.role}
+          {localizedConfigured({ name: task.role_label || task.role, name_es: task.name_es }, locale, "name", "name_es") ||
+            task.role}
         </Typography>
-        <InstructionHint text={task.instructions || task.remarks} />
+        <InstructionHint text={localizedInstruction(task, locale) || task.remarks} label={t("tasks.pin.instructions")} />
       </Stack>
       <Typography variant="body2" color="text.secondary">
-        {isGroup ? "Activity Group" : task.category_name || task.category_code || "Task"}
+        {isGroup ? t("tasks.pin.activityGroup") : categoryLabel(t, task.category_code, task.category_name) || t("tasks.pin.task")}
         {" · "}
-        {task.timing_label || "Anytime"}
+        {task.timing_label || t("tasks.pin.anytime")}
         {names ? ` · ${names}` : ""}
-        {isGroup && itemCount ? ` · ${itemCount} tasks` : ""}
-        {!isGroup && needsInput ? " · Input required" : ""}
-        {untimed ? " · Untimed" : ""}
+        {isGroup && itemCount ? ` · ${t("tasks.pin.tasksCount", { count: itemCount })}` : ""}
+        {!isGroup && needsInput ? ` · ${t("tasks.pin.inputRequired")}` : ""}
+        {untimed ? ` · ${t("tasks.pin.untimed")}` : ""}
       </Typography>
       {isGroup && (task.group_items || []).length ? (
         <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-          {(task.group_items || []).map((it) => it.task_name || it.task_code).join(" · ")}
+          {(task.group_items || [])
+            .map(
+              (it) =>
+                localizedConfigured(
+                  { task_name: it.task_name || it.task_code, task_name_es: it.task_name_es },
+                  locale,
+                  "task_name",
+                  "task_name_es",
+                ) || it.task_code,
+            )
+            .join(" · ")}
         </Typography>
       ) : null}
       <PartnerLines
@@ -167,7 +157,7 @@ function TaskCard({ task, onStart, onCompleteUntimed, busy }) {
         assignedNames={task.assigned_employees}
       />
       <Typography variant="caption" sx={{ fontWeight: 700, color: "#b45309" }}>
-        {statusLabel(task.status)}
+        {statusLabel(task.status, t)}
       </Typography>
       {canAct ? (
         <Button
@@ -177,13 +167,13 @@ function TaskCard({ task, onStart, onCompleteUntimed, busy }) {
           onClick={() => (untimed ? onCompleteUntimed(task) : onStart(task))}
           sx={{ mt: 1.25, fontWeight: 800, textTransform: "none" }}
         >
-          {isGroup
-            ? "Start Group"
-            : untimed
-              ? needsInput
-                ? "Complete with input"
-                : "Mark Complete"
-              : "Start Task"}
+          {untimed
+            ? needsInput
+              ? t("tasks.pin.completeWithInput")
+              : t("tasks.pin.markComplete")
+            : task.status === "rejected"
+              ? t("tasks.pin.resumeActivity")
+              : t("tasks.pin.startActivity")}
         </Button>
       ) : null}
     </Box>
@@ -194,6 +184,7 @@ function TaskCard({ task, onStart, onCompleteUntimed, busy }) {
  * PIN Tasks — My Tasks (by category) + Tasks to Verify + checklist review.
  */
 export default function CleaningTasksPinPage() {
+  const { t, locale } = useI18n();
   const { orgSlug: routeSlug } = useParams();
   const navigate = useNavigate();
   const slug = sanitizeSlug(routeSlug);
@@ -234,7 +225,7 @@ export default function CleaningTasksPinPage() {
 
   const load = useCallback(async () => {
     if (!hub?.token || !slug) {
-      setError("Enter your PIN again.");
+      setError(t("tasks.pin.enterPin"));
       setLoading(false);
       return;
     }
@@ -246,7 +237,7 @@ export default function CleaningTasksPinPage() {
         attendancePinCleaningTasksVerifyQueue(slug, hub.pin, { hubToken: hub.token }),
       ]);
       const body = res?.data || {};
-      if (!body.ok) throw new Error(body.error || "Could not load tasks");
+      if (!body.ok) throw new Error(body.error || t("tasks.pin.loadTasks"));
       setData(body);
       if (body.open_activity) {
         setActive(body.open_activity);
@@ -264,11 +255,11 @@ export default function CleaningTasksPinPage() {
       setVerifyQueue(vbody.ok ? vbody.pending_verification || [] : []);
       setChecklists(vbody.ok ? vbody.checklists || [] : []);
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not load tasks");
+      setError(e?.response?.data?.error || e?.message || t("tasks.pin.loadTasks"));
     } finally {
       setLoading(false);
     }
-  }, [hub, slug]);
+  }, [hub, slug, t]);
 
   useEffect(() => {
     load();
@@ -341,7 +332,7 @@ export default function CleaningTasksPinPage() {
         responsibility_id: task.responsibility_id,
       });
       const body = res?.data || {};
-      if (!body.ok) throw new Error(body.error || "Could not start task");
+      if (!body.ok) throw new Error(body.error || t("tasks.pin.startFailed"));
       const activity = {
         ...body.activity,
         input_schema: body.activity?.input_schema || task.input_schema || [],
@@ -353,7 +344,7 @@ export default function CleaningTasksPinPage() {
       resetInputs(activity.input_schema || []);
       await load();
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not start task");
+      setError(e?.response?.data?.error || e?.message || t("tasks.pin.startFailed"));
     } finally {
       setBusy(false);
     }
@@ -384,7 +375,7 @@ export default function CleaningTasksPinPage() {
         remark: workRemark,
       });
       const body = res?.data || {};
-      if (!body.ok) throw new Error(body.error || "Could not complete task");
+      if (!body.ok) throw new Error(body.error || t("tasks.pin.completeFailed"));
       setInputDraftTask(null);
       if ((body.activity?.next_options || []).length) {
         setCompleted(body.activity);
@@ -393,7 +384,7 @@ export default function CleaningTasksPinPage() {
         await load();
       }
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not complete task");
+      setError(e?.response?.data?.error || e?.message || t("tasks.pin.completeFailed"));
     } finally {
       setBusy(false);
     }
@@ -408,10 +399,10 @@ export default function CleaningTasksPinPage() {
         activity_id: activityId,
       });
       const body = res?.data || {};
-      if (!body.ok) throw new Error(body.error || "Could not verify");
+      if (!body.ok) throw new Error(body.error || t("tasks.pin.verifyFailed"));
       await load();
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not verify");
+      setError(e?.response?.data?.error || e?.message || t("tasks.pin.verifyFailed"));
     } finally {
       setBusy(false);
     }
@@ -428,12 +419,12 @@ export default function CleaningTasksPinPage() {
         reason: rejectReason,
       });
       const body = res?.data || {};
-      if (!body.ok) throw new Error(body.error || "Could not reject");
+      if (!body.ok) throw new Error(body.error || t("tasks.pin.rejectFailed"));
       setRejectId(null);
       setRejectReason("");
       await load();
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not reject");
+      setError(e?.response?.data?.error || e?.message || t("tasks.pin.rejectFailed"));
     } finally {
       setBusy(false);
     }
@@ -455,11 +446,11 @@ export default function CleaningTasksPinPage() {
         remark: workRemark,
       });
       const body = res?.data || {};
-      if (!body.ok) throw new Error(body.error || "Could not complete task");
+      if (!body.ok) throw new Error(body.error || t("tasks.pin.completeFailed"));
       setCompleted(body.activity);
       setActive(null);
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not complete task");
+      setError(e?.response?.data?.error || e?.message || t("tasks.pin.completeFailed"));
     } finally {
       setBusy(false);
     }
@@ -488,7 +479,7 @@ export default function CleaningTasksPinPage() {
         completion_input,
       });
       const body = res?.data || {};
-      if (!body.ok) throw new Error(body.error || "Could not check off task");
+      if (!body.ok) throw new Error(body.error || t("tasks.pin.checkoffFailed"));
       const next = body.activity;
       if (
         active.checklist_followup_only &&
@@ -503,7 +494,7 @@ export default function CleaningTasksPinPage() {
       setCheckoffCode(null);
       resetInputs([]);
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not check off task");
+      setError(e?.response?.data?.error || e?.message || t("tasks.pin.checkoffFailed"));
     } finally {
       setBusy(false);
     }
@@ -521,12 +512,12 @@ export default function CleaningTasksPinPage() {
         task_code: taskCode || "",
       });
       const payload = res?.data || {};
-      if (!payload.ok) throw new Error(payload.error || "Could not save the remark");
+      if (!payload.ok) throw new Error(payload.error || t("tasks.pin.remarkFailed"));
       setActive((current) =>
         current ? { ...current, remarks: payload.remarks || [], remark_count: (payload.remarks || []).length } : current
       );
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not save the remark");
+      setError(e?.response?.data?.error || e?.message || t("tasks.pin.remarkFailed"));
     } finally {
       setBusy(false);
     }
@@ -543,12 +534,12 @@ export default function CleaningTasksPinPage() {
         remark: workRemark,
       });
       const body = res?.data || {};
-      if (!body.ok) throw new Error(body.error || "Could not complete group");
+      if (!body.ok) throw new Error(body.error || t("tasks.pin.groupFailed"));
       setCompleted(body.activity);
       setActive(null);
       setCheckoffCode(null);
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not complete group");
+      setError(e?.response?.data?.error || e?.message || t("tasks.pin.groupFailed"));
     } finally {
       setBusy(false);
     }
@@ -565,10 +556,10 @@ export default function CleaningTasksPinPage() {
         group_id: groupId,
       });
       const body = res?.data || {};
-      if (!body.ok) throw new Error(body.error || "Could not verify checklist");
+      if (!body.ok) throw new Error(body.error || t("tasks.pin.checklistVerifyFailed"));
       await load();
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not verify checklist");
+      setError(e?.response?.data?.error || e?.message || t("tasks.pin.checklistVerifyFailed"));
     } finally {
       setBusy(false);
     }
@@ -584,12 +575,12 @@ export default function CleaningTasksPinPage() {
         reason: rejectReason,
       });
       const body = res?.data || {};
-      if (!body.ok) throw new Error(body.error || "Could not reject item");
+      if (!body.ok) throw new Error(body.error || t("tasks.pin.rejectItemFailed"));
       setRejectId(null);
       setRejectReason("");
       await load();
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not reject item");
+      setError(e?.response?.data?.error || e?.message || t("tasks.pin.rejectItemFailed"));
     } finally {
       setBusy(false);
     }
@@ -606,7 +597,7 @@ export default function CleaningTasksPinPage() {
         choice,
       });
       const body = res?.data || {};
-      if (!body.ok) throw new Error(body.error || "Could not continue");
+      if (!body.ok) throw new Error(body.error || t("tasks.pin.continueFailed"));
       const pausedCat = body.paused_category_id ?? completed.paused_category_id;
       const pausedRole = body.paused_role_id ?? completed.paused_role_id;
       setCompleted(null);
@@ -628,14 +619,14 @@ export default function CleaningTasksPinPage() {
         });
         const switchBody = switchRes?.data || {};
         if (!switchBody.ok) {
-          throw new Error(switchBody.error || "Could not resume previous role");
+          throw new Error(switchBody.error || t("tasks.pin.resumeRoleFailed"));
         }
         navigate(pinHubMenuPath(slug), { replace: true });
         return;
       }
       navigate(`/attendance/role/${encodeURIComponent(slug)}?from=hub`, { replace: true });
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not continue");
+      setError(e?.response?.data?.error || e?.message || t("tasks.pin.continueFailed"));
     } finally {
       setBusy(false);
     }
@@ -653,7 +644,7 @@ export default function CleaningTasksPinPage() {
   return (
     <OpsMobileShell>
       <OpsTopBar
-        title="Tasks"
+        title={t("tasks.pin.title")}
         onBack={goHub}
         onLock={lock}
         identity={hub.employee_first_name || hub.employee_name || ""}
@@ -678,11 +669,16 @@ export default function CleaningTasksPinPage() {
               textAlign: "center",
             }}
           >
-            Task Completed!
+            {t("tasks.pin.completed")}
           </Typography>
           <Box sx={{ textAlign: "center" }}>
             <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy, fontSize: "1.1rem" }}>
-              {completed.group?.name || completed.role_label || completed.role}
+              {localizedConfigured(
+                { name: completed.group?.name || completed.role_label || completed.role, name_es: completed.name_es || completed.group?.name_es },
+                locale,
+                "name",
+                "name_es",
+              )}
             </Typography>
             <Typography variant="body1" color="text.secondary" sx={{ mt: 0.5 }}>
               {completed.verification_required ||
@@ -694,8 +690,8 @@ export default function CleaningTasksPinPage() {
                   it.status === "pending_approval" ||
                   it.status === "pending_verification",
               )
-                ? "Waiting for verification"
-                : "All set"}
+                ? t("tasks.pin.waitingVerification")
+                : t("tasks.pin.allSet")}
             </Typography>
           </Box>
           <Typography
@@ -707,7 +703,7 @@ export default function CleaningTasksPinPage() {
               pt: 1,
             }}
           >
-            What&apos;s Next?
+            {t("tasks.pin.whatsNext")}
           </Typography>
           <Stack spacing={1.5}>
             <Button
@@ -717,7 +713,7 @@ export default function CleaningTasksPinPage() {
               onClick={() => chooseNext("resume_work")}
               sx={{ fontWeight: 800, textTransform: "none", py: 1.75, fontSize: "1.05rem" }}
             >
-              Resume Work
+              {t("tasks.pin.resumeWork")}
             </Button>
             <Button
               fullWidth
@@ -726,7 +722,7 @@ export default function CleaningTasksPinPage() {
               onClick={() => chooseNext("change_role")}
               sx={{ fontWeight: 800, textTransform: "none", py: 1.75, fontSize: "1.05rem" }}
             >
-              Switch Role
+              {t("tasks.pin.switchRole")}
             </Button>
             <Button
               fullWidth
@@ -735,27 +731,32 @@ export default function CleaningTasksPinPage() {
               onClick={() => chooseNext("take_break")}
               sx={{ fontWeight: 800, textTransform: "none", py: 1.75, fontSize: "1.05rem" }}
             >
-              Take Break
+              {t("tasks.pin.takeBreak")}
             </Button>
           </Stack>
         </Stack>
       ) : inputDraftTask ? (
         <Stack spacing={1.5}>
           <Typography variant="h6" sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-            {inputDraftTask.role_label || inputDraftTask.role}
+            {localizedConfigured(
+              { name: inputDraftTask.role_label || inputDraftTask.role, name_es: inputDraftTask.name_es },
+              locale,
+              "name",
+              "name_es",
+            )}
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Enter required information to complete this task.
+            {t("tasks.pin.enterInfo")}
           </Typography>
           {inputDraftTask.instructions || inputDraftTask.remarks ? (
             <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-              {inputDraftTask.instructions || inputDraftTask.remarks}
+              {localizedInstruction(inputDraftTask, locale) || inputDraftTask.remarks}
             </Typography>
           ) : null}
           <TextField
             size="small"
             fullWidth
-            label="Remark (optional)"
+            label={t("tasks.pin.remarkOptional")}
             value={workRemark}
             onChange={(e) => setWorkRemark(e.target.value)}
           />
@@ -774,24 +775,35 @@ export default function CleaningTasksPinPage() {
             onClick={() => completeUntimed(inputDraftTask)}
             sx={{ fontWeight: 800, textTransform: "none", py: 1.5 }}
           >
-            Submit & Complete
+            {t("tasks.pin.submitComplete")}
           </Button>
           <Button disabled={busy} onClick={() => setInputDraftTask(null)} sx={{ textTransform: "none" }}>
-            Cancel
+            {t("tasks.pin.cancel")}
           </Button>
         </Stack>
       ) : active?.is_activity_group || active?.activity_kind === "group" ? (
         <Stack spacing={1.5} alignItems="stretch">
           <Stack direction="row" alignItems="center" spacing={0.5}>
             <Typography variant="h6" sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-              {active.group?.name || active.role_label || active.role}
+              {localizedConfigured(
+                {
+                  name: active.group?.name || active.role_label || active.role,
+                  name_es: active.name_es || active.group?.name_es,
+                },
+                locale,
+                "name",
+                "name_es",
+              )}
             </Typography>
-            <InstructionHint text={active.instructions || active.group?.instructions || active.remarks} />
+            <InstructionHint
+              text={localizedInstruction(active, locale) || localizedInstruction(active.group, locale) || active.remarks}
+              label={t("tasks.pin.instructions")}
+            />
           </Stack>
           <Typography variant="body2" color="text.secondary">
             {active.execution_mode === "shared" || active.group?.execution_mode === "shared"
-              ? "Shared Activity · your timer · one checklist"
-              : "Activity Group · your timer"}
+              ? t("tasks.pin.sharedActivity")
+              : t("tasks.pin.groupTimer")}
           </Typography>
           <PartnerLines
             partners={active.partners}
@@ -800,12 +812,12 @@ export default function CleaningTasksPinPage() {
           />
           {active.group?.checklist_complete || active.shared_checklist_complete ? (
             <Typography variant="body2" sx={{ fontWeight: 700, color: "#166534" }}>
-              Shared checklist complete
-              {active.status === "in_progress" ? " — finish your timer when ready" : ""}
+              {t("tasks.pin.checklistComplete")}
+              {active.status === "in_progress" ? ` ${t("tasks.pin.finishTimer")}` : ""}
             </Typography>
           ) : active.checklist_followup_only ? (
             <Typography variant="body2" sx={{ fontWeight: 700, color: OPS_MOBILE.navy }}>
-              Your timer is finished — check off remaining shared items
+              {t("tasks.pin.timerFinished")}
             </Typography>
           ) : null}
           {active.checklist_followup_only ? null : (
@@ -844,8 +856,8 @@ export default function CleaningTasksPinPage() {
               sx={{ fontWeight: 800, textTransform: "none", py: 1.5 }}
             >
               {active.execution_mode === "shared" || active.group?.execution_mode === "shared"
-                ? "Finish My Participation"
-                : "Complete Group"}
+                ? t("tasks.pin.finishParticipation")
+                : t("tasks.pin.completeGroup")}
             </Button>
             </>
           )}
@@ -854,12 +866,17 @@ export default function CleaningTasksPinPage() {
         <Stack spacing={1.5} alignItems="stretch">
           <Stack direction="row" alignItems="center" spacing={0.5}>
             <Typography variant="h6" sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-              {active.role_label || active.role}
+              {localizedConfigured(
+                { name: active.role_label || active.role, name_es: active.name_es },
+                locale,
+                "name",
+                "name_es",
+              )}
             </Typography>
-            <InstructionHint text={active.instructions || active.remarks} />
+            <InstructionHint text={localizedInstruction(active, locale) || active.remarks} label={t("tasks.pin.instructions")} />
           </Stack>
           <Typography variant="body2" color="text.secondary">
-            {active.timing_label || "Anytime"}
+            {active.timing_label || t("tasks.pin.anytime")}
           </Typography>
           <ActivityRemarks remarks={active.remarks || []} busy={busy} onAdd={addActivityRemark} />
           <Typography sx={{ fontSize: "2.4rem", fontWeight: 900, textAlign: "center", color: OPS_MOBILE.navy }}>
@@ -882,21 +899,21 @@ export default function CleaningTasksPinPage() {
             onClick={completeTask}
             sx={{ fontWeight: 800, textTransform: "none", py: 1.5 }}
           >
-            Complete
+            {t("tasks.pin.complete")}
           </Button>
         </Stack>
       ) : (
         <Stack spacing={2.5}>
           <Box>
             <Typography sx={{ fontWeight: 900, mb: 1, color: OPS_MOBILE.navy, fontSize: "1.1rem" }}>
-              My Tasks
+              {t("tasks.pin.myTasks")}
             </Typography>
             {(data?.tasks_by_category || []).length ? (
               <Stack spacing={2}>
                 {(data.tasks_by_category || []).map((group) => (
                   <Box key={group.category_code}>
                     <Typography sx={{ fontWeight: 800, mb: 1, color: OPS_MOBILE.navy }}>
-                      {group.category_name}
+                      {categoryLabel(t, group.category_code, group.category_name)}
                     </Typography>
                     <Stack spacing={1}>
                       {(group.tasks || []).map((task) => (
@@ -914,14 +931,14 @@ export default function CleaningTasksPinPage() {
               </Stack>
             ) : (
               <Typography variant="body2" color="text.secondary">
-                No tasks assigned today.
+                {t("tasks.pin.noTasks")}
               </Typography>
             )}
           </Box>
 
           <Box>
             <Typography sx={{ fontWeight: 900, mb: 1, color: OPS_MOBILE.navy, fontSize: "1.1rem" }}>
-              Tasks to Verify ({verifyQueue.length})
+              {t("tasks.pin.toVerify", { count: verifyQueue.length })}
             </Typography>
             <Stack spacing={1}>
               {verifyQueue.length ? (
@@ -939,13 +956,13 @@ export default function CleaningTasksPinPage() {
                       {item.role_label || item.role}
                     </Typography>
                     <Typography variant="body2" color="text.secondary">
-                      {item.category_name || item.category_code || "Task"} · Completed by{" "}
-                      {item.employee_name || `User #${item.user_id}`} ·{" "}
+                      {categoryLabel(t, item.category_code, item.category_name) || t("tasks.pin.task")} ·{" "}
+                      {t("tasks.pin.completedBy", { name: item.employee_name || `User #${item.user_id}` })} ·{" "}
                       {item.original_business_date || item.business_date}
                     </Typography>
                     {formatCompletionInput(item.completion_input) ? (
                       <Typography variant="caption" display="block" sx={{ mt: 0.5 }}>
-                        Input: {formatCompletionInput(item.completion_input)}
+                        {t("tasks.pin.input", { value: formatCompletionInput(item.completion_input) })}
                       </Typography>
                     ) : null}
                     {rejectId === item.id ? (
@@ -953,15 +970,15 @@ export default function CleaningTasksPinPage() {
                         <input
                           value={rejectReason}
                           onChange={(e) => setRejectReason(e.target.value)}
-                          placeholder="Rejection reason (required)"
+                          placeholder={t("tasks.pin.rejectReasonRequired")}
                           style={{ padding: 8, borderRadius: 8, border: "1px solid #cbd5e1" }}
                         />
                         <Stack direction="row" spacing={1}>
                           <Button size="small" variant="contained" color="warning" disabled={busy} onClick={rejectItem}>
-                            Reject
+                            {t("tasks.pin.reject")}
                           </Button>
                           <Button size="small" onClick={() => setRejectId(null)}>
-                            Cancel
+                            {t("tasks.pin.cancel")}
                           </Button>
                         </Stack>
                       </Stack>
@@ -974,7 +991,7 @@ export default function CleaningTasksPinPage() {
                           onClick={() => verifyItem(item.id)}
                           sx={{ textTransform: "none", fontWeight: 800 }}
                         >
-                          Verify
+                          {t("tasks.pin.verify")}
                         </Button>
                         <Button
                           size="small"
@@ -983,7 +1000,7 @@ export default function CleaningTasksPinPage() {
                           onClick={() => setRejectId(item.id)}
                           sx={{ textTransform: "none", fontWeight: 800 }}
                         >
-                          Needs redo
+                          {t("tasks.pin.needsRedo")}
                         </Button>
                       </Stack>
                     )}
@@ -991,7 +1008,7 @@ export default function CleaningTasksPinPage() {
                 ))
               ) : (
                 <Typography variant="body2" color="text.secondary">
-                  None waiting for you
+                  {t("tasks.pin.noneWaiting")}
                 </Typography>
               )}
             </Stack>
@@ -999,7 +1016,7 @@ export default function CleaningTasksPinPage() {
 
           <Box>
             <Typography sx={{ fontWeight: 900, mb: 1, color: OPS_MOBILE.navy, fontSize: "1.1rem" }}>
-              Checklists ({checklists.length})
+              {t("tasks.pin.checklists", { count: checklists.length })}
             </Typography>
             <Stack spacing={1.25}>
               {checklists.length ? (
@@ -1017,8 +1034,8 @@ export default function CleaningTasksPinPage() {
                       {cl.checklist_name}
                     </Typography>
                     <Typography variant="body2" color="text.secondary">
-                      Original date {cl.business_date} · {statusLabel(cl.status)} ·{" "}
-                      {cl.required_done}/{cl.required_total} required done
+                      {t("tasks.pin.originalDate", { date: cl.business_date })} · {statusLabel(cl.status, t)} ·{" "}
+                      {t("tasks.pin.requiredDone", { done: cl.required_done, total: cl.required_total })}
                       {cl.completion_pct != null ? ` · ${cl.completion_pct}%` : ""}
                     </Typography>
                     <Stack spacing={1} sx={{ mt: 1 }}>
@@ -1034,7 +1051,7 @@ export default function CleaningTasksPinPage() {
                               }}
                             >
                               <Typography variant="body2" sx={{ fontWeight: 800 }}>
-                                {group.group_name} · {statusLabel(group.status)} ·{" "}
+                                {group.group_name} · {statusLabel(group.status, t)} ·{" "}
                                 {group.required_done}/{group.required_total}
                                 {group.completion_pct != null ? ` · ${group.completion_pct}%` : ""}
                               </Typography>
@@ -1042,14 +1059,14 @@ export default function CleaningTasksPinPage() {
                                 {(group.items || []).map((item) => (
                                   <Box key={item.task_code} sx={{ pl: 0.5 }}>
                                     <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                                      {item.task_label} · {statusLabel(item.status)}
-                                      {item.required ? "" : " (optional)"}
+                                      {item.task_label} · {statusLabel(item.status, t)}
+                                      {item.required ? "" : ` ${t("tasks.pin.optionalParen")}`}
                                     </Typography>
                                     {(item.activities || []).map((act) => (
                                       <Box key={act.id} sx={{ ml: 1, mb: 0.5 }}>
                                         <Typography variant="caption" display="block" color="text.secondary">
                                           {act.employee_name} ·{" "}
-                                          {statusLabel(act.display_status || act.status)}
+                                          {statusLabel(act.display_status || act.status, t)}
                                           {formatCompletionInput(act.completion_input)
                                             ? ` · ${formatCompletionInput(act.completion_input)}`
                                             : ""}
@@ -1061,7 +1078,7 @@ export default function CleaningTasksPinPage() {
                                               <input
                                                 value={rejectReason}
                                                 onChange={(e) => setRejectReason(e.target.value)}
-                                                placeholder="Rejection reason"
+                                                placeholder={t("tasks.pin.rejectReason")}
                                                 style={{
                                                   padding: 6,
                                                   borderRadius: 6,
@@ -1075,10 +1092,10 @@ export default function CleaningTasksPinPage() {
                                                   disabled={busy}
                                                   onClick={() => rejectChecklistActivity(act.id)}
                                                 >
-                                                  Reject item
+                                                  {t("tasks.pin.rejectItem")}
                                                 </Button>
                                                 <Button size="small" onClick={() => setRejectId(null)}>
-                                                  Cancel
+                                                  {t("tasks.pin.cancel")}
                                                 </Button>
                                               </Stack>
                                             </Stack>
@@ -1090,7 +1107,7 @@ export default function CleaningTasksPinPage() {
                                               onClick={() => setRejectId(`cl-${act.id}`)}
                                               sx={{ textTransform: "none" }}
                                             >
-                                              Flag item
+                                              {t("tasks.pin.flagItem")}
                                             </Button>
                                           )
                                         ) : null}
@@ -1108,7 +1125,7 @@ export default function CleaningTasksPinPage() {
                                   onClick={() => verifyChecklist(cl, group.group_id)}
                                   sx={{ mt: 1, fontWeight: 700, textTransform: "none" }}
                                 >
-                                  Verify group
+                                  {t("tasks.pin.verifyGroup")}
                                 </Button>
                               ) : null}
                             </Box>
@@ -1116,8 +1133,8 @@ export default function CleaningTasksPinPage() {
                         : (cl.items || []).map((item) => (
                             <Box key={item.task_code} sx={{ pl: 0.5 }}>
                               <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                                {item.task_label} · {statusLabel(item.status)}
-                                {item.required ? "" : " (optional)"}
+                                {item.task_label} · {statusLabel(item.status, t)}
+                                {item.required ? "" : ` ${t("tasks.pin.optionalParen")}`}
                               </Typography>
                             </Box>
                           ))}
@@ -1130,18 +1147,18 @@ export default function CleaningTasksPinPage() {
                         onClick={() => verifyChecklist(cl)}
                         sx={{ mt: 1.25, fontWeight: 800, textTransform: "none" }}
                       >
-                        Verify entire checklist
+                        {t("tasks.pin.verifyChecklist")}
                       </Button>
                     ) : (
                       <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-                        Complete all required items (and clear rejections) before verifying the checklist.
+                        {t("tasks.pin.completeRequired")}
                       </Typography>
                     )}
                   </Box>
                 ))
               ) : (
                 <Typography variant="body2" color="text.secondary">
-                  No checklists awaiting review
+                  {t("tasks.pin.noChecklists")}
                 </Typography>
               )}
             </Stack>

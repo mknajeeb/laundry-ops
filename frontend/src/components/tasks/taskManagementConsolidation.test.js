@@ -4,6 +4,7 @@ import { PIN_LAUNCHER_I18N } from "../../opsMobile/buildPinLauncherTiles";
 import { buildTaskDashboardPrintDocument } from "./taskDashboardPrint";
 import { hiddenRoutineAssignmentCodes, routineAssignmentOptions } from "./routineAssignmentOptions";
 import { sectionRollups } from "./sectionVerification";
+import { splitActivityRemarks } from "./taskEmployeeI18n";
 
 describe("PIN task labels", () => {
   it("translates the cleaning task tiles in English and Spanish", () => {
@@ -20,6 +21,37 @@ describe("PIN task labels", () => {
     expect(TRANSLATIONS.en["mobileOps.currentRole"]).toBe("Current Role");
     expect(TRANSLATIONS.es["mobileOps.currentRole"]).toBe("Función actual");
     expect(TRANSLATIONS.es["mobileOps.notClockedIn"]).toBe("Sin fichar entrada");
+    for (const key of [
+      "tasks.pin.startActivity",
+      "tasks.pin.finishParticipation",
+      "tasks.pin.resumeActivity",
+      "tasks.pin.addRemark",
+      "tasks.pin.verificationNote",
+      "tasks.pin.needsRedo",
+      "tasks.pin.reviewTitle",
+      "tasks.pin.status.pending_verification",
+      "tasks.pin.status.needs_correction",
+    ]) {
+      expect(TRANSLATIONS.en[key], key).toBeTruthy();
+      expect(TRANSLATIONS.es[key], key).toBeTruthy();
+      expect(TRANSLATIONS.es[key]).not.toBe(TRANSLATIONS.en[key]);
+    }
+    expect(TRANSLATIONS.en["tasks.pin.startActivity"]).toBe("Start Activity");
+    expect(TRANSLATIONS.es["tasks.pin.startActivity"]).toBe("Iniciar actividad");
+    expect(TRANSLATIONS.en["tasks.pin.finishParticipation"]).toBe("Finish My Participation");
+    expect(TRANSLATIONS.es["tasks.pin.finishParticipation"]).toBe("Terminar mi participación");
+  });
+
+  it("keeps verification events out of employee remarks", () => {
+    const split = splitActivityRemarks([
+      { author_role: "employee", body: "Residue in washer 2", remark_kind: "comment" },
+      { author_role: "management", body: "Please recheck washer 3", remark_kind: "comment" },
+      { author_role: "supervisor", body: "Machines verified", remark_kind: "verification" },
+      { author_role: "supervisor", body: "Machines verified", legacy_source: null },
+      { author_role: "employee", body: "Left the mop out", legacy_source: "employee_remark" },
+    ]);
+    expect(split.comments.map((row) => row.body)).toEqual(["Residue in washer 2", "Please recheck washer 3", "Left the mop out"]);
+    expect(split.verification).toHaveLength(2);
   });
 });
 
@@ -67,6 +99,14 @@ describe("print remarks", () => {
         author_role: "employee",
         body: "Lint tray on dryer 2 was packed",
         created_at_label: "2026-11-01 21:05:00 ET",
+        remark_kind: "comment",
+      },
+      {
+        author_name: "VeeWash Admin",
+        author_role: "supervisor",
+        body: "Machines verified",
+        created_at_label: "2026-11-01 22:46:45 ET",
+        remark_kind: "verification",
       },
     ],
     checklist_sections: [{ section_label: "Dryer Cleaning", status_label: "Pending Verification" }],
@@ -83,6 +123,10 @@ describe("print remarks", () => {
       rows: [row],
     });
     expect(html).toContain("Lint tray on dryer 2 was packed");
+    expect(html).toContain("Machines verified");
+    expect(html.indexOf(">Remarks<")).toBeLessThan(html.indexOf(">Verification<"));
+    expect(html).toContain("@page { size: letter portrait;");
+    expect(html).toContain("break-inside: auto");
     expect(html).toContain("Pending Verification");
     expect(html).toContain("Yesenia");
   });

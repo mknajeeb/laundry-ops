@@ -64,6 +64,7 @@ def ensure_task_activity_remarks_table(cursor) -> None:
         cursor,
         f"ALTER TABLE {TABLE} MODIFY author_name VARCHAR(120) NULL, MODIFY created_at DATETIME NULL",
     )
+    _relax_schema(cursor, f"ALTER TABLE {TABLE} ADD COLUMN remark_kind VARCHAR(32) NULL")
 
 
 def _stamp(at) -> str:
@@ -174,6 +175,7 @@ def _row_out(row: Mapping[str, Any]) -> dict[str, Any]:
         "created_at_utc": _stamp(row.get("created_at_utc")) or None,
         "created_at_label": remark_time_label(created, row.get("created_at_utc")),
         "legacy_source": (str(row.get("legacy_source") or "").strip() or None),
+        "remark_kind": (str(row.get("remark_kind") or "").strip() or None),
     }
 
 
@@ -200,6 +202,7 @@ def _virtual_legacy(activity: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "created_at_utc": None,
                 "created_at_label": f"{legacy['at']} ET" if legacy.get("at") else None,
                 "legacy_source": key,
+                "remark_kind": None,
             }
         )
     return out
@@ -410,8 +413,9 @@ def import_legacy_remarks(cursor, organization_id: int, activity: Mapping[str, A
             f"""
             INSERT INTO {TABLE}
               (organization_id, activity_id, assignment_group_id, task_code,
-               author_user_id, author_name, author_role, body, created_at, created_at_utc, legacy_source)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               author_user_id, author_name, author_role, body, created_at, created_at_utc, legacy_source,
+               remark_kind)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 int(organization_id),
@@ -425,6 +429,7 @@ def import_legacy_remarks(cursor, organization_id: int, activity: Mapping[str, A
                 wall,
                 utc,
                 key,
+                None,
             ),
         )
         inserted += 1
@@ -469,6 +474,7 @@ def append_remark(
     body: str,
     task_code: str | None = None,
     names: Mapping[int, str] | None = None,
+    remark_kind: str = "comment",
 ) -> dict[str, Any]:
     """Import any legacy single remarks, then insert this remark."""
     role = str(author_role or "").strip().lower()
@@ -483,12 +489,14 @@ def append_remark(
     wall, utc = remark_now()
     code = (str(task_code or "").strip() or None)
     stored_name = (str(author_name or "").strip() or None)
+    kind = "verification" if str(remark_kind or "") == "verification" else "comment"
     cursor.execute(
         f"""
         INSERT INTO {TABLE}
           (organization_id, activity_id, assignment_group_id, task_code,
-           author_user_id, author_name, author_role, body, created_at, created_at_utc, legacy_source)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+           author_user_id, author_name, author_role, body, created_at, created_at_utc, legacy_source,
+           remark_kind)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             int(organization_id),
@@ -502,6 +510,7 @@ def append_remark(
             wall,
             utc,
             None,
+            kind,
         ),
     )
     remark_id = int(getattr(cursor, "lastrowid", 0) or 0)
@@ -518,5 +527,6 @@ def append_remark(
             "created_at": wall,
             "created_at_utc": utc,
             "legacy_source": None,
+            "remark_kind": kind,
         }
     )

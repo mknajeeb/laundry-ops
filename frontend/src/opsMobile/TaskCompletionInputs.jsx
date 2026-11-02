@@ -11,6 +11,7 @@ import {
   Typography,
 } from "@mui/material";
 import { getAuthToken, getWashproApiBase } from "../api";
+import { useI18n } from "../i18n/I18nContext";
 
 export function conditionMet(condition, values) {
   if (!condition || typeof condition !== "object") return true;
@@ -210,13 +211,14 @@ export default function TaskCompletionInputs({
   onChangeRemarks,
   disabled,
 }) {
+  const { t } = useI18n();
   const fields = normalizeInputSchema(schema);
   if (!fields.length) {
     return (
       <TextField
         fullWidth
         size="small"
-        label="Comments (optional)"
+        label={t("tasks.pin.commentsOptional")}
         value={remarks || ""}
         disabled={disabled}
         onChange={(e) => onChangeRemarks?.(e.target.value)}
@@ -420,7 +422,7 @@ export default function TaskCompletionInputs({
       <TextField
         fullWidth
         size="small"
-        label="Comments (optional)"
+        label={t("tasks.pin.commentsOptional")}
         value={remarks || ""}
         disabled={disabled}
         onChange={(e) => onChangeRemarks?.(e.target.value)}

@@ -13,6 +13,7 @@ import {
   formatDashboardTime,
   participationTimeLine,
 } from "./taskDashboardFormat";
+import { localizedConfigured, splitActivityRemarks } from "./taskEmployeeI18n";
 import {
   checklistItemLabel,
   completionLabel,
@@ -57,7 +58,9 @@ function checklistGroups(items) {
     const label = String(item?.section_label || "").trim();
     const order = Number(item?.section_order || 0);
     const key = `${order}::${label}`;
-    if (!groups.has(key)) groups.set(key, { label, order, items: [] });
+    if (!groups.has(key)) {
+      groups.set(key, { label, labelEs: String(item?.section_label_es || "").trim(), order, items: [] });
+    }
     groups.get(key).items.push(item);
   }
   return [...groups.values()].sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
@@ -107,14 +110,16 @@ function metricCells(metrics, hideLabor) {
     .join("");
 }
 
-function checklistTable(items, sections, hideLabor = false) {
+function checklistTable(items, sections, hideLabor = false, locale = "en") {
   const groups = checklistGroups(items);
   const showSections = groups.some((group) => group.label);
   return groups
     .map((group) => {
       const sectionStatus = (sections || []).find((section) => section.section_label === (group.label || "Checklist"));
       const heading = showSections
-        ? `<div class="section">${escapeHtml(group.label || "Checklist")}${
+        ? `<div class="section">${escapeHtml(
+            (locale === "es" && group.labelEs) || group.label || "Checklist",
+          )}${
             sectionStatus ? ` · ${escapeHtml(sectionStatus.status_label)}` : ""
           }</div>`
         : `<div class="section">Checklist${
@@ -130,7 +135,14 @@ function checklistTable(items, sections, hideLabor = false) {
             .filter(Boolean)
             .join(" · ");
           return `<tr>
-            <td>${escapeHtml(item.task_name || item.task_code || "Item")}${
+            <td>${escapeHtml(
+              localizedConfigured(
+                { task_name: item.task_name || item.task_label, task_name_es: item.task_name_es },
+                locale,
+                "task_name",
+                "task_name_es",
+              ) || item.task_code || "Item",
+            )}${
               detail ? `<div class="detail">${escapeHtml(detail)}</div>` : ""
             }</td>
             <td>${escapeHtml(item.responsibility_label || "Anyone on Team")}</td>
@@ -147,11 +159,8 @@ function checklistTable(items, sections, hideLabor = false) {
     .join("");
 }
 
-function remarksBlock(row, hideRemarks) {
-  if (hideRemarks) return "";
-  const remarks = Array.isArray(row?.remarks) ? row.remarks : [];
-  if (!remarks.length) return "";
-  const lines = remarks
+function remarkLines(remarks) {
+  return remarks
     .map((remark) => {
       const who = [remark.author_name, remark.author_role, remark.task_code, remark.created_at_label]
         .filter(Boolean)
@@ -159,7 +168,16 @@ function remarksBlock(row, hideRemarks) {
       return `<li><b>${escapeHtml(who || "Remark")}</b><div class="detail">${escapeHtml(remark.body || "")}</div></li>`;
     })
     .join("");
-  return `<div class="section">Remarks</div><ul>${lines}</ul>`;
+}
+
+function remarksBlock(row, hideRemarks) {
+  if (hideRemarks) return "";
+  const split = splitActivityRemarks(row?.remarks);
+  const comments = remarkLines(split.comments);
+  const verification = remarkLines(split.verification);
+  return `${comments ? `<div class="section">Remarks</div><ul>${comments}</ul>` : ""}${
+    verification ? `<div class="section">Verification</div><ul>${verification}</ul>` : ""
+  }`;
 }
 
 function participantLines(row, hideLabor, hideRemarks) {
@@ -188,17 +206,23 @@ function participantLines(row, hideLabor, hideRemarks) {
   return `<div class="section">Employees</div><ul>${lines}</ul>`;
 }
 
-function assignmentCard(row, hideLabor, hideRemarks) {
+function assignmentCard(row, hideLabor, hideRemarks, locale) {
   const title = row?.role_label || row?.role || "Activity";
   const when = [employeeNames(row), row?.timing_label, row?.business_date ? formatDashboardDate(row.business_date) : ""]
     .filter(Boolean)
     .join(" · ");
   const checklist = row?.shared_checklist_items || [];
-  const instructions = String(row?.instructions || "").trim();
+  const instructions = localizedConfigured(row, locale, "instructions", "instructions_es");
+  const titleName = localizedConfigured(
+    { name: title, name_es: row?.name_es },
+    locale,
+    "name",
+    "name_es",
+  );
   return `<article class="card">
     <div class="top">
       <div>
-        <h3>${escapeHtml(title)}</h3>
+        <h3>${escapeHtml(titleName || title)}</h3>
         <div class="meta">${escapeHtml(when)}</div>
         ${
           hideLabor && row?.activity_started_at
@@ -218,7 +242,7 @@ function assignmentCard(row, hideLabor, hideRemarks) {
       </div>
     </div>
     ${instructions ? `<div class="detail">${escapeHtml(instructions)}</div>` : ""}
-    ${checklist.length ? checklistTable(checklist, row?.checklist_sections, hideLabor) : ""}
+    ${checklist.length ? checklistTable(checklist, row?.checklist_sections, hideLabor, locale) : ""}
     ${remarksBlock(row, hideRemarks)}
     ${participantLines(row, hideLabor, hideRemarks)}
   </article>`;
@@ -232,11 +256,12 @@ export function buildTaskDashboardPrintDocument({
   rows = [],
   hideLabor = false,
   hideRemarks = false,
+  locale = "en",
 } = {}) {
   const list = Array.isArray(rows) ? rows : [];
   const metrics = dashboardHeadlineMetrics(list);
   const cards = list.length
-    ? list.map((row) => assignmentCard(row, hideLabor, hideRemarks)).join("")
+    ? list.map((row) => assignmentCard(row, hideLabor, hideRemarks, locale)).join("")
     : `<p class="empty">No assignments in this range.</p>`;
   const subtitle = `${rangeText(rangeStart, rangeEnd)} · ${categoryLabel || "All"} · ${groupByLabel(groupBy)}`;
   return `<!DOCTYPE html>
@@ -257,7 +282,9 @@ export function buildTaskDashboardPrintDocument({
   .metric { border: 1px solid #d5deea; border-radius: 6px; padding: 4px 8px; min-width: 92px; }
   .metric span { display: block; font-size: 8pt; color: #64748b; }
   .metric b { font-size: 13pt; }
-  .card { border: 1px solid #d5deea; border-radius: 8px; padding: 8px 10px 10px; margin: 0 0 10px; break-inside: avoid; page-break-inside: avoid; }
+  .card { border: 1px solid #d5deea; border-radius: 8px; padding: 8px 10px 10px; margin: 0 0 10px; break-inside: auto; page-break-inside: auto; overflow: visible; }
+  tr, li { break-inside: avoid; page-break-inside: avoid; }
+  h1, h2, h3 { break-after: avoid; page-break-after: avoid; }
   .top { display: flex; justify-content: space-between; gap: 12px; }
   .status { text-align: right; font-size: 9.5pt; font-weight: 700; white-space: nowrap; }
   .section { margin-top: 8px; font-size: 8pt; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #64748b; }

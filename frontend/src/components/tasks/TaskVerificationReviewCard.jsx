@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Box, Button, Collapse, Stack, TextField, Typography } from "@mui/material";
 import ActivityRemarks from "./ActivityRemarks";
 import InstructionHint from "./InstructionHint";
+import { useI18n } from "../../i18n/I18nContext";
+import { localizedConfigured, localizedInstruction, taskStatusLabel } from "./taskEmployeeI18n";
 import { formatDashboardTime } from "./taskDashboardFormat";
 import { OPS_MOBILE } from "../../opsMobile";
 import { CompletionDetails } from "../../opsMobile/TaskCompletionInputs";
@@ -30,8 +32,16 @@ export default function TaskVerificationReviewCard({
   const [reason, setReason] = useState("");
   const [itemRejectId, setItemRejectId] = useState(null);
   const [itemReason, setItemReason] = useState("");
+  const { t, locale } = useI18n();
   const [supervisorRemark, setSupervisorRemark] = useState("");
   const assigned = (card?.assigned_employees || []).join(" + ");
+  const activityName = localizedConfigured(
+    { name: card.role_label, name_es: card.name_es },
+    locale,
+    "name",
+    "name_es",
+  );
+  const overall = card.overall_status ? taskStatusLabel(t, card.overall_status) : card.overall_label;
 
   return (
     <Box
@@ -43,21 +53,21 @@ export default function TaskVerificationReviewCard({
       }}
     >
       <Stack direction="row" alignItems="center" spacing={0.5}>
-        <Typography sx={{ fontWeight: 900, letterSpacing: 0.2 }}>{card.role_label}</Typography>
-        <InstructionHint text={card.instructions} />
+        <Typography sx={{ fontWeight: 900, letterSpacing: 0.2 }}>{activityName || card.role_label}</Typography>
+        <InstructionHint text={localizedInstruction(card, locale)} label={t("tasks.pin.instructions")} />
       </Stack>
       {assigned ? (
         <Typography variant="body2" color="text.secondary">
-          Assigned: {assigned}
+          {t("tasks.pin.assigned", { names: assigned })}
         </Typography>
       ) : null}
       {card.timing_label ? (
         <Typography variant="body2" color="text.secondary">
-          Scheduled: {card.timing_label}
+          {t("tasks.pin.scheduled", { time: card.timing_label })}
         </Typography>
       ) : null}
       <Typography variant="body2" sx={{ mt: 0.75, fontWeight: 800 }}>
-        Overall status: {card.overall_label}
+        {t("tasks.pin.overall", { status: overall })}
       </Typography>
 
       <Button
@@ -65,7 +75,7 @@ export default function TaskVerificationReviewCard({
         onClick={() => setOpenPeople((v) => !v)}
         sx={{ textTransform: "none", px: 0, fontWeight: 800 }}
       >
-        {openPeople ? "Hide participation" : "Participation"}
+        {openPeople ? t("tasks.pin.hideParticipation") : t("tasks.pin.participation")}
       </Button>
       <Collapse in={openPeople}>
         <Stack spacing={0.5} sx={{ mb: 1 }}>
@@ -76,13 +86,13 @@ export default function TaskVerificationReviewCard({
               </Typography>
               {person.participation_status === "not_started" ? (
                 <Typography variant="caption" color="text.secondary">
-                  Not started
+                  {t("tasks.pin.notStarted")}
                 </Typography>
               ) : (
                 <Typography variant="caption" color="text.secondary" display="block">
-                  {clock(person.started_at) ? `Started: ${clock(person.started_at)}` : "Started: —"}
+                  {t("tasks.pin.started", { time: clock(person.started_at) || "—" })}
                   {person.participation_status === "finished"
-                    ? ` · Finished: ${clock(person.finished_at) || "—"}`
+                    ? ` · ${t("tasks.pin.finished", { time: clock(person.finished_at) || "—" })}`
                     : ""}
                 </Typography>
               )}
@@ -98,7 +108,7 @@ export default function TaskVerificationReviewCard({
             onClick={() => setOpenChecklist((v) => !v)}
             sx={{ textTransform: "none", px: 0, fontWeight: 800 }}
           >
-            {openChecklist ? "Hide shared checklist" : "Shared checklist"}
+            {openChecklist ? t("tasks.pin.hideChecklist") : t("tasks.pin.sharedChecklist")}
           </Button>
           <Collapse in={openChecklist}>
             <Stack spacing={0.75} sx={{ mb: 1 }}>
@@ -106,34 +116,45 @@ export default function TaskVerificationReviewCard({
                 <Box key={item.task_code || item.task_label}>
                   <Stack direction="row" alignItems="center" spacing={0.5}>
                   <Typography variant="body2">
-                    {item.task_label} —{" "}
+                    {localizedConfigured(
+                      { task_name: item.task_label || item.task_name, task_name_es: item.task_name_es },
+                      locale,
+                      "task_name",
+                      "task_name_es",
+                    ) || item.task_label}{" "}
+                    —{" "}
                     {item.needs_correction
-                      ? "Needs correction"
+                      ? t("tasks.pin.needsCorrection")
                       : item.checked_off
-                        ? "Checked off"
-                        : "Not checked off"}
+                        ? t("tasks.pin.checkedOff")
+                        : t("tasks.pin.notCheckedOff")}
                   </Typography>
-                  <InstructionHint text={item.instructions} label="Item instructions" />
+                  <InstructionHint text={localizedInstruction(item, locale)} label={t("tasks.pin.itemInstructions")} />
                   </Stack>
                   {item.section_label ? (
                     <Typography variant="caption" sx={{ fontWeight: 800 }} display="block">
-                      {item.section_label}
+                      {localizedConfigured(item, locale, "section_label", "section_label_es") || item.section_label}
                     </Typography>
                   ) : null}
                   <Typography variant="caption" color="text.secondary" display="block">
-                    Responsible: {item.responsibility_label || "Anyone on Team"}
-                    {item.completed_by_name ? ` · Checked off by ${item.completed_by_name}` : ""}
+                    {t("tasks.pin.responsible", {
+                      name:
+                        item.responsibility_label && item.responsibility_label !== "Anyone on Team"
+                          ? item.responsibility_label
+                          : t("tasks.pin.anyone"),
+                    })}
+                    {item.completed_by_name ? ` · ${t("tasks.pin.checkedOffBy", { name: item.completed_by_name })}` : ""}
                   </Typography>
                   <CompletionDetails completionInput={item.completion_input} schema={item.input_schema} />
                   {(item.records || []).map((rec) => (
                     <Box key={rec.activity_id || `${item.task_code}-${rec.employee_id}`} sx={{ pl: 1 }}>
                       <Typography variant="caption" color="text.secondary" display="block">
                         {clock(rec.checked_off_at)
-                          ? `Checked off: ${clock(rec.checked_off_at)}`
+                          ? t("tasks.pin.checkedOffAt", { time: clock(rec.checked_off_at) })
                           : item.checked_off
-                            ? "Checked off"
-                            : "Not checked off"}
-                        {rec.employee_name ? ` · By: ${rec.employee_name}` : ""}
+                            ? t("tasks.pin.checkedOff")
+                            : t("tasks.pin.notCheckedOff")}
+                        {rec.employee_name ? ` · ${t("tasks.pin.by", { name: rec.employee_name })}` : ""}
                       </Typography>
                       {rec.rejection_reason ? (
                         <Typography variant="caption" color="error" display="block">
@@ -151,7 +172,7 @@ export default function TaskVerificationReviewCard({
                           }}
                           sx={{ textTransform: "none", px: 0 }}
                         >
-                          Reject this item
+                          {t("tasks.pin.rejectThisItem")}
                         </Button>
                       ) : null}
                     </Box>
@@ -166,7 +187,7 @@ export default function TaskVerificationReviewCard({
       {(card.checklist_sections || []).map((section) => (
         <Stack key={section.section_label} direction="row" spacing={1} alignItems="center" sx={{ mt: 0.5 }}>
           <Typography variant="caption" sx={{ fontWeight: 800 }}>
-            {section.section_label}: {section.status_label}
+            {section.section_label}: {section.status ? taskStatusLabel(t, section.status) : section.status_label}
           </Typography>
           {section.pending_activity_ids?.length ? (
             <Button
@@ -177,7 +198,7 @@ export default function TaskVerificationReviewCard({
               }
               sx={{ textTransform: "none", fontWeight: 800 }}
             >
-              Verify section
+              {t("tasks.pin.verifySection")}
             </Button>
           ) : null}
         </Stack>
@@ -204,7 +225,7 @@ export default function TaskVerificationReviewCard({
         <Stack spacing={1} sx={{ mt: 1 }}>
           <TextField
             size="small"
-            label="Supervisor remark (optional)"
+            label={t("tasks.pin.verificationNote")}
             value={supervisorRemark}
             onChange={(e) => setSupervisorRemark(e.target.value)}
           />
@@ -216,7 +237,7 @@ export default function TaskVerificationReviewCard({
             onClick={() => onApproveAll?.(card.pending_activity_ids || [], { remark: supervisorRemark })}
             sx={{ textTransform: "none", fontWeight: 800 }}
           >
-            Approve All
+            {t("tasks.pin.approveAll")}
           </Button>
           <Button
             size="small"
@@ -229,7 +250,7 @@ export default function TaskVerificationReviewCard({
             }}
             sx={{ textTransform: "none", fontWeight: 800 }}
           >
-            Needs Redo
+            {t("tasks.pin.needsRedoAction")}
           </Button>
           </Stack>
         </Stack>
@@ -241,10 +262,10 @@ export default function TaskVerificationReviewCard({
             size="small"
             multiline
             minRows={2}
-            label="Reason"
+            label={t("tasks.pin.reason")}
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder="Required"
+            placeholder={t("tasks.pin.requiredShort")}
           />
           <Stack direction="row" spacing={1}>
             <Button
@@ -255,10 +276,10 @@ export default function TaskVerificationReviewCard({
               onClick={() => onNeedsRedo?.(card.pending_activity_ids || [], reason.trim())}
               sx={{ textTransform: "none", fontWeight: 800 }}
             >
-              Submit redo
+              {t("tasks.pin.submitRedo")}
             </Button>
             <Button size="small" onClick={() => setRedo(false)} sx={{ textTransform: "none" }}>
-              Cancel
+              {t("tasks.pin.cancel")}
             </Button>
           </Stack>
         </Stack>
@@ -270,7 +291,7 @@ export default function TaskVerificationReviewCard({
             size="small"
             multiline
             minRows={2}
-            label="Reason for this item"
+            label={t("tasks.pin.itemReason")}
             value={itemReason}
             onChange={(e) => setItemReason(e.target.value)}
           />
@@ -283,10 +304,10 @@ export default function TaskVerificationReviewCard({
               onClick={() => onRejectItem?.(itemRejectId, itemReason.trim())}
               sx={{ textTransform: "none", fontWeight: 800 }}
             >
-              Reject item
+              {t("tasks.pin.rejectItem")}
             </Button>
             <Button size="small" onClick={() => setItemRejectId(null)} sx={{ textTransform: "none" }}>
-              Cancel
+              {t("tasks.pin.cancel")}
             </Button>
           </Stack>
         </Stack>

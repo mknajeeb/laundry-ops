@@ -16,6 +16,7 @@ import {
 import TaskVerificationReviewCard from "../components/tasks/TaskVerificationReviewCard";
 import { formatDashboardTime } from "../components/tasks/taskDashboardFormat";
 import { OpsMobileShell, OpsTopBar, OPS_MOBILE } from "../opsMobile";
+import { useI18n } from "../i18n/I18nContext";
 import {
   clearPinHubSession,
   loadPinHubSession,
@@ -43,6 +44,7 @@ function reviewClock(value) {
  * Supervisor PIN Task Review — verify / reject completed tasks.
  */
 export default function CleaningTaskReviewPinPage() {
+  const { t } = useI18n();
   const { orgSlug: routeSlug } = useParams();
   const navigate = useNavigate();
   const slug = sanitizeSlug(routeSlug);
@@ -65,7 +67,7 @@ export default function CleaningTaskReviewPinPage() {
 
   const load = useCallback(async () => {
     if (!hub?.token || !slug) {
-      setError("Enter your PIN again.");
+      setError(t("tasks.pin.enterPin"));
       setLoading(false);
       return;
     }
@@ -75,14 +77,14 @@ export default function CleaningTaskReviewPinPage() {
     try {
       const res = await attendancePinCleaningTasksReview(slug, hub.pin, { hubToken: hub.token });
       const body = res?.data || {};
-      if (!body.ok) throw new Error(body.error || "Could not load review");
+      if (!body.ok) throw new Error(body.error || t("tasks.pin.loadReview"));
       setQueue(body);
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not load review");
+      setError(e?.response?.data?.error || e?.message || t("tasks.pin.loadReview"));
     } finally {
       setLoading(false);
     }
-  }, [hub, slug]);
+  }, [hub, slug, t]);
 
   useEffect(() => {
     load();
@@ -102,11 +104,11 @@ export default function CleaningTaskReviewPinPage() {
         supervisor_remark: supervisorRemark || "",
       });
       const body = res?.data || {};
-      if (!body.ok) throw new Error(body.error || "Could not approve");
-      setNotice(approveAll ? "Assignment verified." : "Verified.");
+      if (!body.ok) throw new Error(body.error || t("tasks.pin.approveFailed"));
+      setNotice(approveAll ? t("tasks.pin.assignmentVerified") : t("tasks.pin.verifiedNotice"));
       await load();
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not approve");
+      setError(e?.response?.data?.error || e?.message || t("tasks.pin.approveFailed"));
     } finally {
       setBusy(false);
     }
@@ -116,7 +118,7 @@ export default function CleaningTaskReviewPinPage() {
     const list = (ids || []).filter(Boolean);
     if (!list.length) return;
     if (String(rejectReason || "").trim().length < 3) {
-      setError("A rejection reason is required.");
+      setError(t("tasks.pin.reasonRequired"));
       return;
     }
     setBusy(true);
@@ -129,11 +131,11 @@ export default function CleaningTaskReviewPinPage() {
         reason: rejectReason,
       });
       const body = res?.data || {};
-      if (!body.ok) throw new Error(body.error || "Could not reject");
-      setNotice(list.length > 1 ? "Assignment sent back for redo." : "Item sent back for correction.");
+      if (!body.ok) throw new Error(body.error || t("tasks.pin.rejectFailed"));
+      setNotice(list.length > 1 ? t("tasks.pin.assignmentRedo") : t("tasks.pin.itemCorrection"));
       await load();
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not reject");
+      setError(e?.response?.data?.error || e?.message || t("tasks.pin.rejectFailed"));
     } finally {
       setBusy(false);
     }
@@ -141,18 +143,18 @@ export default function CleaningTaskReviewPinPage() {
 
   const reviewCards = queue?.verification_cards || [];
   const sections = [
-    ["In progress", queue?.in_progress || []],
-    ["Overdue", queue?.overdue || []],
-    ["Not started", queue?.not_started || []],
-    ["Approved", queue?.approved || []],
-    ["Rejected / redo", queue?.rejected || []],
+    [t("tasks.pin.inProgress"), queue?.in_progress || []],
+    [t("tasks.pin.status.overdue"), queue?.overdue || []],
+    [t("tasks.pin.notStarted"), queue?.not_started || []],
+    [t("tasks.pin.approved"), queue?.approved || []],
+    [t("tasks.pin.rejectedRedo"), queue?.rejected || []],
   ];
 
   if (!hub?.token) {
     return (
       <OpsMobileShell>
-        <Alert severity="warning">Enter your PIN again.</Alert>
-        <Button onClick={lock}>Back to PIN</Button>
+        <Alert severity="warning">{t("tasks.pin.enterPin")}</Alert>
+        <Button onClick={lock}>{t("tasks.pin.backToPin")}</Button>
       </OpsMobileShell>
     );
   }
@@ -160,7 +162,7 @@ export default function CleaningTaskReviewPinPage() {
   return (
     <OpsMobileShell>
       <OpsTopBar
-        title="Task Review"
+        title={t("tasks.pin.reviewTitle")}
         onBack={goHub}
         onLock={lock}
         identity={hub.employee_first_name || hub.employee_name || ""}
@@ -186,17 +188,17 @@ export default function CleaningTaskReviewPinPage() {
           ) : null}
           {(queue?.shift_end?.blocking_close || []).length ? (
             <Alert severity="warning">
-              Before closing the day: {(queue.shift_end.blocking_close || []).length} incomplete,
-              overdue, rejected, or pending-approval contribution
-              {(queue.shift_end.blocking_close || []).length === 1 ? "" : "s"} still open. Completed
-              tasks stay Pending Approval until a supervisor verifies them.
+              {t("tasks.pin.blockingClose", {
+                count: (queue.shift_end.blocking_close || []).length,
+                plural: (queue.shift_end.blocking_close || []).length === 1 ? "" : "s",
+              })}
             </Alert>
           ) : (
-            <Alert severity="success">No open cleaning items blocking close for today.</Alert>
+            <Alert severity="success">{t("tasks.pin.noBlocking")}</Alert>
           )}
           <Box>
             <Typography sx={{ fontWeight: 800, mb: 1, color: OPS_MOBILE.navy }}>
-              Pending approvals ({reviewCards.length})
+              {t("tasks.pin.pendingApprovals", { count: reviewCards.length })}
             </Typography>
             <Stack spacing={1}>
               {reviewCards.length ? (
@@ -212,7 +214,7 @@ export default function CleaningTaskReviewPinPage() {
                 ))
               ) : (
                 <Typography variant="body2" color="text.secondary">
-                  None
+                  {t("tasks.pin.none")}
                 </Typography>
               )}
             </Stack>
@@ -246,12 +248,12 @@ export default function CleaningTaskReviewPinPage() {
                           </Typography>
                         ) : null}
                         <Typography variant="body2" color="text.secondary">
-                          {row.timing_label ? `Scheduled: ${row.timing_label}` : "Anytime"}
+                          {row.timing_label ? t("tasks.pin.scheduled", { time: row.timing_label }) : t("tasks.pin.anytime")}
                           {act?.started_at
-                            ? ` · Started: ${reviewClock(act.started_at) || "—"}`
-                            : " · Not started"}
+                            ? ` · ${t("tasks.pin.started", { time: reviewClock(act.started_at) || "—" })}`
+                            : ` · ${t("tasks.pin.notStarted")}`}
                           {act?.ended_at && reviewClock(act.ended_at) !== reviewClock(act.started_at)
-                            ? ` · Finished: ${reviewClock(act.ended_at)}`
+                            ? ` · ${t("tasks.pin.finished", { time: reviewClock(act.ended_at) })}`
                             : ""}
                         </Typography>
                         {act?.rejection_reason ? (
@@ -264,7 +266,7 @@ export default function CleaningTaskReviewPinPage() {
                   })
                 ) : (
                   <Typography variant="body2" color="text.secondary">
-                    None
+                    {t("tasks.pin.none")}
                   </Typography>
                 )}
               </Stack>

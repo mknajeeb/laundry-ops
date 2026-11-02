@@ -158,7 +158,7 @@ def definition_snapshot(item: Mapping[str, Any]) -> dict[str, Any]:
     Later edits to the master Activity do not rewrite this copy.
     """
     schema = item.get("input_schema") or []
-    return {
+    frozen = {
         "task_name": str(item.get("task_name") or item.get("name") or item.get("task_code") or ""),
         "instructions": (str(item.get("instructions") or "").strip() or None),
         "section_label": (str(item.get("section_label") or "").strip() or None),
@@ -167,6 +167,11 @@ def definition_snapshot(item: Mapping[str, Any]) -> dict[str, Any]:
         "completion_type": item.get("completion_type") or "simple",
         "input_schema": schema if isinstance(schema, list) else [],
     }
+    for field in ("instructions_es", "section_label_es", "task_name_es"):
+        text = str(item.get(field) or "").strip()
+        if text:
+            frozen[field] = text
+    return frozen
 
 
 def definition_snapshot_json(item: Mapping[str, Any]) -> str:

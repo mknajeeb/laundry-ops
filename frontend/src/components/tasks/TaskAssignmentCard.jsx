@@ -12,6 +12,8 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ActivityRemarks from "./ActivityRemarks";
 import InstructionHint from "./InstructionHint";
+import { useI18n } from "../../i18n/I18nContext";
+import { localizedConfigured, localizedInstruction } from "./taskEmployeeI18n";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import { CompletionDetails } from "../../opsMobile/TaskCompletionInputs";
 import {
@@ -63,10 +65,17 @@ export default function TaskAssignmentCard({
   onCancelReject,
   onAddRemark,
 }) {
+  const { locale } = useI18n();
   const [supervisorRemark, setSupervisorRemark] = useState("");
   const employees = (row.assigned_employees || []).join(" + ") || "Unassigned";
   const checklistItems = row.shared_checklist_items || [];
-  const instructions = String(row.instructions || "").trim();
+  const instructions = localizedInstruction(row, locale);
+  const activityName = localizedConfigured(
+    { name: row.role_label || row.role, name_es: row.name_es },
+    locale,
+    "name",
+    "name_es",
+  );
   const showParticipation = Boolean(row.shared || row.execution_mode === "shared" || row.overall_status);
   const requiredItems = checklistItems.filter((item) => item.required !== false);
   const checklistDone = requiredItems.filter((item) =>
@@ -110,7 +119,7 @@ export default function TaskAssignmentCard({
               variant="subtitle1"
               sx={{ fontWeight: 800, color: VEEWASH_DASHBOARD.wfCharcoal, lineHeight: 1.2 }}
             >
-              {row.role_label || row.role}
+              {activityName || row.role_label || row.role}
             </Typography>
             <InstructionHint text={instructions} />
             {row.has_manual_completion && !readOnly ? (
@@ -188,7 +197,10 @@ export default function TaskAssignmentCard({
                   {row.checklist_sections.map((section) => (
                     <Stack key={section.section_label} direction="row" spacing={1} alignItems="center">
                       <Typography variant="caption" sx={{ fontWeight: 700 }}>
-                        {section.section_label}: {section.status_label}
+                        {(locale === "es" &&
+                          checklistItems.find((item) => item.section_label === section.section_label)?.section_label_es) ||
+                          section.section_label}
+                        : {section.status_label}
                       </Typography>
                       {canApprove && section.pending_activity_ids?.length ? (
                         <Button
@@ -215,9 +227,14 @@ export default function TaskAssignmentCard({
                     <Box>
                       <Stack direction="row" alignItems="center" spacing={0.25}>
                         <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                          {item.task_name || item.task_code}
+                          {localizedConfigured(
+                            { task_name: item.task_name || item.task_label, task_name_es: item.task_name_es },
+                            locale,
+                            "task_name",
+                            "task_name_es",
+                          ) || item.task_code}
                         </Typography>
-                        <InstructionHint text={item.instructions} label="Item instructions" />
+                        <InstructionHint text={localizedInstruction(item, locale)} label="Item instructions" />
                       </Stack>
                       <Typography variant="caption" color="text.secondary" display="block">
                         Responsible: {item.responsibility_label || "Anyone on Team"}

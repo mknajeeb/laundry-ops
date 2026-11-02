@@ -19,6 +19,7 @@ from backend.intra_day_activity_groups import (
     competing_new_assignment_error,
     intra_day_activity_group_payloads,
 )
+from backend.task_activity_item_responsibility import definition_snapshot
 from backend.task_activity_remarks import (
     append_remark,
     et_wall_to_utc,
@@ -115,8 +116,9 @@ class _MemoryCursor:
                     "author_role": params[6],
                     "body": params[7],
                     "created_at": params[8],
-                    "created_at_utc": params[9] if len(params) > 10 else None,
-                    "legacy_source": params[10] if len(params) > 10 else params[9],
+                    "created_at_utc": params[9] if len(params) > 9 else None,
+                    "legacy_source": params[10] if len(params) > 10 else None,
+                    "remark_kind": params[11] if len(params) > 11 else None,
                 }
             )
             self._fetch = None
@@ -147,11 +149,35 @@ def test_intra_day_payloads_reuse_existing_task_codes():
         "washer_cleaning",
     ]
     assert washer["items"][0]["section_label"] == "Machines"
+    assert washer["name_es"] == "Limpieza de lavadoras"
+    assert washer["instructions_es"]
+    assert washer["items"][0]["section_label_es"] == "Máquinas"
+    assert washer["items"][0]["instructions"] and washer["items"][0]["instructions_es"]
+    assert washer["instructions"] != washer["instructions_es"]
     assert payloads[1]["items"][0]["section_label"] == "Floor Cleaning"
     assert payloads[1]["items"][0]["task_code"] == "floor_cleaning"
     assert payloads[2]["items"][0]["section_label"] == "Dryer Cleaning"
     assert payloads[2]["items"][0]["task_code"] == "lint_cleaning"
     assert all(item["instructions"] for group in payloads for item in group["items"])
+
+
+def test_checklist_snapshot_keeps_english_and_stores_spanish_only_when_configured():
+    english = definition_snapshot({"task_name": "Check washer residue", "instructions": "Look inside."})
+    assert english["instructions"] == "Look inside."
+    assert "instructions_es" not in english
+    both = definition_snapshot(
+        {
+            "task_name": "Check washer residue",
+            "instructions": "Look inside.",
+            "instructions_es": "Mira dentro.",
+            "section_label": "Machines",
+            "section_label_es": "Máquinas",
+        }
+    )
+    assert both["instructions"] == "Look inside."
+    assert both["instructions_es"] == "Mira dentro."
+    assert both["section_label"] == "Machines"
+    assert both["section_label_es"] == "Máquinas"
 
 
 def test_new_routine_assignment_uses_the_activity_group_once_it_is_active():
@@ -213,6 +239,8 @@ def test_remarks_append_and_keep_each_author():
     assert listed[0]["author_name"] == "Yesenia"
     assert second["task_code"] == "washer_cleaning"
     assert second["author_user_id"] == 56
+    assert second["remark_kind"] == "comment"
+    assert first["remark_kind"] == "comment"
     again = append_remark(
         cursor,
         organization_id=3,
