@@ -144,12 +144,9 @@ export default function SharedActivityChecklist({
   const { t, locale } = useI18n();
   const [othersOpen, setOthersOpen] = useState(false);
   const split = splitSharedChecklist(items, userId);
-  const sectionTitle = (section, count) =>
-    visibleSectionLabel((locale === "es" && section.labelEs) || section.label, count);
   const renderSections = (source, keyPrefix, startOpen) => {
     const sections = groupChecklistSections(source);
     return sections.map((section) => {
-      const title = sectionTitle(section, sections.length);
       const rows = (
         <Stack spacing={1}>
           {section.items.map((item) => (
@@ -166,6 +163,10 @@ export default function SharedActivityChecklist({
             />
           ))}
         </Stack>
+      );
+      const title = visibleSectionLabel(
+        (locale === "es" && section.labelEs) || section.label,
+        sections.length,
       );
       if (!title) return <Box key={`${keyPrefix}-${section.label}`}>{rows}</Box>;
       return (

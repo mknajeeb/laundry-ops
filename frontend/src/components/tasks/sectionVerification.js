@@ -5,7 +5,7 @@ const REJECTED = new Set(["rejected"]);
 export const SECTION_LABELS = {
   verified: "Verified",
   needs_correction: "Needs Correction",
-  pending_verification: "Pending Verification",
+  pending_verification: "Waiting for Verification",
   in_progress: "In Progress",
 };
 

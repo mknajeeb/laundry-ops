@@ -119,10 +119,12 @@ def test_rinse_dashboard_strips_duration_fields():
     contrib = out["shared_assignments"][0]["contributions"][0]
     assert "group_duration_seconds" not in contrib
     assert "duration_seconds" not in (contrib.get("activity") or {})
-    assert "duration_seconds" not in out["activity_log"][0]
+    # The activity log and supervisor queue are withheld from Rinse, not duration-stripped.
+    assert out["activity_log"] == []
+    assert "queue" not in out
+    assert out["rinse_scope"]["activity_log_hidden"] is True
+    assert out["read_only"] is True
+    assert out["can_approve"] is False
     nested = out["checklists"][0]["groups"][0]["items"][0]["activities"][0]
     assert "duration_seconds" not in nested
-    assert "duration_seconds" not in out["queue"]["pending_approval"][0]["activity"]
-    assert "duration_seconds" not in out["queue"]["shift_end"]["blocking_close"][0]["activity"]
-    assert "duration_seconds" not in out["queue"]["shift_end"]["incomplete"][0]["activity"]
     assert "duration_seconds" not in out["shift_end"]["blocking_close"][0]["activity"]

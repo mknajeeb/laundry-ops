@@ -25,7 +25,7 @@ import {
   attendancePinCleaningTasksVerifyQueue,
   attendancePinSwitchRole,
 } from "../api";
-import { OpsMobileShell, OpsTopBar, OPS_MOBILE } from "../opsMobile";
+import { OpsLocaleToggle, OpsMobileShell, OpsTopBar, OPS_MOBILE } from "../opsMobile";
 import { useI18n } from "../i18n/I18nContext";
 import { categoryLabel, localizedConfigured, localizedInstruction, taskStatusLabel } from "../components/tasks/taskEmployeeI18n";
 import ActivityRemarks from "../components/tasks/ActivityRemarks";
@@ -104,6 +104,13 @@ function PartnerLines({ partners, executionMode, assignedNames }) {
 
 function TaskCard({ task, onStart, onCompleteUntimed, busy }) {
   const { t, locale } = useI18n();
+  const taskName = localizedConfigured(
+    { name: task.role_label || task.role, name_es: task.name_es },
+    locale,
+    "name",
+    "name_es",
+  );
+  const taskInstructions = localizedInstruction(task, locale);
   const names = (task.assigned_employees || []).join(" + ");
   const canAct =
     task.status === "pending" || task.status === "overdue" || task.status === "rejected";
@@ -122,10 +129,9 @@ function TaskCard({ task, onStart, onCompleteUntimed, busy }) {
     >
       <Stack direction="row" alignItems="center" spacing={0.5}>
         <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-          {localizedConfigured({ name: task.role_label || task.role, name_es: task.name_es }, locale, "name", "name_es") ||
-            task.role}
+          {taskName || task.role}
         </Typography>
-        <InstructionHint text={localizedInstruction(task, locale) || task.remarks} label={t("tasks.pin.instructions")} />
+        <InstructionHint text={taskInstructions} label={t("tasks.pin.instructions")} />
       </Stack>
       <Typography variant="body2" color="text.secondary">
         {task.timing_label || t("tasks.pin.anytime")}
@@ -184,6 +190,40 @@ export default function CleaningTasksPinPage() {
   const [workRemark, setWorkRemark] = useState("");
 
   const activeSchema = active?.input_schema || inputDraftTask?.input_schema || [];
+  const completedName = localizedConfigured(
+    {
+      name: completed?.group?.name || completed?.role_label || completed?.role || "",
+      name_es: completed?.name_es || completed?.group?.name_es || "",
+    },
+    locale,
+    "name",
+    "name_es",
+  );
+  const draftName = localizedConfigured(
+    { name: inputDraftTask?.role_label || inputDraftTask?.role || "", name_es: inputDraftTask?.name_es || "" },
+    locale,
+    "name",
+    "name_es",
+  );
+  const draftInstructions = localizedInstruction(inputDraftTask || {}, locale);
+  const activeGroupName = localizedConfigured(
+    {
+      name: active?.group?.name || active?.role_label || active?.role || "",
+      name_es: active?.name_es || active?.group?.name_es || "",
+    },
+    locale,
+    "name",
+    "name_es",
+  );
+  const activeGroupInstructions =
+    localizedInstruction(active || {}, locale) || localizedInstruction(active?.group || {}, locale);
+  const activeName = localizedConfigured(
+    { name: active?.role_label || active?.role || "", name_es: active?.name_es || "" },
+    locale,
+    "name",
+    "name_es",
+  );
+  const activeInstructions = localizedInstruction(active || {}, locale);
 
   const goHub = useCallback(() => {
     navigate(pinHubMenuPath(slug || hub?.organization_slug || ""), { replace: true });
@@ -623,7 +663,9 @@ export default function CleaningTasksPinPage() {
         title={t("tasks.pin.title")}
         onBack={goHub}
         onLock={lock}
+        lockLabel={t("mobileOps.lock")}
         identity={hub.employee_first_name || hub.employee_name || ""}
+        right={<OpsLocaleToggle />}
       />
       {error ? (
         <Alert severity="error" sx={{ mb: 1.5 }}>
@@ -649,12 +691,7 @@ export default function CleaningTasksPinPage() {
           </Typography>
           <Box sx={{ textAlign: "center" }}>
             <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy, fontSize: "1.1rem" }}>
-              {localizedConfigured(
-                { name: completed.group?.name || completed.role_label || completed.role, name_es: completed.name_es || completed.group?.name_es },
-                locale,
-                "name",
-                "name_es",
-              )}
+              {completedName}
             </Typography>
             <Typography variant="body1" color="text.secondary" sx={{ mt: 0.5 }}>
               {completed.verification_required ||
@@ -714,19 +751,14 @@ export default function CleaningTasksPinPage() {
       ) : inputDraftTask ? (
         <Stack spacing={1.5}>
           <Typography variant="h6" sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-            {localizedConfigured(
-              { name: inputDraftTask.role_label || inputDraftTask.role, name_es: inputDraftTask.name_es },
-              locale,
-              "name",
-              "name_es",
-            )}
+            {draftName}
           </Typography>
           <Typography variant="body2" color="text.secondary">
             {t("tasks.pin.enterInfo")}
           </Typography>
-          {inputDraftTask.instructions || inputDraftTask.remarks ? (
+          {draftInstructions || inputDraftTask.remarks ? (
             <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-              {localizedInstruction(inputDraftTask, locale) || inputDraftTask.remarks}
+              {draftInstructions || inputDraftTask.remarks}
             </Typography>
           ) : null}
           <TextField
@@ -761,18 +793,10 @@ export default function CleaningTasksPinPage() {
         <Stack spacing={1.5} alignItems="stretch">
           <Stack direction="row" alignItems="center" spacing={0.5}>
             <Typography variant="h6" sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-              {localizedConfigured(
-                {
-                  name: active.group?.name || active.role_label || active.role,
-                  name_es: active.name_es || active.group?.name_es,
-                },
-                locale,
-                "name",
-                "name_es",
-              )}
+              {activeGroupName}
             </Typography>
             <InstructionHint
-              text={localizedInstruction(active, locale) || localizedInstruction(active.group, locale) || active.remarks}
+              text={activeGroupInstructions || active.remarks}
               label={t("tasks.pin.instructions")}
             />
           </Stack>
@@ -842,14 +866,9 @@ export default function CleaningTasksPinPage() {
         <Stack spacing={1.5} alignItems="stretch">
           <Stack direction="row" alignItems="center" spacing={0.5}>
             <Typography variant="h6" sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-              {localizedConfigured(
-                { name: active.role_label || active.role, name_es: active.name_es },
-                locale,
-                "name",
-                "name_es",
-              )}
+              {activeName}
             </Typography>
-            <InstructionHint text={localizedInstruction(active, locale) || active.remarks} label={t("tasks.pin.instructions")} />
+            <InstructionHint text={activeInstructions || active.remarks} label={t("tasks.pin.instructions")} />
           </Stack>
           <Typography variant="body2" color="text.secondary">
             {active.timing_label || t("tasks.pin.anytime")}

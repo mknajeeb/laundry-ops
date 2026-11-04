@@ -1,11 +1,22 @@
 import { Chip } from "@mui/material";
+import { useI18n } from "../../i18n/I18nContext";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
+import { taskStatusLabel } from "./taskEmployeeI18n";
 import {
   completionLabel,
   verificationLabel,
   checklistItemLabel,
   overallLabel,
 } from "./taskDashboardLabels";
+
+const CHECKLIST_STATUS_KEYS = {
+  pending: "tasks.pin.notCheckedOff",
+  completed: "tasks.pin.checkedOff",
+  approved: "tasks.pin.status.verified",
+  pending_verification: "tasks.pin.status.pending_verification",
+  pending_approval: "tasks.pin.status.pending_verification",
+  rejected: "tasks.pin.status.needs_correction",
+};
 
 const STYLES = {
   "Not Started": {
@@ -29,6 +40,11 @@ const STYLES = {
     border: VEEWASH_DASHBOARD.primaryBlueBorder,
   },
   "Pending Verification": {
+    bg: VEEWASH_DASHBOARD.pendingLight,
+    color: VEEWASH_DASHBOARD.pendingDark,
+    border: VEEWASH_DASHBOARD.pendingBorder,
+  },
+  "Waiting for Verification": {
     bg: VEEWASH_DASHBOARD.pendingLight,
     color: VEEWASH_DASHBOARD.pendingDark,
     border: VEEWASH_DASHBOARD.pendingBorder,
@@ -65,9 +81,9 @@ const STYLES = {
   },
 };
 
-export function TaskStatusBadge({ label, sx }) {
+export function TaskStatusBadge({ label, tone, sx }) {
   const text = String(label || "Not Started");
-  const style = STYLES[text] || STYLES["Not Started"];
+  const style = STYLES[tone || text] || STYLES["Not Started"];
   return (
     <Chip
       size="small"
@@ -87,19 +103,31 @@ export function TaskStatusBadge({ label, sx }) {
 }
 
 export function CompletionBadge({ status }) {
-  return <TaskStatusBadge label={completionLabel(status)} />;
+  const { t } = useI18n();
+  const tone = completionLabel(status);
+  return <TaskStatusBadge label={taskStatusLabel(t, status) || tone} tone={tone} />;
 }
 
 export function OverallBadge({ status }) {
-  return <TaskStatusBadge label={overallLabel(status)} />;
+  const { t } = useI18n();
+  const tone = overallLabel(status);
+  return <TaskStatusBadge label={taskStatusLabel(t, status) || tone} tone={tone} />;
 }
 
 export function VerificationBadge({ status }) {
-  const label = verificationLabel(status);
-  if (label === "Not Required") return null;
-  return <TaskStatusBadge label={label} />;
+  const { t } = useI18n();
+  const tone = verificationLabel(status);
+  if (tone === "Not Required") return null;
+  const label =
+    String(status || "") === "partial"
+      ? t("tasks.dashboard.partiallyVerified")
+      : taskStatusLabel(t, status) || tone;
+  return <TaskStatusBadge label={label} tone={tone} />;
 }
 
 export function ChecklistBadge({ status }) {
-  return <TaskStatusBadge label={checklistItemLabel(status)} />;
+  const { t } = useI18n();
+  const tone = checklistItemLabel(status);
+  const key = CHECKLIST_STATUS_KEYS[String(status || "").toLowerCase()];
+  return <TaskStatusBadge label={key ? t(key) : tone} tone={tone} />;
 }

@@ -287,7 +287,7 @@ def test_section_status_follows_required_items():
         {"section_label": "Machines", "section_order": 10, "required": False, "status": "pending"},
     ]
     pending = section_rollups(items)[0]
-    assert pending["status_label"] == "Pending Verification"
+    assert pending["status_label"] == "Waiting for Verification"
     assert pending["pending_activity_ids"] == [9]
 
     items[1]["status"] = "rejected"

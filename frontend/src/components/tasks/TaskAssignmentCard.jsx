@@ -13,7 +13,7 @@ import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ActivityRemarks from "./ActivityRemarks";
 import InstructionHint from "./InstructionHint";
 import { useI18n } from "../../i18n/I18nContext";
-import { localizedConfigured, localizedInstruction } from "./taskEmployeeI18n";
+import { localizedConfigured, localizedInstruction, taskStatusLabel } from "./taskEmployeeI18n";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import { CompletionDetails } from "../../opsMobile/TaskCompletionInputs";
 import { ChecklistBadge, TaskStatusBadge } from "./TaskStatusBadge";
@@ -24,13 +24,30 @@ import {
 } from "./taskDashboardFormat";
 import {
   formatDurationHm,
-  friendlyStatusLabel,
-  overallLabel,
-  participationLabel,
   participationStatusOf,
   showPerEmployeeChecklist,
 } from "./taskDashboardLabels";
 import { responsibilityLabel, visibleSectionLabel } from "./sharedChecklistOwnership";
+
+function ChecklistItemTitle({ item, label }) {
+  const { locale } = useI18n();
+  const name =
+    localizedConfigured(
+      { task_name: item.task_name || item.task_label, task_name_es: item.task_name_es },
+      locale,
+      "task_name",
+      "task_name_es",
+    ) || item.task_code;
+  const instructions = localizedInstruction(item, locale);
+  return (
+    <>
+      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+        {name}
+      </Typography>
+      <InstructionHint text={instructions} label={label} />
+    </>
+  );
+}
 
 function formatDuration(seconds) {
   if (seconds == null) return null;
@@ -60,9 +77,9 @@ export default function TaskAssignmentCard({
   onCancelReject,
   onAddRemark,
 }) {
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const [supervisorRemark, setSupervisorRemark] = useState("");
-  const employees = (row.assigned_employees || []).join(" + ") || "Unassigned";
+  const employees = (row.assigned_employees || []).join(" + ") || t("tasks.dashboard.unassigned");
   const checklistItems = row.shared_checklist_items || [];
   const instructions = localizedInstruction(row, locale);
   const activityName = localizedConfigured(
@@ -79,8 +96,8 @@ export default function TaskAssignmentCard({
   const checklistRequired = row.checklist_required ?? requiredItems.length;
   const checklistProgress = row.checklist_done ?? checklistDone;
   const statusText = row.overall_status
-    ? overallLabel(row.overall_status)
-    : friendlyStatusLabel(row.status);
+    ? taskStatusLabel(t, row.overall_status)
+    : taskStatusLabel(t, row.status);
   const verifyLocked = row.verification_eligible === false;
   const sectionHeadings = (row.checklist_sections || [])
     .map((section) => ({
@@ -125,7 +142,7 @@ export default function TaskAssignmentCard({
             </Typography>
             <InstructionHint text={instructions} />
             {row.has_manual_completion && !readOnly ? (
-              <TaskStatusBadge label="Manual entry" />
+              <TaskStatusBadge label={t("tasks.dashboard.manualEntry")} tone="Finished" />
             ) : null}
           </Stack>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.2 }}>
@@ -133,13 +150,15 @@ export default function TaskAssignmentCard({
             {row.timing_label ? ` · ${row.timing_label}` : ""}
           </Typography>
           <Typography variant="body2" sx={{ mt: 0.15, color: VEEWASH_DASHBOARD.wfCharcoal }}>
-            {checklistRequired ? `${checklistProgress}/${checklistRequired} items completed` : "No checklist"}
+            {checklistRequired
+              ? t("tasks.dashboard.itemsCompleted", { done: checklistProgress, required: checklistRequired })
+              : t("tasks.dashboard.noChecklist")}
             {" · "}
             {statusText}
           </Typography>
           {hideLabor && row.activity_started_at ? (
             <Typography variant="caption" color="text.secondary" display="block">
-              Started {formatDashboardDateTime(row.activity_started_at)}
+              {t("tasks.dashboard.started", { time: formatDashboardDateTime(row.activity_started_at) })}
             </Typography>
           ) : null}
         </Box>
@@ -150,7 +169,7 @@ export default function TaskAssignmentCard({
               e.stopPropagation();
               onToggle();
             }}
-            aria-label={expanded ? "Collapse" : "Expand"}
+            aria-label={expanded ? t("tasks.dashboard.collapse") : t("tasks.dashboard.expand")}
           >
             {expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
           </IconButton>
@@ -172,7 +191,7 @@ export default function TaskAssignmentCard({
               className="no-print"
               size="small"
               fullWidth
-              label="Supervisor remark (optional)"
+              label={t("tasks.dashboard.supervisorRemark")}
               value={supervisorRemark}
               onChange={(e) => setSupervisorRemark(e.target.value)}
               sx={{ mb: 1, bgcolor: "#fff" }}
@@ -218,15 +237,7 @@ export default function TaskAssignmentCard({
                   >
                     <Box>
                       <Stack direction="row" alignItems="center" spacing={0.25}>
-                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                          {localizedConfigured(
-                            { task_name: item.task_name || item.task_label, task_name_es: item.task_name_es },
-                            locale,
-                            "task_name",
-                            "task_name_es",
-                          ) || item.task_code}
-                        </Typography>
-                        <InstructionHint text={localizedInstruction(item, locale)} label="Item instructions" />
+                        <ChecklistItemTitle item={item} label={t("tasks.pin.itemInstructions")} />
                       </Stack>
                       <Typography variant="caption" color="text.secondary" display="block">
                         {responsibilityLabel(item)}
@@ -313,8 +324,8 @@ export default function TaskAssignmentCard({
                       <TaskStatusBadge
                         label={
                           showParticipation
-                            ? participationLabel(participation)
-                            : friendlyStatusLabel(c.status || act.status)
+                            ? taskStatusLabel(t, participation)
+                            : taskStatusLabel(t, c.status || act.status)
                         }
                       />
                       {!readOnly && canApprove && !verifyLocked && String(c.status) === "pending_approval" && act.id ? (

@@ -16,7 +16,7 @@ import {
 } from "../api";
 import TaskVerificationReviewCard from "../components/tasks/TaskVerificationReviewCard";
 import { formatDashboardTime } from "../components/tasks/taskDashboardFormat";
-import { OpsMobileShell, OpsTopBar, OPS_MOBILE } from "../opsMobile";
+import { OpsLocaleToggle, OpsMobileShell, OpsTopBar, OPS_MOBILE } from "../opsMobile";
 import { useI18n } from "../i18n/I18nContext";
 import {
   clearPinHubSession,
@@ -64,7 +64,7 @@ function reviewClock(value) {
  * Supervisor PIN Task Review — verify / reject completed tasks.
  */
 export default function CleaningTaskReviewPinPage() {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const { orgSlug: routeSlug } = useParams();
   const navigate = useNavigate();
   const slug = sanitizeSlug(routeSlug);
@@ -162,6 +162,11 @@ export default function CleaningTaskReviewPinPage() {
   };
 
   const reviewCards = queue?.verification_cards || [];
+  const endOfDayClose = Array.isArray(queue?.shift_end?.end_of_day_close)
+    ? queue.shift_end.end_of_day_close
+    : (queue?.shift_end?.blocking_close || []).filter(
+        (row) => String(row?.category_code || row?.activity?.category_code || "") === "end_of_day"
+      );
   const sections = [
     [t("tasks.pin.inProgress"), queue?.in_progress || []],
     [t("tasks.pin.status.overdue"), queue?.overdue || []],
@@ -185,7 +190,9 @@ export default function CleaningTaskReviewPinPage() {
         title={t("tasks.pin.reviewTitle")}
         onBack={goHub}
         onLock={lock}
+        lockLabel={t("mobileOps.lock")}
         identity={hub.employee_first_name || hub.employee_name || ""}
+        right={<OpsLocaleToggle />}
       />
           {notice ? (
         <Alert severity="success" sx={{ mb: 1.5 }}>
@@ -205,7 +212,7 @@ export default function CleaningTaskReviewPinPage() {
         <Stack spacing={2}>
           <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
             {[
-              [locale === "es" ? "Pendiente" : "Pending", reviewCards.length],
+              [t("tasks.dashboard.waiting"), reviewCards.length],
               [t("tasks.pin.inProgress"), (queue?.in_progress || []).length],
               [t("tasks.pin.status.overdue"), (queue?.overdue || []).length],
               [t("tasks.pin.approved"), (queue?.approved || []).length],
@@ -229,11 +236,11 @@ export default function CleaningTaskReviewPinPage() {
               </Box>
             ))}
           </Stack>
-          {(queue?.shift_end?.blocking_close || []).length ? (
+          {endOfDayClose.length ? (
             <Typography variant="body2" color="text.secondary">
               {t("tasks.pin.blockingClose", {
-                count: (queue.shift_end.blocking_close || []).length,
-                plural: (queue.shift_end.blocking_close || []).length === 1 ? "" : "s",
+                count: endOfDayClose.length,
+                plural: endOfDayClose.length === 1 ? "" : "s",
               })}
             </Typography>
           ) : null}

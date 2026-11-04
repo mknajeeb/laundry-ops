@@ -181,7 +181,7 @@ def participation_rollup(shared_rows: list[Mapping[str, Any]]) -> dict[str, int]
 _REPORT_STATUS_LABELS = {
     "not_started": "Not Started",
     "in_progress": "In Progress",
-    "pending_verification": "Pending Verification",
+    "pending_verification": "Waiting for Verification",
     "verified": "Verified",
     "overdue": "Overdue",
     "needs_correction": "Needs Correction",

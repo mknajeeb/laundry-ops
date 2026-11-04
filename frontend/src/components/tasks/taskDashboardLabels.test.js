@@ -37,7 +37,7 @@ describe("taskDashboardLabels", () => {
   it("keeps completion and verification labels separate", () => {
     expect(completionLabel("completed")).toBe("Completed");
     expect(completionLabel("in_progress")).toBe("In Progress");
-    expect(verificationLabel("waiting")).toBe("Pending Verification");
+    expect(verificationLabel("waiting")).toBe("Waiting for Verification");
     expect(verificationLabel("partial")).toBe("Partially Verified");
     expect(verificationLabel("not_required")).toBe("Not Required");
     expect(verificationLabel("needs_correction")).toBe("Needs Correction");
@@ -66,7 +66,7 @@ describe("taskDashboardLabels", () => {
     expect(participationLabel("finished")).toBe("Finished");
     expect(participationLabel("in_progress")).toBe("In Progress");
     expect(overallLabel("in_progress")).toBe("In Progress");
-    expect(overallLabel("pending_verification")).toBe("Pending Verification");
+    expect(overallLabel("pending_verification")).toBe("Waiting for Verification");
     expect(
       participationSummary({ finished: 1, assigned: 2, checklistDone: 0, checklistRequired: 2 })
     ).toBe("1/2 employees finished · 0/2 checklist items completed");

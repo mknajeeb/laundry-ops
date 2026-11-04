@@ -102,7 +102,7 @@ OPEN_OR_PENDING = frozenset({STATUS_IN_PROGRESS, STATUS_PENDING_APPROVAL})
 
 DISPLAY_PENDING = "pending"
 DISPLAY_IN_PROGRESS = "in_progress"
-DISPLAY_PENDING_APPROVAL = "pending_approval"  # UI: Pending Verification
+DISPLAY_PENDING_APPROVAL = "pending_approval"  # UI: Waiting for Verification
 DISPLAY_APPROVED = "approved"  # UI: Verified
 DISPLAY_COMPLETED = "completed"
 DISPLAY_REJECTED = "rejected"
@@ -1734,6 +1734,20 @@ def _group_item_queue_entry(
     return entry
 
 
+def _queue_category_code(item, act, catalog) -> str | None:
+    """Category already known on the assignment, activity, or role catalog."""
+    info = (catalog or {}).get(str((item or {}).get("role") or "").strip()) or {}
+    activity = act if isinstance(act, Mapping) else {}
+    code = str(
+        (item or {}).get("category_code")
+        or activity.get("category_code")
+        or info.get("category_code")
+        or info.get("task_category_code")
+        or ""
+    ).strip()
+    return code or None
+
+
 def _contribution_entry(
     item: Mapping[str, Any],
     act: Mapping[str, Any] | None,
@@ -1758,6 +1772,7 @@ def _contribution_entry(
         ],
         "status": status,
         "status_label": friendly_status_label(status, overdue=status == DISPLAY_OVERDUE),
+        "category_code": _queue_category_code(item, act, catalog),
         "activity": serialize_activity(act, catalog=catalog) if act else None,
         "can_record_manual": status in {DISPLAY_PENDING, DISPLAY_OVERDUE, DISPLAY_REJECTED}
         or (act is None),
@@ -1905,18 +1920,31 @@ def list_supervisor_queue(
         if alias:
             buckets = {k: (v if k == alias else []) for k, v in buckets.items()}
 
+    for rows in buckets.values():
+        for row in rows:
+            if row.get("category_code"):
+                continue
+            meta = _task_meta_for_role(cursor, int(organization_id), str(row.get("role") or ""))
+            row["category_code"] = str(meta.get("category_code") or "intra_day")
+
     # Shift-end: incomplete / overdue / still waiting on supervisor approval.
+    # The closing-day list is End of Day work only. Ordinary open activities stay
+    # in the other buckets so their warnings remain, without a closing instruction.
+    open_rows = (
+        buckets["not_started"]
+        + buckets["in_progress"]
+        + buckets["overdue"]
+        + buckets["pending_approval"]
+        + buckets["rejected"]
+    )
     shift_end = {
         "incomplete": buckets["not_started"] + buckets["in_progress"] + buckets["rejected"],
         "overdue": buckets["overdue"],
         "pending_approval": buckets["pending_approval"],
-        "blocking_close": (
-            buckets["not_started"]
-            + buckets["in_progress"]
-            + buckets["overdue"]
-            + buckets["pending_approval"]
-            + buckets["rejected"]
-        ),
+        "blocking_close": open_rows,
+        "end_of_day_close": [
+            row for row in open_rows if str(row.get("category_code") or "") == "end_of_day"
+        ],
     }
 
     return {
@@ -2924,7 +2952,7 @@ def build_verification_review_cards(
             block = "Required checklist items are still incomplete."
         elif pending_ids:
             overall = OVERALL_PENDING_VERIFICATION
-            overall_label = "Pending Verification"
+            overall_label = "Waiting for Verification"
             block = None
         else:
             overall = VERIFICATION_VERIFIED

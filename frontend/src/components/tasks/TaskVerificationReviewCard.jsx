@@ -8,6 +8,38 @@ import { formatDashboardTime } from "./taskDashboardFormat";
 import { OPS_MOBILE } from "../../opsMobile";
 import { CompletionDetails } from "../../opsMobile/TaskCompletionInputs";
 
+function ReviewItemText({ item, t, locale }) {
+  const name =
+    localizedConfigured(
+      { task_name: item.task_label || item.task_name, task_name_es: item.task_name_es },
+      locale,
+      "task_name",
+      "task_name_es",
+    ) || item.task_label;
+  const instructions = localizedInstruction(item, locale);
+  const section = localizedConfigured(item, locale, "section_label", "section_label_es") || item.section_label;
+  return (
+    <>
+      <Stack direction="row" alignItems="center" spacing={0.5}>
+        <Typography variant="body2">
+          {name || item.task_label} —{" "}
+          {item.needs_correction
+            ? t("tasks.pin.needsCorrection")
+            : item.checked_off
+              ? t("tasks.pin.checkedOff")
+              : t("tasks.pin.notCheckedOff")}
+        </Typography>
+        <InstructionHint text={instructions} label={t("tasks.pin.itemInstructions")} />
+      </Stack>
+      {item.section_label ? (
+        <Typography variant="caption" sx={{ fontWeight: 800 }} display="block">
+          {section}
+        </Typography>
+      ) : null}
+    </>
+  );
+}
+
 function clock(value) {
   const text = formatDashboardTime(value);
   return text === "—" ? null : text;
@@ -41,6 +73,7 @@ export default function TaskVerificationReviewCard({
     "name",
     "name_es",
   );
+  const activityInstructions = localizedInstruction(card, locale);
   const overall = card.overall_status ? taskStatusLabel(t, card.overall_status) : card.overall_label;
 
   return (
@@ -54,7 +87,7 @@ export default function TaskVerificationReviewCard({
     >
       <Stack direction="row" alignItems="center" spacing={0.5}>
         <Typography sx={{ fontWeight: 900, letterSpacing: 0.2 }}>{activityName || card.role_label}</Typography>
-        <InstructionHint text={localizedInstruction(card, locale)} label={t("tasks.pin.instructions")} />
+        <InstructionHint text={activityInstructions} label={t("tasks.pin.instructions")} />
       </Stack>
       {assigned ? (
         <Typography variant="body2" color="text.secondary">
@@ -114,28 +147,7 @@ export default function TaskVerificationReviewCard({
             <Stack spacing={0.75} sx={{ mb: 1 }}>
               {card.checklist.map((item) => (
                 <Box key={item.task_code || item.task_label}>
-                  <Stack direction="row" alignItems="center" spacing={0.5}>
-                  <Typography variant="body2">
-                    {localizedConfigured(
-                      { task_name: item.task_label || item.task_name, task_name_es: item.task_name_es },
-                      locale,
-                      "task_name",
-                      "task_name_es",
-                    ) || item.task_label}{" "}
-                    —{" "}
-                    {item.needs_correction
-                      ? t("tasks.pin.needsCorrection")
-                      : item.checked_off
-                        ? t("tasks.pin.checkedOff")
-                        : t("tasks.pin.notCheckedOff")}
-                  </Typography>
-                  <InstructionHint text={localizedInstruction(item, locale)} label={t("tasks.pin.itemInstructions")} />
-                  </Stack>
-                  {item.section_label ? (
-                    <Typography variant="caption" sx={{ fontWeight: 800 }} display="block">
-                      {localizedConfigured(item, locale, "section_label", "section_label_es") || item.section_label}
-                    </Typography>
-                  ) : null}
+                  <ReviewItemText item={item} t={t} locale={locale} />
                   <Typography variant="caption" color="text.secondary" display="block">
                     {t("tasks.pin.responsible", {
                       name:
