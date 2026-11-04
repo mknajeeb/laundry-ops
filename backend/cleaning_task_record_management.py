@@ -28,7 +28,7 @@ from backend.cleaning_task_manual_completion import (
     _parse_et_datetime,
     ensure_manual_completion_schema,
 )
-from backend.ta_helpers import invalidate_schema_cache, table_exists, table_has_column
+from backend.ta_helpers import remember_column, table_exists, table_has_column
 
 CHANGE_CORRECTION = "correction"
 CHANGE_BUSINESS_DATE = "business_date"
@@ -49,6 +49,7 @@ def ensure_record_management_schema(cursor) -> None:
     for col, ddl in _VOID_COLUMNS:
         if not table_has_column(cursor, TABLE, col):
             cursor.execute(f"ALTER TABLE {TABLE} ADD COLUMN {col} {ddl}")
+            remember_column(TABLE, col)
     if table_exists(cursor, REVISIONS_TABLE) and not table_has_column(
         cursor, REVISIONS_TABLE, "change_type"
     ):
@@ -59,7 +60,7 @@ def ensure_record_management_schema(cursor) -> None:
               AFTER revised_by_user_id
             """
         )
-    invalidate_schema_cache()
+        remember_column(REVISIONS_TABLE, "change_type")
 
 
 def activity_is_voided(row: Mapping[str, Any] | None) -> bool:

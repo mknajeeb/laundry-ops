@@ -11,7 +11,13 @@ import json
 import re
 from typing import Any, Mapping, Optional, Sequence
 
-from backend.ta_helpers import invalidate_schema_cache, table_exists, table_has_column
+from backend.ta_helpers import (
+    invalidate_table_schema,
+    once_per_cursor,
+    remember_column,
+    table_exists,
+    table_has_column,
+)
 from backend.weekly_schedule_roles import (
     BUILTIN_ROLE_CODES,
     CLEANING_TASK_CODES,
@@ -99,6 +105,7 @@ class TaskCatalogError(Exception):
         self.status = status
 
 
+@once_per_cursor("task_catalog")
 def ensure_task_catalog_tables(cursor) -> None:
     ensure_weekly_schedule_roles_table(cursor)
     if not table_exists(cursor, CATEGORIES_TABLE):
@@ -118,6 +125,7 @@ def ensure_task_catalog_tables(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        invalidate_table_schema(CATEGORIES_TABLE)
     if not table_exists(cursor, CHECKLISTS_TABLE):
         cursor.execute(
             f"""
@@ -139,6 +147,7 @@ def ensure_task_catalog_tables(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        invalidate_table_schema(CHECKLISTS_TABLE)
     if not table_exists(cursor, CHECKLIST_ITEMS_TABLE):
         cursor.execute(
             f"""
@@ -156,6 +165,7 @@ def ensure_task_catalog_tables(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        invalidate_table_schema(CHECKLIST_ITEMS_TABLE)
     if not table_exists(cursor, CHECKLIST_GROUPS_TABLE):
         cursor.execute(
             f"""
@@ -171,12 +181,14 @@ def ensure_task_catalog_tables(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        invalidate_table_schema(CHECKLIST_GROUPS_TABLE)
     if table_exists(cursor, CHECKLIST_ITEMS_TABLE) and not table_has_column(
         cursor, CHECKLIST_ITEMS_TABLE, "group_id"
     ):
         cursor.execute(
             f"ALTER TABLE {CHECKLIST_ITEMS_TABLE} ADD COLUMN group_id INT NULL"
         )
+        remember_column(CHECKLIST_ITEMS_TABLE, "group_id")
         try:
             cursor.execute(
                 f"ALTER TABLE {CHECKLIST_ITEMS_TABLE} ADD INDEX idx_task_cli_group (checklist_id, group_id)"
@@ -203,10 +215,11 @@ def ensure_task_catalog_tables(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        invalidate_table_schema(CHECKLIST_VERIFICATIONS_TABLE)
     for col, ddl in _TASK_CONFIG_COLUMNS:
         if not table_has_column(cursor, "weekly_schedule_roles", col):
             cursor.execute(f"ALTER TABLE weekly_schedule_roles ADD COLUMN {col} {ddl}")
-    invalidate_schema_cache()
+            remember_column("weekly_schedule_roles", col)
 
 
 def _slug_code(raw: str, *, max_len: int = 40) -> str:
@@ -306,27 +319,58 @@ def _fetch_categories(cursor, organization_id: int, *, include_inactive: bool = 
     return out
 
 
+def clear_task_read_cache(cursor) -> None:
+    """Drop request-local catalog caches after a definition or group write."""
+    for name in (
+        "_vw_categories",
+        "_vw_task_def_list",
+        "_vw_task_def_index",
+        "_vw_task_def_cache",
+        "_vw_activity_group",
+        "_vw_global_policy",
+        "_vw_task_meta",
+        "_vw_role_catalog",
+    ):
+        try:
+            delattr(cursor, name)
+        except Exception:
+            pass
+
+
 def list_categories(cursor, organization_id: int, *, include_inactive: bool = True) -> list[dict[str, Any]]:
     ensure_task_catalog_tables(cursor)
-    rows = _fetch_categories(cursor, int(organization_id), include_inactive=True)
-    if not rows:
-        seed_builtin_categories(cursor, organization_id)
-        rows = _fetch_categories(cursor, int(organization_id), include_inactive=True)
-    # If DB seed is unavailable (e.g. unit FakeCursor), fall back to built-in definitions.
-    if not rows:
-        rows = [
-            {
-                "id": i + 1,
-                "organization_id": int(organization_id),
-                "code": item["code"],
-                "name": item["name"],
-                "display_order": int(item["display_order"]),
-                "active": True,
-            }
-            for i, item in enumerate(BUILTIN_CATEGORIES)
-        ]
+    oid = int(organization_id)
+    store = getattr(cursor, "_vw_categories", None)
+    if isinstance(store, dict) and oid in store:
+        rows = store[oid]
+    else:
+        rows = _fetch_categories(cursor, oid, include_inactive=True)
+        if not rows:
+            seed_builtin_categories(cursor, organization_id)
+            rows = _fetch_categories(cursor, oid, include_inactive=True)
+        # If DB seed is unavailable (e.g. unit FakeCursor), fall back to built-in definitions.
+        if not rows:
+            rows = [
+                {
+                    "id": i + 1,
+                    "organization_id": oid,
+                    "code": item["code"],
+                    "name": item["name"],
+                    "display_order": int(item["display_order"]),
+                    "active": True,
+                }
+                for i, item in enumerate(BUILTIN_CATEGORIES)
+            ]
+        if not isinstance(store, dict):
+            store = {}
+            try:
+                setattr(cursor, "_vw_categories", store)
+            except Exception:
+                store = None
+        if isinstance(store, dict):
+            store[oid] = rows
     if include_inactive:
-        return rows
+        return list(rows)
     return [r for r in rows if r.get("active")]
 
 
@@ -386,7 +430,12 @@ def task_definition_from_role(role: Mapping[str, Any], *, categories_by_code: Ma
 
 def list_task_definitions(cursor, organization_id: int, *, include_inactive: bool = True) -> list[dict[str, Any]]:
     ensure_task_catalog_tables(cursor)
-    cats = {c["code"]: c for c in list_categories(cursor, organization_id)}
+    oid = int(organization_id)
+    cache_key = (oid, bool(include_inactive))
+    store = getattr(cursor, "_vw_task_def_list", None)
+    if isinstance(store, dict) and cache_key in store:
+        return store[cache_key]
+    cats = {c["code"]: c for c in list_categories(cursor, oid)}
     catalog = list_role_catalog(cursor, int(organization_id))
     # Overlay DB config columns for org rows.
     cursor.execute(
@@ -397,7 +446,7 @@ def list_task_definitions(cursor, organization_id: int, *, include_inactive: boo
         FROM weekly_schedule_roles
         WHERE organization_id = %s
         """,
-        (int(organization_id),),
+        (oid,),
     )
     overlays = {str(r["code"]): r for r in (cursor.fetchall() or []) if isinstance(r, dict)}
     seen: set[str] = set()
@@ -440,19 +489,60 @@ def list_task_definitions(cursor, organization_id: int, *, include_inactive: boo
             continue
         _append_merged({**row, "code": code, "uses_time_slots": 0})
     out.sort(key=lambda t: (t.get("category_code") or "", t.get("display_order") or 0, t.get("name") or ""))
+    if not isinstance(store, dict):
+        store = {}
+        try:
+            setattr(cursor, "_vw_task_def_list", store)
+        except Exception:
+            store = None
+    if isinstance(store, dict):
+        store[cache_key] = out
     return out
+
+
+def _task_definition_index(cursor, organization_id: int) -> dict[str, dict[str, Any]]:
+    """One catalog read per request. Checklist items otherwise reload every definition."""
+    oid = int(organization_id)
+    store = getattr(cursor, "_vw_task_def_index", None)
+    if isinstance(store, dict) and oid in store:
+        return store[oid]
+    index = {
+        item["code"]: item
+        for item in list_task_definitions(cursor, oid, include_inactive=True)
+        if item.get("code")
+    }
+    if not isinstance(store, dict):
+        store = {}
+        try:
+            setattr(cursor, "_vw_task_def_index", store)
+        except Exception:
+            return index
+    store[oid] = index
+    return index
 
 
 def get_task_definition(cursor, organization_id: int, code: str) -> dict[str, Any] | None:
     code_clean = str(code or "").strip()
     if not code_clean:
         return None
+    cache = getattr(cursor, "_vw_task_def_cache", None)
+    key = (int(organization_id), code_clean)
+    if isinstance(cache, dict) and key in cache:
+        return cache[key]
     # Prefer the normal task list (excludes synthetic activity-group roles).
-    for item in list_task_definitions(cursor, organization_id, include_inactive=True):
-        if item["code"] == code_clean:
-            return item
+    found = _task_definition_index(cursor, int(organization_id)).get(code_clean)
+    if found is not None:
+        if not isinstance(cache, dict):
+            cache = {}
+            try:
+                setattr(cursor, "_vw_task_def_cache", cache)
+            except Exception:
+                return found
+        cache[key] = found
+        return found
     # Activity-group schedule roles (agroup_*) are omitted from list_task_definitions
     # but still need a definition after upsert / for schedule labels.
+    result = None
     if code_clean.startswith("agroup_"):
         ensure_task_catalog_tables(cursor)
         cats = {c["code"]: c for c in list_categories(cursor, organization_id)}
@@ -469,11 +559,19 @@ def get_task_definition(cursor, organization_id: int, code: str) -> dict[str, An
         )
         row = cursor.fetchone()
         if isinstance(row, dict):
-            return task_definition_from_role(row, categories_by_code=cats)
-    return None
+            result = task_definition_from_role(row, categories_by_code=cats)
+    if not isinstance(cache, dict):
+        cache = {}
+        try:
+            setattr(cursor, "_vw_task_def_cache", cache)
+        except Exception:
+            return result
+    cache[key] = result
+    return result
 
 
 def upsert_category(cursor, organization_id: int, data: Mapping[str, Any], *, category_id: int | None = None) -> dict[str, Any]:
+    clear_task_read_cache(cursor)
     ensure_task_catalog_tables(cursor)
     oid = int(organization_id)
     name = " ".join(str(data.get("name") or "").split())
@@ -539,6 +637,7 @@ def reorder_categories(cursor, organization_id: int, ordered_codes: Sequence[str
 
 
 def upsert_task_definition(cursor, organization_id: int, code: str, data: Mapping[str, Any]) -> dict[str, Any]:
+    clear_task_read_cache(cursor)
     """Create/update task config on weekly_schedule_roles (task kind only)."""
     ensure_task_catalog_tables(cursor)
     oid = int(organization_id)

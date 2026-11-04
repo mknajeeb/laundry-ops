@@ -1,5 +1,6 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { Box } from "@mui/material";
+import { useI18n } from "../../i18n/I18nContext";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 
 /** Hub compartments. Only Rinse WF (+ transitional Today landing) are live. */
@@ -21,6 +22,7 @@ export const MANAGEMENT_BUCKETS = ["rinse_wf", "rinse_hd", "non_rinse"];
 
 export default function ManagementHubNav({ activeId = "today" }) {
   const navigate = useNavigate();
+  const { t } = useI18n();
   return (
     <Box
       component="nav"
@@ -70,7 +72,7 @@ export default function ManagementHubNav({ activeId = "today" }) {
           if (!item.enabled) {
             return (
               <Box key={item.id} component="span" sx={sx} aria-disabled="true">
-                {item.label}
+                {t(`shell.hub.${item.id}`)}
               </Box>
             );
           }
@@ -85,7 +87,7 @@ export default function ManagementHubNav({ activeId = "today" }) {
               }}
               sx={sx}
             >
-              {item.label}
+              {t(`shell.hub.${item.id}`)}
             </Box>
           );
         })}

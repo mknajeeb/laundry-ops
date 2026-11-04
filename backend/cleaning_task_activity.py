@@ -22,7 +22,13 @@ from backend.planned_weekly_schedule_responsibilities import (
     list_week_responsibilities,
 )
 from backend.planned_weekly_schedule_task_timing import TIMING_LABELS, timing_display
-from backend.ta_helpers import invalidate_schema_cache, table_exists, table_has_column
+from backend.ta_helpers import (
+    invalidate_table_schema,
+    once_per_cursor,
+    remember_column,
+    table_exists,
+    table_has_column,
+)
 from backend.task_catalog import (
     COMPLETION_INPUT,
     COMPLETION_SIMPLE,
@@ -45,7 +51,19 @@ EVENTS = "cleaning_task_activity_events"
 
 
 def _role_catalog(cursor, organization_id: int) -> dict[str, dict[str, Any]]:
-    return catalog_index(list_role_catalog(cursor, int(organization_id)))
+    oid = int(organization_id)
+    store = getattr(cursor, "_vw_role_catalog", None)
+    if isinstance(store, dict) and oid in store:
+        return store[oid]
+    catalog = catalog_index(list_role_catalog(cursor, oid))
+    if not isinstance(store, dict):
+        store = {}
+        try:
+            setattr(cursor, "_vw_role_catalog", store)
+        except Exception:
+            return catalog
+    store[oid] = catalog
+    return catalog
 
 
 def _role_label(code: Any, catalog: Mapping[str, Mapping[str, Any]] | None = None) -> str:
@@ -84,7 +102,7 @@ OPEN_OR_PENDING = frozenset({STATUS_IN_PROGRESS, STATUS_PENDING_APPROVAL})
 
 DISPLAY_PENDING = "pending"
 DISPLAY_IN_PROGRESS = "in_progress"
-DISPLAY_PENDING_APPROVAL = "pending_approval"  # UI: Pending Verification
+DISPLAY_PENDING_APPROVAL = "pending_approval"  # UI: Waiting for Verification
 DISPLAY_APPROVED = "approved"  # UI: Verified
 DISPLAY_COMPLETED = "completed"
 DISPLAY_REJECTED = "rejected"
@@ -117,7 +135,10 @@ class CleaningTaskError(Exception):
         self.payload = payload or {}
 
 
+@once_per_cursor("cleaning_task_activity")
 def ensure_cleaning_task_activity_tables(cursor) -> None:
+    activities_ready = table_exists(cursor, TABLE)
+    events_ready = table_exists(cursor, EVENTS)
     cursor.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {TABLE} (
@@ -165,10 +186,14 @@ def ensure_cleaning_task_activity_tables(cursor) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
+    if not activities_ready:
+        invalidate_table_schema(TABLE)
+    if not events_ready:
+        invalidate_table_schema(EVENTS)
     for col, ddl in _ACTIVITY_EXTRA_COLUMNS:
         if not table_has_column(cursor, TABLE, col):
             cursor.execute(f"ALTER TABLE {TABLE} ADD COLUMN {col} {ddl}")
-    invalidate_schema_cache()
+            remember_column(TABLE, col)
 
 
 def _dow_for_date(day: date) -> int:
@@ -449,8 +474,22 @@ def _day_responsibilities(
         return []
     dow = _dow_for_date(business_date)
     catalog = _role_catalog(cursor, int(organization_id))
+    week_key = (int(organization_id), week)
+    week_store = getattr(cursor, "_vw_week_resp", None)
+    if isinstance(week_store, dict) and week_key in week_store:
+        week_rows = week_store[week_key]
+    else:
+        week_rows = list_week_responsibilities(cursor, int(organization_id), week_start=week)
+        if not isinstance(week_store, dict):
+            week_store = {}
+            try:
+                setattr(cursor, "_vw_week_resp", week_store)
+            except Exception:
+                week_store = None
+        if isinstance(week_store, dict):
+            week_store[week_key] = week_rows
     items = []
-    for item in list_week_responsibilities(cursor, int(organization_id), week_start=week):
+    for item in week_rows:
         # Sunday is stored as 0. `or -1` treats that as missing and hides the day.
         raw_dow = item.get("day_of_week")
         if raw_dow is None or int(raw_dow) != dow:
@@ -463,6 +502,43 @@ def _day_responsibilities(
     return items
 
 
+def _prime_activities_for_range(cursor, organization_id: int, start: date, end: date) -> None:
+    """One indexed read for a dashboard range. Later day lookups reuse it."""
+    params: list[Any] = [int(organization_id), start, end]
+    sql = f"""
+        SELECT * FROM {TABLE}
+        WHERE organization_id = %s AND business_date >= %s AND business_date <= %s
+          AND voided_at IS NULL
+        ORDER BY id ASC
+    """
+    try:
+        cursor.execute(sql, tuple(params))
+        fetched = cursor.fetchall() or []
+    except Exception:
+        return
+    buckets: dict[tuple[int, date], list[dict[str, Any]]] = {}
+    day = start
+    while day <= end:
+        buckets[(int(organization_id), day)] = []
+        day += timedelta(days=1)
+    for row in fetched:
+        if not isinstance(row, dict):
+            continue
+        raw = row.get("business_date")
+        if isinstance(raw, datetime):
+            raw = raw.date()
+        elif not isinstance(raw, date):
+            try:
+                raw = date.fromisoformat(str(raw)[:10])
+            except ValueError:
+                continue
+        buckets.setdefault((int(organization_id), raw), []).append(row)
+    try:
+        setattr(cursor, "_vw_day_activities", buckets)
+    except Exception:
+        pass
+
+
 def _activities_for_day(
     cursor,
     organization_id: int,
@@ -471,6 +547,11 @@ def _activities_for_day(
     user_id: int | None = None,
     include_voided: bool = False,
 ) -> list[dict[str, Any]]:
+    if user_id is None and not include_voided:
+        cached = getattr(cursor, "_vw_day_activities", None)
+        hit = cached.get((int(organization_id), business_date)) if isinstance(cached, dict) else None
+        if hit is not None:
+            return list(hit)
     ensure_cleaning_task_activity_tables(cursor)
     params: list[Any] = [int(organization_id), business_date]
     sql = f"""
@@ -601,6 +682,38 @@ def _is_overdue(
     return False
 
 
+def _day_shifts_by_user(
+    cursor,
+    organization_id: int,
+    user_ids: Sequence[int],
+    business_date: date,
+) -> dict[int, list[dict]]:
+    """Shift anchors for every assignee on a day, in one query."""
+    ids = sorted({int(uid) for uid in user_ids if uid})
+    if not ids or not table_exists(cursor, "planned_weekly_schedule_entries"):
+        return {}
+    week = normalize_week_start(business_date)
+    if not week:
+        return {}
+    dow = _dow_for_date(business_date)
+    placeholders = ", ".join(["%s"] * len(ids))
+    cursor.execute(
+        f"""
+        SELECT user_id, start_time, end_time, break_slots, break_minutes
+        FROM planned_weekly_schedule_entries
+        WHERE organization_id = %s AND week_start = %s AND day_of_week = %s
+          AND user_id IN ({placeholders})
+        ORDER BY user_id ASC, start_time ASC, id ASC
+        """,
+        (int(organization_id), week, dow, *ids),
+    )
+    grouped: dict[int, list[dict]] = {}
+    for row in cursor.fetchall() or []:
+        if isinstance(row, dict) and row.get("user_id") is not None:
+            grouped.setdefault(int(row["user_id"]), []).append(row)
+    return grouped
+
+
 def _day_shifts_for_user(cursor, organization_id: int, user_id: int, business_date: date) -> list[dict]:
     week = normalize_week_start(business_date)
     if not week:
@@ -647,10 +760,12 @@ def _shift_break_anchors(shifts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 
 def _task_meta_for_role(cursor, organization_id: int, role_code: str) -> dict[str, Any]:
+    key = (int(organization_id), str(role_code or ""))
+    store = getattr(cursor, "_vw_task_meta", None)
+    if isinstance(store, dict) and key in store:
+        return store[key]
     defn = get_task_definition(cursor, int(organization_id), str(role_code or ""))
-    if defn:
-        return defn
-    return {
+    meta = defn or {
         "code": role_code,
         "name": role_code,
         "category_code": "intra_day",
@@ -664,6 +779,14 @@ def _task_meta_for_role(cursor, organization_id: int, role_code: str) -> dict[st
         "input_schema": [],
         "checklist_id": None,
     }
+    if not isinstance(store, dict):
+        store = {}
+        try:
+            setattr(cursor, "_vw_task_meta", store)
+        except Exception:
+            return meta
+    store[key] = meta
+    return meta
 
 
 def list_employee_day_tasks(
@@ -1611,6 +1734,20 @@ def _group_item_queue_entry(
     return entry
 
 
+def _queue_category_code(item, act, catalog) -> str | None:
+    """Category already known on the assignment, activity, or role catalog."""
+    info = (catalog or {}).get(str((item or {}).get("role") or "").strip()) or {}
+    activity = act if isinstance(act, Mapping) else {}
+    code = str(
+        (item or {}).get("category_code")
+        or activity.get("category_code")
+        or info.get("category_code")
+        or info.get("task_category_code")
+        or ""
+    ).strip()
+    return code or None
+
+
 def _contribution_entry(
     item: Mapping[str, Any],
     act: Mapping[str, Any] | None,
@@ -1635,6 +1772,7 @@ def _contribution_entry(
         ],
         "status": status,
         "status_label": friendly_status_label(status, overdue=status == DISPLAY_OVERDUE),
+        "category_code": _queue_category_code(item, act, catalog),
         "activity": serialize_activity(act, catalog=catalog) if act else None,
         "can_record_manual": status in {DISPLAY_PENDING, DISPLAY_OVERDUE, DISPLAY_REJECTED}
         or (act is None),
@@ -1782,18 +1920,31 @@ def list_supervisor_queue(
         if alias:
             buckets = {k: (v if k == alias else []) for k, v in buckets.items()}
 
+    for rows in buckets.values():
+        for row in rows:
+            if row.get("category_code"):
+                continue
+            meta = _task_meta_for_role(cursor, int(organization_id), str(row.get("role") or ""))
+            row["category_code"] = str(meta.get("category_code") or "intra_day")
+
     # Shift-end: incomplete / overdue / still waiting on supervisor approval.
+    # The closing-day list is End of Day work only. Ordinary open activities stay
+    # in the other buckets so their warnings remain, without a closing instruction.
+    open_rows = (
+        buckets["not_started"]
+        + buckets["in_progress"]
+        + buckets["overdue"]
+        + buckets["pending_approval"]
+        + buckets["rejected"]
+    )
     shift_end = {
         "incomplete": buckets["not_started"] + buckets["in_progress"] + buckets["rejected"],
         "overdue": buckets["overdue"],
         "pending_approval": buckets["pending_approval"],
-        "blocking_close": (
-            buckets["not_started"]
-            + buckets["in_progress"]
-            + buckets["overdue"]
-            + buckets["pending_approval"]
-            + buckets["rejected"]
-        ),
+        "blocking_close": open_rows,
+        "end_of_day_close": [
+            row for row in open_rows if str(row.get("category_code") or "") == "end_of_day"
+        ],
     }
 
     return {
@@ -1852,6 +2003,15 @@ def _group_shared_assignments(
             order.append(key)
         groups[key].append(dict(item))
 
+    shift_users = [
+        int(member["user_id"])
+        for members in groups.values()
+        for member in members
+        if member.get("user_id")
+    ]
+    shifts_by_user = _day_shifts_by_user(cursor, int(organization_id), shift_users, business_date)
+    shared_checklist_cache: dict[int, list[dict[str, Any]]] = {}
+
     out: list[dict[str, Any]] = []
     for key in order:
         members = groups[key]
@@ -1872,8 +2032,7 @@ def _group_shared_assignments(
             elif act and str(act.get("status")) == STATUS_REJECTED:
                 st = DISPLAY_REJECTED
             else:
-                shifts = _day_shifts_for_user(cursor, organization_id, int(member["user_id"]), business_date)
-                anchors = _shift_break_anchors(shifts)
+                anchors = _shift_break_anchors(shifts_by_user.get(int(member["user_id"])) or [])
                 overdue = _is_overdue(
                     timing_mode=str(member.get("timing_mode") or "anytime"),
                     planned_start_time=member.get("start_time"),
@@ -1907,36 +2066,39 @@ def _group_shared_assignments(
                     entry["group_duration_seconds"] = int(act.get("duration_seconds") or 0)
                 # Shared checklist once per assignment (who completed each item).
                 if act.get("shared_session_id") is not None:
+                    session_id = int(act["shared_session_id"])
                     try:
-                        from backend.cleaning_task_shared_execution import (
-                            list_shared_session_items,
-                            serialize_shared_item,
-                        )
+                        if session_id not in shared_checklist_cache:
+                            from backend.cleaning_task_shared_execution import (
+                                list_shared_session_items,
+                                serialize_shared_item,
+                            )
 
-                        shared_items = list_shared_session_items(
-                            cursor, int(organization_id), int(act["shared_session_id"])
-                        )
-                        name_ids = {
-                            int(it["completed_by_user_id"])
-                            for it in shared_items
-                            if it.get("completed_by_user_id") is not None
-                        }
-                        item_names = _employee_names(cursor, int(organization_id), sorted(name_ids))
-                        entry["shared_checklist_items"] = apply_shared_item_verification(
-                            [
-                                serialize_shared_item(
-                                    it,
-                                    catalog=catalog,
-                                    meta=_task_meta_for_role(
-                                        cursor, int(organization_id), str(it.get("task_code") or "")
-                                    ),
-                                    names=item_names,
-                                )
+                            shared_items = list_shared_session_items(
+                                cursor, int(organization_id), session_id
+                            )
+                            name_ids = {
+                                int(it["completed_by_user_id"])
                                 for it in shared_items
-                            ],
-                            activities_all,
-                        )
-                        entry["shared_session_id"] = int(act["shared_session_id"])
+                                if it.get("completed_by_user_id") is not None
+                            }
+                            item_names = _employee_names(cursor, int(organization_id), sorted(name_ids))
+                            shared_checklist_cache[session_id] = apply_shared_item_verification(
+                                [
+                                    serialize_shared_item(
+                                        it,
+                                        catalog=catalog,
+                                        meta=_task_meta_for_role(
+                                            cursor, int(organization_id), str(it.get("task_code") or "")
+                                        ),
+                                        names=item_names,
+                                    )
+                                    for it in shared_items
+                                ],
+                                activities_all,
+                            )
+                        entry["shared_checklist_items"] = shared_checklist_cache[session_id]
+                        entry["shared_session_id"] = session_id
                     except Exception:
                         pass
             subjects = verification_subjects_for_contribution(entry)
@@ -2585,7 +2747,7 @@ def _review_item_from_shared(item: Mapping[str, Any], shared: Mapping[str, Any])
     out["task_code"] = shared.get("task_code") or out.get("task_code")
     out["task_label"] = shared.get("task_name") or out.get("task_label")
     out["checked_off"] = checked
-    out["responsibility_label"] = shared.get("responsibility_label") or "Anyone on Team"
+    out["responsibility_label"] = shared.get("responsibility_label") or "Any assigned employee"
     out["responsibility_mode"] = shared.get("responsibility_mode") or "team"
     out["completed_by_name"] = shared.get("completed_by_name")
     out["checked_off_at"] = shared.get("completed_at")
@@ -2790,7 +2952,7 @@ def build_verification_review_cards(
             block = "Required checklist items are still incomplete."
         elif pending_ids:
             overall = OVERALL_PENDING_VERIFICATION
-            overall_label = "Pending Verification"
+            overall_label = "Waiting for Verification"
             block = None
         else:
             overall = VERIFICATION_VERIFIED
@@ -2831,7 +2993,7 @@ def build_verification_review_cards(
                     seen_codes.add(code)
                     item["task_label"] = shared.get("task_name") or item.get("task_label")
                     if item.get("records"):
-                        item["responsibility_label"] = shared.get("responsibility_label") or "Anyone on Team"
+                        item["responsibility_label"] = shared.get("responsibility_label") or "Any assigned employee"
                         item["responsibility_mode"] = shared.get("responsibility_mode") or "team"
                         item["completed_by_name"] = shared.get("completed_by_name") or item.get("completed_by_name")
                         item["completion_input"] = shared.get("completion_input")
@@ -3009,12 +3171,24 @@ def apply_assignment_reporting(row: dict[str, Any]) -> dict[str, Any]:
                 VERIFICATION_VERIFIED,
             }
 
-        completion = str(row.get("completion_status") or COMPLETION_NOT_STARTED)
-        verification = str(row.get("verification_status") or VERIFICATION_NOT_REQUIRED)
-        rollup = str(row.get("status") or "")
-        row["completion_label"] = _COMPLETION_LABELS.get(completion, "Not Started")
-        row["verification_label"] = _VERIFICATION_LABELS.get(verification, "Not Required")
-        row["status_label"] = friendly_status_label(rollup, overdue=rollup == DISPLAY_OVERDUE)
+    # A finished activity with no checklist still waits for verification.
+    # The collapsed card and printed status use this row, so they must match the KPI.
+    verification_now = str(row.get("verification_status") or VERIFICATION_NOT_REQUIRED)
+    if (
+        not row.get("overall_status")
+        and verification_now == VERIFICATION_WAITING
+        and str(row.get("status") or "") in {DISPLAY_COMPLETED, DISPLAY_APPROVED}
+    ):
+        row["overall_status"] = OVERALL_PENDING_VERIFICATION
+        row["status"] = DISPLAY_PENDING_APPROVAL
+        row["completion_status"] = COMPLETION_COMPLETED
+
+    completion = str(row.get("completion_status") or COMPLETION_NOT_STARTED)
+    verification = str(row.get("verification_status") or VERIFICATION_NOT_REQUIRED)
+    rollup = str(row.get("status") or "")
+    row["completion_label"] = _COMPLETION_LABELS.get(completion, "Not Started")
+    row["verification_label"] = _VERIFICATION_LABELS.get(verification, "Not Required")
+    row["status_label"] = friendly_status_label(rollup, overdue=rollup == DISPLAY_OVERDUE)
 
     return row
 

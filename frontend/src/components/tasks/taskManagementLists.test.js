@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   checklistSections,
   groupActivitiesByCategory,
+  isLegacyActivity,
+  isOperationalActivity,
   visibleCatalogRows,
 } from "./taskManagementLists";
 
@@ -42,5 +44,15 @@ describe("task management lists", () => {
       "Facility",
       "Machines",
     ]);
+  });
+
+  it("keeps active activities in the catalog even when the name says test", () => {
+    const named = { name: "E2E sample scratch test", active: true, category_code: "intra_day" };
+    const inactive = { name: "Washer Cleaning", active: false };
+    const archived = { name: "Washer Cleaning", active: true, archived: true };
+    expect(isOperationalActivity(named)).toBe(true);
+    expect(isLegacyActivity(named)).toBe(false);
+    expect(isLegacyActivity(inactive)).toBe(true);
+    expect(isLegacyActivity(archived)).toBe(true);
   });
 });

@@ -8,14 +8,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-
-const FIELD_TYPES = [
-  { value: "choice", label: "Choice" },
-  { value: "number", label: "Number" },
-  { value: "text", label: "Text" },
-  { value: "machine_numbers", label: "Machine numbers" },
-  { value: "photo", label: "Photo" },
-];
+import { useI18n } from "../../i18n/I18nContext";
 
 function blankField() {
   return {
@@ -154,6 +147,14 @@ export function itemsToPayload(rows) {
 }
 
 export default function ActivityChecklistEditor({ items, assignees = [], onChange }) {
+  const { t } = useI18n();
+  const fieldTypes = [
+    { value: "choice", label: t("tasks.config.choice") },
+    { value: "number", label: t("tasks.config.number") },
+    { value: "text", label: t("tasks.config.text") },
+    { value: "machine_numbers", label: t("tasks.config.machineNumbers") },
+    { value: "photo", label: t("tasks.config.photo") },
+  ];
   const rows = items || [];
   const sections = [];
   for (const row of rows) {
@@ -195,7 +196,7 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
   return (
     <Stack spacing={1.25}>
       <Stack direction="row" justifyContent="space-between" alignItems="center">
-        <Typography sx={{ fontWeight: 800 }}>Checklist</Typography>
+        <Typography sx={{ fontWeight: 800 }}>{t("tasks.config.checklist")}</Typography>
         <Button
           size="small"
           onClick={() =>
@@ -213,13 +214,13 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
             <TextField
               size="small"
-              label="Section"
+              label={t("tasks.config.section")}
               value={section.label}
               onChange={(e) => renameSection(section.label, e.target.value)}
             />
             <TextField
               size="small"
-              label="Section (Spanish)"
+              label={t("tasks.config.sectionEs")}
               value={rows[section.indexes[0]]?.section_label_es || ""}
               onChange={(e) => {
                 const value = e.target.value;
@@ -258,19 +259,19 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                   <Stack spacing={0.75}>
                     <TextField
                       size="small"
-                      label="Label"
+                      label={t("tasks.config.itemLabel")}
                       value={row.task_name || ""}
                       onChange={(e) => update(index, { task_name: e.target.value })}
                     />
                     <TextField
                       size="small"
-                      label="Label (Spanish)"
+                      label={t("tasks.config.itemLabelEs")}
                       value={row.task_name_es || ""}
                       onChange={(e) => update(index, { task_name_es: e.target.value })}
                     />
                     <TextField
                       size="small"
-                      label="Instructions"
+                      label={t("tasks.config.instructions")}
                       multiline
                       minRows={2}
                       value={row.instructions || ""}
@@ -278,7 +279,7 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                     />
                     <TextField
                       size="small"
-                      label="Instructions (Spanish)"
+                      label={t("tasks.config.instructionsEs")}
                       multiline
                       minRows={2}
                       value={row.instructions_es || ""}
@@ -292,7 +293,7 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                             onChange={(e) => update(index, { required: e.target.checked })}
                           />
                         }
-                        label="Required"
+                        label={t("tasks.config.required")}
                       />
                       <FormControlLabel
                         control={
@@ -301,13 +302,13 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                             onChange={(e) => update(index, { active: e.target.checked })}
                           />
                         }
-                        label="Active"
+                        label={t("tasks.config.active")}
                       />
                     </Stack>
                     <TextField
                       select
                       size="small"
-                      label="Move to section"
+                      label={t("tasks.config.moveSection")}
                       value={row.section_label || ""}
                       onChange={(e) => {
                         const label = e.target.value;
@@ -324,7 +325,7 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                     <TextField
                       select
                       size="small"
-                      label="Default responsibility"
+                      label={t("tasks.config.defaultResponsibility")}
                       value={row.responsibility_mode === "named" ? "named" : "team"}
                       onChange={(e) =>
                         update(index, {
@@ -333,14 +334,14 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                         })
                       }
                     >
-                      <MenuItem value="team">Anyone on Team</MenuItem>
+                      <MenuItem value="team">Any assigned employee</MenuItem>
                       <MenuItem value="named">Named employees</MenuItem>
                     </TextField>
                     {row.responsibility_mode === "named" ? (
                       <TextField
                         select
                         size="small"
-                        label="Responsible employees"
+                        label={t("tasks.config.responsibleEmployees")}
                         value={(row.responsibility_user_ids || []).map(String)}
                         SelectProps={{ multiple: true }}
                         onChange={(e) =>
@@ -366,7 +367,7 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                       <Stack key={field.id} direction={{ xs: "column", sm: "row" }} spacing={0.5}>
                         <TextField
                           size="small"
-                          label="Field label"
+                          label={t("tasks.config.fieldLabel")}
                           value={field.label}
                           onChange={(e) => {
                             const fields = [...row.fields];
@@ -377,7 +378,7 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                         <TextField
                           select
                           size="small"
-                          label="Type"
+                          label={t("tasks.config.fieldType")}
                           value={field.type}
                           onChange={(e) => {
                             const fields = [...row.fields];
@@ -385,7 +386,7 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                             update(index, { fields });
                           }}
                         >
-                          {FIELD_TYPES.map((type) => (
+                          {fieldTypes.map((type) => (
                             <MenuItem key={type.value} value={type.value}>
                               {type.label}
                             </MenuItem>
@@ -394,7 +395,7 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                         {field.type === "choice" ? (
                           <TextField
                             size="small"
-                            label="Options"
+                            label={t("tasks.config.options")}
                             value={field.optionsText}
                             helperText="Comma-separated"
                             onChange={(e) => {
@@ -407,7 +408,7 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                         {field.type === "number" ? (
                           <TextField
                             size="small"
-                            label="Minimum"
+                            label={t("tasks.config.minimum")}
                             value={field.min}
                             onChange={(e) => {
                               const fields = [...row.fields];
@@ -418,7 +419,7 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                         ) : null}
                         <TextField
                           size="small"
-                          label="Show when field"
+                          label={t("tasks.config.showWhenField")}
                           value={field.showField}
                           onChange={(e) => {
                             const fields = [...row.fields];
@@ -428,7 +429,7 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                         />
                         <TextField
                           size="small"
-                          label="Show when values"
+                          label={t("tasks.config.showWhenValues")}
                           value={field.showValues}
                           helperText="yes, done, or >0"
                           onChange={(e) => {
@@ -448,7 +449,7 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                               }}
                             />
                           }
-                          label="Required"
+                          label={t("tasks.config.required")}
                         />
                       </Stack>
                     ))}

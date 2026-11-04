@@ -80,8 +80,8 @@ describe("task dashboard print document", () => {
     expect(html).toContain("Floor &amp; Washer");
     expect(html).toContain("Gabriela, Yesenia");
     expect(html).toContain("Completion: Completed");
-    expect(html).toContain("Verification: Pending Verification");
-    expect(html).toContain("Overall: Pending Verification");
+    expect(html).toContain("Verification: Waiting for Verification");
+    expect(html).toContain("Overall: Waiting for Verification");
     expect(html).toContain("Check Washer Residue");
     expect(html).toContain("Floor Brooming");
     expect(html).toContain("Facility");
@@ -156,7 +156,7 @@ describe("task dashboard print document", () => {
     expect(html).toContain("Activity 26");
     expect(html).toContain("Completion: Completed");
     expect(html).toContain("Verification: Verified");
-    expect(html).toContain("Verification: Pending Verification");
+    expect(html).toContain("Verification: Waiting for Verification");
     expect(html).toContain("Check 26");
     expect(html).toContain("9:15 AM");
     expect(html.match(/<article class="card">/g)).toHaveLength(26);
@@ -168,14 +168,18 @@ describe("task dashboard print document", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const page = readFileSync(resolve(here, "../../pages/ManagementTasksPage.jsx"), "utf8");
     const config = readFileSync(resolve(here, "../../pages/ManagementTaskConfigPage.jsx"), "utf8");
+    const copy = readFileSync(resolve(here, "../../i18n/translations.js"), "utf8");
     expect(page).toContain("assignment_limit: 0");
     expect(page).toContain("setAssignmentPage(0)");
     expect(page).toContain("setHistoryPage(0)");
-    expect(page).toContain("Completion:");
-    expect(page).toContain("Verification:");
-    expect(config.indexOf(">Activity Groups<")).toBeLessThan(config.indexOf(">Standalone Tasks<"));
-    expect(config).toContain("Show inactive records");
-    expect(config).toContain("Nothing is saved until you click Save activity group.");
+    expect(page).toContain("tasks.dashboard.completion");
+    expect(page).toContain("tasks.dashboard.verification");
+    expect(copy).toContain("Completion: {status}");
+    expect(copy).toContain("Verification: {status}");
+    expect(config.indexOf("tasks.config.groups")).toBeLessThan(config.indexOf("tasks.config.legacy"));
+    expect(config).toContain("tasks.config.legacy");
+    expect(copy).toContain("Legacy / Archived");
+    expect(copy).toContain("Nothing is deleted.");
   });
 
   it("omits labor duration when the dashboard hides labor", () => {

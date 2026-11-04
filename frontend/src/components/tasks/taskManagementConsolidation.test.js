@@ -83,7 +83,7 @@ describe("section verification", () => {
       { section_label: "Dryer Cleaning", required: true, status: "completed", records: [{ status: "pending_approval", activity_id: 4 }] },
       { section_label: "Dryer Cleaning", required: false, status: "pending" },
     ]);
-    expect(section.status_label).toBe("Pending Verification");
+    expect(section.status_label).toBe("Waiting for Verification");
     expect(section.pending_activity_ids).toEqual([4]);
   });
 });
@@ -109,7 +109,7 @@ describe("print remarks", () => {
         remark_kind: "verification",
       },
     ],
-    checklist_sections: [{ section_label: "Dryer Cleaning", status_label: "Pending Verification" }],
+    checklist_sections: [{ section_label: "Dryer Cleaning", status_label: "Waiting for Verification" }],
     shared_checklist_items: [
       { task_name: "Clean dryer lint and gaskets", section_label: "Dryer Cleaning", status: "completed", required: true },
     ],
@@ -127,7 +127,7 @@ describe("print remarks", () => {
     expect(html.indexOf(">Remarks<")).toBeLessThan(html.indexOf(">Verification<"));
     expect(html).toContain("@page { size: letter portrait;");
     expect(html).toContain("break-inside: auto");
-    expect(html).toContain("Pending Verification");
+    expect(html).toContain("Waiting for Verification");
     expect(html).toContain("Yesenia");
   });
 

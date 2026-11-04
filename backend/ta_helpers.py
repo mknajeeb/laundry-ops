@@ -9,6 +9,29 @@ from decimal import Decimal
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
+def once_per_cursor(name: str):
+    """Skip a schema ensure after it has succeeded on this request cursor."""
+
+    def deco(fn):
+        flag = f"_vw_ensured_{name}"
+
+        def wrapped(cursor, *args, **kwargs):
+            if getattr(cursor, flag, False):
+                return None
+            result = fn(cursor, *args, **kwargs)
+            try:
+                setattr(cursor, flag, True)
+            except Exception:
+                pass
+            return result
+
+        wrapped.__name__ = getattr(fn, "__name__", "wrapped")
+        wrapped.__doc__ = getattr(fn, "__doc__", None)
+        return wrapped
+
+    return deco
+
+
 def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     r = 6371000.0
     p1, p2 = math.radians(lat1), math.radians(lat2)
@@ -85,34 +108,89 @@ def verify_password(hash_str: str, plain: str) -> bool:
 
 
 _schema_lock = threading.Lock()
+_scope_local = threading.local()
 # Schema rarely changes at runtime; INFORMATION_SCHEMA hits are slow on remote MySQL (e.g. Azure).
-_column_cache: dict[tuple[str, str], bool] = {}
-_table_cache: dict[str, bool] = {}
+# Columns are loaded once per table and database. A later check for another column does not query again.
+# Cursors without a real database name (unit-test fakes) do not write this cache.
+_column_cache: dict[tuple[str, str, str], bool] = {}
+_table_cache: dict[tuple[str, str], bool] = {}
+_table_columns: dict[tuple[str, str], set[str]] = {}
+
+
+def _schema_scope(cursor) -> str | None:
+    """Database name for a live connection. Missing names stay uncached."""
+    conn = getattr(cursor, "connection", None) or getattr(cursor, "_connection", None)
+    name = str(getattr(conn, "database", None) or "").strip() if conn is not None else ""
+    scope = name or None
+    _scope_local.scope = scope
+    return scope
+
+
+def _column_name(row) -> str:
+    if isinstance(row, dict):
+        raw = row.get("COLUMN_NAME") or row.get("column_name")
+    elif row:
+        raw = row[0]
+    else:
+        raw = None
+    return str(raw or "")
+
+
+def _load_table_columns(cursor, table_name: str) -> set[str]:
+    """One INFORMATION_SCHEMA read for every column on this table."""
+    scope = _schema_scope(cursor)
+    cache_key = (scope, table_name) if scope else None
+    if cache_key is not None:
+        with _schema_lock:
+            cached = _table_columns.get(cache_key)
+            if cached is not None:
+                return set(cached)
+    if not table_exists(cursor, table_name):
+        if cache_key is not None:
+            with _schema_lock:
+                _table_columns[cache_key] = set()
+        return set()
+    cursor.execute(
+        """
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+        """,
+        (table_name,),
+    )
+    found = {_column_name(row) for row in (cursor.fetchall() or [])}
+    found.discard("")
+    if cache_key is not None:
+        with _schema_lock:
+            _table_columns[cache_key] = set(found)
+            _table_cache[cache_key] = True
+            for column in found:
+                _column_cache[(scope, table_name, column)] = True
+    return found
 
 
 def table_has_column(cursor, table_name: str, col_name: str) -> bool:
-    key = (table_name, col_name)
-    with _schema_lock:
-        if key in _column_cache:
-            return _column_cache[key]
-    cursor.execute(
-        """
-        SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s
-        LIMIT 1
-        """,
-        (table_name, col_name),
-    )
-    ok = cursor.fetchone() is not None
-    with _schema_lock:
-        _column_cache[key] = ok
+    scope = _schema_scope(cursor)
+    key = (scope, table_name, col_name) if scope else None
+    if key is not None:
+        with _schema_lock:
+            if key in _column_cache:
+                return _column_cache[key]
+    found = _load_table_columns(cursor, table_name)
+    ok = col_name in found
+    if key is not None:
+        with _schema_lock:
+            _column_cache[key] = ok
     return ok
 
 
 def table_exists(cursor, table_name: str) -> bool:
-    with _schema_lock:
-        if table_name in _table_cache:
-            return _table_cache[table_name]
+    scope = _schema_scope(cursor)
+    key = (scope, table_name) if scope else None
+    if key is not None:
+        with _schema_lock:
+            if key in _table_cache:
+                return _table_cache[key]
     cursor.execute(
         """
         SELECT 1 FROM INFORMATION_SCHEMA.TABLES
@@ -122,9 +200,32 @@ def table_exists(cursor, table_name: str) -> bool:
         (table_name,),
     )
     ok = cursor.fetchone() is not None
-    with _schema_lock:
-        _table_cache[table_name] = ok
+    if key is not None:
+        with _schema_lock:
+            _table_cache[key] = ok
     return ok
+
+
+def remember_column(table_name: str, column_name: str) -> None:
+    """Record a column this process just added so the next check does not repeat ALTER."""
+    scope = getattr(_scope_local, "scope", None)
+    if not scope:
+        return
+    with _schema_lock:
+        _table_columns.setdefault((scope, table_name), set()).add(column_name)
+        _column_cache[(scope, table_name, column_name)] = True
+        _table_cache[(scope, table_name)] = True
+
+
+def invalidate_table_schema(table_name: str) -> None:
+    """Drop cached answers for one table after CREATE or ALTER on that table."""
+    with _schema_lock:
+        for key in [item for item in _table_cache if item[1] == table_name]:
+            _table_cache.pop(key, None)
+        for key in [item for item in _table_columns if item[1] == table_name]:
+            _table_columns.pop(key, None)
+        for key in [item for item in _column_cache if item[1] == table_name]:
+            _column_cache.pop(key, None)
 
 
 def invalidate_schema_cache() -> None:
@@ -136,3 +237,4 @@ def invalidate_schema_cache() -> None:
     with _schema_lock:
         _column_cache.clear()
         _table_cache.clear()
+        _table_columns.clear()

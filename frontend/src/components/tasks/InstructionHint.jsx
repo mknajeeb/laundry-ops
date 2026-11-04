@@ -1,34 +1,58 @@
 import { useState } from "react";
-import { Box, Collapse, IconButton, Tooltip, Typography } from "@mui/material";
+import { Box, IconButton, Popover, Typography } from "@mui/material";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 
 /**
- * Compact instructions. Hover shows the text on desktop. Click or tap pins it open.
+ * Instructions stay on the info icon. Desktop hover or click, and mobile tap,
+ * open an anchored popover that wraps long text beside that control.
  */
 export default function InstructionHint({ text, label = "Instructions" }) {
+  const [anchor, setAnchor] = useState(null);
   const [pinned, setPinned] = useState(false);
   const value = String(text || "").trim();
   if (!value) return null;
+  const close = () => {
+    setPinned(false);
+    setAnchor(null);
+  };
   return (
-    <Box sx={{ display: "inline-flex", flexDirection: "column", maxWidth: "100%" }}>
-      <Tooltip title={value} placement="top" enterTouchDelay={0} leaveTouchDelay={4000} arrow>
-        <IconButton
-          size="small"
-          aria-label={label}
-          aria-expanded={pinned}
-          onClick={(event) => {
-            event.stopPropagation();
-            setPinned((open) => !open);
-          }}
-        >
-          <InfoOutlinedIcon fontSize="small" />
-        </IconButton>
-      </Tooltip>
-      <Collapse in={pinned}>
-        <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", mt: 0.25 }}>
+    <Box
+      component="span"
+      sx={{ display: "inline-flex" }}
+      onMouseEnter={(event) => setAnchor(event.currentTarget)}
+      onMouseLeave={() => {
+        if (!pinned) setAnchor(null);
+      }}
+    >
+      <IconButton
+        size="small"
+        aria-label={label}
+        aria-expanded={Boolean(anchor)}
+        onClick={(event) => {
+          event.stopPropagation();
+          setPinned((open) => !open);
+          setAnchor(event.currentTarget);
+        }}
+      >
+        <InfoOutlinedIcon fontSize="small" />
+      </IconButton>
+      <Popover
+        open={Boolean(anchor)}
+        anchorEl={anchor}
+        onClose={close}
+        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+        transformOrigin={{ vertical: "top", horizontal: "left" }}
+        disableRestoreFocus
+        slotProps={{
+          paper: {
+            sx: { maxWidth: 320, p: 1.25 },
+          },
+        }}
+      >
+        <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
           {value}
         </Typography>
-      </Collapse>
+      </Popover>
     </Box>
   );
 }

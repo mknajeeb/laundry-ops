@@ -277,7 +277,7 @@ export default function WeeklyScheduleCopyShiftDialog({
                           display="block"
                           sx={{ pl: 4 }}
                         >
-                          {item.task_name}: {item.responsibility_label || "Anyone on Team"}
+                          {item.task_name}: {item.responsibility_label || "Any assigned employee"}
                         </Typography>
                       ))}
                     </Box>

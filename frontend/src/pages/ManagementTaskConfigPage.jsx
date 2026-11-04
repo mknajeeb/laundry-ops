@@ -14,6 +14,8 @@ import {
   Typography,
 } from "@mui/material";
 import ManagementHubNav from "../components/management/ManagementHubNav";
+import { useI18n } from "../i18n/I18nContext";
+import { categoryLabel, localizedConfigured } from "../components/tasks/taskEmployeeI18n";
 import ActivityChecklistEditor, {
   itemsFromGroup,
   itemsToPayload,
@@ -21,7 +23,7 @@ import ActivityChecklistEditor, {
 import {
   checklistSections,
   groupActivitiesByCategory,
-  visibleCatalogRows,
+  isOperationalActivity,
 } from "../components/tasks/taskManagementLists";
 import {
   getEndOfDayClosingTemplate,
@@ -67,6 +69,7 @@ function textToSchema(text) {
  * Assignments remain on Weekly Schedule.
  */
 export default function ManagementTaskConfigPage() {
+  const { locale, t } = useI18n();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [okMsg, setOkMsg] = useState("");
@@ -82,7 +85,6 @@ export default function ManagementTaskConfigPage() {
   const [globalDraft, setGlobalDraft] = useState(null);
   const [busy, setBusy] = useState(false);
   const [assignees, setAssignees] = useState([]);
-  const [showInactive, setShowInactive] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -108,11 +110,11 @@ export default function ManagementTaskConfigPage() {
       setGlobalPolicy(policy);
       setGlobalDraft(null);
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not load Task Management");
+      setError(e?.response?.data?.error || e?.message || t("tasks.config.loadFailed"));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     load();
@@ -137,10 +139,10 @@ export default function ManagementTaskConfigPage() {
       };
       await upsertManagementTaskDefinition(payload);
       setDraft(null);
-      setOkMsg("Task saved.");
+      setOkMsg(t("tasks.config.saved"));
       await load();
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Save failed");
+      setError(e?.response?.data?.error || e?.message || t("tasks.config.saveFailed"));
     } finally {
       setBusy(false);
     }
@@ -152,7 +154,7 @@ export default function ManagementTaskConfigPage() {
       await updateManagementTaskCategory(cat.id, { name: cat.name, display_order: cat.display_order, active: !cat.active });
       await load();
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Update failed");
+      setError(e?.response?.data?.error || e?.message || t("tasks.config.updateFailed"));
     } finally {
       setBusy(false);
     }
@@ -232,10 +234,10 @@ export default function ManagementTaskConfigPage() {
         items,
       });
       setGroupDraft(null);
-      setOkMsg("Activity group saved. Assign it from Weekly Schedule.");
+      setOkMsg(t("tasks.config.groupSaved"));
       await load();
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Activity group save failed");
+      setError(e?.response?.data?.error || e?.message || t("tasks.config.groupSaveFailed"));
     } finally {
       setBusy(false);
     }
@@ -274,7 +276,7 @@ export default function ManagementTaskConfigPage() {
         itemRows: itemsFromGroup(template.items),
       });
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not load End of Day Closing");
+      setError(e?.response?.data?.error || e?.message || t("tasks.config.eodFailed"));
     } finally {
       setBusy(false);
     }
@@ -292,10 +294,10 @@ export default function ManagementTaskConfigPage() {
         verification_timing: globalDraft.verification_timing || "same_shift",
         verifier_config: globalDraft.verifier_config || {},
       });
-      setOkMsg("Global verification policy saved. Applies to new activity only.");
+      setOkMsg(t("tasks.config.policySaved"));
       await load();
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not save verification policy");
+      setError(e?.response?.data?.error || e?.message || t("tasks.config.policySaveFailed"));
     } finally {
       setBusy(false);
     }
@@ -332,10 +334,10 @@ export default function ManagementTaskConfigPage() {
         groups,
       });
       setChecklistDraft(null);
-      setOkMsg("Checklist saved.");
+      setOkMsg(t("tasks.config.checklistSaved"));
       await load();
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Checklist save failed");
+      setError(e?.response?.data?.error || e?.message || t("tasks.config.checklistSaveFailed"));
     } finally {
       setBusy(false);
     }
@@ -375,14 +377,18 @@ export default function ManagementTaskConfigPage() {
     });
   };
 
-  const visibleTasks = useMemo(
-    () => visibleCatalogRows(tasks, { showInactive }),
-    [tasks, showInactive]
+  const visibleTasks = tasks;
+  const operationalGroups = useMemo(
+    () => activityGroups.filter(isOperationalActivity),
+    [activityGroups]
+  );
+  const legacyGroups = useMemo(
+    () => activityGroups.filter((group) => !isOperationalActivity(group)),
+    [activityGroups]
   );
   const activityBuckets = useMemo(
-    () =>
-      groupActivitiesByCategory(visibleCatalogRows(activityGroups, { showInactive }), categories),
-    [activityGroups, categories, showInactive]
+    () => groupActivitiesByCategory(operationalGroups, categories),
+    [operationalGroups, categories]
   );
 
   return (
@@ -391,17 +397,14 @@ export default function ManagementTaskConfigPage() {
       <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" sx={{ mb: 2 }} spacing={1}>
         <Box>
           <Typography variant="h5" sx={{ fontWeight: 800 }}>
-            Task Management
+            {t("tasks.config.title")}
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Activity Groups are the assignment for routine cleaning. Washer Cleaning, Floor Sweeping,
-            and Dryer Lint Cleaning each have one shared checklist. Standalone tasks remain for history
-            and for work that is not one of those groups. Assign on Weekly Schedule. Policy changes apply
-            to new activity only.
+            {t("tasks.config.intro")}
           </Typography>
         </Box>
         <Button component={RouterLink} to="/management/tasks" size="small" variant="outlined">
-          Task Dashboard
+          {t("tasks.config.openDashboard")}
         </Button>
       </Stack>
       {error ? (
@@ -415,12 +418,12 @@ export default function ManagementTaskConfigPage() {
         </Alert>
       ) : null}
       {loading ? (
-        <Typography>Loading…</Typography>
+        <Typography>{t("tasks.config.loading")}</Typography>
       ) : (
         <Stack spacing={2.5}>
           <Paper variant="outlined" sx={{ p: 1.5 }}>
               <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-                <Typography sx={{ fontWeight: 800 }}>Global verification default</Typography>
+                <Typography sx={{ fontWeight: 800 }}>{t("tasks.config.global")}</Typography>
                 <Button
                   size="small"
                   variant="outlined"
@@ -434,25 +437,26 @@ export default function ManagementTaskConfigPage() {
                     })
                   }
                 >
-                  Edit
+                  {t("tasks.config.edit")}
                 </Button>
               </Stack>
               <Typography variant="body2" color="text.secondary">
-                Hierarchy: Global → Activity Group override → Task override. Default: Supervisor
-                verification required.
+                {t("tasks.config.hierarchy")}
                 {globalPolicy
-                  ? ` Current: ${
-                      globalPolicy.verification_required
-                        ? `${globalPolicy.verification_method}/${globalPolicy.verification_timing}`
-                        : "not required"
-                    }${globalPolicy.is_default ? " (built-in default)" : ""}.`
+                  ? t("tasks.config.current", {
+                      value: `${
+                        globalPolicy.verification_required
+                          ? `${globalPolicy.verification_method}/${globalPolicy.verification_timing}`
+                          : t("tasks.config.notRequired")
+                      }${globalPolicy.is_default ? ` (${t("tasks.config.builtin")})` : ""}`,
+                    })
                   : ""}
               </Typography>
               {globalDraft ? (
                 <Stack spacing={1.25} sx={{ mt: 1.5 }}>
                   <TextField
                     select
-                    label="Verification"
+                    label={t("tasks.config.verification")}
                     size="small"
                     value={
                       globalDraft.verification_required === false ||
@@ -468,32 +472,32 @@ export default function ManagementTaskConfigPage() {
                         verification_required: method !== "none",
                       });
                     }}
-                    helperText="“No verification” is intentional only — never applied silently."
+                    helperText={t("tasks.config.noVerificationIntentional")}
                   >
-                    <MenuItem value="none">No verification</MenuItem>
-                    <MenuItem value="employee">Employee / peer</MenuItem>
-                    <MenuItem value="supervisor">Supervisor</MenuItem>
-                    <MenuItem value="role">Role-based</MenuItem>
+                    <MenuItem value="none">{t("tasks.config.noVerification")}</MenuItem>
+                    <MenuItem value="employee">{t("tasks.config.employeePeer")}</MenuItem>
+                    <MenuItem value="supervisor">{t("tasks.config.supervisor")}</MenuItem>
+                    <MenuItem value="role">{t("tasks.config.roleBased")}</MenuItem>
                   </TextField>
                   <TextField
                     select
-                    label="Verification timing"
+                    label={t("tasks.config.verificationTiming")}
                     size="small"
                     value={globalDraft.verification_timing || "same_shift"}
                     onChange={(e) =>
                       setGlobalDraft({ ...globalDraft, verification_timing: e.target.value })
                     }
                   >
-                    <MenuItem value="same_shift">Same shift</MenuItem>
-                    <MenuItem value="later_shift">Later shift</MenuItem>
-                    <MenuItem value="next_day">Next day</MenuItem>
+                    <MenuItem value="same_shift">{t("tasks.config.sameShift")}</MenuItem>
+                    <MenuItem value="later_shift">{t("tasks.config.laterShift")}</MenuItem>
+                    <MenuItem value="next_day">{t("tasks.config.nextDay")}</MenuItem>
                   </TextField>
                   <Stack direction="row" spacing={1}>
                     <Button variant="contained" disabled={busy} onClick={saveGlobalPolicy}>
-                      Save global policy
+                      {t("tasks.config.savePolicy")}
                     </Button>
                     <Button disabled={busy} onClick={() => setGlobalDraft(null)}>
-                      Cancel
+                      {t("tasks.config.cancel")}
                     </Button>
                   </Stack>
                 </Stack>
@@ -501,7 +505,7 @@ export default function ManagementTaskConfigPage() {
           </Paper>
 
           <Paper variant="outlined" sx={{ p: 1.5 }}>
-            <Typography sx={{ fontWeight: 800, mb: 1 }}>Categories</Typography>
+            <Typography sx={{ fontWeight: 800, mb: 1 }}>{t("tasks.config.categories")}</Typography>
             <Stack spacing={1}>
               {categories.map((cat) => (
                 <Stack
@@ -512,7 +516,7 @@ export default function ManagementTaskConfigPage() {
                   spacing={1}
                 >
                   <Typography>
-                    {cat.name}{" "}
+                    {categoryLabel(t, cat.code, cat.name)}{" "}
                     <Typography component="span" variant="caption">
                       ({cat.code})
                     </Typography>
@@ -521,7 +525,7 @@ export default function ManagementTaskConfigPage() {
                     control={
                       <Switch checked={!!cat.active} disabled={busy} onChange={() => toggleCategory(cat)} />
                     }
-                    label={cat.active ? "Active" : "Inactive"}
+                    label={cat.active ? t("tasks.config.active") : t("tasks.config.inactive")}
                   />
                 </Stack>
               ))}
@@ -530,10 +534,10 @@ export default function ManagementTaskConfigPage() {
 
                     <Paper variant="outlined" sx={{ p: 1.5 }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-              <Typography sx={{ fontWeight: 800 }}>Activity Groups</Typography>
+              <Typography sx={{ fontWeight: 800 }}>{t("tasks.config.groups")}</Typography>
               <Stack direction="row" spacing={1}>
                 <Button size="small" variant="contained" disabled={busy} onClick={startEndOfDay}>
-                  End of Day Closing
+                  {t("tasks.config.endOfDay")}
                 </Button>
                 <Button
                   size="small"
@@ -555,26 +559,19 @@ export default function ManagementTaskConfigPage() {
                     })
                   }
                 >
-                  Add activity
+                  {t("tasks.config.addActivity")}
                 </Button>
               </Stack>
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-              Each group has one timer and a checklist. End of Day Closing opens the template here.
-              Nothing is saved until you click Save activity group.
+              {t("tasks.config.activeHelp")}
             </Typography>
-            <FormControlLabel
-              control={
-                <Switch checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
-              }
-              label="Show inactive records"
-            />
             <Stack spacing={1.5}>
               {activityBuckets.length ? (
                 activityBuckets.map((bucket) => (
                   <Box key={bucket.code}>
                     <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 0.5 }}>
-                      {bucket.name}
+                      {categoryLabel(t, bucket.code, bucket.name)}
                     </Typography>
                     <Stack spacing={1}>
                       {bucket.groups.map((g) => (
@@ -582,22 +579,33 @@ export default function ManagementTaskConfigPage() {
                           <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
                             <Box sx={{ minWidth: 0 }}>
                               <Typography sx={{ fontWeight: 800 }}>
-                                {g.name}
-                                {!g.active ? <Chip size="small" label="Inactive" sx={{ ml: 0.5 }} /> : null}
+                                {localizedConfigured(g, locale, "name", "name_es") || g.name}
+                                {!g.active ? <Chip size="small" label={t("tasks.config.inactive")} sx={{ ml: 0.5 }} /> : null}
                               </Typography>
                               <Typography variant="caption" color="text.secondary" display="block">
-                                Schedule code {g.role_code}
+                                {t("tasks.config.scheduleCode", { code: g.role_code })}
                                 {" · "}
                                 {g.verification_inherits !== false
-                                  ? "verify:inherited"
+                                  ? t("tasks.config.verifyInherited")
                                   : g.verification_required
-                                    ? `verify:${g.verification_method}/${g.verification_timing}`
-                                    : "no verification (override)"}
+                                    ? t("tasks.config.verifyDetail", {
+                                        method: g.verification_method,
+                                        timing: g.verification_timing,
+                                      })
+                                    : t("tasks.config.verifyNone")}
                               </Typography>
                               {checklistSections(g.items).map((section) => (
                                 <Box key={section.label} sx={{ mt: 0.75 }}>
                                   <Typography variant="caption" sx={{ fontWeight: 800 }}>
-                                    {section.label}
+                                    {localizedConfigured(
+                                      {
+                                        section_label: section.label,
+                                        section_label_es: section.items?.[0]?.section_label_es,
+                                      },
+                                      locale,
+                                      "section_label",
+                                      "section_label_es",
+                                    ) || section.label}
                                   </Typography>
                                   {section.items.map((item) => (
                                     <Typography
@@ -606,8 +614,12 @@ export default function ManagementTaskConfigPage() {
                                       color="text.secondary"
                                       display="block"
                                     >
-                                      {item.task_name || item.task_code}
-                                      {item.required === false ? " · optional" : " · required"}
+                                      {localizedConfigured(item, locale, "task_name", "task_name_es") ||
+                                        item.task_name ||
+                                        item.task_code}
+                                      {item.required === false
+                                        ? ` · ${t("tasks.config.optional")}`
+                                        : ` · ${t("tasks.config.required")}`}
                                     </Typography>
                                   ))}
                                 </Box>
@@ -623,7 +635,7 @@ export default function ManagementTaskConfigPage() {
                                 })
                               }
                             >
-                              Edit
+                              {t("tasks.config.edit")}
                             </Button>
                           </Stack>
                         </Paper>
@@ -633,8 +645,7 @@ export default function ManagementTaskConfigPage() {
                 ))
               ) : (
                 <Typography variant="body2" color="text.secondary">
-                  No activity groups yet. End of Day Closing can be opened from the button above and
-                  saved when you are ready.
+                  {t("tasks.config.noGroupsYet")}
                 </Typography>
               )}
             </Stack>
@@ -642,22 +653,22 @@ export default function ManagementTaskConfigPage() {
 
           {groupDraft ? (
             <Paper variant="outlined" sx={{ p: 1.5 }}>
-              <Typography sx={{ fontWeight: 800, mb: 1 }}>Edit activity group</Typography>
+              <Typography sx={{ fontWeight: 800, mb: 1 }}>{t("tasks.config.editGroup")}</Typography>
               <Stack spacing={1.25}>
                 <TextField
-                  label="Name"
+                  label={t("tasks.config.name")}
                   size="small"
                   value={groupDraft.name || ""}
                   onChange={(e) => setGroupDraft({ ...groupDraft, name: e.target.value })}
                 />
                 <TextField
-                  label="Name (Spanish)"
+                  label={t("tasks.config.nameEs")}
                   size="small"
                   value={groupDraft.name_es || ""}
                   onChange={(e) => setGroupDraft({ ...groupDraft, name_es: e.target.value })}
                 />
                 <TextField
-                  label="Instructions"
+                  label={t("tasks.config.instructions")}
                   size="small"
                   multiline
                   minRows={2}
@@ -665,7 +676,7 @@ export default function ManagementTaskConfigPage() {
                   onChange={(e) => setGroupDraft({ ...groupDraft, instructions: e.target.value })}
                 />
                 <TextField
-                  label="Instructions (Spanish)"
+                  label={t("tasks.config.instructionsEs")}
                   size="small"
                   multiline
                   minRows={2}
@@ -674,19 +685,19 @@ export default function ManagementTaskConfigPage() {
                 />
                 <TextField
                   select
-                  label="Category"
+                  label={t("tasks.config.category")}
                   size="small"
                   value={groupDraft.category_code || "intra_day"}
                   onChange={(e) => setGroupDraft({ ...groupDraft, category_code: e.target.value })}
                 >
                   {categories.map((c) => (
                     <MenuItem key={c.code} value={c.code}>
-                      {c.name}
+                      {categoryLabel(t, c.code, c.name)}
                     </MenuItem>
                   ))}
                 </TextField>
                 <TextField
-                  label="Display order"
+                  label={t("tasks.config.displayOrder")}
                   size="small"
                   type="number"
                   value={groupDraft.display_order ?? 0}
@@ -704,7 +715,7 @@ export default function ManagementTaskConfigPage() {
                       onChange={(e) => setGroupDraft({ ...groupDraft, active: e.target.checked })}
                     />
                   }
-                  label="Active"
+                  label={t("tasks.config.active")}
                 />
                 <FormControlLabel
                   control={
@@ -728,14 +739,10 @@ export default function ManagementTaskConfigPage() {
                       }
                     />
                   }
-                  label="Require Checklist Before Completion"
+                  label={t("tasks.config.requireChecklist")}
                 />
                 <Typography variant="caption" color="text.secondary">
-                  Groups with required checklist items use this requirement, including existing groups
-                  whose setting is still unset. Saving other fields does not rewrite that unset value.
-                  Turn it off to let an employee finish while required items are still open. Groups with
-                  no required items complete normally. An open required checklist stays In Progress on
-                  the dashboard either way.
+                  {t("tasks.config.checklistRequirementHelp")}
                 </Typography>
                 <FormControlLabel
                   control={
@@ -751,15 +758,15 @@ export default function ManagementTaskConfigPage() {
                   }
                   label={
                     groupDraft.verification_inherits !== false
-                      ? "Inherit global verification (default)"
-                      : "Override verification for this group"
+                      ? t("tasks.config.inheritVerification")
+                      : t("tasks.config.overrideGroupVerification")
                   }
                 />
                 {groupDraft.verification_inherits === false ? (
                   <>
                     <TextField
                       select
-                      label="Group verification"
+                      label={t("tasks.config.groupVerification")}
                       size="small"
                       value={
                         groupDraft.verification_required === false ||
@@ -776,43 +783,85 @@ export default function ManagementTaskConfigPage() {
                           verification_required: method !== "none",
                         });
                       }}
-                      helperText="Same options as standalone tasks. Member tasks may still override."
+                      helperText={t("tasks.config.sameOptions")}
                     >
-                      <MenuItem value="none">No verification</MenuItem>
-                      <MenuItem value="employee">Employee / peer</MenuItem>
-                      <MenuItem value="supervisor">Supervisor</MenuItem>
-                      <MenuItem value="role">Role-based</MenuItem>
+                      <MenuItem value="none">{t("tasks.config.noVerification")}</MenuItem>
+                      <MenuItem value="employee">{t("tasks.config.employeePeer")}</MenuItem>
+                      <MenuItem value="supervisor">{t("tasks.config.supervisor")}</MenuItem>
+                      <MenuItem value="role">{t("tasks.config.roleBased")}</MenuItem>
                     </TextField>
                     <TextField
                       select
-                      label="Verification timing"
+                      label={t("tasks.config.verificationTiming")}
                       size="small"
                       value={groupDraft.verification_timing || "same_shift"}
                       onChange={(e) =>
                         setGroupDraft({ ...groupDraft, verification_timing: e.target.value })
                       }
                     >
-                      <MenuItem value="same_shift">Same shift</MenuItem>
-                      <MenuItem value="later_shift">Later shift</MenuItem>
-                      <MenuItem value="next_day">Next day</MenuItem>
+                      <MenuItem value="same_shift">{t("tasks.config.sameShift")}</MenuItem>
+                      <MenuItem value="later_shift">{t("tasks.config.laterShift")}</MenuItem>
+                      <MenuItem value="next_day">{t("tasks.config.nextDay")}</MenuItem>
                     </TextField>
                   </>
                 ) : null}
                 <Stack direction="row" spacing={1}>
                   <Button variant="contained" disabled={busy} onClick={saveGroup}>
-                    Save activity group
+                    {t("tasks.config.saveGroup")}
                   </Button>
                   <Button disabled={busy} onClick={() => setGroupDraft(null)}>
-                    Cancel
+                    {t("tasks.config.cancel")}
                   </Button>
                 </Stack>
               </Stack>
             </Paper>
           ) : null}
 
+          <Box component="details" sx={{ border: "1px solid", borderColor: "divider", borderRadius: 1, px: 1.5, py: 1 }}>
+            <Box component="summary" sx={{ cursor: "pointer", fontWeight: 800 }}>
+              {t("tasks.config.legacy")}
+            </Box>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1, mb: 1 }}>
+              {t("tasks.config.legacyHelp")}
+            </Typography>
+            <Stack spacing={1} sx={{ mb: 1.5 }}>
+              {legacyGroups.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">
+                  {t("tasks.config.noneArchived")}
+                </Typography>
+              ) : (
+                legacyGroups.map((g) => (
+                  <Paper key={g.id || g.code} variant="outlined" sx={{ p: 1.25 }}>
+                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                      <Box>
+                        <Typography sx={{ fontWeight: 800 }}>
+                          {localizedConfigured(g, locale, "name", "name_es") || g.name}
+                          {!g.active ? <Chip size="small" label={t("tasks.config.inactive")} sx={{ ml: 0.5 }} /> : null}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {g.category_code || "intra_day"} · {g.role_code}
+                        </Typography>
+                      </Box>
+                      <Button
+                        size="small"
+                        onClick={() =>
+                          setGroupDraft({
+                            ...g,
+                            itemRows: itemsFromGroup(g.items),
+                            requireChecklistTouched: false,
+                          })
+                        }
+                      >
+                        {t("tasks.config.edit")}
+                      </Button>
+                    </Stack>
+                  </Paper>
+                ))
+              )}
+            </Stack>
           <Paper variant="outlined" sx={{ p: 1.5 }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-              <Typography sx={{ fontWeight: 800 }}>Standalone Tasks</Typography>
+              <Typography sx={{ fontWeight: 800 }}>{t("tasks.config.standalone")}</Typography>
               <Button
                 size="small"
                 variant="outlined"
@@ -835,17 +884,16 @@ export default function ManagementTaskConfigPage() {
                   setSchemaText("");
                 }}
               >
-                Add task
+                {t("tasks.config.addTask")}
               </Button>
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-              These codes stay on existing assignments. Inactive rows stay in the catalog and appear
-              when Show inactive records is on.
+              {t("tasks.config.codesStay")}
             </Typography>
             <Stack spacing={1}>
               {visibleTasks.length === 0 ? (
                 <Typography variant="body2" color="text.secondary">
-                  No active standalone tasks.
+                  {t("tasks.config.noStandalone")}
                 </Typography>
               ) : null}
               {visibleTasks.map((task) => (
@@ -853,49 +901,56 @@ export default function ManagementTaskConfigPage() {
                   <Stack direction="row" justifyContent="space-between" alignItems="center">
                     <Box>
                       <Typography sx={{ fontWeight: 800 }}>
-                        {task.name}{" "}
-                        {!task.active ? <Chip size="small" label="Inactive" sx={{ ml: 0.5 }} /> : null}
+                        {localizedConfigured(task, locale, "name", "name_es") || task.name}{" "}
+                        {!task.active ? <Chip size="small" label={t("tasks.config.inactive")} sx={{ ml: 0.5 }} /> : null}
                       </Typography>
                       <Typography variant="body2" color="text.secondary">
-                        {task.category_name} · {task.completion_type}
-                        {task.timer_enabled ? " · timed" : " · untimed"} ·{" "}
+                        {categoryLabel(t, task.category_code, task.category_name)} ·{" "}
+                        {task.completion_type === "input_required"
+                          ? t("tasks.config.inputRequired")
+                          : t("tasks.config.simpleCompletion")}
+                        {task.timer_enabled ? ` · ${t("tasks.config.timedShort")}` : ` · ${t("tasks.config.untimed")}`} ·{" "}
                         {task.verification_inherits
-                          ? "verify:inherited"
+                          ? t("tasks.config.verifyInherited")
                           : task.verification_required
-                            ? `verify:${task.verification_method}/${task.verification_timing}`
-                            : "no verification (override)"}
-                        {task.checklist_id ? ` · checklist #${task.checklist_id}` : ""}
+                            ? t("tasks.config.verifyDetail", {
+                                method: task.verification_method,
+                                timing: task.verification_timing,
+                              })
+                            : t("tasks.config.verifyNone")}
+                        {task.checklist_id ? ` · ${t("tasks.config.checklistRef", { id: task.checklist_id })}` : ""}
                       </Typography>
                     </Box>
                     <Button size="small" onClick={() => openTask(task)}>
-                      Edit
+                      {t("tasks.config.edit")}
                     </Button>
                   </Stack>
                 </Paper>
               ))}
             </Stack>
           </Paper>
+          </Box>
 
           {draft ? (
             <Paper variant="outlined" sx={{ p: 1.5 }}>
-              <Typography sx={{ fontWeight: 800, mb: 1 }}>Edit task</Typography>
+              <Typography sx={{ fontWeight: 800, mb: 1 }}>{t("tasks.config.editTask")}</Typography>
               <Stack spacing={1.25}>
                 <TextField
-                  label="Name"
+                  label={t("tasks.config.name")}
                   size="small"
                   value={draft.name || ""}
                   onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                 />
                 <TextField
-                  label="Code"
+                  label={t("tasks.config.code")}
                   size="small"
                   value={draft.code || ""}
                   onChange={(e) => setDraft({ ...draft, code: e.target.value })}
                   disabled={!draft._isNew}
-                  helperText="Use custom_… codes for new tasks. Codes stick on schedule assignments."
+                  helperText={t("tasks.config.codeHelp")}
                 />
                 <TextField
-                  label="Peer verifier user IDs (comma-separated)"
+                  label={t("tasks.config.peerIds")}
                   size="small"
                   value={
                     Array.isArray(draft.verifier_config?.user_ids)
@@ -914,40 +969,40 @@ export default function ManagementTaskConfigPage() {
                       verifier_config: { ...(draft.verifier_config || {}), user_ids: ids },
                     });
                   }}
-                  helperText="For Employee/peer verification: who may verify (payroll user ids)."
+                  helperText={t("tasks.config.peerIdsHelp")}
                 />
                 <TextField
                   select
-                  label="Category"
+                  label={t("tasks.config.category")}
                   size="small"
                   value={draft.category_code || "intra_day"}
                   onChange={(e) => setDraft({ ...draft, category_code: e.target.value })}
                 >
                   {categories.map((c) => (
                     <MenuItem key={c.code} value={c.code}>
-                      {c.name}
+                      {categoryLabel(t, c.code, c.name)}
                     </MenuItem>
                   ))}
                 </TextField>
                 <TextField
                   select
-                  label="Completion"
+                  label={t("tasks.config.completion")}
                   size="small"
                   value={draft.completion_type || "simple"}
                   onChange={(e) => setDraft({ ...draft, completion_type: e.target.value })}
                 >
-                  <MenuItem value="simple">Simple completion</MenuItem>
-                  <MenuItem value="input_required">Input required</MenuItem>
+                  <MenuItem value="simple">{t("tasks.config.simpleCompletion")}</MenuItem>
+                  <MenuItem value="input_required">{t("tasks.config.inputRequired")}</MenuItem>
                 </TextField>
                 {draft.completion_type === "input_required" ? (
                   <TextField
-                    label="Input fields (one per line: id|type|label|required|optional)"
+                    label={t("tasks.config.inputFields")}
                     size="small"
                     multiline
                     minRows={3}
                     value={schemaText}
                     onChange={(e) => setSchemaText(e.target.value)}
-                    helperText="Types: number, text, yes_no, checkbox, checklist. Example: gallons|number|Gallons remaining|required"
+                    helperText={t("tasks.config.inputFieldsHelp")}
                   />
                 ) : null}
                 <FormControlLabel
@@ -970,15 +1025,15 @@ export default function ManagementTaskConfigPage() {
                   }
                   label={
                     draft.verification_inherits !== false
-                      ? "Inherit global/group verification (default)"
-                      : "Override verification for this task"
+                      ? t("tasks.config.inheritGroupVerification")
+                      : t("tasks.config.overrideTaskVerification")
                   }
                 />
                 {draft.verification_inherits === false ? (
                   <>
                     <TextField
                       select
-                      label="Verification"
+                      label={t("tasks.config.verification")}
                       size="small"
                       value={
                         draft.verification_required === false || draft.verification_method === "none"
@@ -994,29 +1049,29 @@ export default function ManagementTaskConfigPage() {
                           verification_required: method !== "none",
                         });
                       }}
-                      helperText="Choose “No verification” only when intentionally not required."
+                      helperText={t("tasks.config.noVerificationChoice")}
                     >
-                      <MenuItem value="none">No verification</MenuItem>
-                      <MenuItem value="employee">Employee / peer</MenuItem>
-                      <MenuItem value="supervisor">Supervisor</MenuItem>
-                      <MenuItem value="role">Role-based</MenuItem>
+                      <MenuItem value="none">{t("tasks.config.noVerification")}</MenuItem>
+                      <MenuItem value="employee">{t("tasks.config.employeePeer")}</MenuItem>
+                      <MenuItem value="supervisor">{t("tasks.config.supervisor")}</MenuItem>
+                      <MenuItem value="role">{t("tasks.config.roleBased")}</MenuItem>
                     </TextField>
                     <TextField
                       select
-                      label="Verification timing"
+                      label={t("tasks.config.verificationTiming")}
                       size="small"
                       value={draft.verification_timing || "same_shift"}
                       onChange={(e) => setDraft({ ...draft, verification_timing: e.target.value })}
                     >
-                      <MenuItem value="same_shift">Same shift</MenuItem>
-                      <MenuItem value="later_shift">Later shift</MenuItem>
-                      <MenuItem value="next_day">Next day</MenuItem>
+                      <MenuItem value="same_shift">{t("tasks.config.sameShift")}</MenuItem>
+                      <MenuItem value="later_shift">{t("tasks.config.laterShift")}</MenuItem>
+                      <MenuItem value="next_day">{t("tasks.config.nextDay")}</MenuItem>
                     </TextField>
                   </>
                 ) : null}
                 <TextField
                   select
-                  label="Checklist (optional)"
+                  label={t("tasks.config.checklist")}
                   size="small"
                   value={draft.checklist_id || ""}
                   onChange={(e) =>
@@ -1026,7 +1081,7 @@ export default function ManagementTaskConfigPage() {
                     })
                   }
                 >
-                  <MenuItem value="">None</MenuItem>
+                  <MenuItem value="">{t("tasks.config.none")}</MenuItem>
                   {checklists.map((cl) => (
                     <MenuItem key={cl.id} value={cl.id}>
                       {cl.name}
@@ -1040,7 +1095,7 @@ export default function ManagementTaskConfigPage() {
                       onChange={(e) => setDraft({ ...draft, timer_enabled: e.target.checked })}
                     />
                   }
-                  label="Timed activity"
+                  label={t("tasks.config.timed")}
                 />
                 <FormControlLabel
                   control={
@@ -1049,14 +1104,14 @@ export default function ManagementTaskConfigPage() {
                       onChange={(e) => setDraft({ ...draft, active: e.target.checked })}
                     />
                   }
-                  label="Active"
+                  label={t("tasks.config.active")}
                 />
                 <Stack direction="row" spacing={1}>
                   <Button variant="contained" disabled={busy} onClick={saveTask}>
-                    Save
+                    {t("tasks.config.save")}
                   </Button>
                   <Button disabled={busy} onClick={() => setDraft(null)}>
-                    Cancel
+                    {t("tasks.config.cancel")}
                   </Button>
                 </Stack>
               </Stack>
@@ -1065,7 +1120,7 @@ export default function ManagementTaskConfigPage() {
 
 <Paper variant="outlined" sx={{ p: 1.5 }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-              <Typography sx={{ fontWeight: 800 }}>Checklists</Typography>
+              <Typography sx={{ fontWeight: 800 }}>{t("tasks.config.checklists")}</Typography>
               <Button
                 size="small"
                 variant="outlined"
@@ -1101,20 +1156,23 @@ export default function ManagementTaskConfigPage() {
                         <Typography sx={{ fontWeight: 800 }}>{cl.name}</Typography>
                         <Typography variant="body2" color="text.secondary">
                           {(cl.groups || []).length
-                            ? `${(cl.groups || []).length} groups · ${(cl.items || []).length} tasks`
-                            : (cl.items || []).map((i) => i.task_code).join(", ") || "No items"}{" "}
+                            ? t("tasks.config.groupCount", {
+                                groups: (cl.groups || []).length,
+                                tasks: (cl.items || []).length,
+                              })
+                            : (cl.items || []).map((i) => i.task_code).join(", ") || t("tasks.config.noItems")}{" "}
                           · {cl.verification_method}/{cl.verification_timing}
                         </Typography>
                       </Box>
                       <Button size="small" onClick={() => openChecklistEditor(cl)}>
-                        Edit
+                        {t("tasks.config.edit")}
                       </Button>
                     </Stack>
                   </Paper>
                 ))
               ) : (
                 <Typography variant="body2" color="text.secondary">
-                  No checklists yet. Create one for End of Day → next-morning verification.
+                  {t("tasks.config.noChecklists")}
                 </Typography>
               )}
             </Stack>
@@ -1122,17 +1180,17 @@ export default function ManagementTaskConfigPage() {
 
           {checklistDraft ? (
             <Paper variant="outlined" sx={{ p: 1.5 }}>
-              <Typography sx={{ fontWeight: 800, mb: 1 }}>Edit checklist</Typography>
+              <Typography sx={{ fontWeight: 800, mb: 1 }}>{t("tasks.config.editChecklist")}</Typography>
               <Stack spacing={1.25}>
                 <TextField
-                  label="Name"
+                  label={t("tasks.config.name")}
                   size="small"
                   value={checklistDraft.name || ""}
                   onChange={(e) => setChecklistDraft({ ...checklistDraft, name: e.target.value })}
                 />
                 <TextField
                   select
-                  label="Category"
+                  label={t("tasks.config.category")}
                   size="small"
                   value={checklistDraft.category_id || ""}
                   onChange={(e) =>
@@ -1142,41 +1200,41 @@ export default function ManagementTaskConfigPage() {
                     })
                   }
                 >
-                  <MenuItem value="">None</MenuItem>
+                  <MenuItem value="">{t("tasks.config.none")}</MenuItem>
                   {categories.map((c) => (
                     <MenuItem key={c.id} value={c.id}>
-                      {c.name}
+                      {categoryLabel(t, c.code, c.name)}
                     </MenuItem>
                   ))}
                 </TextField>
                 <TextField
                   select
-                  label="Verification method"
+                  label={t("tasks.config.verification")}
                   size="small"
                   value={checklistDraft.verification_method || "employee"}
                   onChange={(e) =>
                     setChecklistDraft({ ...checklistDraft, verification_method: e.target.value })
                   }
                 >
-                  <MenuItem value="employee">Employee / peer</MenuItem>
-                  <MenuItem value="supervisor">Supervisor</MenuItem>
+                  <MenuItem value="employee">{t("tasks.config.employeePeer")}</MenuItem>
+                  <MenuItem value="supervisor">{t("tasks.config.supervisor")}</MenuItem>
                 </TextField>
                 <TextField
                   select
-                  label="Verification timing"
+                  label={t("tasks.config.verificationTiming")}
                   size="small"
                   value={checklistDraft.verification_timing || "next_day"}
                   onChange={(e) =>
                     setChecklistDraft({ ...checklistDraft, verification_timing: e.target.value })
                   }
                 >
-                  <MenuItem value="same_shift">Same shift</MenuItem>
-                  <MenuItem value="later_shift">Later shift</MenuItem>
-                  <MenuItem value="next_day">Next day</MenuItem>
+                  <MenuItem value="same_shift">{t("tasks.config.sameShift")}</MenuItem>
+                  <MenuItem value="later_shift">{t("tasks.config.laterShift")}</MenuItem>
+                  <MenuItem value="next_day">{t("tasks.config.nextDay")}</MenuItem>
                 </TextField>
                 <Stack direction="row" justifyContent="space-between" alignItems="center">
                   <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
-                    Checklist groups
+                    {t("tasks.config.checklistGroups")}
                   </Typography>
                   <Button
                     size="small"
@@ -1190,19 +1248,18 @@ export default function ManagementTaskConfigPage() {
                       })
                     }
                   >
-                    Add group
+                    {t("tasks.config.addGroup")}
                   </Button>
                 </Stack>
                 <Typography variant="caption" color="text.secondary">
-                  Named groups organize verification (not Activity Groups / shared assignments). Use task names from
-                  the catalog.
+                  {t("tasks.config.checklistGroupsHelp")}
                 </Typography>
                 <Stack spacing={1.25}>
                   {(checklistDraft.groups || []).map((group, gIdx) => (
                     <Paper key={`g-${gIdx}-${group.id || group.name}`} variant="outlined" sx={{ p: 1.25 }}>
                       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
                         <TextField
-                          label="Group name"
+                          label={t("tasks.config.groupName")}
                           size="small"
                           fullWidth
                           value={group.name || ""}
@@ -1219,7 +1276,7 @@ export default function ManagementTaskConfigPage() {
                             setChecklistDraft({ ...checklistDraft, groups });
                           }}
                         >
-                          Up
+                          {t("tasks.config.up")}
                         </Button>
                         <Button
                           size="small"
@@ -1232,7 +1289,7 @@ export default function ManagementTaskConfigPage() {
                             setChecklistDraft({ ...checklistDraft, groups });
                           }}
                         >
-                          Down
+                          {t("tasks.config.down")}
                         </Button>
                         <Button
                           size="small"
@@ -1244,7 +1301,7 @@ export default function ManagementTaskConfigPage() {
                             })
                           }
                         >
-                          Remove
+                          {t("tasks.config.remove")}
                         </Button>
                       </Stack>
                       <Stack spacing={0.75}>
@@ -1258,7 +1315,8 @@ export default function ManagementTaskConfigPage() {
                               alignItems="center"
                             >
                               <Typography sx={{ flex: 1, fontWeight: 600 }}>
-                                {task?.name || item.task_code}
+                                {localizedConfigured(task || { name: item.task_code }, locale, "name", "name_es") ||
+                                  item.task_code}
                               </Typography>
                               <FormControlLabel
                                 control={
@@ -1272,7 +1330,7 @@ export default function ManagementTaskConfigPage() {
                                     }}
                                   />
                                 }
-                                label="Required"
+                                label={t("tasks.config.required")}
                               />
                               <Button
                                 size="small"
@@ -1282,7 +1340,7 @@ export default function ManagementTaskConfigPage() {
                                   updateChecklistGroup(gIdx, { items });
                                 }}
                               >
-                                Remove
+                                {t("tasks.config.remove")}
                               </Button>
                             </Stack>
                           );
@@ -1292,12 +1350,12 @@ export default function ManagementTaskConfigPage() {
                         <TextField
                           select
                           size="small"
-                          label="Add task"
+                          label={t("tasks.config.addTask")}
                           fullWidth
                           value={group._addCode || ""}
                           onChange={(e) => updateChecklistGroup(gIdx, { _addCode: e.target.value })}
                         >
-                          <MenuItem value="">Select task…</MenuItem>
+                          <MenuItem value="">{t("tasks.config.selectTask")}</MenuItem>
                           {tasks
                             .filter(
                               (t) => !(group.items || []).some((it) => it.task_code === t.code),
@@ -1323,7 +1381,7 @@ export default function ManagementTaskConfigPage() {
                             });
                           }}
                         >
-                          Add task
+                          {t("tasks.config.addTask")}
                         </Button>
                       </Stack>
                     </Paper>
@@ -1338,14 +1396,14 @@ export default function ManagementTaskConfigPage() {
                       }
                     />
                   }
-                  label="Active"
+                  label={t("tasks.config.active")}
                 />
                 <Stack direction="row" spacing={1}>
                   <Button variant="contained" disabled={busy} onClick={saveChecklist}>
-                    Save checklist
+                    {t("tasks.config.saveChecklist")}
                   </Button>
                   <Button disabled={busy} onClick={() => setChecklistDraft(null)}>
-                    Cancel
+                    {t("tasks.config.cancel")}
                   </Button>
                 </Stack>
               </Stack>

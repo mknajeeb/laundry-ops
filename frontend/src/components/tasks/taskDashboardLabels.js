@@ -36,8 +36,8 @@ export const COMPLETION_LABELS = {
 
 export const VERIFICATION_LABELS = {
   not_required: "Not Required",
-  waiting: "Pending Verification",
-  pending_verification: "Pending Verification",
+  waiting: "Waiting for Verification",
+  pending_verification: "Waiting for Verification",
   partial: "Partially Verified",
   verified: "Verified",
   needs_correction: "Needs Correction",
@@ -48,7 +48,7 @@ export const DASHBOARD_STATUS_BADGES = [
   "Not Started",
   "In Progress",
   "Completed",
-  "Pending Verification",
+  "Waiting for Verification",
   "Partially Verified",
   "Verified",
   "Needs Correction",
@@ -147,7 +147,7 @@ export function overallLabel(status) {
     {
       not_started: "Not Started",
       in_progress: "In Progress",
-      pending_verification: "Pending Verification",
+      pending_verification: "Waiting for Verification",
       partial: "Partially Verified",
       verified: "Verified",
       completed: "Completed",

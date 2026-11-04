@@ -29,7 +29,7 @@ const MOCK_SHARED = {
     {
       section_label: "Machines",
       status: "pending_verification",
-      status_label: "Pending Verification",
+      status_label: "Waiting for Verification",
       pending_activity_ids: [107, 108],
     },
   ],
@@ -181,7 +181,7 @@ const REVIEW_CARD = {
   checklist_sections: [
     {
       section_label: "Machines",
-      status_label: "Pending Verification",
+      status_label: "Waiting for Verification",
       pending_activity_ids: [107, 108],
     },
   ],
@@ -196,7 +196,7 @@ const REVIEW_CARD = {
   ],
   timing_label: "9:00 AM",
   assigned_employees: ["Gabriela", "Yesenia"],
-  overall_label: "Pending Verification",
+  overall_label: "Waiting for Verification",
   overall_status: "pending_verification",
   can_approve_all: true,
   pending_activity_ids: [97, 98, 99, 100],
@@ -273,7 +273,7 @@ function DashboardShell({ title, readOnly, hideLabor, children, extraActions, ro
         <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mb: 0.75 }}>
           <Metric label="Assigned" value={metrics.activitiesAssigned} hint="Shared assignments count once." />
           <Metric label="Completed" value={metrics.completedActivities} hint="Finished assignments. Includes pending verification and verified." />
-          <Metric label="Pending Verification" value={metrics.pendingVerification} hint="Finished and waiting for a supervisor." />
+          <Metric label="Waiting for Verification" value={metrics.pendingVerification} hint="Finished and waiting for a supervisor." />
           <Metric label="Verified" value={metrics.verifiedActivities} hint="Supervisor approved. Also included in Completed." />
           <Metric label="Overdue" value={metrics.overdue} hint="Not finished after the planned time." />
         </Stack>

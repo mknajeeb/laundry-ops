@@ -889,7 +889,7 @@ conn.close()
         "supervisor sees one shared checker, not a partner not-checked row",
         review.status_code == 200 and card and floor and floor.get("checked_off") and len(floor.get("records") or []) == 1
         and (floor.get("records") or [{}])[0].get("employee_name") in {"Alex", "Alex User"}
-        and floor.get("responsibility_label") == "Anyone on Team",
+        and floor.get("responsibility_label") == "Any assigned employee",
         json.dumps({"status": review.status_code, "card": card}, default=str)[:700],
     )
     child_id = ((floor or {}).get("records") or [{}])[0].get("activity_id")

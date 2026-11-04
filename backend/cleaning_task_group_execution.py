@@ -49,7 +49,7 @@ from backend.task_catalog import (
     TaskCatalogError,
     validate_completion_input,
 )
-from backend.ta_helpers import invalidate_schema_cache, table_exists, table_has_column
+from backend.ta_helpers import invalidate_table_schema, remember_column, table_exists, table_has_column
 
 ITEMS_TABLE = "cleaning_task_activity_items"
 KIND_STANDALONE = "standalone"
@@ -69,6 +69,7 @@ def ensure_group_activity_schema(cursor) -> None:
     ):
         if not table_has_column(cursor, TABLE, col):
             cursor.execute(f"ALTER TABLE {TABLE} ADD COLUMN {col} {ddl}")
+            remember_column(TABLE, col)
     if not table_exists(cursor, ITEMS_TABLE):
         cursor.execute(
             f"""
@@ -90,12 +91,13 @@ def ensure_group_activity_schema(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        invalidate_table_schema(ITEMS_TABLE)
     elif not table_has_column(cursor, ITEMS_TABLE, "child_activity_id"):
         cursor.execute(f"ALTER TABLE {ITEMS_TABLE} ADD COLUMN child_activity_id BIGINT NULL")
+        remember_column(ITEMS_TABLE, "child_activity_id")
     from backend.cleaning_task_shared_execution import ensure_shared_activity_schema
 
     ensure_shared_activity_schema(cursor)
-    invalidate_schema_cache()
 
 
 def list_activity_items(cursor, organization_id: int, activity_id: int) -> list[dict[str, Any]]:

@@ -11,9 +11,10 @@ import json
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
-from backend.ta_helpers import invalidate_schema_cache, table_exists, table_has_column
+from backend.ta_helpers import invalidate_table_schema, once_per_cursor, remember_column, table_exists, table_has_column
 
 MODE_TEAM = "team"
+TEAM_RESPONSIBILITY_LABEL = "Any assigned employee"
 MODE_NAMED = "named"
 MODES = frozenset({MODE_TEAM, MODE_NAMED})
 
@@ -41,6 +42,7 @@ class ItemResponsibilityError(Exception):
         self.message = message
 
 
+@once_per_cursor("item_responsibility")
 def ensure_item_responsibility_schema(cursor) -> None:
     if table_exists(cursor, GROUP_ITEMS_TABLE):
         if not table_has_column(cursor, GROUP_ITEMS_TABLE, "responsibility_mode"):
@@ -48,26 +50,32 @@ def ensure_item_responsibility_schema(cursor) -> None:
                 f"ALTER TABLE {GROUP_ITEMS_TABLE} "
                 "ADD COLUMN responsibility_mode VARCHAR(16) NOT NULL DEFAULT 'team'"
             )
+            remember_column(GROUP_ITEMS_TABLE, "responsibility_mode")
         if not table_has_column(cursor, GROUP_ITEMS_TABLE, "responsibility_user_ids_json"):
             cursor.execute(
                 f"ALTER TABLE {GROUP_ITEMS_TABLE} ADD COLUMN responsibility_user_ids_json TEXT NULL"
             )
+            remember_column(GROUP_ITEMS_TABLE, "responsibility_user_ids_json")
         if not table_has_column(cursor, GROUP_ITEMS_TABLE, "section_label"):
             cursor.execute(
                 f"ALTER TABLE {GROUP_ITEMS_TABLE} ADD COLUMN section_label VARCHAR(80) NULL"
             )
+            remember_column(GROUP_ITEMS_TABLE, "section_label")
         if not table_has_column(cursor, GROUP_ITEMS_TABLE, "section_order"):
             cursor.execute(
                 f"ALTER TABLE {GROUP_ITEMS_TABLE} ADD COLUMN section_order INT NOT NULL DEFAULT 0"
             )
+            remember_column(GROUP_ITEMS_TABLE, "section_order")
         if not table_has_column(cursor, GROUP_ITEMS_TABLE, "instructions"):
             cursor.execute(
                 f"ALTER TABLE {GROUP_ITEMS_TABLE} ADD COLUMN instructions TEXT NULL"
             )
+            remember_column(GROUP_ITEMS_TABLE, "instructions")
         if not table_has_column(cursor, GROUP_ITEMS_TABLE, "active"):
             cursor.execute(
                 f"ALTER TABLE {GROUP_ITEMS_TABLE} ADD COLUMN active TINYINT(1) NOT NULL DEFAULT 1"
             )
+            remember_column(GROUP_ITEMS_TABLE, "active")
     if not table_exists(cursor, OVERRIDES_TABLE):
         cursor.execute(
             f"""
@@ -85,14 +93,16 @@ def ensure_item_responsibility_schema(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        invalidate_table_schema(OVERRIDES_TABLE)
     for table in (SESSION_ITEMS_TABLE, "cleaning_task_activity_items"):
         if not table_exists(cursor, table):
             continue
         if not table_has_column(cursor, table, "responsibility_snapshot_json"):
             cursor.execute(f"ALTER TABLE {table} ADD COLUMN responsibility_snapshot_json TEXT NULL")
+            remember_column(table, "responsibility_snapshot_json")
         if not table_has_column(cursor, table, "definition_snapshot_json"):
             cursor.execute(f"ALTER TABLE {table} ADD COLUMN definition_snapshot_json TEXT NULL")
-    invalidate_schema_cache()
+            remember_column(table, "definition_snapshot_json")
 
 
 def parse_user_ids(raw: Any) -> list[int]:
@@ -122,7 +132,7 @@ def parse_user_ids(raw: Any) -> list[int]:
 
 
 def normalize_responsibility(mode: Any, user_ids: Any) -> tuple[str, list[int]]:
-    """Anyone on Team is the default. Named requires at least one employee."""
+    """Team mode is the default: any employee assigned to the Activity. Named requires one employee."""
     chosen = str(mode or MODE_TEAM).strip().lower()
     ids = parse_user_ids(user_ids)
     if chosen not in MODES:
@@ -143,7 +153,7 @@ def responsibility_payload(mode: Any, user_ids: Any, names: Mapping[int, str] | 
         "responsibility_mode": chosen,
         "responsibility_user_ids": ids,
         "responsibility_names": label_names,
-        "responsibility_label": "Anyone on Team" if chosen == MODE_TEAM else ", ".join(label_names),
+        "responsibility_label": TEAM_RESPONSIBILITY_LABEL if chosen == MODE_TEAM else ", ".join(label_names),
     }
 
 
@@ -380,7 +390,7 @@ def save_date_overrides(
         requested_ids = parse_user_ids(raw.get("user_ids") if raw.get("user_ids") is not None else raw.get("user_ids_json"))
         if requested_mode == MODE_NAMED and not requested_ids:
             raise ItemResponsibilityError(
-                "Choose at least one employee for a named item, or switch it to Anyone on Team."
+                "Choose at least one employee for a named item, or leave it as any assigned employee."
             )
         mode, ids = normalize_responsibility(requested_mode, requested_ids)
         if mode == MODE_NAMED:

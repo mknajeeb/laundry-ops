@@ -1,4 +1,10 @@
-import { groupChecklistSections, isMyChecklistItem, splitSharedChecklist } from "./sharedChecklistOwnership";
+import {
+  groupChecklistSections,
+  isMyChecklistItem,
+  responsibilityLabel,
+  splitSharedChecklist,
+  visibleSectionLabel,
+} from "./sharedChecklistOwnership";
 
 const team = { task_code: "a", required: true, responsibility_mode: "team", status: "pending" };
 const mine = {
@@ -24,6 +30,11 @@ describe("splitSharedChecklist", () => {
     expect(split.requiredDone).toBe(1);
     expect(split.requiredTotal).toBe(2);
     expect(isMyChecklistItem(team, 3)).toBe(true);
+    expect(responsibilityLabel(team)).toBe("Any assigned employee");
+    expect(responsibilityLabel({ responsibility_label: "Anyone on Team" })).toBe("Any assigned employee");
+    expect(visibleSectionLabel("General", 1)).toBe("");
+    expect(visibleSectionLabel("Section 1", 2)).toBe("");
+    expect(visibleSectionLabel("Dryer Cleaning", 2)).toBe("Dryer Cleaning");
     expect(isMyChecklistItem(theirs, 7)).toBe(false);
   });
 

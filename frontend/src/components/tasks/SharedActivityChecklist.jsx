@@ -5,7 +5,13 @@ import { OPS_MOBILE } from "../../opsMobile";
 import TaskCompletionInputs from "../../opsMobile/TaskCompletionInputs";
 import { useI18n } from "../../i18n/I18nContext";
 import { localizedConfigured, localizedInstruction } from "./taskEmployeeI18n";
-import { groupChecklistSections, responsibilityLabel, splitSharedChecklist } from "./sharedChecklistOwnership";
+import {
+  groupChecklistSections,
+  responsibilityLabel,
+  splitSharedChecklist,
+  TEAM_RESPONSIBILITY_LABEL,
+  visibleSectionLabel,
+} from "./sharedChecklistOwnership";
 
 function SectionBlock({ title, done, total, items, busy, editingCode, inputValues, inputRemarks, onChangeValues, onChangeRemarks, onCheckoff, startOpen }) {
   const [open, setOpen] = useState(startOpen);
@@ -55,7 +61,8 @@ function ItemRow({ item, busy, editing, inputValues, inputRemarks, onChangeValue
       "task_name_es",
     ) || item.task_code;
   const responsibility = responsibilityLabel(item);
-  const responsibilityText = responsibility === "Anyone on Team" ? t("tasks.pin.anyone") : responsibility;
+  const responsibilityText =
+    responsibility === TEAM_RESPONSIBILITY_LABEL ? t("tasks.pin.anyone") : responsibility;
   return (
     <Box
       sx={{
@@ -110,7 +117,7 @@ function ItemRow({ item, busy, editing, inputValues, inputRemarks, onChangeValue
             variant="outlined"
             disabled={busy}
             onClick={() => onCheckoff?.(item)}
-            sx={{ mt: 1, fontWeight: 800, textTransform: "none" }}
+            sx={{ mt: 1, minHeight: 48, fontWeight: 800, textTransform: "none" }}
           >
             {editing ? t("tasks.pin.saveCheckoff") : t("tasks.pin.checkOff")}
           </Button>
@@ -137,8 +144,50 @@ export default function SharedActivityChecklist({
   const { t, locale } = useI18n();
   const [othersOpen, setOthersOpen] = useState(false);
   const split = splitSharedChecklist(items, userId);
-  const sectionTitle = (section) =>
-    (locale === "es" && section.labelEs) || section.label || t("tasks.pin.checklist");
+  const renderSections = (source, keyPrefix, startOpen) => {
+    const sections = groupChecklistSections(source);
+    return sections.map((section) => {
+      const rows = (
+        <Stack spacing={1}>
+          {section.items.map((item) => (
+            <ItemRow
+              key={item.task_code || item.id}
+              item={item}
+              busy={busy}
+              editing={editingCode === item.task_code}
+              inputValues={inputValues}
+              inputRemarks={inputRemarks}
+              onChangeValues={onChangeValues}
+              onChangeRemarks={onChangeRemarks}
+              onCheckoff={onCheckoff}
+            />
+          ))}
+        </Stack>
+      );
+      const title = visibleSectionLabel(
+        (locale === "es" && section.labelEs) || section.label,
+        sections.length,
+      );
+      if (!title) return <Box key={`${keyPrefix}-${section.label}`}>{rows}</Box>;
+      return (
+        <SectionBlock
+          key={`${keyPrefix}-${section.label}`}
+          title={title}
+          done={section.done}
+          total={section.total}
+          items={section.items}
+          busy={busy}
+          editingCode={editingCode}
+          inputValues={inputValues}
+          inputRemarks={inputRemarks}
+          onChangeValues={onChangeValues}
+          onChangeRemarks={onChangeRemarks}
+          onCheckoff={onCheckoff}
+          startOpen={startOpen && section.done < section.total}
+        />
+      );
+    });
+  };
   return (
     <Stack spacing={1}>
       <Typography variant="body2" sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
@@ -148,23 +197,7 @@ export default function SharedActivityChecklist({
         {t("tasks.pin.myItems")}
       </Typography>
       {split.myItems.length ? (
-        groupChecklistSections(split.myItems).map((section) => (
-          <SectionBlock
-            key={section.label}
-            title={sectionTitle(section)}
-            done={section.done}
-            total={section.total}
-            items={section.items}
-            busy={busy}
-            editingCode={editingCode}
-            inputValues={inputValues}
-            inputRemarks={inputRemarks}
-            onChangeValues={onChangeValues}
-            onChangeRemarks={onChangeRemarks}
-            onCheckoff={onCheckoff}
-            startOpen={section.done < section.total}
-          />
-        ))
+        renderSections(split.myItems, "mine", true)
       ) : (
         <Typography variant="body2" color="text.secondary">
           {t("tasks.pin.noneAssigned")}
@@ -183,23 +216,7 @@ export default function SharedActivityChecklist({
           </Button>
           <Collapse in={othersOpen}>
             <Stack spacing={1}>
-              {groupChecklistSections(split.otherItems).map((section) => (
-                <SectionBlock
-                  key={`other-${section.label}`}
-                  title={sectionTitle(section)}
-                  done={section.done}
-                  total={section.total}
-                  items={section.items}
-                  busy={busy}
-                  editingCode={editingCode}
-                  inputValues={inputValues}
-                  inputRemarks={inputRemarks}
-                  onChangeValues={onChangeValues}
-                  onChangeRemarks={onChangeRemarks}
-                  onCheckoff={onCheckoff}
-                  startOpen={false}
-                />
-              ))}
+              {renderSections(split.otherItems, "other", false)}
             </Stack>
           </Collapse>
         </>

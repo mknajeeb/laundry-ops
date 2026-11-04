@@ -16,8 +16,15 @@ import json
 import re
 from typing import Any, Mapping, Optional, Sequence
 
-from backend.ta_helpers import invalidate_schema_cache, table_exists, table_has_column
+from backend.ta_helpers import (
+    invalidate_table_schema,
+    once_per_cursor,
+    remember_column,
+    table_exists,
+    table_has_column,
+)
 from backend.task_catalog import (
+    clear_task_read_cache,
     ensure_task_catalog_tables,
     get_task_definition,
     list_categories,
@@ -53,6 +60,7 @@ def activity_group_slug_from_code(code: Any) -> str:
     return text
 
 
+@once_per_cursor("task_activity_groups")
 def ensure_task_activity_group_tables(cursor) -> None:
     ensure_task_catalog_tables(cursor)
     if not table_exists(cursor, GROUPS_TABLE):
@@ -79,6 +87,7 @@ def ensure_task_activity_group_tables(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        invalidate_table_schema(GROUPS_TABLE)
     if not table_exists(cursor, GROUP_ITEMS_TABLE):
         cursor.execute(
             f"""
@@ -94,6 +103,7 @@ def ensure_task_activity_group_tables(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        invalidate_table_schema(GROUP_ITEMS_TABLE)
     try:
         from backend.task_verification_policy import ensure_verification_policy_schema
 
@@ -104,14 +114,17 @@ def ensure_task_activity_group_tables(cursor) -> None:
         cursor, GROUPS_TABLE, "instructions"
     ):
         cursor.execute(f"ALTER TABLE {GROUPS_TABLE} ADD COLUMN instructions TEXT NULL")
+        remember_column(GROUPS_TABLE, "instructions")
     for column in ("instructions_es", "name_es"):
         if table_exists(cursor, GROUPS_TABLE) and not table_has_column(cursor, GROUPS_TABLE, column):
             cursor.execute(f"ALTER TABLE {GROUPS_TABLE} ADD COLUMN {column} TEXT NULL")
+            remember_column(GROUPS_TABLE, column)
     for column in ("instructions_es", "section_label_es", "task_name_es"):
         if table_exists(cursor, GROUP_ITEMS_TABLE) and not table_has_column(
             cursor, GROUP_ITEMS_TABLE, column
         ):
             cursor.execute(f"ALTER TABLE {GROUP_ITEMS_TABLE} ADD COLUMN {column} TEXT NULL")
+            remember_column(GROUP_ITEMS_TABLE, column)
     if table_exists(cursor, GROUPS_TABLE) and not table_has_column(
         cursor, GROUPS_TABLE, "require_checklist_before_completion"
     ):
@@ -119,13 +132,13 @@ def ensure_task_activity_group_tables(cursor) -> None:
         cursor.execute(
             f"ALTER TABLE {GROUPS_TABLE} ADD COLUMN require_checklist_before_completion TINYINT(1) NULL"
         )
+        remember_column(GROUPS_TABLE, "require_checklist_before_completion")
     try:
         from backend.task_activity_item_responsibility import ensure_item_responsibility_schema
 
         ensure_item_responsibility_schema(cursor)
     except Exception:
         pass
-    invalidate_schema_cache()
 
 
 def _slug_code(raw: str, *, max_len: int = 28) -> str:
@@ -358,6 +371,10 @@ def get_activity_group(
 ) -> dict[str, Any] | None:
     ensure_task_activity_group_tables(cursor)
     oid = int(organization_id)
+    cache_key = (oid, group_id, str(code or ""), str(role_code or ""), bool(include_inactive))
+    store = getattr(cursor, "_vw_activity_group", None)
+    if isinstance(store, dict) and cache_key in store:
+        return store[cache_key]
     if group_id is not None:
         cursor.execute(
             f"SELECT * FROM {GROUPS_TABLE} WHERE organization_id=%s AND id=%s LIMIT 1",
@@ -391,9 +408,18 @@ def get_activity_group(
     from backend.task_verification_policy import resolve_verification_policy
 
     policy = resolve_verification_policy(cursor, oid, activity_group=row)
-    return _serialize_group(
+    result = _serialize_group(
         row, items.get(int(row["id"]), []), task_index=task_index, effective_policy=policy
     )
+    if not isinstance(store, dict):
+        store = {}
+        try:
+            setattr(cursor, "_vw_activity_group", store)
+        except Exception:
+            store = None
+    if isinstance(store, dict):
+        store[cache_key] = result
+    return result
 
 
 def _sync_schedule_role(cursor, organization_id: int, group: Mapping[str, Any]) -> None:
@@ -439,6 +465,7 @@ def upsert_activity_group(
     *,
     group_id: int | None = None,
 ) -> dict[str, Any]:
+    clear_task_read_cache(cursor)
     ensure_task_activity_group_tables(cursor)
     oid = int(organization_id)
     name = str(payload.get("name") or "").strip()

@@ -5,6 +5,7 @@ import {
   Box,
   Button,
   CircularProgress,
+  Collapse,
   Stack,
   Typography,
 } from "@mui/material";
@@ -15,13 +16,32 @@ import {
 } from "../api";
 import TaskVerificationReviewCard from "../components/tasks/TaskVerificationReviewCard";
 import { formatDashboardTime } from "../components/tasks/taskDashboardFormat";
-import { OpsMobileShell, OpsTopBar, OPS_MOBILE } from "../opsMobile";
+import { OpsLocaleToggle, OpsMobileShell, OpsTopBar, OPS_MOBILE } from "../opsMobile";
 import { useI18n } from "../i18n/I18nContext";
 import {
   clearPinHubSession,
   loadPinHubSession,
   pinHubMenuPath,
 } from "../utils/pinHubSession";
+
+function ReviewGroup({ label, count, startOpen, children }) {
+  const [open, setOpen] = useState(startOpen);
+  return (
+    <Box>
+      <Button
+        fullWidth
+        onClick={() => setOpen((value) => !value)}
+        sx={{ justifyContent: "space-between", textTransform: "none", fontWeight: 800, px: 0, color: OPS_MOBILE.navy }}
+      >
+        <span>
+          {label} ({count})
+        </span>
+        <span>{open ? "−" : "+"}</span>
+      </Button>
+      <Collapse in={open}>{children}</Collapse>
+    </Box>
+  );
+}
 
 function sanitizeSlug(raw) {
   if (!raw) return "";
@@ -142,6 +162,11 @@ export default function CleaningTaskReviewPinPage() {
   };
 
   const reviewCards = queue?.verification_cards || [];
+  const endOfDayClose = Array.isArray(queue?.shift_end?.end_of_day_close)
+    ? queue.shift_end.end_of_day_close
+    : (queue?.shift_end?.blocking_close || []).filter(
+        (row) => String(row?.category_code || row?.activity?.category_code || "") === "end_of_day"
+      );
   const sections = [
     [t("tasks.pin.inProgress"), queue?.in_progress || []],
     [t("tasks.pin.status.overdue"), queue?.overdue || []],
@@ -165,7 +190,9 @@ export default function CleaningTaskReviewPinPage() {
         title={t("tasks.pin.reviewTitle")}
         onBack={goHub}
         onLock={lock}
+        lockLabel={t("mobileOps.lock")}
         identity={hub.employee_first_name || hub.employee_name || ""}
+        right={<OpsLocaleToggle />}
       />
           {notice ? (
         <Alert severity="success" sx={{ mb: 1.5 }}>
@@ -183,19 +210,40 @@ export default function CleaningTaskReviewPinPage() {
         </Box>
       ) : (
         <Stack spacing={2}>
-          {queue?.approval_policy_label ? (
-            <Alert severity="info">{queue.approval_policy_label}</Alert>
-          ) : null}
-          {(queue?.shift_end?.blocking_close || []).length ? (
-            <Alert severity="warning">
+          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+            {[
+              [t("tasks.dashboard.waiting"), reviewCards.length],
+              [t("tasks.pin.inProgress"), (queue?.in_progress || []).length],
+              [t("tasks.pin.status.overdue"), (queue?.overdue || []).length],
+              [t("tasks.pin.approved"), (queue?.approved || []).length],
+              [t("tasks.pin.rejectedRedo"), (queue?.rejected || []).length],
+            ].map(([label, count]) => (
+              <Box
+                key={label}
+                sx={{
+                  px: 1,
+                  py: 0.5,
+                  borderRadius: 1.5,
+                  bgcolor: "#fff",
+                  border: `1px solid ${OPS_MOBILE.border}`,
+                  minWidth: 72,
+                }}
+              >
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ lineHeight: 1.1 }}>
+                  {label}
+                </Typography>
+                <Typography sx={{ fontWeight: 800, lineHeight: 1.2 }}>{count}</Typography>
+              </Box>
+            ))}
+          </Stack>
+          {endOfDayClose.length ? (
+            <Typography variant="body2" color="text.secondary">
               {t("tasks.pin.blockingClose", {
-                count: (queue.shift_end.blocking_close || []).length,
-                plural: (queue.shift_end.blocking_close || []).length === 1 ? "" : "s",
+                count: endOfDayClose.length,
+                plural: endOfDayClose.length === 1 ? "" : "s",
               })}
-            </Alert>
-          ) : (
-            <Alert severity="success">{t("tasks.pin.noBlocking")}</Alert>
-          )}
+            </Typography>
+          ) : null}
           <Box>
             <Typography sx={{ fontWeight: 800, mb: 1, color: OPS_MOBILE.navy }}>
               {t("tasks.pin.pendingApprovals", { count: reviewCards.length })}
@@ -219,11 +267,13 @@ export default function CleaningTaskReviewPinPage() {
               )}
             </Stack>
           </Box>
-          {sections.map(([label, rows]) => (
-            <Box key={label}>
-              <Typography sx={{ fontWeight: 800, mb: 1, color: OPS_MOBILE.navy }}>
-                {label} ({rows.length})
-              </Typography>
+          {sections.map(([label, rows], index) => (
+            <ReviewGroup
+              key={label}
+              label={label}
+              count={rows.length}
+              startOpen={index === 0 || index === 1 || index === 4}
+            >
               <Stack spacing={1}>
                 {rows.length ? (
                   rows.map((row) => {
@@ -270,7 +320,7 @@ export default function CleaningTaskReviewPinPage() {
                   </Typography>
                 )}
               </Stack>
-            </Box>
+            </ReviewGroup>
           ))}
         </Stack>
       )}

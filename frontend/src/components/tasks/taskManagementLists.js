@@ -31,6 +31,24 @@ export function groupActivitiesByCategory(groups, categories) {
     }));
 }
 
+const LEGACY_MARKERS = new Set(["archived", "inactive", "test", "migration", "legacy"]);
+
+/** Legacy only when the record is inactive or explicitly marked. Names are not a signal. */
+export function isLegacyActivity(group) {
+  if (!group) return false;
+  if (!isActiveCatalogRow(group)) return true;
+  if (group.archived === true || group.is_archived === true || group.is_test === true) return true;
+  if (group.migration_only === true || group.legacy === true) return true;
+  const marker = String(group.catalog_status || group.record_status || group.lifecycle || "")
+    .trim()
+    .toLowerCase();
+  return LEGACY_MARKERS.has(marker);
+}
+
+export function isOperationalActivity(group) {
+  return Boolean(group) && !isLegacyActivity(group);
+}
+
 export function checklistSections(items) {
   const sections = new Map();
   for (const item of items || []) {

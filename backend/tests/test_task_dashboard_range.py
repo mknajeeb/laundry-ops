@@ -5,13 +5,46 @@ from unittest import mock
 
 import pytest
 
+from backend.cleaning_task_activity import _activities_for_day, _prime_activities_for_range
 from backend.cleaning_task_dashboard_analytics import (
     TaskDashboardRangeError,
+    build_activity_frequency,
+    build_employee_report,
     history_verification_label,
     monthly_task_performance,
     participation_rollup,
     resolve_task_dashboard_range,
 )
+
+
+def test_one_range_query_serves_every_day():
+    class Cur:
+        def __init__(self):
+            self.calls = 0
+
+        def execute(self, *args, **kwargs):
+            self.calls += 1
+
+        def fetchall(self):
+            return [
+                {
+                    "id": 9,
+                    "user_id": 2,
+                    "business_date": date(2026, 11, 4),
+                    "status": "pending",
+                    "role": "lint",
+                }
+            ]
+
+        def fetchone(self):
+            return None
+
+    cur = Cur()
+    _prime_activities_for_range(cur, 1, date(2026, 11, 1), date(2026, 11, 7))
+    assert cur.calls == 1
+    assert _activities_for_day(cur, 1, date(2026, 11, 4))[0]["id"] == 9
+    assert _activities_for_day(cur, 1, date(2026, 11, 2)) == []
+    assert cur.calls == 1
 
 
 def test_range_is_not_shortened():
@@ -59,6 +92,77 @@ def test_participation_counts_people_once_and_skips_checklist_rows():
         "employees_finished": 2,
         "total_time_seconds": 3600,
     }
+
+
+def test_employee_report_counts_a_shared_activity_once():
+    report = build_employee_report(
+        [
+            {
+                "assignment_key": "g:2026-11-04:wash",
+                "role": "agroup_wash",
+                "role_label": "Washer Cleaning",
+                "business_date": "2026-11-04",
+                "status": "in_progress",
+                "overall_status": "in_progress",
+                "verification_status": "not_required",
+                "verification_label": "Not Required",
+                "checklist_done": 0,
+                "checklist_required": 2,
+                "assigned_employees": ["Evelin", "Florentina"],
+                "shared_checklist_items": [
+                    {"completed_by_user_id": 1, "status": "completed"},
+                ],
+                "contributions": [
+                    {
+                        "employee_id": 1,
+                        "employee_name": "Evelin",
+                        "status": "in_progress",
+                        "participation_status": "in_progress",
+                        "activity": {"started_at": "2026-11-04 10:00:00", "duration_seconds": 600},
+                    },
+                    {
+                        "employee_id": 2,
+                        "employee_name": "Florentina",
+                        "participation_status": "not_started",
+                        "activity": {},
+                    },
+                ],
+            }
+        ]
+    )
+    assert report["unique_activities"] == 1
+    assert len(report["employees"]) == 2
+    evelin = next(person for person in report["employees"] if person["employee_name"] == "Evelin")
+    assert evelin["assigned"] == 1
+    assert evelin["in_progress"] == 1
+    assert evelin["activities"][0]["checklist_completed_by_employee"] == 1
+    frequency = build_activity_frequency(
+        [
+            {
+                "role": "agroup_dry",
+                "role_label": "Dryer Lint Cleaning",
+                "business_date": "2026-11-04",
+                "status": "approved",
+                "verification_status": "verified",
+                "overall_status": "verified",
+                "assigned_employees": ["Maria Perez", "Lily Chen"],
+                "contributions": [],
+            },
+            {
+                "role": "agroup_dry",
+                "role_label": "Dryer Lint Cleaning",
+                "business_date": "2026-11-03",
+                "status": "approved",
+                "verification_status": "verified",
+                "overall_status": "verified",
+                "assigned_employees": ["Jennifer", "Aselisa"],
+                "contributions": [],
+            },
+        ]
+    )
+    assert frequency[0]["activity"] == "Dryer Lint Cleaning"
+    assert frequency[0]["assigned"] == 2
+    assert [row["business_date"] for row in frequency[0]["dates"]] == ["2026-11-04", "2026-11-03"]
 
 
 def test_verification_label_stays_separate_from_completion():

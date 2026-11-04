@@ -16,7 +16,7 @@ SECTION_IN_PROGRESS = "in_progress"
 SECTION_LABELS = {
     SECTION_VERIFIED: "Verified",
     SECTION_NEEDS_CORRECTION: "Needs Correction",
-    SECTION_PENDING: "Pending Verification",
+    SECTION_PENDING: "Waiting for Verification",
     SECTION_IN_PROGRESS: "In Progress",
 }
 
