@@ -2783,10 +2783,10 @@ def _planned_clock_payloads(
         aggregate_classified_batch_lines,
         resolve_batch_overtime_policy,
         resolve_overtime_rate,
+        week_ot_enabled_flags,
         weekly_ot_policy_category,
     )
     from backend.payroll_session_rate import resolve_session_hourly_rate
-    from backend.payroll_week_ot import OT_MODE_DISABLE
     from backend.payroll_workflow import resolve_rate_for_batch_line
 
     only_raw = batch.get("supplemental_for_user_id")
@@ -2822,15 +2822,9 @@ def _planned_clock_payloads(
         policy = resolve_batch_overtime_policy(
             conn, organization_id, weekly_ot_policy_category(recs)
         )
-        week_ot_enabled: dict[str, bool] = {}
-        for rec in recs:
-            ws = str(rec.get("payroll_week_start") or "")[:10]
-            if not ws:
-                continue
-            if rec.get("ot_week_mode") == OT_MODE_DISABLE:
-                week_ot_enabled[ws] = False
-            else:
-                week_ot_enabled.setdefault(ws, bool(policy["enabled"]))
+        week_ot_enabled = week_ot_enabled_flags(
+            recs, default_enabled=bool(policy["enabled"])
+        )
         any_rate = any(
             float(r.get("resolved_hourly_rate") or r.get("hourly_rate") or 0) > 0
             for r in recs

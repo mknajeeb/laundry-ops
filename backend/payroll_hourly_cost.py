@@ -1373,87 +1373,57 @@ def group_batch_sync_lines(
     ot_threshold: Any = DEFAULT_OT_THRESHOLD,
     ot_multiplier: Any = DEFAULT_OT_MULTIPLIER,
 ) -> list[dict]:
-    """Split one batch's lines from a weekly walk that includes every classification and rate.
+    """Split one batch's lines with the same week allocator batch sync uses.
 
-    Hours accumulate for the employee across the whole week. Only slices whose
-    classification matches this batch become payout lines. A later rate in the
-    same category becomes its own line and keeps the overtime the walk assigned.
+    An enabled week accumulates hours across classifications and rates. A
+    ``disable_ot`` week stays regular. Only slices whose classification matches
+    this batch become payout lines.
     """
+    from backend.payroll_overtime import (
+        aggregate_classified_batch_lines,
+        week_ot_enabled_flags,
+        weekly_ot_policy_category,
+    )
+
     category = _category_key(batch_category)
-    prepared = []
-    for rec in records or []:
-        prepared.append(
-            {
-                "id": rec.get("id"),
-                "user_id": rec.get("user_id"),
-                "worker_name": rec.get("worker_name") or "",
-                "approved_hours": rec.get("approved_hours"),
-                "clock_in_at": rec.get("clock_in_at") or rec.get("work_date"),
-                "hourly_rate": rec.get("hourly_rate"),
-                "worker_category": rec.get("worker_category"),
-            }
-        )
     by_user: dict[Any, list[dict]] = {}
     user_order: list[Any] = []
-    for rec in prepared:
+    for rec in records or []:
         uid = rec.get("user_id")
         if uid not in by_user:
             user_order.append(uid)
             by_user[uid] = []
         by_user[uid].append(rec)
-    allocated = []
-    for uid in user_order:
-        allocated.extend(
-            allocate_weekly_overtime(
-                by_user[uid],
-                ot_threshold=ot_threshold,
-                ot_multiplier=ot_multiplier,
-                category_policies=category_policies,
-            )
-        )
-    by_id = {rec.get("id"): rec for rec in prepared}
-    groups: dict[tuple, dict] = {}
-    order: list[tuple] = []
-    for line in allocated:
-        if line["worker_category"] != category:
-            continue
-        src = by_id.get(line["id"]) or {}
-        try:
-            uid = int(src.get("user_id") or 0)
-        except (TypeError, ValueError):
-            uid = 0
-        rate = round(float(line["rate"] or 0), 2)
-        key = (uid, rate)
-        if key not in groups:
-            order.append(key)
-            groups[key] = {
-                "user_id": uid,
-                "worker_name": src.get("worker_name") or "",
-                "rate": rate,
-                "regular_hours": Decimal("0"),
-                "ot_hours": Decimal("0"),
-                "session_ids": [],
-                "multiplier": line["rule"]["multiplier"],
-            }
-        bucket = groups[key]
-        bucket["regular_hours"] += line["regular_dec"]
-        bucket["ot_hours"] += line["overtime_dec"]
-        if line["id"] is not None:
-            bucket["session_ids"].append(line["id"])
     out = []
-    for key in order:
-        bucket = groups[key]
-        out.append(
-            {
-                "user_id": bucket["user_id"],
-                "worker_name": bucket["worker_name"],
-                "rate": bucket["rate"],
-                "regular_hours": float(_q2_dec(bucket["regular_hours"])),
-                "ot_hours": float(_q2_dec(bucket["ot_hours"])),
-                "session_ids": bucket["session_ids"],
-                "multiplier": bucket["multiplier"],
-            }
+    for uid in user_order:
+        user_records = by_user[uid]
+        policy_category = weekly_ot_policy_category(user_records)
+        rule = classification_overtime_rule(
+            policy_category,
+            category_policies,
+            ot_threshold=ot_threshold,
+            ot_multiplier=ot_multiplier,
         )
+        flags = week_ot_enabled_flags(user_records, default_enabled=True)
+        lines = aggregate_classified_batch_lines(
+            user_records,
+            batch_category=category,
+            threshold_hours=rule["threshold_hours"],
+            ot_enabled=True,
+            week_ot_enabled=flags if flags else None,
+        )
+        for line in lines:
+            out.append(
+                {
+                    "user_id": line["user_id"],
+                    "worker_name": line["worker_name"],
+                    "rate": line["rate"],
+                    "regular_hours": line["approved_hours"],
+                    "ot_hours": line["ot_hours"],
+                    "session_ids": line["session_ids"],
+                    "multiplier": rule["multiplier"],
+                }
+            )
     return out
 
 
@@ -1643,8 +1613,17 @@ def project_open_classifications(
     weekly overtime walk and are not emitted again. Open rows for a user and
     period are replaced by that walk, so a classification change moves hours
     once and does not wait for batch synchronization. Nothing is written.
+
+    Overtime uses the same week allocator as batch sync. A ``disable_ot`` week
+    stays all regular. An enabled week keeps one running total across
+    classifications and rates.
     """
-    from backend.payroll_overtime import compute_earnings_breakdown
+    from backend.payroll_overtime import (
+        allocate_session_overtime_by_week,
+        compute_earnings_breakdown,
+        week_ot_enabled_flags,
+        weekly_ot_policy_category,
+    )
 
     wanted = _category_key(category_filter) if category_filter and category_filter != "all" else None
     grouped: dict[tuple, list[dict]] = {}
@@ -1693,22 +1672,44 @@ def project_open_classifications(
         if not period_records:
             out.extend(group)
             continue
-        allocated = allocate_weekly_overtime(
-            period_records,
+        policy_category = weekly_ot_policy_category(period_records)
+        rule = classification_overtime_rule(
+            policy_category,
+            category_policies,
             ot_threshold=ot_threshold,
             ot_multiplier=ot_multiplier,
-            category_policies=category_policies,
+        )
+        flags = week_ot_enabled_flags(period_records, default_enabled=True)
+        allocated = allocate_session_overtime_by_week(
+            period_records,
+            threshold=rule["threshold_hours"],
+            week_ot_enabled=flags if flags else None,
+            default_enabled=True,
         )
         by_id = {record.get("id"): record for record in period_records}
         buckets: dict[tuple, dict] = {}
         bucket_order: list[tuple] = []
-        for line in allocated:
-            if line["id"] in locked_ids:
+        ordered_records = sorted(
+            period_records,
+            key=lambda row: (str(row.get("clock_in_at") or ""), str(row.get("id") or "")),
+        )
+        for record in ordered_records:
+            try:
+                session_id = int(record.get("id"))
+            except (TypeError, ValueError):
                 continue
-            category = line["worker_category"]
+            if session_id in locked_ids:
+                continue
+            category = _category_key(record.get("worker_category"))
             if wanted and category != wanted:
                 continue
-            rate = round(float(line["rate"] or 0), 2)
+            regular_hours, overtime_hours = allocated.get(
+                session_id, (Decimal("0"), Decimal("0"))
+            )
+            rate_raw = record.get("resolved_hourly_rate")
+            if rate_raw in (None, ""):
+                rate_raw = record.get("hourly_rate")
+            rate = round(float(rate_raw or 0), 2)
             bucket_key = (category, rate)
             if bucket_key not in buckets:
                 bucket_order.append(bucket_key)
@@ -1716,13 +1717,12 @@ def project_open_classifications(
                     "regular": Decimal("0"),
                     "overtime": Decimal("0"),
                     "session_ids": [],
-                    "multiplier": line["rule"]["multiplier"],
+                    "multiplier": rule["multiplier"],
                 }
             bucket = buckets[bucket_key]
-            bucket["regular"] += line["regular_dec"]
-            bucket["overtime"] += line["overtime_dec"]
-            if line["id"] is not None:
-                bucket["session_ids"].append(line["id"])
+            bucket["regular"] += regular_hours
+            bucket["overtime"] += overtime_hours
+            bucket["session_ids"].append(record.get("id"))
         out.extend(authoritative)
         for category, rate in bucket_order:
             bucket = buckets[(category, rate)]

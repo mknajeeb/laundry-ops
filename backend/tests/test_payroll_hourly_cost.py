@@ -1044,8 +1044,8 @@ def _open_report_row(**overrides):
     return row
 
 
-def _week_record(session_id, hours, category, day, rate=20):
-    return {
+def _week_record(session_id, hours, category, day, rate=20, *, week_start=None, ot_mode="default"):
+    row = {
         "id": session_id,
         "user_id": 7,
         "worker_name": "Alex",
@@ -1054,6 +1054,10 @@ def _week_record(session_id, hours, category, day, rate=20):
         "hourly_rate": rate,
         "worker_category": category,
     }
+    if week_start:
+        row["payroll_week_start"] = week_start
+        row["ot_week_mode"] = ot_mode
+    return row
 
 
 def test_open_report_follows_classification_before_sync_and_matches_after():
@@ -1123,6 +1127,108 @@ def test_open_report_follows_classification_before_sync_and_matches_after():
     )
     assert [row["worker_category"] for row in filtered] == ["w2"]
     assert filtered[0]["regular_hours"] + filtered[0]["ot_hours"] == 20
+
+
+def test_open_report_follows_the_batch_week_overtime_switch():
+    """Enabled weeks keep one overtime walk. A disabled week stays regular."""
+    from backend.payroll_hourly_cost import group_batch_sync_lines, project_open_classifications
+
+    open_lines = [
+        _open_report_row(
+            line_id=1, batch_id=1, worker_category="w2", gross_pay=600, regular_hours=30, total_payroll_cost=600
+        ),
+        _open_report_row(line_id=2, batch_id=2, worker_category="temp"),
+    ]
+
+    def shown_matches_sync(records, lines=None):
+        shown = project_open_classifications(lines or open_lines, records)
+        by_cat = {}
+        for row in shown:
+            by_cat.setdefault(row["worker_category"], []).append(row)
+        for category, report_rows in by_cat.items():
+            synced = group_batch_sync_lines(records, batch_category=category)
+            assert len(synced) == len(report_rows)
+            for sync_line, report_row in zip(
+                sorted(synced, key=lambda line: (line["rate"], line["regular_hours"])),
+                sorted(report_rows, key=lambda row: (row["regular_rate"], row["regular_hours"])),
+            ):
+                assert report_row["regular_hours"] == sync_line["regular_hours"]
+                assert report_row["ot_hours"] == sync_line["ot_hours"]
+                assert report_row["reporting_projection"] is True
+                assert report_row["employer_cost_recorded"] is False
+                assert report_row["line_id"] is None
+        return shown
+
+    enabled = [
+        _week_record(1, 30, "w2", "2026-11-02", week_start="2026-11-02"),
+        _week_record(2, 20, "temp", "2026-11-03", week_start="2026-11-02"),
+    ]
+    enabled_rows = shown_matches_sync(enabled)
+    assert sum(row["ot_hours"] for row in enabled_rows) == 10
+    assert sum(row["regular_hours"] + row["ot_hours"] for row in enabled_rows) == 50
+
+    disabled = [
+        _week_record(1, 30, "w2", "2026-11-02", week_start="2026-11-02", ot_mode="disable_ot"),
+        _week_record(2, 20, "temp", "2026-11-03", week_start="2026-11-02", ot_mode="disable_ot"),
+    ]
+    disabled_rows = shown_matches_sync(disabled)
+    assert sum(row["ot_hours"] for row in disabled_rows) == 0
+    assert sum(row["regular_hours"] for row in disabled_rows) == 50
+
+    two_rates = [
+        _week_record(1, 25, "temp", "2026-11-02", rate=17, week_start="2026-11-02", ot_mode="disable_ot"),
+        _week_record(2, 20, "w2", "2026-11-04", rate=21, week_start="2026-11-02", ot_mode="disable_ot"),
+    ]
+    rate_rows = shown_matches_sync(two_rates)
+    assert sum(row["ot_hours"] for row in rate_rows) == 0
+    assert {row["regular_rate"] for row in rate_rows} == {17.0, 21.0}
+
+    wide = [
+        _open_report_row(
+            line_id=1,
+            worker_category="w2",
+            pay_period_start="2026-11-02",
+            pay_period_end="2026-11-15",
+            gross_pay=900,
+            regular_hours=45,
+            total_payroll_cost=900,
+        ),
+        _open_report_row(
+            line_id=2,
+            worker_category="temp",
+            pay_period_start="2026-11-02",
+            pay_period_end="2026-11-15",
+        ),
+    ]
+    split_weeks = [
+        _week_record(1, 45, "w2", "2026-11-02", week_start="2026-11-02", ot_mode="disable_ot"),
+        _week_record(2, 45, "temp", "2026-11-09", week_start="2026-11-09"),
+    ]
+    split_rows = shown_matches_sync(split_weeks, wide)
+    by_cat = {row["worker_category"]: row for row in split_rows}
+    assert by_cat["w2"]["regular_hours"] == 45
+    assert by_cat["w2"]["ot_hours"] == 0
+    assert by_cat["temp"]["regular_hours"] == 40
+    assert by_cat["temp"]["ot_hours"] == 5
+
+    stored = _open_report_row(
+        line_id=9,
+        worker_category="w2",
+        gross_pay=600,
+        regular_hours=30,
+        ot_hours=0,
+        employer_taxes=0,
+        employer_cost_recorded=True,
+        total_payroll_cost=600,
+        batch_status="paid",
+        details_finalized_at="2026-11-09 12:00:00",
+        source_shift_session_ids=[1],
+    )
+    kept = project_open_classifications([stored, open_lines[1]], disabled)
+    assert kept[0]["gross_pay"] == 600
+    assert kept[0]["employer_taxes"] == 0
+    assert kept[0]["employer_cost_recorded"] is True
+    assert kept[0].get("reporting_projection") is not True
 
 
 def test_projection_keeps_finalized_snapshots_and_does_not_double_count():

@@ -14,6 +14,67 @@ test("a category change does not restart weekly overtime", () => {
   assert.equal(enriched.totalCost, 1100);
 });
 
+test("a disabled overtime week stays regular across classifications", () => {
+  const rows = [
+    {
+      id: 1,
+      user_id: 7,
+      approved_hours: 30,
+      clock_in_at: "2026-11-02 08:00:00",
+      worker_category: "w2",
+      payroll_week_start: "2026-11-02",
+      ot_week_mode: "disable_ot",
+    },
+    {
+      id: 2,
+      user_id: 7,
+      approved_hours: 20,
+      clock_in_at: "2026-11-03 08:00:00",
+      worker_category: "temp",
+      payroll_week_start: "2026-11-02",
+      ot_week_mode: "disable_ot",
+    },
+  ];
+  const rateMap = { 7: { regular_rate: 20, ot_rate: 30, ot_threshold: 40 } };
+  const enriched = enrichTimeRecords(rows, rateMap);
+  const byId = Object.fromEntries(enriched.rows.map((row) => [row.id, row]));
+  assert.equal(byId[1].ot_premium, 0);
+  assert.equal(byId[2].ot_premium, 0);
+  assert.equal(byId[1].ot_week_disabled, true);
+  assert.equal(enriched.totalOtCost, 0);
+  assert.equal(enriched.totalCost, 1000);
+});
+
+test("an enabled week keeps overtime and the next disabled week does not", () => {
+  const rows = [
+    {
+      id: 1,
+      user_id: 7,
+      approved_hours: 45,
+      clock_in_at: "2026-11-02 08:00:00",
+      worker_category: "w2",
+      payroll_week_start: "2026-11-02",
+      ot_week_mode: "default",
+    },
+    {
+      id: 2,
+      user_id: 7,
+      approved_hours: 45,
+      clock_in_at: "2026-11-09 08:00:00",
+      worker_category: "temp",
+      payroll_week_start: "2026-11-09",
+      ot_week_mode: "disable_ot",
+    },
+  ];
+  const rateMap = { 7: { regular_rate: 20, ot_rate: 30, ot_threshold: 40 } };
+  const enriched = enrichTimeRecords(rows, rateMap);
+  const byId = Object.fromEntries(enriched.rows.map((row) => [row.id, row]));
+  assert.equal(byId[1].ot_premium, 50);
+  assert.equal(byId[2].ot_premium, 0);
+  assert.equal(byId[2].regular_cost, 900);
+  assert.equal(enriched.totalOtCost, 50);
+});
+
 test("combined analyses add dollars and hours before dividing", () => {
   const combined = combineHourlyAnalyses([
     {

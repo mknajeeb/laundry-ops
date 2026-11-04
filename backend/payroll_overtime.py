@@ -388,6 +388,31 @@ def allocate_session_overtime(
     return out
 
 
+def week_ot_enabled_flags(records: list[dict], *, default_enabled: bool = True) -> dict[str, bool]:
+    """Week flags shared by batch sync and the open-period report.
+
+    A payroll week is disabled when any of its sessions is ``disable_ot``.
+    Sessions with no ``payroll_week_start`` are left out; the caller then uses
+    ``default_enabled`` for that ungrouped walk. Calendar ``overtime_enabled``
+    is not consulted here.
+    """
+    from backend.payroll_week_ot import OT_MODE_DISABLE
+
+    flags: dict[str, bool] = {}
+    for rec in records or []:
+        ws = rec.get("payroll_week_start") or ""
+        if hasattr(ws, "isoformat"):
+            ws = ws.isoformat()
+        ws = str(ws)[:10]
+        if not ws:
+            continue
+        if rec.get("ot_week_mode") == OT_MODE_DISABLE:
+            flags[ws] = False
+        else:
+            flags.setdefault(ws, bool(default_enabled))
+    return flags
+
+
 def allocate_session_overtime_by_week(
     sessions: list[dict],
     *,
