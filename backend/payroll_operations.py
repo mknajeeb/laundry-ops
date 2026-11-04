@@ -179,6 +179,39 @@ def format_hours_display(seconds: Any) -> str:
     return f"{dec} h"
 
 
+RECORD_WORKER_CATEGORIES = ("w2", "contractor_1099", "temp")
+
+
+def parse_record_worker_category(value: Any) -> Optional[str]:
+    """None leaves the stored classification alone. An empty string clears it."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text == "":
+        return ""
+    if text not in RECORD_WORKER_CATEGORIES:
+        raise ValueError("worker_category must be w2, contractor_1099, or temp")
+    return text
+
+
+def ensure_payroll_worker_category_column(cursor) -> None:
+    if not table_exists(cursor, "shift_sessions"):
+        return
+    if table_has_column(cursor, "shift_sessions", "payroll_worker_category"):
+        return
+    try:
+        cursor.execute(
+            """
+            ALTER TABLE shift_sessions
+            ADD COLUMN payroll_worker_category VARCHAR(32) NULL
+            """
+        )
+    except Exception as exc:
+        if getattr(exc, "args", (None,))[0] != 1060:
+            raise
+    invalidate_schema_cache()
+
+
 def ensure_payroll_hours_approved_column(cursor) -> None:
     if not table_exists(cursor, "shift_sessions"):
         return
@@ -360,6 +393,12 @@ def list_time_records(
         if has_rate_override
         else ", NULL AS payroll_rate_override"
     )
+    has_record_cat = table_has_column(chk, "shift_sessions", "payroll_worker_category")
+    record_cat_sel = (
+        ", s.payroll_worker_category"
+        if has_record_cat
+        else ", NULL AS payroll_worker_category"
+    )
     review_sel = ", pc.review_state AS payroll_cycle_review_state" if has_review else ""
     jt_cols = []
     for col in (
@@ -381,7 +420,7 @@ def list_time_records(
     q = f"""
         SELECT s.id, s.user_id, s.clock_in_at, s.clock_out_at, s.status,
                s.total_break_seconds, s.net_work_seconds
-               {override_sel}{hours_approved_sel}{class_sel}{rate_override_sel}{remarks_sel}{jt_sel},
+               {override_sel}{hours_approved_sel}{class_sel}{rate_override_sel}{record_cat_sel}{remarks_sel}{jt_sel},
                pp.first_name, pp.last_name
                {review_sel}
         FROM shift_sessions s
@@ -433,6 +472,11 @@ def list_time_records(
         cat, class_source = resolve_session_payroll_category(
             profile_cat, row.get("payroll_classification_override")
         )
+        if class_source == "profile":
+            legacy = str(row.get("payroll_worker_category") or "").strip()
+            if legacy in RECORD_WORKER_CATEGORIES:
+                cat = legacy
+                class_source = "record_override"
         if worker_category and worker_category != "all" and cat != worker_category:
             continue
         profile_rate = rate_info.get("hourly_rate")
@@ -455,6 +499,7 @@ def list_time_records(
             "worker_category_label": CATEGORY_LABELS.get(cat, cat),
             "profile_worker_category": profile_cat,
             "classification_source": class_source,
+            "worker_category_source": class_source,
             "payroll_classification_override": (
                 cat if class_source == "record_override" else None
             ),
@@ -901,6 +946,18 @@ def _apply_time_record_role_tag(
         ins.execute(f"UPDATE shift_sessions SET {', '.join(upd)} WHERE id=%s", vals)
 
 
+def _apply_saved_classification(conn, organization_id: int, session_id: int, record_category: str) -> None:
+    """Store a classification on the session override. Does not clear approval or payout lines."""
+    from backend.payroll_classification import set_session_payroll_classification_override
+
+    set_session_payroll_classification_override(
+        conn,
+        int(organization_id),
+        int(session_id),
+        value=record_category or None,
+    )
+
+
 def create_manual_time_record(
     conn,
     organization_id: int,
@@ -911,6 +968,7 @@ def create_manual_time_record(
     remarks: str = "",
     category_id: Any = None,
     role_id: Any = None,
+    worker_category: Any = None,
 ) -> dict:
     ci = _parse_clock_dt(clock_in_at)
     co_raw = clock_out_at
@@ -951,6 +1009,7 @@ def create_manual_time_record(
     has_ss_org = table_has_column(chk, "shift_sessions", "organization_id")
     has_remarks = table_has_column(chk, "shift_sessions", "period_adjustment_remarks")
     has_manual = table_has_column(chk, "shift_sessions", "manual_override")
+    record_category = parse_record_worker_category(worker_category)
 
     if co is None:
         status = "active"
@@ -1000,6 +1059,8 @@ def create_manual_time_record(
             ended_at=co,
         )
     conn.commit()
+    if record_category:
+        _apply_saved_classification(conn, oid, int(sid), record_category)
     # UI reloads the filtered list after save — avoid list_time_records(limit=2000).
     return {
         "id": int(sid),
@@ -1008,6 +1069,7 @@ def create_manual_time_record(
         "clock_out_at": co,
         "status": "open" if co is None else "pending_approval",
         "payroll_hours_approved": False,
+        "worker_category": record_category or None,
     }
 
 
@@ -1021,6 +1083,7 @@ def update_time_record(
     remarks: Optional[str] = None,
     category_id: Any = None,
     role_id: Any = None,
+    worker_category: Any = None,
 ) -> dict:
     sid = int(session_id)
     if not _session_in_org(conn, organization_id, sid):
@@ -1030,6 +1093,9 @@ def update_time_record(
     has_remarks = table_has_column(chk, "shift_sessions", "period_adjustment_remarks")
     has_manual = table_has_column(chk, "shift_sessions", "manual_override")
     has_ss_org = table_has_column(chk, "shift_sessions", "organization_id")
+    record_category = parse_record_worker_category(worker_category)
+    ensure_payroll_hours_approved_column(chk)
+    has_hours_approved = table_has_column(chk, "shift_sessions", "payroll_hours_approved")
 
     ci = _parse_clock_dt(clock_in_at) if clock_in_at is not None else None
     co = _parse_clock_dt(clock_out_at) if clock_out_at is not None else None
@@ -1047,8 +1113,9 @@ def update_time_record(
             raise ValueError("category_id and role_id are required together to tag a role")
 
     c = conn.cursor(dictionary=True)
+    approved_sel = ", payroll_hours_approved" if has_hours_approved else ""
     c.execute(
-        "SELECT user_id, clock_in_at, clock_out_at FROM shift_sessions WHERE id=%s",
+        f"SELECT user_id, clock_in_at, clock_out_at{approved_sel} FROM shift_sessions WHERE id=%s",
         (sid,),
     )
     cur = c.fetchone()
@@ -1088,7 +1155,6 @@ def update_time_record(
     if has_remarks and remarks is not None:
         updates.append("period_adjustment_remarks=%s")
         params.append(str(remarks)[:2000])
-
     where = "id=%s"
     params.append(sid)
     if has_ss_org:
@@ -1139,6 +1205,8 @@ def update_time_record(
     status = "open" if new_co is None else "pending_approval"
     if recomputed.get("approval_cleared"):
         status = "pending_approval"
+    if record_category is not None:
+        _apply_saved_classification(conn, int(organization_id), sid, record_category)
     return {
         "id": sid,
         "user_id": int(cur["user_id"]),
@@ -1150,6 +1218,7 @@ def update_time_record(
         "approved_hours": recomputed.get("approved_hours"),
         "approval_cleared": recomputed.get("approval_cleared"),
         "has_open_break": recomputed.get("has_open_break"),
+        "worker_category": record_category or None,
     }
 
 

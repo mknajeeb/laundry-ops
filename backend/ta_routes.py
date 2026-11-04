@@ -5769,6 +5769,7 @@ def payroll_time_records():
                     remarks=(body.get("remarks") or body.get("notes") or "").strip(),
                     category_id=body.get("category_id"),
                     role_id=body.get("role_id"),
+                    worker_category=body.get("worker_category") if "worker_category" in body else None,
                 )
                 return jsonify(rec), 201
             except ValueError as e:
@@ -5851,6 +5852,8 @@ def _payroll_time_record_update(conn, oid: int, rid: int, body: dict):
         patch_kwargs["category_id"] = body.get("category_id")
     if "role_id" in body:
         patch_kwargs["role_id"] = body.get("role_id")
+    if "worker_category" in body:
+        patch_kwargs["worker_category"] = body.get("worker_category")
     rec = update_time_record(conn, oid, rid, **patch_kwargs)
     write_audit(
         conn,

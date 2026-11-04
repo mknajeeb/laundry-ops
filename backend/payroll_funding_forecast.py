@@ -31,6 +31,28 @@ CATEGORY_LABELS = {
 }
 
 
+def ensure_employer_burden_column(cursor) -> None:
+    """Optional percent per classification. NULL means not configured."""
+    ensure_payroll_calendar_settings(cursor)
+    if not table_exists(cursor, "payroll_calendar_settings"):
+        return
+    if table_has_column(cursor, "payroll_calendar_settings", "employer_burden_percent"):
+        return
+    try:
+        cursor.execute(
+            """
+            ALTER TABLE payroll_calendar_settings
+            ADD COLUMN employer_burden_percent DECIMAL(6,2) NULL
+            """
+        )
+    except Exception as exc:
+        if getattr(exc, "args", (None,))[0] != 1060:
+            raise
+    from backend.ta_helpers import invalidate_schema_cache
+
+    invalidate_schema_cache()
+
+
 def ensure_payroll_calendar_settings(cursor) -> None:
     if table_exists(cursor, "payroll_calendar_settings"):
         return
@@ -63,6 +85,7 @@ def _default_calendar_row(organization_id: int, worker_category: str, org_settin
         "overtime_multiplier": None,
         "include_draft_schedule_in_forecast": True,
         "include_published_schedule_in_forecast": True,
+        "employer_burden_percent": None,
     }
 
 
@@ -70,6 +93,7 @@ def get_calendar_settings(conn, organization_id: int) -> dict[str, Any]:
     oid = int(organization_id)
     seed_schedule_defaults(conn.cursor(), oid)
     ensure_payroll_calendar_settings(conn.cursor())
+    ensure_employer_burden_column(conn.cursor())
     org_settings = get_org_schedule_settings(conn, oid)
     c = _cursor(conn)
     c.execute(
@@ -104,6 +128,7 @@ def get_calendar_settings(conn, organization_id: int) -> dict[str, Any]:
 
 def save_calendar_settings(conn, organization_id: int, body: dict) -> dict[str, Any]:
     ensure_payroll_calendar_settings(conn.cursor())
+    ensure_employer_burden_column(conn.cursor())
     oid = int(organization_id)
     c = conn.cursor()
     items = body.get("categories") or body.get("items") or [body]
@@ -122,6 +147,7 @@ def save_calendar_settings(conn, organization_id: int, body: dict) -> dict[str, 
             "overtime_multiplier",
             "include_draft_schedule_in_forecast",
             "include_published_schedule_in_forecast",
+            "employer_burden_percent",
         )
         vals = [oid, cat]
         cols = ["organization_id", "worker_category"]
@@ -132,6 +158,8 @@ def save_calendar_settings(conn, organization_id: int, body: dict) -> dict[str, 
                 val = item[fld]
                 if fld.startswith("overtime_enabled") or fld.startswith("include_"):
                     val = 1 if val else 0
+                if fld == "employer_burden_percent":
+                    val = None if val in (None, "") else round(float(val), 2)
                 vals.append(val)
                 updates.append(f"{fld}=VALUES({fld})")
         if len(cols) <= 2:

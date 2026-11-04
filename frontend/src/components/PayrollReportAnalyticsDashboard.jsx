@@ -323,6 +323,26 @@ export default function PayrollReportAnalyticsDashboard({
                 ? "Select a month with Official Pay Date payroll."
                 : "No terminal payroll period in selection (batches paid/finalized; eligible work must be batched for Complete)."}
           </Typography>
+            {summary?.employer_cost_basis === "estimated" ? (
+              <Typography variant="caption" color="text.secondary" display="block">
+                Open W-2 payroll shows an estimated employer burden from prior finalized payroll. Temp and 1099 stay at gross unless that classification has its own configured percent. Finalized payroll keeps its stored employer taxes.
+              </Typography>
+            ) : null}
+            {summary?.employer_cost_basis === "configured" ? (
+              <Typography variant="caption" color="text.secondary" display="block">
+                Open payroll shows the employer burden configured for each classification. Finalized payroll keeps its stored employer taxes.
+              </Typography>
+            ) : null}
+            {summary?.employer_cost_basis === "mixed" ? (
+              <Typography variant="caption" color="text.secondary" display="block">
+                This selection mixes stored finalized employer taxes with an estimate for open payroll.
+              </Typography>
+            ) : null}
+            {summary?.employer_cost_basis && summary.employer_cost_basis !== "actual" ? (
+              <Typography variant="caption" color="text.secondary" display="block">
+                Open-period classification follows the saved time record. Stored payout lines stay unchanged until the batch is synchronized or finalized.
+              </Typography>
+            ) : null}
         </Box>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
           <FormControl size="small" sx={{ minWidth: 200 }}>

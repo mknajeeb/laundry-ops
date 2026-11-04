@@ -66,6 +66,23 @@ export function burdenCaption(analysis) {
   return analysis.burden_label || "";
 }
 
+/** Sentence under the burden figure. Configured percents are not called historical. */
+export function burdenEstimateNote(analysis) {
+  if (!analysis) return "";
+  const status = analysis.burden_status;
+  const method = analysis.method;
+  if (status === "configured" || method === "configured_burden") {
+    return "Configured employer burden for this classification. Not a finalized expense.";
+  }
+  if (status === "mixed") {
+    return "Employer burden mixes configured rates and historical estimates. Not a finalized expense.";
+  }
+  if (status === "estimated" || method === "historical_burden") {
+    return "Estimated from prior finalized payroll. Not a finalized expense.";
+  }
+  return "";
+}
+
 export function hourlyCostTooltipLines(analysis) {
   if (!analysis) return [];
   const lines = [
@@ -91,8 +108,7 @@ export function hourlyCostTooltipLines(analysis) {
   if (analysis.formula) lines.push(analysis.formula);
   const target = targetComparisonText(analysis);
   if (target) lines.push(target);
-  if (analysis.burden_status === "estimated") {
-    lines.push("Estimated. Not a finalized payroll expense.");
-  }
+  const note = burdenEstimateNote(analysis);
+  if (note) lines.push(note);
   return lines;
 }

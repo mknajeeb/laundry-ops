@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS payroll_calendar_settings (
   overtime_multiplier DECIMAL(4,2) NULL COMMENT 'e.g. 1.5 for time-and-a-half premium calc',
   include_draft_schedule_in_forecast TINYINT(1) NOT NULL DEFAULT 1,
   include_published_schedule_in_forecast TINYINT(1) NOT NULL DEFAULT 1,
+  employer_burden_percent DECIMAL(6,2) NULL COMMENT 'Blank means not configured. W-2 then uses history; 1099 and temp do not inherit W-2 burden.',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uq_pcs_org_cat (organization_id, worker_category),

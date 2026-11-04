@@ -190,7 +190,7 @@ def test_multi_role_session_inherits_one_classification():
     assert lines[0]["session_ids"] == [5]
 
 
-def test_override_clears_approval_and_keeps_audit_then_is_idempotent():
+def test_override_keeps_approval_and_audit_then_is_idempotent():
     conn = _Conn(
         {
             "id": 41,
@@ -201,13 +201,13 @@ def test_override_clears_approval_and_keeps_audit_then_is_idempotent():
         }
     )
     first = _set(conn, "temp", reason="friday was temp")
-    assert first["approval_cleared"] is True
-    assert first["payroll_hours_approved"] is False
+    assert first["approval_cleared"] is False
+    assert first["payroll_hours_approved"] is True
     assert first["audit_appended"] is True
     assert first["worker_category"] == "temp"
-    assert time_record_status({"status": "completed", "payroll_hours_approved": 0}) != "approved"
+    assert time_record_status({"status": "completed", "payroll_hours_approved": 1, "manual_override": 0}) == "approved"
     updates = [sql for sql, _params in conn.writes if "UPDATE shift_sessions" in sql]
-    assert updates and "payroll_hours_approved=0" in updates[0]
+    assert updates and "payroll_hours_approved=0" not in updates[0]
     assert "net_work_seconds" not in updates[0]
     assert "clock_in_at" not in updates[0]
     inserts = [item for item in conn.writes if "shift_session_classification_audit" in item[0]]

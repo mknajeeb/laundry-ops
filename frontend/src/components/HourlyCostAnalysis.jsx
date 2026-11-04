@@ -12,6 +12,7 @@ import {
 } from "@mui/material";
 import {
   burdenCaption,
+  burdenEstimateNote,
   formatBurdenPercent,
   formatHourlyRate,
   formatOtImpact,
@@ -125,9 +126,9 @@ export function HourlyCostPanel({ analysis, loading, error }) {
               {targetComparisonText(analysis)}
             </Typography>
           ) : null}
-          {analysis.burden_status === "estimated" ? (
+          {burdenEstimateNote(analysis) ? (
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
-              Estimated from prior finalized payroll. Not a finalized expense.
+              {burdenEstimateNote(analysis)}
             </Typography>
           ) : null}
           {analysis.base_wage_blended ? (
