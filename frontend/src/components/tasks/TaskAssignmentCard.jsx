@@ -27,7 +27,7 @@ import {
   participationStatusOf,
   showPerEmployeeChecklist,
 } from "./taskDashboardLabels";
-import { responsibilityLabel, visibleSectionLabel } from "./sharedChecklistOwnership";
+import { employeeCheckSummary, responsibilityLabel, visibleSectionLabel } from "./sharedChecklistOwnership";
 
 function ChecklistItemTitle({ item, label }) {
   const { locale } = useI18n();
@@ -244,16 +244,31 @@ export default function TaskAssignmentCard({
                       </Typography>
                       <CompletionDetails completionInput={item.completion_input} schema={item.input_schema} />
                     </Box>
-                    <Stack direction="row" spacing={0.5} alignItems="center">
-                      <ChecklistBadge status={item.display_status || item.status} />
-                      {item.completed_by_name ? (
-                        <Typography variant="caption" color="text.secondary">
-                          {item.completed_by_name}
-                          {!hideLabor && item.completed_at
-                            ? ` · ${formatDashboardTime(item.completed_at)}`
-                            : ""}
-                        </Typography>
-                      ) : null}
+                    <Stack spacing={0.25} alignItems="flex-end">
+                      {(item.employee_checks || []).length ? (
+                        employeeCheckSummary(item.employee_checks).map((check) => (
+                          <Typography key={check.userId} variant="caption" color="text.secondary">
+                            {check.name}
+                            {" · "}
+                            {check.done ? t("tasks.pin.checkedOff") : t("tasks.pin.notCheckedOff")}
+                            {check.done && !hideLabor && check.completedAt
+                              ? ` · ${formatDashboardTime(check.completedAt)}`
+                              : ""}
+                          </Typography>
+                        ))
+                      ) : (
+                        <Stack direction="row" spacing={0.5} alignItems="center">
+                          <ChecklistBadge status={item.display_status || item.status} />
+                          {item.completed_by_name ? (
+                            <Typography variant="caption" color="text.secondary">
+                              {item.completed_by_name}
+                              {!hideLabor && item.completed_at
+                                ? ` · ${formatDashboardTime(item.completed_at)}`
+                                : ""}
+                            </Typography>
+                          ) : null}
+                        </Stack>
+                      )}
                     </Stack>
                   </Stack>
                 ))}

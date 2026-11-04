@@ -2077,11 +2077,24 @@ def _group_shared_assignments(
                             shared_items = list_shared_session_items(
                                 cursor, int(organization_id), session_id
                             )
+                            from backend.cleaning_task_shared_execution import load_employee_checks
+
+                            check_map = load_employee_checks(
+                                cursor,
+                                int(organization_id),
+                                [int(it.get("id") or 0) for it in shared_items],
+                            )
+                            for it in shared_items:
+                                it["employee_checks"] = check_map.get(int(it.get("id") or 0)) or []
                             name_ids = {
                                 int(it["completed_by_user_id"])
                                 for it in shared_items
                                 if it.get("completed_by_user_id") is not None
                             }
+                            for rows in check_map.values():
+                                name_ids.update(
+                                    int(row.get("user_id") or 0) for row in rows if row.get("user_id")
+                                )
                             item_names = _employee_names(cursor, int(organization_id), sorted(name_ids))
                             shared_checklist_cache[session_id] = apply_shared_item_verification(
                                 [
@@ -2390,7 +2403,15 @@ def shared_required_checklist_progress(
     Participation finish is independent; required checklist gates assignment Completed.
     """
     items = [item for item in (shared_checklist or []) if isinstance(item, Mapping)]
-    required = [item for item in items if item.get("required", True)]
+    required = []
+    for item in items:
+        if not item.get("required", True):
+            continue
+        checks = [check for check in (item.get("employee_checks") or []) if isinstance(check, Mapping)]
+        if checks:
+            required.extend(checks)
+        else:
+            required.append(item)
     if not required:
         return True, None, 0, 0
     done = [

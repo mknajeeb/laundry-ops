@@ -26,6 +26,17 @@ export function visibleSectionLabel(label, sectionCount = 1) {
   return raw;
 }
 
+const CHECK_DONE = new Set(["completed", "approved", "verified"]);
+
+export function employeeCheckSummary(checks) {
+  return (Array.isArray(checks) ? checks : []).map((check) => ({
+    userId: Number(check?.user_id),
+    name: check?.employee_name || "",
+    done: CHECK_DONE.has(String(check?.status || "").toLowerCase()),
+    completedAt: check?.completed_at || null,
+  }));
+}
+
 export function isMyChecklistItem(item, userId) {
   const mode = String(item?.responsibility_mode || "team");
   const ids = item?.responsibility_user_ids || [];

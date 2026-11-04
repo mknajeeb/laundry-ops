@@ -43,6 +43,7 @@ from backend.ta_helpers import invalidate_table_schema, remember_column, table_e
 
 SESSIONS_TABLE = "cleaning_task_shared_sessions"
 SESSION_ITEMS_TABLE = "cleaning_task_shared_session_items"
+CHECKS_TABLE = "cleaning_task_shared_item_checks"
 
 SESSION_OPEN = "open"
 SESSION_CHECKLIST_COMPLETE = "checklist_complete"
@@ -96,6 +97,25 @@ def ensure_shared_activity_schema(cursor) -> None:
             """
         )
         invalidate_table_schema(SESSION_ITEMS_TABLE)
+    if not table_exists(cursor, CHECKS_TABLE):
+        cursor.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {CHECKS_TABLE} (
+              id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+              organization_id INT NOT NULL,
+              session_item_id BIGINT NOT NULL,
+              user_id INT NOT NULL,
+              status VARCHAR(32) NOT NULL,
+              completed_at DATETIME NULL,
+              completion_input_json TEXT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+              UNIQUE KEY uq_ctsic (session_item_id, user_id),
+              INDEX idx_ctsic_org_item (organization_id, session_item_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        invalidate_table_schema(CHECKS_TABLE)
     if table_exists(cursor, TABLE) and not table_has_column(cursor, TABLE, "shared_session_id"):
         cursor.execute(f"ALTER TABLE {TABLE} ADD COLUMN shared_session_id BIGINT NULL")
         remember_column(TABLE, "shared_session_id")
@@ -139,6 +159,143 @@ def list_shared_session_items(cursor, organization_id: int, session_id: int) -> 
     return [r for r in (cursor.fetchall() or []) if isinstance(r, dict)]
 
 
+def _assigned_user_ids(user_ids: Sequence[int] | None) -> list[int]:
+    out: list[int] = []
+    for raw in user_ids or []:
+        try:
+            uid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if uid > 0 and uid not in out:
+            out.append(uid)
+    return out
+
+
+def load_employee_checks(
+    cursor,
+    organization_id: int,
+    item_ids: Sequence[int],
+) -> dict[int, list[dict[str, Any]]]:
+    """Per-employee check-offs for shared checklist items. Empty for older sessions."""
+    ids = [int(item_id) for item_id in item_ids or [] if int(item_id or 0) > 0]
+    if not ids:
+        return {}
+    ensure_shared_activity_schema(cursor)
+    grouped: dict[int, list[dict[str, Any]]] = {item_id: [] for item_id in ids}
+    for item_id in ids:
+        cursor.execute(
+            f"""
+            SELECT * FROM {CHECKS_TABLE}
+            WHERE organization_id=%s AND session_item_id=%s
+            ORDER BY user_id ASC, id ASC
+            """,
+            (int(organization_id), int(item_id)),
+        )
+        grouped[int(item_id)] = [row for row in (cursor.fetchall() or []) if isinstance(row, dict)]
+    return grouped
+
+
+def serialize_employee_checks(
+    checks: Sequence[Mapping[str, Any]],
+    names: Mapping[int, str] | None = None,
+) -> list[dict[str, Any]]:
+    out = []
+    for row in checks or []:
+        uid = int(row.get("user_id") or 0)
+        if not uid:
+            continue
+        out.append(
+            {
+                "user_id": uid,
+                "employee_name": (names or {}).get(uid) or f"User #{uid}",
+                "status": str(row.get("status") or ITEM_PENDING),
+                "completed_at": str(row.get("completed_at") or "")[:19] or None,
+            }
+        )
+    return out
+
+
+def open_required_codes_for_user(
+    items: Sequence[Mapping[str, Any]],
+    checks_by_item: Mapping[int, Sequence[Mapping[str, Any]]],
+    user_id: int,
+) -> list[str]:
+    """Required items this employee still has to check off.
+
+    When a session has per-employee checks, a partner's open item does not count.
+    Older sessions have no check rows, so the shared item status still applies.
+    Completed item rows are not rewritten.
+    """
+    uid = int(user_id)
+    uses_personal = any(checks_by_item.get(int(item.get("id") or 0)) for item in items or [])
+    missing: list[str] = []
+    for item in items or []:
+        if not bool(item.get("required", True)):
+            continue
+        code = str(item.get("task_code") or "")
+        rows = list(checks_by_item.get(int(item.get("id") or 0)) or [])
+        if uses_personal:
+            if not rows:
+                continue
+            mine = next((row for row in rows if int(row.get("user_id") or 0) == uid), None)
+            if mine is None or str(mine.get("status") or "") != ITEM_COMPLETED:
+                missing.append(code)
+            continue
+        if str(item.get("status") or "") != ITEM_COMPLETED:
+            missing.append(code)
+    return missing
+
+
+def _insert_check(cursor, organization_id: int, session_item_id: int, user_id: int) -> None:
+    cursor.execute(
+        f"""
+        INSERT INTO {CHECKS_TABLE}
+          (organization_id, session_item_id, user_id, status)
+        VALUES (%s,%s,%s,%s)
+        """,
+        (int(organization_id), int(session_item_id), int(user_id), ITEM_PENDING),
+    )
+
+
+def _seed_checks(cursor, organization_id: int, items: Sequence[Mapping[str, Any]], user_ids: Sequence[int]) -> None:
+    assigned = _assigned_user_ids(user_ids)
+    if len(assigned) < 2:
+        return
+    for item in items or []:
+        item_id = int(item.get("id") or 0)
+        if not item_id or str(item.get("status") or ITEM_PENDING) == ITEM_COMPLETED:
+            continue
+        for uid in assigned:
+            _insert_check(cursor, organization_id, item_id, uid)
+
+
+def _extend_personal_checks(
+    cursor,
+    organization_id: int,
+    session_id: int,
+    user_ids: Sequence[int],
+) -> None:
+    """Add a missing employee to a session that already tracks personal check-offs.
+
+    A session with no check rows stays collaborative. Completed items are left alone.
+    """
+    assigned = _assigned_user_ids(user_ids)
+    if len(assigned) < 2:
+        return
+    items = list_shared_session_items(cursor, organization_id, int(session_id))
+    existing = load_employee_checks(cursor, organization_id, [int(item.get("id") or 0) for item in items])
+    if not any(existing.values()):
+        return
+    for item in items:
+        if str(item.get("status") or "") == ITEM_COMPLETED:
+            continue
+        item_id = int(item.get("id") or 0)
+        have = {int(row.get("user_id") or 0) for row in existing.get(item_id) or []}
+        for uid in assigned:
+            if uid not in have:
+                _insert_check(cursor, organization_id, item_id, uid)
+
+
 def ensure_shared_session(
     cursor,
     *,
@@ -147,6 +304,7 @@ def ensure_shared_session(
     business_date,
     role: str,
     group_items: Sequence[Mapping[str, Any]],
+    assigned_user_ids: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     """Get or create the day's shared checklist for an assignment group."""
     ensure_shared_activity_schema(cursor)
@@ -163,6 +321,7 @@ def ensure_shared_session(
     )
     existing = cursor.fetchone()
     if isinstance(existing, dict):
+        _extend_personal_checks(cursor, oid, int(existing["id"]), assigned_user_ids or [])
         return existing
     cursor.execute(
         f"""
@@ -249,6 +408,8 @@ def ensure_shared_session(
                     ITEM_PENDING,
                 ),
             )
+    created_items = list_shared_session_items(cursor, oid, session_id)
+    _seed_checks(cursor, oid, created_items, assigned_user_ids or [])
     return get_shared_session(cursor, oid, session_id) or {
         "id": session_id,
         "organization_id": oid,
@@ -324,6 +485,7 @@ def serialize_shared_item(
         "verification_required": bool(info.get("verification_required", False)),
         "verification_method": info.get("verification_method"),
         "timer_enabled": bool(info.get("timer_enabled", True)),
+        "employee_checks": serialize_employee_checks(row.get("employee_checks") or [], names),
     }
 
 
@@ -371,6 +533,9 @@ def enrich_shared_group_activity(
         return activity
     catalog = _role_catalog(cursor, oid)
     items = list_shared_session_items(cursor, oid, int(session_id))
+    checks_by_item = load_employee_checks(cursor, oid, [int(it.get("id") or 0) for it in items])
+    for it in items:
+        it["employee_checks"] = checks_by_item.get(int(it.get("id") or 0)) or []
     from backend.task_activity_item_responsibility import parse_user_ids
 
     name_ids = {
@@ -378,6 +543,8 @@ def enrich_shared_group_activity(
         for it in items
         if it.get("completed_by_user_id") is not None
     }
+    for rows in checks_by_item.values():
+        name_ids.update(int(row.get("user_id") or 0) for row in rows if row.get("user_id"))
     for it in items:
         snap = it.get("responsibility_snapshot_json")
         parsed = None
@@ -395,12 +562,42 @@ def enrich_shared_group_activity(
     for it in items:
         meta = _task_meta_for_role(cursor, oid, str(it.get("task_code") or ""))
         serialized.append(serialize_shared_item(it, catalog=catalog, meta=meta, names=names))
-    required = [x for x in serialized if x["required"]]
+    viewer_id = int(activity.get("user_id") or 0)
+    viewer_items = []
+    for source, item in zip(items, serialized):
+        personal = list(source.get("employee_checks") or [])
+        mine = next((row for row in personal if int(row.get("user_id") or 0) == viewer_id), None)
+        if not personal or mine is None:
+            viewer_items.append(item)
+            continue
+        viewed = dict(item)
+        viewed["status"] = str(mine.get("status") or ITEM_PENDING)
+        viewed["completed_at"] = str(mine.get("completed_at") or "")[:19] or None
+        if viewed["status"] == ITEM_COMPLETED:
+            viewed["completed_by_user_id"] = viewer_id
+            viewed["completed_by_name"] = names.get(viewer_id) or f"User #{viewer_id}"
+        else:
+            viewed["completed_by_user_id"] = None
+            viewed["completed_by_name"] = None
+        viewer_items.append(viewed)
+    required = [x for x in viewer_items if x["required"]]
     done_req = [x for x in required if x["status"] == ITEM_COMPLETED]
+    my_checklist_complete = len(required) > 0 and len(done_req) == len(required)
+    group_items_done = [
+        it
+        for it in items
+        if bool(it.get("required", True)) and str(it.get("status") or "") == ITEM_COMPLETED
+    ]
+    group_required = [it for it in items if bool(it.get("required", True))]
     checklist_complete = str(session.get("status") or "") == SESSION_CHECKLIST_COMPLETE or (
-        len(required) > 0 and len(done_req) == len(required)
+        len(group_required) > 0 and len(group_items_done) == len(group_required)
     )
     group_cfg = get_activity_group(cursor, oid, role_code=str(activity.get("role") or ""))
+    can_finish = _shared_finish_allowed(
+        group_cfg,
+        required,
+        my_checklist_complete if any(checks_by_item.values()) else checklist_complete,
+    )
     out = dict(activity)
     out["activity_kind"] = KIND_GROUP
     out["is_activity_group"] = True
@@ -414,12 +611,12 @@ def enrich_shared_group_activity(
         "name": (group_cfg or {}).get("name") or out.get("role_label"),
         "category_code": (group_cfg or {}).get("category_code") or out.get("category_code"),
         "execution_mode": EXECUTION_SHARED,
-        "items": serialized,
+        "items": viewer_items,
         "required_count": len(required),
         "completed_required_count": len(done_req),
-        "can_complete_group": _shared_finish_allowed(group_cfg, required, checklist_complete),
-        "can_finish_participation": _shared_finish_allowed(group_cfg, required, checklist_complete),
-        "checklist_complete": checklist_complete,
+        "can_complete_group": can_finish,
+        "can_finish_participation": can_finish,
+        "checklist_complete": my_checklist_complete if any(checks_by_item.values()) else checklist_complete,
     }
     from backend.cleaning_task_activity import partners_for_activity
 
@@ -618,23 +815,52 @@ def checkoff_shared_item(
         raise CleaningTaskError(exc.message, status=exc.status) from exc
 
     at = eastern_now_naive()
-    cursor.execute(
-        f"""
-        UPDATE {SESSION_ITEMS_TABLE}
-        SET status=%s, completed_at=%s, completed_by_user_id=%s, completion_input_json=%s
-        WHERE id=%s AND status=%s
-        """,
-        (
-            ITEM_COMPLETED,
-            at,
-            uid,
-            json.dumps(validated, default=str),
-            int(item["id"]),
-            ITEM_PENDING,
-        ),
-    )
-    if int(getattr(cursor, "rowcount", 0) or 0) == 0:
-        raise CleaningTaskError("That task was already checked off.", status=409)
+    personal = load_employee_checks(cursor, oid, [int(item["id"])]).get(int(item["id"])) or []
+    payload_json = json.dumps(validated, default=str)
+    if personal:
+        mine = next((row for row in personal if int(row.get("user_id") or 0) == uid), None)
+        if mine is None:
+            raise CleaningTaskError("That task is not on your checklist.", status=404)
+        if str(mine.get("status") or "") == ITEM_COMPLETED:
+            raise CleaningTaskError("That task is already checked off.", status=409)
+        cursor.execute(
+            f"""
+            UPDATE {CHECKS_TABLE}
+            SET status=%s, completed_at=%s, completion_input_json=%s
+            WHERE id=%s AND user_id=%s AND status=%s
+            """,
+            (ITEM_COMPLETED, at, payload_json, int(mine["id"]), uid, ITEM_PENDING),
+        )
+        if int(getattr(cursor, "rowcount", 0) or 0) == 0:
+            raise CleaningTaskError("That task was already checked off.", status=409)
+        refreshed = load_employee_checks(cursor, oid, [int(item["id"])]).get(int(item["id"])) or []
+        if refreshed and all(str(row.get("status") or "") == ITEM_COMPLETED for row in refreshed):
+            cursor.execute(
+                f"""
+                UPDATE {SESSION_ITEMS_TABLE}
+                SET status=%s, completed_at=%s, completed_by_user_id=%s, completion_input_json=%s
+                WHERE id=%s AND status=%s
+                """,
+                (ITEM_COMPLETED, at, uid, payload_json, int(item["id"]), ITEM_PENDING),
+            )
+    else:
+        cursor.execute(
+            f"""
+            UPDATE {SESSION_ITEMS_TABLE}
+            SET status=%s, completed_at=%s, completed_by_user_id=%s, completion_input_json=%s
+            WHERE id=%s AND status=%s
+            """,
+            (
+                ITEM_COMPLETED,
+                at,
+                uid,
+                payload_json,
+                int(item["id"]),
+                ITEM_PENDING,
+            ),
+        )
+        if int(getattr(cursor, "rowcount", 0) or 0) == 0:
+            raise CleaningTaskError("That task was already checked off.", status=409)
 
     _record_event(
         cursor,
@@ -691,6 +917,7 @@ def finish_shared_participation(
 
     group = get_activity_group(cursor, oid, role_code=str(row.get("role") or ""))
     session_items = list_shared_session_items(cursor, oid, int(session_id))
+    checks_by_item = load_employee_checks(cursor, oid, [int(it.get("id") or 0) for it in session_items])
     has_required = group_has_required_checklist_items(
         (group or {}).get("items")
     ) or group_has_required_checklist_items(session_items)
@@ -699,11 +926,7 @@ def finish_shared_participation(
         shared=True,
         has_required_items=has_required,
     ):
-        missing = [
-            str(it.get("task_code") or "")
-            for it in session_items
-            if bool(it.get("required", True)) and str(it.get("status") or "") != ITEM_COMPLETED
-        ]
+        missing = open_required_codes_for_user(session_items, checks_by_item, uid)
         if missing:
             raise CleaningTaskError(
                 f"Check off all required tasks before finishing ({len(missing)} remaining).",

@@ -15,6 +15,23 @@ from backend.cleaning_task_activity import (
 )
 
 
+def test_each_employee_check_counts_until_everyone_is_done():
+    items = [
+        {
+            "required": True,
+            "status": "pending",
+            "employee_checks": [
+                {"status": "completed"},
+                {"status": "pending"},
+            ],
+        }
+    ]
+    complete, status, done, req = shared_required_checklist_progress(items)
+    assert complete is False
+    assert status == COMPLETION_IN_PROGRESS
+    assert done == 1 and req == 2
+
+
 def test_required_checklist_progress():
     items = [
         {"required": True, "status": "pending"},

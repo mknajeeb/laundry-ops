@@ -289,6 +289,7 @@ def start_group_activity(
             business_date=day,
             role=role,
             group_items=group.get("items") or [],
+            assigned_user_ids=target.get("user_ids") or [],
         )
         shared_session_id = int(session["id"])
 

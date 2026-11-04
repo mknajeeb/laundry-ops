@@ -7,13 +7,14 @@ import { useI18n } from "../../i18n/I18nContext";
 import { localizedConfigured, localizedInstruction } from "./taskEmployeeI18n";
 import {
   groupChecklistSections,
+  employeeCheckSummary,
   responsibilityLabel,
   splitSharedChecklist,
   TEAM_RESPONSIBILITY_LABEL,
   visibleSectionLabel,
 } from "./sharedChecklistOwnership";
 
-function SectionBlock({ title, done, total, items, busy, editingCode, inputValues, inputRemarks, onChangeValues, onChangeRemarks, onCheckoff, startOpen }) {
+function SectionBlock({ title, done, total, items, userId, busy, editingCode, inputValues, inputRemarks, onChangeValues, onChangeRemarks, onCheckoff, startOpen }) {
   const [open, setOpen] = useState(startOpen);
   return (
     <Box>
@@ -33,6 +34,7 @@ function SectionBlock({ title, done, total, items, busy, editingCode, inputValue
             <ItemRow
               key={item.task_code || item.id}
               item={item}
+              userId={userId}
               busy={busy}
               editing={editingCode === item.task_code}
               inputValues={inputValues}
@@ -48,7 +50,7 @@ function SectionBlock({ title, done, total, items, busy, editingCode, inputValue
   );
 }
 
-function ItemRow({ item, busy, editing, inputValues, inputRemarks, onChangeValues, onChangeRemarks, onCheckoff }) {
+function ItemRow({ item, userId, busy, editing, inputValues, inputRemarks, onChangeValues, onChangeRemarks, onCheckoff }) {
   const { t, locale } = useI18n();
   const [info, setInfo] = useState(false);
   const done = ["completed", "approved", "verified"].includes(String(item.status || "").toLowerCase());
@@ -86,6 +88,16 @@ function ItemRow({ item, busy, editing, inputValues, inputRemarks, onChangeValue
                 : ` · ${t("tasks.pin.checkedOff")}`
               : ""}
           </Typography>
+          {employeeCheckSummary(item.employee_checks)
+            .filter((check) => check.userId !== Number(userId))
+            .map((check) => (
+              <Typography key={check.userId} variant="caption" color="text.secondary" display="block">
+                {check.name}
+                {" · "}
+                {check.done ? t("tasks.pin.checkedOff") : t("tasks.pin.notCheckedOff")}
+                {check.done && check.completedAt ? ` · ${String(check.completedAt).slice(11, 16)}` : ""}
+              </Typography>
+            ))}
         </Box>
         {instructions ? (
           <Tooltip title={instructions} enterTouchDelay={0} leaveTouchDelay={4000} arrow>
@@ -153,6 +165,7 @@ export default function SharedActivityChecklist({
             <ItemRow
               key={item.task_code || item.id}
               item={item}
+              userId={userId}
               busy={busy}
               editing={editingCode === item.task_code}
               inputValues={inputValues}
@@ -176,6 +189,7 @@ export default function SharedActivityChecklist({
           done={section.done}
           total={section.total}
           items={section.items}
+          userId={userId}
           busy={busy}
           editingCode={editingCode}
           inputValues={inputValues}

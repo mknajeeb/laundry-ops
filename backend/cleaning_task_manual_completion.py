@@ -295,10 +295,7 @@ def record_manual_completion(
     attributed_items: list[dict[str, Any]] = []
     if is_shared:
         # Manual completion must not bypass required shared checklist items.
-        from backend.cleaning_task_shared_execution import (
-            ITEM_COMPLETED,
-            list_shared_session_items,
-        )
+        from backend.cleaning_task_shared_execution import list_shared_session_items
         from backend.task_activity_groups import get_activity_group
 
         if not (shared_item_completions or group_item_codes):
@@ -322,13 +319,16 @@ def record_manual_completion(
         refreshed = get_activity(cursor, oid, activity_id) or row or {}
         session_id = refreshed.get("shared_session_id")
         if session_id is not None:
+            from backend.cleaning_task_shared_execution import (
+                load_employee_checks,
+                open_required_codes_for_user,
+            )
+
             session_items = list_shared_session_items(cursor, oid, int(session_id))
-            missing = [
-                str(it.get("task_code"))
-                for it in session_items
-                if bool(it.get("required", True))
-                and str(it.get("status") or "") != ITEM_COMPLETED
-            ]
+            checks_by_item = load_employee_checks(
+                cursor, oid, [int(it.get("id") or 0) for it in session_items]
+            )
+            missing = open_required_codes_for_user(session_items, checks_by_item, employee)
             if missing:
                 raise CleaningTaskError(
                     f"Required shared checklist items still open ({len(missing)} remaining).",
@@ -608,9 +608,20 @@ def _apply_shared_item_attributions(
         if session_id is not None:
             cursor.execute(
                 """
+                UPDATE cleaning_task_shared_item_checks c
+                INNER JOIN cleaning_task_shared_session_items i ON i.id = c.session_item_id
+                SET c.completed_at=%s
+                WHERE c.organization_id=%s AND i.shared_session_id=%s AND i.task_code=%s
+                  AND c.user_id=%s AND c.status='completed'
+                """,
+                (completed_at, oid, int(session_id), code, by_uid),
+            )
+            cursor.execute(
+                """
                 UPDATE cleaning_task_shared_session_items
                 SET completed_at=%s, completed_by_user_id=%s
                 WHERE organization_id=%s AND shared_session_id=%s AND task_code=%s
+                  AND status='completed'
                 """,
                 (completed_at, by_uid, oid, int(session_id), code),
             )

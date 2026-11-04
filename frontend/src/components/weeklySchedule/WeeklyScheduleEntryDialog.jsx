@@ -946,7 +946,7 @@ export default function WeeklyScheduleEntryDialog({
               ) : null}
               {respIsActivityGroup && userIds.length < 2 ? (
                 <Typography variant="caption" color="text.secondary">
-                  Select two or more employees to use Shared Execution — one checklist for the group, with a separate timer for each person.
+                  Select two or more employees for Shared Execution. Each person checks off every item and keeps a separate timer.
                 </Typography>
               ) : null}
               <FormControl size="small" fullWidth>
@@ -981,7 +981,7 @@ export default function WeeklyScheduleEntryDialog({
                     onChange={(e) => setExecutionMode(e.target.value)}
                   >
                     <MenuItem value="individual">Individual — each person completes their own checklist</MenuItem>
-                    <MenuItem value="shared">Shared Execution — one checklist, separate timers</MenuItem>
+                    <MenuItem value="shared">Shared Execution — each person checks every item, separate timers</MenuItem>
                   </Select>
                 </FormControl>
               ) : null}

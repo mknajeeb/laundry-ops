@@ -1,4 +1,5 @@
 import {
+  employeeCheckSummary,
   groupChecklistSections,
   isMyChecklistItem,
   responsibilityLabel,
@@ -21,6 +22,19 @@ const theirs = {
   responsibility_user_ids: [9],
   status: "pending",
 };
+
+describe("employeeCheckSummary", () => {
+  it("keeps each assigned employee's check-off separate", () => {
+    const lines = employeeCheckSummary([
+      { user_id: 23, employee_name: "Tarannum", status: "completed", completed_at: "2026-11-04 09:15:00" },
+      { user_id: 36, employee_name: "Amna", status: "pending" },
+    ]);
+    expect(lines).toEqual([
+      { userId: 23, name: "Tarannum", done: true, completedAt: "2026-11-04 09:15:00" },
+      { userId: 36, name: "Amna", done: false, completedAt: null },
+    ]);
+  });
+});
 
 describe("splitSharedChecklist", () => {
   it("puts Anyone on Team and my named items first, once each", () => {

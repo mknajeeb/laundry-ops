@@ -40,6 +40,7 @@ class _Mem:
     def __init__(self):
         self.sessions = []
         self.items = []
+        self.checks = []
         self.activities = []
         self.events = []
         self.lastrowid = 0
@@ -101,6 +102,41 @@ class _Mem:
         if "from cleaning_task_shared_sessions" in sql_n and "and id=%s" in sql_n:
             sid = params[1]
             self._last = [s for s in self.sessions if s["id"] == sid][:1]
+            return
+        if "insert into cleaning_task_shared_item_checks" in sql_n:
+            item_id, user_id = params[1], params[2]
+            if any(c["session_item_id"] == item_id and c["user_id"] == user_id for c in self.checks):
+                self._last = None
+                return
+            self.lastrowid += 1
+            self.checks.append(
+                {
+                    "id": self.lastrowid,
+                    "organization_id": params[0],
+                    "session_item_id": item_id,
+                    "user_id": user_id,
+                    "status": params[3],
+                    "completed_at": None,
+                    "completion_input_json": None,
+                }
+            )
+            self._last = None
+            return
+        if "from cleaning_task_shared_item_checks" in sql_n:
+            item_id = params[1]
+            self._last = [c for c in self.checks if c["session_item_id"] == item_id]
+            return
+        if "update cleaning_task_shared_item_checks" in sql_n and "status=%s" in sql_n:
+            check_id, user_id, expect = params[3], params[4], params[5]
+            self.rowcount = 0
+            for check in self.checks:
+                if check["id"] == check_id and check["user_id"] == user_id and check["status"] == expect:
+                    check["status"] = params[0]
+                    check["completed_at"] = params[1]
+                    check["completion_input_json"] = params[2]
+                    self.rowcount = 1
+                    break
+            self._last = None
             return
         if "from cleaning_task_shared_session_items" in sql_n and "and task_code" in sql_n:
             sid, code = params[1], params[2]
@@ -257,6 +293,119 @@ def test_shared_checkoff_is_visible_and_blocks_duplicate():
                     completion_input={},
                 )
             assert dup.value.status == 409
+
+
+def test_each_assigned_employee_checks_off_the_same_items():
+    from backend.cleaning_task_shared_execution import (
+        checkoff_shared_item,
+        ensure_shared_session,
+        list_shared_session_items,
+        open_required_codes_for_user,
+    )
+    from backend.cleaning_task_activity import CleaningTaskError
+
+    mem = _Mem()
+    session = ensure_shared_session(
+        mem,
+        organization_id=3,
+        assignment_group_id="wash-floor",
+        business_date=date(2026, 11, 4),
+        role="agroup_washer_and_floor_cleaning",
+        group_items=[
+            {"task_code": "washer_cleaning", "display_order": 0, "required": True},
+            {"task_code": "floor_cleaning", "display_order": 1, "required": True},
+        ],
+        assigned_user_ids=[23, 36],
+    )
+    items = list_shared_session_items(mem, 3, session["id"])
+    assert [item["task_code"] for item in items] == ["washer_cleaning", "floor_cleaning"]
+    assert len(mem.checks) == 4
+
+    parent = {
+        "id": 50,
+        "user_id": 23,
+        "status": "in_progress",
+        "shared_session_id": session["id"],
+        "assignment_group_id": "wash-floor",
+        "responsibility_id": 1,
+        "business_date": date(2026, 11, 4),
+        "role": "agroup_washer_and_floor_cleaning",
+        "timing_mode": "anytime",
+        "planned_start_time": None,
+        "shift_session_id": None,
+    }
+    patches = dict(
+        get_activity=mock.patch(
+            "backend.cleaning_task_shared_execution.get_activity", return_value=dict(parent)
+        ),
+        meta=mock.patch(
+            "backend.cleaning_task_shared_execution._task_meta_for_role",
+            return_value={
+                "completion_type": "simple",
+                "input_schema": [],
+                "verification_required": True,
+                "verification_method": "supervisor",
+                "name": "Washer",
+            },
+        ),
+        validate=mock.patch(
+            "backend.cleaning_task_shared_execution.validate_completion_input", return_value={}
+        ),
+        photos=mock.patch(
+            "backend.task_completion_photos.persist_completion_photos", side_effect=lambda c, o, v: v
+        ),
+        event=mock.patch("backend.cleaning_task_shared_execution._record_event"),
+        serialize=mock.patch(
+            "backend.cleaning_task_shared_execution.serialize_activity",
+            return_value={**parent, "id": 50},
+        ),
+        catalog=mock.patch("backend.cleaning_task_shared_execution._role_catalog", return_value={}),
+        enrich=mock.patch(
+            "backend.cleaning_task_shared_execution.enrich_shared_group_activity",
+            side_effect=lambda c, o, a: a,
+        ),
+        spawn=mock.patch(
+            "backend.cleaning_task_shared_execution._spawn_shared_item_verification",
+            side_effect=lambda cursor, **kwargs: spawned.append(kwargs["item"]["task_code"]) or 1,
+        ),
+    )
+    spawned = []
+
+    def checkoff(user_id, activity_id, code):
+        row = {**parent, "id": activity_id, "user_id": user_id}
+        with mock.patch("backend.cleaning_task_shared_execution.get_activity", return_value=row):
+            return checkoff_shared_item(
+                SimpleNamespace(),
+                mem,
+                organization_id=3,
+                user_id=user_id,
+                activity_id=activity_id,
+                task_code=code,
+                completion_input={},
+            )
+
+    with patches["meta"], patches["validate"], patches["photos"], patches["event"], patches["serialize"], patches["catalog"], patches["enrich"], patches["spawn"]:
+        checkoff(23, 50, "washer_cleaning")
+        washer = next(item for item in list_shared_session_items(mem, 3, session["id"]) if item["task_code"] == "washer_cleaning")
+        assert washer["status"] == "pending"
+        checks = {(c["session_item_id"], c["user_id"]): c["status"] for c in mem.checks}
+        assert checks[(washer["id"], 23)] == "completed"
+        assert checks[(washer["id"], 36)] == "pending"
+        with pytest.raises(CleaningTaskError) as again:
+            checkoff(23, 50, "washer_cleaning")
+        assert again.value.status == 409
+        checkoff(36, 51, "washer_cleaning")
+        washer = next(item for item in list_shared_session_items(mem, 3, session["id"]) if item["task_code"] == "washer_cleaning")
+        assert washer["status"] == "completed"
+        assert spawned == []
+        by_item = {}
+        for check in mem.checks:
+            by_item.setdefault(check["session_item_id"], []).append(check)
+        assert open_required_codes_for_user(items, by_item, 23) == ["floor_cleaning"]
+        assert "washer_cleaning" not in open_required_codes_for_user(items, by_item, 23)
+        checkoff(23, 50, "floor_cleaning")
+        checkoff(36, 51, "floor_cleaning")
+        assert spawned == ["washer_cleaning", "floor_cleaning"]
 
 
 def test_rinse_strip_keeps_completed_by_without_durations():
