@@ -37,6 +37,7 @@ import {
   validateBreakSlots,
 } from "./weeklyScheduleRoles";
 import { ASSIGNMENT_KIND } from "./weeklyScheduleTimeBlocks";
+import { reconcileChecklistAssignment, rosterReleaseNote } from "./checklistAssignment";
 import WeeklyScheduleBreakFields from "./WeeklyScheduleBreakFields";
 import {
   TASK_TIMING,
@@ -182,6 +183,8 @@ export default function WeeklyScheduleEntryDialog({
       setTimingMode(responsibility.timing_mode || TASK_TIMING.ANYTIME);
       setTaskStart(responsibility.start_time || "08:00");
       setExecutionMode(responsibility.execution_mode === "shared" ? "shared" : "individual");
+      setSpecificEmployeeOpen(false);
+      setRosterNote("");
       return;
     }
     if (entry) {
@@ -254,10 +257,28 @@ export default function WeeklyScheduleEntryDialog({
   const isShift = kind === ASSIGNMENT_KIND.SHIFT;
   const respIsActivityGroup = String(respRole || "").startsWith("agroup_");
   const [activityItems, setActivityItems] = useState([]);
+  const [specificEmployeeOpen, setSpecificEmployeeOpen] = useState(false);
+  const [rosterNote, setRosterNote] = useState("");
   const [formError, setFormError] = useState("");
   useEffect(() => {
+    const roster = taskMemberIds(responsibility || {});
+    const nameFor = (id) => scheduleEmployeeName(employeesById, id);
+    const assignItems = (rows) => {
+      const mapped = rows.map((item) => ({
+        group_item_id: item.group_item_id ?? item.id,
+        task_code: item.task_code,
+        task_name: item.task_name || item.task_code,
+        responsibility_mode: item.responsibility_mode === "named" ? "named" : "team",
+        user_ids: (item.responsibility_user_ids || item.user_ids || []).map(Number),
+        dirty: false,
+      }));
+      if (!roster.length) return mapped;
+      const { items, released } = reconcileChecklistAssignment(mapped, roster);
+      if (released.length) setRosterNote(rosterReleaseNote(released, nameFor));
+      return items;
+    };
     if (Array.isArray(previewActivityItems)) {
-      setActivityItems(previewActivityItems);
+      setActivityItems(assignItems(previewActivityItems));
       return undefined;
     }
     if (!open || kind === ASSIGNMENT_KIND.SHIFT || !String(respRole || "").startsWith("agroup_")) {
@@ -266,16 +287,7 @@ export default function WeeklyScheduleEntryDialog({
     }
     const attached = responsibility?.checklist_items;
     if (Array.isArray(attached) && attached.length) {
-      setActivityItems(
-        attached.map((item) => ({
-          group_item_id: item.group_item_id,
-          task_code: item.task_code,
-          task_name: item.task_name || item.task_code,
-          responsibility_mode: item.responsibility_mode === "named" ? "named" : "team",
-          user_ids: (item.responsibility_user_ids || []).map(Number),
-          dirty: false,
-        })),
-      );
+      setActivityItems(assignItems(attached));
       return undefined;
     }
     let cancelled = false;
@@ -284,16 +296,7 @@ export default function WeeklyScheduleEntryDialog({
         const groups = res.data?.activity_groups || [];
         const group = groups.find((row) => row.role_code === respRole);
         if (cancelled) return;
-        setActivityItems(
-          (group?.items || []).map((item) => ({
-            group_item_id: item.id,
-            task_code: item.task_code,
-            task_name: item.task_name || item.task_code,
-            responsibility_mode: item.responsibility_mode === "named" ? "named" : "team",
-            user_ids: (item.responsibility_user_ids || []).map(Number),
-            dirty: false,
-          }))
-        );
+        setActivityItems(assignItems(group?.items || []));
       })
       .catch(() => {
         if (!cancelled) setActivityItems([]);
@@ -436,19 +439,28 @@ export default function WeeklyScheduleEntryDialog({
     };
   };
 
+  const employeeName = (id) => {
+    const fromList = taskEmployeeOptions.find((employee) => Number(employee.user_id) === Number(id));
+    return fromList?.display_name || scheduleEmployeeName(employeesById, id);
+  };
+
+  const applyEmployeeRoster = (next) => {
+    const roster = (Array.isArray(next) ? next : [next]).map(Number).filter((id) => Number.isFinite(id));
+    const { items, released } = reconcileChecklistAssignment(activityItems, roster);
+    setUserIds(roster);
+    setActivityItems(items);
+    setRosterNote(rosterReleaseNote(released, employeeName));
+  };
+
   const handleSubmit = () => {
     if (!canSave) return;
     if (!isShift) {
       const rosterIds = userIds.map(Number);
-      const outsideRoster = (item) =>
-        item.responsibility_mode === "named" &&
-        (!(item.user_ids || []).length ||
-          (item.user_ids || []).some((id) => !rosterIds.includes(Number(id))));
-      const itemOverrides = activityItems
+      const { items: itemsForSave } = reconcileChecklistAssignment(activityItems, rosterIds);
+      const itemOverrides = itemsForSave
         .filter(
           (item) =>
             item.dirty ||
-            outsideRoster(item) ||
             (responsibilityConflicts || []).some((conflict) => conflict.task_code === item.task_code)
         )
         .map((item) => ({
@@ -462,7 +474,7 @@ export default function WeeklyScheduleEntryDialog({
         }));
       const unnamed = itemOverrides.filter((item) => item.responsibility_mode === "named" && !item.user_ids.length);
       if (unnamed.length) {
-        setFormError("Choose at least one employee for each named item, or leave it as any assigned employee.");
+        setFormError("Choose an assigned employee, or leave the item as any assigned employee.");
         return;
       }
       setFormError("");
@@ -844,16 +856,10 @@ export default function WeeklyScheduleEntryDialog({
                   multiple
                   label="Employees"
                   value={userIds}
-                  onChange={(e) => {
-                    const next = e.target.value;
-                    setUserIds((Array.isArray(next) ? next : [next]).map(Number));
-                  }}
+                  onChange={(e) => applyEmployeeRoster(e.target.value)}
                   renderValue={(selected) =>
                     (selected || [])
-                      .map((id) => {
-                        const fromList = taskEmployeeOptions.find((employee) => Number(employee.user_id) === Number(id));
-                        return fromList?.display_name || scheduleEmployeeName(employeesById, id);
-                      })
+                      .map((id) => employeeName(id))
                       .join(", ")
                   }
                 >
@@ -872,65 +878,70 @@ export default function WeeklyScheduleEntryDialog({
               </Typography>
               {respIsActivityGroup && activityItems.length ? (
                 <Stack spacing={1}>
-                  <Typography variant="body2" sx={{ fontWeight: 800 }}>
-                    Checklist responsibility for this date
+                  <Typography variant="body2" color="text.secondary">
+                    Checklist: any assigned employee. That is anyone selected above.
                   </Typography>
-                  {(responsibilityConflicts || []).length ? (
-                    <Alert severity="warning">
-                      Choose a new responsibility for the listed items. This date only. Completed check-offs stay as recorded.
+                  {rosterNote ? (
+                    <Alert severity="info">{rosterNote} Completed check-offs stay as recorded.</Alert>
+                  ) : null}
+                  {(responsibilityConflicts || []).length && !rosterNote ? (
+                    <Alert severity="info">
+                      A removed employee is no longer responsible. Open items use any assigned employee. Completed check-offs stay as recorded.
                     </Alert>
                   ) : null}
-                  {activityItems.map((item, index) => {
-                    const rosterIds = userIds.map(Number);
-                    const outsideRoster =
-                      item.responsibility_mode === "named" &&
-                      (!(item.user_ids || []).length ||
-                        (item.user_ids || []).some((id) => !rosterIds.includes(Number(id))));
-                    const conflict =
-                      outsideRoster ||
-                      (responsibilityConflicts || []).some((row) => row.task_code === item.task_code);
-                    return (
-                      <Stack key={item.task_code} spacing={0.5} sx={{ p: 1, border: "1px solid", borderColor: conflict ? "warning.main" : "divider", borderRadius: 1 }}>
-                        <Typography variant="body2" sx={{ fontWeight: 700 }}>{item.task_name}</Typography>
-                        <FormControl size="small" fullWidth>
-                          <InputLabel>Responsibility</InputLabel>
-                          <Select
-                            label="Responsibility"
-                            value={item.responsibility_mode === "named" ? "named" : "team"}
-                            onChange={(e) => {
-                              const next = [...activityItems];
-                              next[index] = { ...item, responsibility_mode: e.target.value, dirty: true, user_ids: e.target.value === "team" ? [] : item.user_ids };
-                              setActivityItems(next);
-                            }}
-                          >
-                            <MenuItem value="team">Any assigned employee</MenuItem>
-                            <MenuItem value="named">Named employees</MenuItem>
-                          </Select>
-                        </FormControl>
-                        {item.responsibility_mode === "named" ? (
-                          <FormControl size="small" fullWidth>
-                            <InputLabel>Employees</InputLabel>
-                            <Select
-                              multiple
-                              label="Employees"
-                              value={(item.user_ids || []).map(Number).filter((id) => userIds.map(Number).includes(id))}
-                              onChange={(e) => {
-                                const next = [...activityItems];
-                                next[index] = { ...item, user_ids: e.target.value.map(Number), dirty: true, responsibility_mode: "named" };
-                                setActivityItems(next);
-                              }}
-                            >
-                              {userIds.map((id) => (
-                                <MenuItem key={id} value={Number(id)}>
-                                  {scheduleEmployeeName(employeesById, id)}
-                                </MenuItem>
-                              ))}
-                            </Select>
-                          </FormControl>
-                        ) : null}
-                      </Stack>
-                    );
-                  })}
+                  {activityItems.some((item) => item.responsibility_mode !== "named") ? (
+                    <Button
+                      size="small"
+                      onClick={() => setSpecificEmployeeOpen((open) => !open)}
+                      sx={{ alignSelf: "flex-start", fontWeight: 700, px: 0 }}
+                    >
+                      {specificEmployeeOpen ? "Hide specific employee" : "Specific employee"}
+                    </Button>
+                  ) : null}
+                  {(specificEmployeeOpen || activityItems.some((item) => item.responsibility_mode === "named"))
+                    ? activityItems
+                        .filter((item) => specificEmployeeOpen || item.responsibility_mode === "named")
+                        .map((item) => {
+                          const index = activityItems.findIndex((row) => row.task_code === item.task_code);
+                          const selected =
+                            item.responsibility_mode === "named" && (item.user_ids || []).length
+                              ? Number(item.user_ids[0])
+                              : "team";
+                          return (
+                            <Stack key={item.task_code} spacing={0.5}>
+                              <Typography variant="body2" sx={{ fontWeight: 700 }}>{item.task_name}</Typography>
+                              {(item.user_ids || []).length > 1 ? (
+                                <Typography variant="caption" color="text.secondary">
+                                  {(item.user_ids || []).map((id) => employeeName(id)).join(", ")}
+                                </Typography>
+                              ) : null}
+                              <FormControl size="small" fullWidth>
+                                <InputLabel>Responsible employee</InputLabel>
+                                <Select
+                                  label="Responsible employee"
+                                  value={userIds.map(Number).includes(selected) || selected === "team" ? selected : "team"}
+                                  onChange={(e) => {
+                                    const value = e.target.value;
+                                    const next = [...activityItems];
+                                    next[index] =
+                                      value === "team"
+                                        ? { ...item, responsibility_mode: "team", user_ids: [], dirty: true }
+                                        : { ...item, responsibility_mode: "named", user_ids: [Number(value)], dirty: true };
+                                    setActivityItems(next);
+                                  }}
+                                >
+                                  <MenuItem value="team">Any assigned employee</MenuItem>
+                                  {userIds.map((id) => (
+                                    <MenuItem key={id} value={Number(id)}>
+                                      {employeeName(id)}
+                                    </MenuItem>
+                                  ))}
+                                </Select>
+                              </FormControl>
+                            </Stack>
+                          );
+                        })
+                    : null}
                 </Stack>
               ) : null}
               {respIsActivityGroup && userIds.length < 2 ? (

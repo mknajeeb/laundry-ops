@@ -247,6 +247,23 @@ def assert_named_employees_eligible(user_ids: Sequence[int], eligible: Sequence[
         )
 
 
+def responsibility_after_roster_change(
+    resolved: Mapping[str, Any],
+    eligible_user_ids: Sequence[int],
+) -> dict[str, Any]:
+    """Drop a named employee who is no longer assigned.
+
+    A specific person who remains on the roster stays responsible. If nobody
+    named is still assigned, the item returns to any assigned employee.
+    Completed snapshots are not passed here.
+    """
+    eligible = {int(uid) for uid in eligible_user_ids or []}
+    named = [int(uid) for uid in (resolved.get("responsibility_user_ids") or []) if int(uid) in eligible]
+    if str(resolved.get("responsibility_mode") or MODE_TEAM) != MODE_NAMED or not named:
+        return responsibility_payload(MODE_TEAM, [])
+    return responsibility_payload(MODE_NAMED, named)
+
+
 def resolve_responsibility(
     item: Mapping[str, Any],
     override: Mapping[str, Any] | None = None,
@@ -479,7 +496,13 @@ def apply_roster_responsibility(
     overrides: Sequence[Mapping[str, Any]] | None,
     group_items: Sequence[Mapping[str, Any]],
 ) -> None:
-    """Save date overrides, then block if a removed employee is still responsible for open work."""
+    """Save date overrides, then clear a named person who is no longer assigned.
+
+    Open items that only named a removed employee become any assigned employee
+    for this date. A named employee who is still assigned stays responsible.
+    Completed checklist rows are left out of the conflict list, so their
+    snapshots are not rewritten.
+    """
     indexed = {str(item.get("task_code") or ""): item for item in group_items}
     if overrides:
         save_date_overrides(
@@ -505,6 +528,40 @@ def apply_roster_responsibility(
         overrides_by_item_id=override_rows,
         eligible_user_ids=eligible_user_ids,
     )
+    if conflicts:
+        released = []
+        for conflict in conflicts:
+            cleared = responsibility_after_roster_change(conflict, eligible_user_ids)
+            released.append(
+                {
+                    "group_item_id": conflict["group_item_id"],
+                    "task_code": conflict["task_code"],
+                    "responsibility_mode": cleared["responsibility_mode"],
+                    "user_ids": cleared["responsibility_user_ids"],
+                }
+            )
+        save_date_overrides(
+            cursor,
+            organization_id,
+            business_date=business_date,
+            items_by_code=indexed,
+            overrides=released,
+            eligible_user_ids=eligible_user_ids,
+            role=role,
+        )
+        override_rows = load_overrides_for_items(
+            cursor,
+            organization_id,
+            [int(item.get("id") or 0) for item in group_items],
+            business_date,
+        )
+        conflicts = incomplete_items_naming_users(
+            group_items,
+            removed_user_ids=removed_user_ids,
+            session_items=session_items,
+            overrides_by_item_id=override_rows,
+            eligible_user_ids=eligible_user_ids,
+        )
     if conflicts:
         raise ItemResponsibilityConflict(conflicts)
 

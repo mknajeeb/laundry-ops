@@ -9,6 +9,7 @@ from backend.task_activity_item_responsibility import (
     incomplete_items_naming_users,
     normalize_responsibility,
     resolve_responsibility,
+    responsibility_after_roster_change,
     split_items_for_employee,
     task_management_write_allowed,
 )
@@ -78,6 +79,21 @@ def test_master_name_off_the_date_roster_conflicts_until_reassigned():
         overrides_by_item_id={4: {"responsibility_mode": "team", "user_ids": []}},
     )
     assert cleared == []
+
+
+def test_removed_named_employee_returns_open_item_to_any_assigned_employee():
+    cleared = responsibility_after_roster_change(
+        {"responsibility_mode": "named", "responsibility_user_ids": [5]},
+        [8, 9],
+    )
+    assert cleared["responsibility_mode"] == "team"
+    assert cleared["responsibility_user_ids"] == []
+    kept = responsibility_after_roster_change(
+        {"responsibility_mode": "named", "responsibility_user_ids": [5, 8]},
+        [8, 9],
+    )
+    assert kept["responsibility_mode"] == "named"
+    assert kept["responsibility_user_ids"] == [8]
 
 
 def test_completed_snapshot_is_not_the_conflict_source():
