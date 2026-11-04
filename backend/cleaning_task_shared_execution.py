@@ -39,7 +39,7 @@ from backend.task_catalog import (
     TaskCatalogError,
     validate_completion_input,
 )
-from backend.ta_helpers import invalidate_schema_cache, table_exists, table_has_column
+from backend.ta_helpers import invalidate_table_schema, remember_column, table_exists, table_has_column
 
 SESSIONS_TABLE = "cleaning_task_shared_sessions"
 SESSION_ITEMS_TABLE = "cleaning_task_shared_session_items"
@@ -72,6 +72,7 @@ def ensure_shared_activity_schema(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        invalidate_table_schema("cleaning_task_shared_sessions")
     if not table_exists(cursor, SESSION_ITEMS_TABLE):
         cursor.execute(
             f"""
@@ -94,15 +95,16 @@ def ensure_shared_activity_schema(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        invalidate_table_schema(SESSION_ITEMS_TABLE)
     if table_exists(cursor, TABLE) and not table_has_column(cursor, TABLE, "shared_session_id"):
         cursor.execute(f"ALTER TABLE {TABLE} ADD COLUMN shared_session_id BIGINT NULL")
+        remember_column(TABLE, "shared_session_id")
         try:
             cursor.execute(
                 f"ALTER TABLE {TABLE} ADD INDEX idx_cta_shared_session (organization_id, shared_session_id)"
             )
         except Exception:
             pass
-    invalidate_schema_cache()
 
 
 def is_shared_execution(target: Mapping[str, Any] | None) -> bool:

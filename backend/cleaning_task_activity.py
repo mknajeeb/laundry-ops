@@ -22,7 +22,13 @@ from backend.planned_weekly_schedule_responsibilities import (
     list_week_responsibilities,
 )
 from backend.planned_weekly_schedule_task_timing import TIMING_LABELS, timing_display
-from backend.ta_helpers import invalidate_schema_cache, once_per_cursor, table_exists, table_has_column
+from backend.ta_helpers import (
+    invalidate_table_schema,
+    once_per_cursor,
+    remember_column,
+    table_exists,
+    table_has_column,
+)
 from backend.task_catalog import (
     COMPLETION_INPUT,
     COMPLETION_SIMPLE,
@@ -131,6 +137,8 @@ class CleaningTaskError(Exception):
 
 @once_per_cursor("cleaning_task_activity")
 def ensure_cleaning_task_activity_tables(cursor) -> None:
+    activities_ready = table_exists(cursor, TABLE)
+    events_ready = table_exists(cursor, EVENTS)
     cursor.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {TABLE} (
@@ -178,10 +186,14 @@ def ensure_cleaning_task_activity_tables(cursor) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
+    if not activities_ready:
+        invalidate_table_schema(TABLE)
+    if not events_ready:
+        invalidate_table_schema(EVENTS)
     for col, ddl in _ACTIVITY_EXTRA_COLUMNS:
         if not table_has_column(cursor, TABLE, col):
             cursor.execute(f"ALTER TABLE {TABLE} ADD COLUMN {col} {ddl}")
-    invalidate_schema_cache()
+            remember_column(TABLE, col)
 
 
 def _dow_for_date(day: date) -> int:
@@ -3131,12 +3143,24 @@ def apply_assignment_reporting(row: dict[str, Any]) -> dict[str, Any]:
                 VERIFICATION_VERIFIED,
             }
 
-        completion = str(row.get("completion_status") or COMPLETION_NOT_STARTED)
-        verification = str(row.get("verification_status") or VERIFICATION_NOT_REQUIRED)
-        rollup = str(row.get("status") or "")
-        row["completion_label"] = _COMPLETION_LABELS.get(completion, "Not Started")
-        row["verification_label"] = _VERIFICATION_LABELS.get(verification, "Not Required")
-        row["status_label"] = friendly_status_label(rollup, overdue=rollup == DISPLAY_OVERDUE)
+    # A finished activity with no checklist still waits for verification.
+    # The collapsed card and printed status use this row, so they must match the KPI.
+    verification_now = str(row.get("verification_status") or VERIFICATION_NOT_REQUIRED)
+    if (
+        not row.get("overall_status")
+        and verification_now == VERIFICATION_WAITING
+        and str(row.get("status") or "") in {DISPLAY_COMPLETED, DISPLAY_APPROVED}
+    ):
+        row["overall_status"] = OVERALL_PENDING_VERIFICATION
+        row["status"] = DISPLAY_PENDING_APPROVAL
+        row["completion_status"] = COMPLETION_COMPLETED
+
+    completion = str(row.get("completion_status") or COMPLETION_NOT_STARTED)
+    verification = str(row.get("verification_status") or VERIFICATION_NOT_REQUIRED)
+    rollup = str(row.get("status") or "")
+    row["completion_label"] = _COMPLETION_LABELS.get(completion, "Not Started")
+    row["verification_label"] = _VERIFICATION_LABELS.get(verification, "Not Required")
+    row["status_label"] = friendly_status_label(rollup, overdue=rollup == DISPLAY_OVERDUE)
 
     return row
 

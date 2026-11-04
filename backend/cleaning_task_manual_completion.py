@@ -26,7 +26,7 @@ from backend.cleaning_task_group_execution import (
     start_group_activity,
 )
 from backend.cleaning_task_shared_execution import ensure_shared_activity_schema
-from backend.ta_helpers import table_exists, table_has_column, invalidate_schema_cache
+from backend.ta_helpers import invalidate_table_schema, remember_column, table_exists, table_has_column
 
 SOURCE_PIN = "pin"
 SOURCE_MANUAL = "manual"
@@ -48,6 +48,7 @@ def ensure_manual_completion_schema(cursor) -> None:
     for col, ddl in _MANUAL_COLUMNS:
         if not table_has_column(cursor, TABLE, col):
             cursor.execute(f"ALTER TABLE {TABLE} ADD COLUMN {col} {ddl}")
+            remember_column(TABLE, col)
     if not table_exists(cursor, REVISIONS_TABLE):
         cursor.execute(
             f"""
@@ -66,7 +67,7 @@ def ensure_manual_completion_schema(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
-    invalidate_schema_cache()
+        invalidate_table_schema(REVISIONS_TABLE)
 
 
 def completion_source_label(source: Any) -> str:

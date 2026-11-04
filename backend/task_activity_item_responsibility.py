@@ -11,7 +11,7 @@ import json
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
-from backend.ta_helpers import invalidate_schema_cache, once_per_cursor, table_exists, table_has_column
+from backend.ta_helpers import invalidate_table_schema, once_per_cursor, remember_column, table_exists, table_has_column
 
 MODE_TEAM = "team"
 TEAM_RESPONSIBILITY_LABEL = "Any assigned employee"
@@ -50,26 +50,32 @@ def ensure_item_responsibility_schema(cursor) -> None:
                 f"ALTER TABLE {GROUP_ITEMS_TABLE} "
                 "ADD COLUMN responsibility_mode VARCHAR(16) NOT NULL DEFAULT 'team'"
             )
+            remember_column(GROUP_ITEMS_TABLE, "responsibility_mode")
         if not table_has_column(cursor, GROUP_ITEMS_TABLE, "responsibility_user_ids_json"):
             cursor.execute(
                 f"ALTER TABLE {GROUP_ITEMS_TABLE} ADD COLUMN responsibility_user_ids_json TEXT NULL"
             )
+            remember_column(GROUP_ITEMS_TABLE, "responsibility_user_ids_json")
         if not table_has_column(cursor, GROUP_ITEMS_TABLE, "section_label"):
             cursor.execute(
                 f"ALTER TABLE {GROUP_ITEMS_TABLE} ADD COLUMN section_label VARCHAR(80) NULL"
             )
+            remember_column(GROUP_ITEMS_TABLE, "section_label")
         if not table_has_column(cursor, GROUP_ITEMS_TABLE, "section_order"):
             cursor.execute(
                 f"ALTER TABLE {GROUP_ITEMS_TABLE} ADD COLUMN section_order INT NOT NULL DEFAULT 0"
             )
+            remember_column(GROUP_ITEMS_TABLE, "section_order")
         if not table_has_column(cursor, GROUP_ITEMS_TABLE, "instructions"):
             cursor.execute(
                 f"ALTER TABLE {GROUP_ITEMS_TABLE} ADD COLUMN instructions TEXT NULL"
             )
+            remember_column(GROUP_ITEMS_TABLE, "instructions")
         if not table_has_column(cursor, GROUP_ITEMS_TABLE, "active"):
             cursor.execute(
                 f"ALTER TABLE {GROUP_ITEMS_TABLE} ADD COLUMN active TINYINT(1) NOT NULL DEFAULT 1"
             )
+            remember_column(GROUP_ITEMS_TABLE, "active")
     if not table_exists(cursor, OVERRIDES_TABLE):
         cursor.execute(
             f"""
@@ -87,14 +93,16 @@ def ensure_item_responsibility_schema(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        invalidate_table_schema(OVERRIDES_TABLE)
     for table in (SESSION_ITEMS_TABLE, "cleaning_task_activity_items"):
         if not table_exists(cursor, table):
             continue
         if not table_has_column(cursor, table, "responsibility_snapshot_json"):
             cursor.execute(f"ALTER TABLE {table} ADD COLUMN responsibility_snapshot_json TEXT NULL")
+            remember_column(table, "responsibility_snapshot_json")
         if not table_has_column(cursor, table, "definition_snapshot_json"):
             cursor.execute(f"ALTER TABLE {table} ADD COLUMN definition_snapshot_json TEXT NULL")
-    invalidate_schema_cache()
+            remember_column(table, "definition_snapshot_json")
 
 
 def parse_user_ids(raw: Any) -> list[int]:

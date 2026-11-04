@@ -129,7 +129,7 @@ function FrequencyReport({ groups, loading }) {
             >
               <Typography sx={{ fontWeight: 800 }}>{group.activity}</Typography>
               <Typography variant="body2" color="text.secondary">
-                {group.assigned} times
+                {Number(group.assigned) === 1 ? "1 time" : `${group.assigned} times`}
                 {group.completion_rate == null ? "" : ` · ${group.completion_rate}% completed`}
               </Typography>
             </Box>

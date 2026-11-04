@@ -13,7 +13,7 @@ import json
 from datetime import date
 from typing import Any, Mapping, Optional, Sequence
 
-from backend.ta_helpers import invalidate_schema_cache, table_exists, table_has_column
+from backend.ta_helpers import remember_column, table_exists, table_has_column
 from backend.task_catalog import (
     VERIFY_EMPLOYEE,
     VERIFY_METHODS,
@@ -76,13 +76,13 @@ def ensure_verification_policy_schema(cursor) -> None:
             "verification_inherits",
             "TINYINT(1) NOT NULL DEFAULT 0",
         )
-    invalidate_schema_cache()
 
 
 def _ensure_column(cursor, table: str, column: str, ddl: str) -> None:
     if table_has_column(cursor, table, column):
         return
     cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+    remember_column(table, column)
 
 
 def _parse_json(raw: Any, default: Any) -> Any:
@@ -130,6 +130,9 @@ def _normalize_policy_fields(
 def get_global_verification_policy(cursor, organization_id: int) -> dict[str, Any]:
     ensure_verification_policy_schema(cursor)
     oid = int(organization_id)
+    store = getattr(cursor, "_vw_global_policy", None)
+    if isinstance(store, dict) and oid in store:
+        return store[oid]
     cursor.execute(
         f"SELECT * FROM {ORG_SETTINGS_TABLE} WHERE organization_id=%s LIMIT 1",
         (oid,),
@@ -145,7 +148,7 @@ def get_global_verification_policy(cursor, organization_id: int) -> dict[str, An
                 "is_default": True,
             }
         )
-        return policy
+        return _remember_global_policy(cursor, store, oid, policy)
     normalized = _normalize_policy_fields(
         verification_required=row.get("verification_required"),
         verification_method=row.get("verification_method"),
@@ -163,7 +166,18 @@ def get_global_verification_policy(cursor, organization_id: int) -> dict[str, An
             ),
         }
     )
-    return normalized
+    return _remember_global_policy(cursor, store, oid, normalized)
+
+
+def _remember_global_policy(cursor, store, organization_id: int, policy: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(store, dict):
+        store = {}
+        try:
+            setattr(cursor, "_vw_global_policy", store)
+        except Exception:
+            return policy
+    store[organization_id] = policy
+    return policy
 
 
 def upsert_global_verification_policy(
@@ -173,6 +187,9 @@ def upsert_global_verification_policy(
     *,
     updated_by_user_id: int | None = None,
 ) -> dict[str, Any]:
+    from backend.task_catalog import clear_task_read_cache
+
+    clear_task_read_cache(cursor)
     ensure_verification_policy_schema(cursor)
     oid = int(organization_id)
     method = str(data.get("verification_method") or VERIFY_SUPERVISOR)

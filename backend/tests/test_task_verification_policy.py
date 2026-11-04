@@ -118,7 +118,7 @@ def test_global_default_is_supervisor_required():
     cur = _MemCursor()
     with mock.patch("backend.task_verification_policy.table_exists", return_value=False), mock.patch(
         "backend.task_verification_policy.table_has_column", return_value=False
-    ), mock.patch("backend.task_verification_policy.invalidate_schema_cache"):
+    ):
         policy = get_global_verification_policy(cur, 3)
     assert policy["verification_required"] is True
     assert policy["verification_method"] == VERIFY_SUPERVISOR
@@ -129,7 +129,7 @@ def test_upsert_global_and_resolve_task_inherit():
     cur = _MemCursor()
     with mock.patch("backend.task_verification_policy.table_exists", return_value=True), mock.patch(
         "backend.task_verification_policy.table_has_column", return_value=True
-    ), mock.patch("backend.task_verification_policy.invalidate_schema_cache"):
+    ):
         upsert_global_verification_policy(
             cur,
             3,
@@ -155,7 +155,7 @@ def test_group_override_then_task_override():
     cur = _MemCursor()
     with mock.patch("backend.task_verification_policy.table_exists", return_value=True), mock.patch(
         "backend.task_verification_policy.table_has_column", return_value=True
-    ), mock.patch("backend.task_verification_policy.invalidate_schema_cache"):
+    ):
         group = {
             "verification_inherits": False,
             "verification_required": True,
@@ -187,7 +187,7 @@ def test_explicit_none_only_via_override():
     cur = _MemCursor()
     with mock.patch("backend.task_verification_policy.table_exists", return_value=True), mock.patch(
         "backend.task_verification_policy.table_has_column", return_value=True
-    ), mock.patch("backend.task_verification_policy.invalidate_schema_cache"):
+    ):
         upsert_global_verification_policy(
             cur, 3, {"verification_method": "none", "verification_required": False}
         )

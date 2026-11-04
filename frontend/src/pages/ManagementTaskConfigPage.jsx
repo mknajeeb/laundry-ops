@@ -560,7 +560,7 @@ export default function ManagementTaskConfigPage() {
               </Stack>
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-              Active groups only. Open Legacy / Archived for inactive, test, and older tasks.
+              Active groups stay in this list. Legacy / Archived is only for inactive records and rows explicitly marked archived, test, or migration.
             </Typography>
             <Stack spacing={1.5}>
               {activityBuckets.length ? (

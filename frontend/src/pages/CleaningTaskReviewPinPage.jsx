@@ -230,7 +230,7 @@ export default function CleaningTaskReviewPinPage() {
             ))}
           </Stack>
           {(queue?.shift_end?.blocking_close || []).length ? (
-            <Typography variant="body2" color="error">
+            <Typography variant="body2" color="text.secondary">
               {t("tasks.pin.blockingClose", {
                 count: (queue.shift_end.blocking_close || []).length,
                 plural: (queue.shift_end.blocking_close || []).length === 1 ? "" : "s",
