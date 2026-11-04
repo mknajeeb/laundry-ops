@@ -719,6 +719,47 @@ def hourly_cost_from_report_rows(
     return analysis
 
 
+def _record_ot_disabled(row: dict) -> bool:
+    """True when this record's payroll week is straight-time only."""
+    if row.get("ot_week_disabled") is True:
+        return True
+    raw = row.get("ot_week_mode")
+    if raw in (None, ""):
+        return False
+    try:
+        from backend.payroll_week_ot import OT_MODE_DISABLE, normalize_ot_week_mode
+
+        return normalize_ot_week_mode(raw) == OT_MODE_DISABLE
+    except ValueError:
+        return False
+
+
+def _payroll_week_key(row: dict) -> str:
+    ws = row.get("payroll_week_start") or ""
+    if hasattr(ws, "isoformat"):
+        ws = ws.isoformat()
+    return str(ws)[:10]
+
+
+def _week_groups(records: list[dict]) -> list[tuple[str, list[dict], bool]]:
+    from backend.payroll_overtime import week_ot_enabled_flags
+
+    ordered = sorted(
+        records or [],
+        key=lambda row: (str(row.get("clock_in_at") or ""), str(row.get("id") or "")),
+    )
+    flags = week_ot_enabled_flags(ordered, default_enabled=True)
+    groups: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for row in ordered:
+        key = _payroll_week_key(row) or "_default"
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(row)
+    return [(key, groups[key], flags.get(key) is False) for key in order]
+
+
 def economics_from_time_records(
     records: list[dict],
     *,
@@ -730,48 +771,62 @@ def economics_from_time_records(
     Payable hours are the record's approved hours (net of unpaid breaks).
     Each record keeps its own regular rate so a mid-period rate change is weighted
     by the hours worked at that rate. Overtime starts after the threshold,
-    in clock-in order.
+    in clock-in order, and restarts on each payroll week.
+
+    A week marked disable_ot keeps every payable hour at straight time.
     """
     threshold = _rate_num(ot_threshold) or DEFAULT_OT_THRESHOLD
     multiplier = _rate_num(ot_multiplier) or DEFAULT_OT_MULTIPLIER
-    ordered = sorted(
-        records or [],
-        key=lambda row: (str(row.get("clock_in_at") or ""), str(row.get("id") or "")),
-    )
-    cumulative = Decimal("0")
     base = Decimal("0")
     premium = Decimal("0")
     ot_wages = Decimal("0")
     reg_h = Decimal("0")
     ot_h = Decimal("0")
+    payable = Decimal("0")
     rates: list[float] = []
     category = ""
     threshold_d = Decimal(str(threshold))
     multiplier_d = Decimal(str(multiplier))
-    for row in ordered:
-        hrs = Decimal(str(max(0.0, _money(row.get("approved_hours")))))
-        rate = Decimal(str(_rate_num(row.get("hourly_rate")) or 0))
-        if not category:
-            category = str(row.get("worker_category") or "")
-        room = max(Decimal("0"), threshold_d - cumulative)
-        if rate > 0:
-            regular = min(hrs, room)
-            overtime = max(Decimal("0"), hrs - regular)
-            base += hrs * rate
-            premium += overtime * max(Decimal("0"), rate * multiplier_d - rate)
-            ot_wages += overtime * rate * multiplier_d
-            rates.append(float(rate))
-        else:
-            regular = hrs
-            overtime = Decimal("0")
-        cumulative += hrs
-        reg_h += regular
-        ot_h += overtime
+    disabled_hours = Decimal("0")
+    enabled_hours = Decimal("0")
+    for key, rows, week_disabled in _week_groups(records):
+        cumulative = Decimal("0")
+        for row in rows:
+            hrs = Decimal(str(max(0.0, _money(row.get("approved_hours")))))
+            rate = Decimal(str(_rate_num(row.get("hourly_rate")) or 0))
+            if not category:
+                category = str(row.get("worker_category") or "")
+            record_disabled = week_disabled or (key == "_default" and _record_ot_disabled(row))
+            room = max(Decimal("0"), threshold_d - cumulative)
+            if rate > 0 and not record_disabled:
+                regular = min(hrs, room)
+                overtime = max(Decimal("0"), hrs - regular)
+                base += hrs * rate
+                premium += overtime * max(Decimal("0"), rate * multiplier_d - rate)
+                ot_wages += overtime * rate * multiplier_d
+                rates.append(float(rate))
+            elif rate > 0:
+                regular = hrs
+                overtime = Decimal("0")
+                base += hrs * rate
+                rates.append(float(rate))
+            else:
+                regular = hrs
+                overtime = Decimal("0")
+            if not record_disabled:
+                cumulative += hrs
+            payable += hrs
+            reg_h += regular
+            ot_h += overtime
+            if record_disabled:
+                disabled_hours += hrs
+            else:
+                enabled_hours += hrs
     base_r = float(_q2_dec(base))
     premium_r = float(_q2_dec(premium))
-    return {
+    result = {
         "worker_category": category or "w2",
-        "payable_hours": float(_q2_dec(cumulative)),
+        "payable_hours": float(_q2_dec(payable)),
         "regular_hours": float(_q2_dec(reg_h)),
         "ot_hours": float(_q2_dec(ot_h)),
         "base_earnings": base_r,
@@ -781,6 +836,15 @@ def economics_from_time_records(
         "gross_pay": _money(base_r + premium_r),
         "regular_rates": rates,
     }
+    if disabled_hours > 0 and enabled_hours <= 0:
+        result["ot_setting_note"] = (
+            "Overtime is disabled for this payroll week. Payable hours stay at straight time."
+        )
+    elif disabled_hours > 0 and enabled_hours > 0:
+        result["ot_setting_note"] = (
+            "Overtime premium includes only the payroll weeks where overtime is enabled."
+        )
+    return result
 
 
 def _category_key(value: Any) -> str:
@@ -840,55 +904,54 @@ def allocate_weekly_overtime(
     ot_multiplier: Any = DEFAULT_OT_MULTIPLIER,
     category_policies: Optional[dict] = None,
 ) -> list[dict]:
-    """One cumulative weekly walk. Category does not reset the hour counter."""
-    ordered = sorted(
-        records or [],
-        key=lambda row: (str(row.get("clock_in_at") or ""), str(row.get("id") or "")),
-    )
-    cumulative = Decimal("0")
+    """One cumulative walk per payroll week. Category does not reset the hour counter."""
     lines = []
-    for row in ordered:
-        category = _category_key(row.get("worker_category"))
-        rule = classification_overtime_rule(
-            category,
-            category_policies,
-            ot_threshold=ot_threshold,
-            ot_multiplier=ot_multiplier,
-        )
-        hrs = Decimal(str(max(0.0, _money(row.get("approved_hours")))))
-        rate = Decimal(str(_rate_num(row.get("hourly_rate")) or 0))
-        threshold_d = Decimal(str(rule["threshold_hours"]))
-        multiplier_d = Decimal(str(rule["multiplier"]))
-        room = max(Decimal("0"), threshold_d - cumulative)
-        if rate > 0 and rule["enabled"]:
-            regular = min(hrs, room)
-            overtime = max(Decimal("0"), hrs - regular)
-            base = hrs * rate
-            premium = overtime * max(Decimal("0"), rate * multiplier_d - rate)
-        elif rate > 0:
-            regular = hrs
-            overtime = Decimal("0")
-            base = hrs * rate
-            premium = Decimal("0")
-        else:
-            regular = hrs
-            overtime = Decimal("0")
-            base = Decimal("0")
-            premium = Decimal("0")
-        cumulative += hrs
-        lines.append(
-            {
-                "id": row.get("id"),
-                "worker_category": category,
-                "hours_dec": hrs,
-                "regular_dec": regular,
-                "overtime_dec": overtime,
-                "base_dec": base,
-                "premium_dec": premium,
-                "rate": float(rate),
-                "rule": rule,
-            }
-        )
+    for key, rows, week_disabled in _week_groups(records):
+        cumulative = Decimal("0")
+        for row in rows:
+            category = _category_key(row.get("worker_category"))
+            rule = classification_overtime_rule(
+                category,
+                category_policies,
+                ot_threshold=ot_threshold,
+                ot_multiplier=ot_multiplier,
+            )
+            hrs = Decimal(str(max(0.0, _money(row.get("approved_hours")))))
+            rate = Decimal(str(_rate_num(row.get("hourly_rate")) or 0))
+            threshold_d = Decimal(str(rule["threshold_hours"]))
+            multiplier_d = Decimal(str(rule["multiplier"]))
+            record_disabled = week_disabled or (key == "_default" and _record_ot_disabled(row))
+            room = max(Decimal("0"), threshold_d - cumulative)
+            if rate > 0 and rule["enabled"] and not record_disabled:
+                regular = min(hrs, room)
+                overtime = max(Decimal("0"), hrs - regular)
+                base = hrs * rate
+                premium = overtime * max(Decimal("0"), rate * multiplier_d - rate)
+            elif rate > 0:
+                regular = hrs
+                overtime = Decimal("0")
+                base = hrs * rate
+                premium = Decimal("0")
+            else:
+                regular = hrs
+                overtime = Decimal("0")
+                base = Decimal("0")
+                premium = Decimal("0")
+            if not record_disabled:
+                cumulative += hrs
+            lines.append(
+                {
+                    "id": row.get("id"),
+                    "worker_category": category,
+                    "hours_dec": hrs,
+                    "regular_dec": regular,
+                    "overtime_dec": overtime,
+                    "base_dec": base,
+                    "premium_dec": premium,
+                    "rate": float(rate),
+                    "rule": rule,
+                }
+            )
     return lines
 
 
@@ -1952,6 +2015,51 @@ def combine_stored_and_open_categories(
     return combined
 
 
+def _stamp_week_ot_modes(conn, organization_id: int, user_id: int, records: list[dict]) -> None:
+    """Attach the stored employee-week overtime setting. Does not change payroll rows."""
+    from datetime import date as date_cls
+
+    from backend.payroll_identity import payroll_week_bounds
+    from backend.payroll_week_ot import OT_MODE_DEFAULT, load_employee_week_ot_modes
+
+    week_by_work: dict[str, str] = {}
+    week_dates = []
+    for rec in records or []:
+        week = _payroll_week_key(rec)
+        work = str(rec.get("work_date") or "")[:10]
+        if not week and work:
+            if work not in week_by_work:
+                try:
+                    start, _end = payroll_week_bounds(
+                        conn, date_cls.fromisoformat(work), int(organization_id)
+                    )
+                    week_by_work[work] = start.isoformat()
+                except Exception:
+                    week_by_work[work] = ""
+            week = week_by_work[work]
+        if week:
+            rec["payroll_week_start"] = week
+            try:
+                week_dates.append(date_cls.fromisoformat(week))
+            except ValueError:
+                pass
+    modes = {}
+    try:
+        if week_dates:
+            modes = load_employee_week_ot_modes(
+                conn, int(organization_id), [int(user_id)], week_dates
+            )
+    except Exception:
+        modes = {}
+    for rec in records or []:
+        week = _payroll_week_key(rec)
+        stored = modes.get((int(user_id), week)) if week else None
+        if stored:
+            rec["ot_week_mode"] = stored
+        elif not rec.get("ot_week_mode"):
+            rec["ot_week_mode"] = OT_MODE_DEFAULT
+
+
 def build_hourly_cost_for_time_records(
     conn,
     organization_id: int,
@@ -2000,6 +2108,8 @@ def build_hourly_cost_for_time_records(
                 "approved_hours": raw.get("approved_hours"),
                 "clock_in_at": raw.get("clock_in_at"),
                 "work_date": str(raw.get("work_date") or raw.get("clock_in_at") or "")[:10],
+                "payroll_week_start": str(raw.get("payroll_week_start") or "")[:10],
+                "ot_week_mode": raw.get("ot_week_mode"),
                 "hourly_rate": raw.get("hourly_rate"),
                 "worker_category": raw.get("worker_category"),
             }
@@ -2033,12 +2143,18 @@ def build_hourly_cost_for_time_records(
             except Exception:
                 rate_by_date[work_date] = None
     rated, rates_changed = apply_historical_rates(clean_records, rate_by_date)
+    _stamp_week_ot_modes(conn, int(organization_id), int(user_id), rated)
     rate_note = None
     if rates_changed:
         rate_note = (
             "Regular rates use the rate in effect on each work date. "
             "That differs from the current profile rate shown on the period summary."
         )
+    if rated and all(_record_ot_disabled(rec) for rec in rated):
+        disabled_note = (
+            "Overtime is disabled for this payroll week. Payable hours stay at straight time."
+        )
+        rate_note = f"{rate_note} {disabled_note}".strip() if rate_note else disabled_note
     policies = load_category_cost_assumptions(conn, organization_id)
     periods = aggregate_finalized_w2_periods(history_rows, exclude_period=(start, end))
     weighted = weighted_burden_from_periods(periods, limit=HISTORY_PERIODS)

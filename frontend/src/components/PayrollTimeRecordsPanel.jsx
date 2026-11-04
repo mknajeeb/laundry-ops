@@ -415,6 +415,8 @@ export default function PayrollTimeRecordsPanel({
             approved_hours: row.approved_hours,
             clock_in_at: row.clock_in_at,
             work_date: row.work_date,
+            payroll_week_start: row.payroll_week_start,
+            ot_week_mode: row.ot_week_mode,
             hourly_rate: row.regular_rate ?? row.hourly_rate,
             worker_category: row.worker_category,
           })),

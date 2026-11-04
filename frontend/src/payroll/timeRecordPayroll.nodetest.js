@@ -75,6 +75,31 @@ test("an enabled week keeps overtime and the next disabled week does not", () =>
   assert.equal(enriched.totalOtCost, 50);
 });
 
+test("Jasanpreet's disabled week stays straight time at both rates", () => {
+  const sessions = [
+    [2006, "2026-10-26", 8.77, 21],
+    [2007, "2026-10-27", 12.14, 17],
+    [2057, "2026-10-28", 9.99, 21],
+    [2077, "2026-10-29", 8.42, 17],
+    [2081, "2026-10-30", 11.71, 17],
+    [2111, "2026-10-31", 6.38, 21],
+  ];
+  const rows = sessions.map(([id, day, hours, rate]) => ({
+    id,
+    user_id: 28,
+    approved_hours: hours,
+    clock_in_at: `${day} 08:00:00`,
+    worker_category: "temp",
+    payroll_week_start: "2026-10-26",
+    ot_week_mode: "disable_ot",
+    resolved_hourly_rate: rate,
+  }));
+  const enriched = enrichTimeRecords(rows, { 28: { regular_rate: 17, ot_rate: 25.5, ot_threshold: 40 } });
+  assert.equal(enriched.totalOtCost, 0);
+  assert.equal(enriched.totalCost, enriched.totalRegularCost);
+  assert.ok(enriched.rows.every((row) => row.ot_premium === 0 && row.ot_week_disabled === true));
+});
+
 test("combined analyses add dollars and hours before dividing", () => {
   const combined = combineHourlyAnalyses([
     {

@@ -1286,3 +1286,95 @@ def test_category_reversal_keeps_shared_overtime():
     assert second["total_employer_cost"] == 1150
     again = price_time_records(week, category_policies=policies)
     assert again["total_employer_cost"] == first["total_employer_cost"]
+
+
+def _jasanpreet_oct_26_records(*, ot_mode):
+    """Two Temp rates in one payroll week. Hours are the Oct 26–Nov 1 sessions."""
+    sessions = [
+        (2006, "2026-10-26", 8.77, 21),
+        (2007, "2026-10-27", 12.14, 17),
+        (2057, "2026-10-28", 9.99, 21),
+        (2077, "2026-10-29", 8.42, 17),
+        (2081, "2026-10-30", 11.71, 17),
+        (2111, "2026-10-31", 6.38, 21),
+    ]
+    return [
+        {
+            "id": session_id,
+            "user_id": 28,
+            "worker_name": "Jasanpreet",
+            "approved_hours": hours,
+            "clock_in_at": f"{day} 08:00:00",
+            "work_date": day,
+            "hourly_rate": rate,
+            "resolved_hourly_rate": rate,
+            "worker_category": "temp",
+            "payroll_week_start": "2026-10-26",
+            "ot_week_mode": ot_mode,
+        }
+        for session_id, day, hours, rate in sessions
+    ]
+
+
+def test_jasanpreet_disabled_week_matches_across_summaries_and_an_enabled_week_keeps_overtime():
+    from backend.payroll_hourly_cost import group_batch_sync_lines, project_open_classifications
+
+    disabled = _jasanpreet_oct_26_records(ot_mode="disable_ot")
+    economics = economics_from_time_records(disabled, ot_threshold=40, ot_multiplier=1.5)
+    assert economics["payable_hours"] == 57.41
+    assert economics["ot_hours"] == 0
+    assert economics["ot_premium"] == 0
+    assert economics["gross_pay"] == 1076.53
+    summary = analyze_employee_hourly_cost(
+        worker_category="temp",
+        payable_hours=economics["payable_hours"],
+        regular_hours=economics["regular_hours"],
+        ot_hours=economics["ot_hours"],
+        base_earnings=economics["base_earnings"],
+        ot_premium=economics["ot_premium"],
+        gross_pay=economics["gross_pay"],
+        total_payroll_cost=economics["gross_pay"],
+        employer_taxes=0,
+        regular_rates=economics["regular_rates"],
+        scenario="contractor",
+    )
+    assert summary["effective_cost_per_hour"] == 18.75
+    assert summary["base_cost_per_hour"] == 18.75
+    assert summary["ot_impact_per_hour"] == 0
+    priced = price_time_records(disabled, ot_threshold=40, ot_multiplier=1.5)
+    assert priced["ot_hours"] == 0
+    assert priced["ot_premium"] == 0
+    assert priced["payable_hours"] == 57.41
+    assert priced["effective_cost_per_hour"] == 18.75
+    report = project_open_classifications(
+        [
+            _open_report_row(
+                user_id=28,
+                worker_category="temp",
+                pay_period_start="2026-10-26",
+                pay_period_end="2026-11-01",
+                gross_pay=1076.53,
+                regular_hours=57.41,
+                total_payroll_cost=1076.53,
+            )
+        ],
+        disabled,
+    )
+    assert sum(row["ot_hours"] for row in report) == 0
+    assert round(sum(row["regular_hours"] + row["ot_hours"] for row in report), 2) == 57.41
+    synced = group_batch_sync_lines(disabled, batch_category="temp")
+    assert sum(line["ot_hours"] for line in synced) == 0
+    by_rate = {line["rate"]: line["regular_hours"] for line in synced}
+    assert by_rate[21.0] == 25.14
+    assert by_rate[17.0] == 32.27
+
+    enabled = _jasanpreet_oct_26_records(ot_mode="default")
+    enabled_econ = economics_from_time_records(enabled, ot_threshold=40, ot_multiplier=1.5)
+    enabled_priced = price_time_records(enabled, ot_threshold=40, ot_multiplier=1.5)
+    enabled_sync = group_batch_sync_lines(enabled, batch_category="temp")
+    assert enabled_econ["ot_hours"] == 17.41
+    assert enabled_econ["ot_premium"] == 160.75
+    assert enabled_priced["ot_hours"] == 17.41
+    assert enabled_priced["ot_premium"] == 160.75
+    assert round(sum(line["ot_hours"] for line in enabled_sync), 2) == 17.41
+    assert {line["rate"] for line in enabled_sync} == {17.0, 21.0}
