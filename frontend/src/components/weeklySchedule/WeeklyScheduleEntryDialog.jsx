@@ -462,7 +462,7 @@ export default function WeeklyScheduleEntryDialog({
         }));
       const unnamed = itemOverrides.filter((item) => item.responsibility_mode === "named" && !item.user_ids.length);
       if (unnamed.length) {
-        setFormError("Choose at least one employee for each named item, or switch it to Anyone on Team.");
+        setFormError("Choose at least one employee for each named item, or leave it as any assigned employee.");
         return;
       }
       setFormError("");
@@ -903,7 +903,7 @@ export default function WeeklyScheduleEntryDialog({
                               setActivityItems(next);
                             }}
                           >
-                            <MenuItem value="team">Anyone on Team</MenuItem>
+                            <MenuItem value="team">Any assigned employee</MenuItem>
                             <MenuItem value="named">Named employees</MenuItem>
                           </Select>
                         </FormControl>

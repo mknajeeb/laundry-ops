@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any, Mapping, Optional, Sequence
 
-from backend.ta_helpers import invalidate_schema_cache, table_exists, table_has_column
+from backend.ta_helpers import invalidate_schema_cache, once_per_cursor, table_exists, table_has_column
 from backend.weekly_schedule_roles import (
     BUILTIN_ROLE_CODES,
     CLEANING_TASK_CODES,
@@ -99,6 +99,7 @@ class TaskCatalogError(Exception):
         self.status = status
 
 
+@once_per_cursor("task_catalog")
 def ensure_task_catalog_tables(cursor) -> None:
     ensure_weekly_schedule_roles_table(cursor)
     if not table_exists(cursor, CATEGORIES_TABLE):
@@ -443,16 +444,49 @@ def list_task_definitions(cursor, organization_id: int, *, include_inactive: boo
     return out
 
 
+def _task_definition_index(cursor, organization_id: int) -> dict[str, dict[str, Any]]:
+    """One catalog read per request. Checklist items otherwise reload every definition."""
+    oid = int(organization_id)
+    store = getattr(cursor, "_vw_task_def_index", None)
+    if isinstance(store, dict) and oid in store:
+        return store[oid]
+    index = {
+        item["code"]: item
+        for item in list_task_definitions(cursor, oid, include_inactive=True)
+        if item.get("code")
+    }
+    if not isinstance(store, dict):
+        store = {}
+        try:
+            setattr(cursor, "_vw_task_def_index", store)
+        except Exception:
+            return index
+    store[oid] = index
+    return index
+
+
 def get_task_definition(cursor, organization_id: int, code: str) -> dict[str, Any] | None:
     code_clean = str(code or "").strip()
     if not code_clean:
         return None
+    cache = getattr(cursor, "_vw_task_def_cache", None)
+    key = (int(organization_id), code_clean)
+    if isinstance(cache, dict) and key in cache:
+        return cache[key]
     # Prefer the normal task list (excludes synthetic activity-group roles).
-    for item in list_task_definitions(cursor, organization_id, include_inactive=True):
-        if item["code"] == code_clean:
-            return item
+    found = _task_definition_index(cursor, int(organization_id)).get(code_clean)
+    if found is not None:
+        if not isinstance(cache, dict):
+            cache = {}
+            try:
+                setattr(cursor, "_vw_task_def_cache", cache)
+            except Exception:
+                return found
+        cache[key] = found
+        return found
     # Activity-group schedule roles (agroup_*) are omitted from list_task_definitions
     # but still need a definition after upsert / for schedule labels.
+    result = None
     if code_clean.startswith("agroup_"):
         ensure_task_catalog_tables(cursor)
         cats = {c["code"]: c for c in list_categories(cursor, organization_id)}
@@ -469,8 +503,15 @@ def get_task_definition(cursor, organization_id: int, code: str) -> dict[str, An
         )
         row = cursor.fetchone()
         if isinstance(row, dict):
-            return task_definition_from_role(row, categories_by_code=cats)
-    return None
+            result = task_definition_from_role(row, categories_by_code=cats)
+    if not isinstance(cache, dict):
+        cache = {}
+        try:
+            setattr(cursor, "_vw_task_def_cache", cache)
+        except Exception:
+            return result
+    cache[key] = result
+    return result
 
 
 def upsert_category(cursor, organization_id: int, data: Mapping[str, Any], *, category_id: int | None = None) -> dict[str, Any]:

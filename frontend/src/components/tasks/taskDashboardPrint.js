@@ -32,6 +32,14 @@ const GROUP_BY_LABELS = {
   monthly: "Monthly",
 };
 
+function responsibilityText(label) {
+  const text = String(label || "").trim();
+  if (!text || text === "Anyone on Team" || text === "Cualquiera del equipo") {
+    return "Any assigned employee";
+  }
+  return text;
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -145,7 +153,7 @@ function checklistTable(items, sections, hideLabor = false, locale = "en") {
             )}${
               detail ? `<div class="detail">${escapeHtml(detail)}</div>` : ""
             }</td>
-            <td>${escapeHtml(item.responsibility_label || "Anyone on Team")}</td>
+            <td>${escapeHtml(responsibilityText(item.responsibility_label))}</td>
             <td>${escapeHtml(checklistItemLabel(item.display_status || item.status))}</td>
             <td>${escapeHtml(who || "—")}</td>
           </tr>`;
@@ -380,4 +388,50 @@ export function deliverTaskDashboardPrint(html, deps = {}) {
 export function printTaskDashboard(model, deps) {
   const html = buildTaskDashboardPrintDocument(model);
   return deliverTaskDashboardPrint(html, deps);
+}
+
+export function buildFrequencyPrintDocument({
+  rangeStart,
+  rangeEnd,
+  categoryLabel = "All",
+  groups = [],
+} = {}) {
+  const blocks = (groups || [])
+    .map((group) => {
+      const dates = (group.dates || [])
+        .map((row) => {
+          const people = (row.employees || []).join(", ") || "—";
+          return `<li>${escapeHtml(rangeText(row.business_date, row.business_date))} — ${escapeHtml(row.status_label || row.status || "")} — ${escapeHtml(people)}</li>`;
+        })
+        .join("");
+      const rate = group.completion_rate == null ? "" : ` · ${group.completion_rate}% complete`;
+      return `<section class="card"><h3>${escapeHtml(group.activity || group.role)}</h3><p class="meta">${group.assigned || 0} occurrences${escapeHtml(rate)}</p><ul>${dates}</ul></section>`;
+    })
+    .join("");
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>VeeWash Task Frequency</title>
+<style>
+  @page { size: letter portrait; margin: 0.55in; }
+  body { font-family: "Segoe UI", Helvetica, Arial, sans-serif; color: #0f2744; font-size: 10.5pt; }
+  h1 { font-size: 18pt; margin: 0 0 4px; }
+  h3 { font-size: 13pt; margin: 0; }
+  .card { border: 1px solid #d5deea; border-radius: 8px; padding: 8px 10px; margin: 0 0 10px; }
+  .meta, .sub { color: #475569; }
+  ul { margin: 6px 0 0; padding-left: 18px; }
+</style>
+</head>
+<body>
+  <h1>Task frequency</h1>
+  <p class="sub">${escapeHtml(rangeText(rangeStart, rangeEnd))} · ${escapeHtml(categoryLabel || "All")}</p>
+  ${blocks || "<p>No activities in this range.</p>"}
+  <p class="sub">Times are America/New_York. A shared activity counts once per day.</p>
+</body>
+</html>`;
+}
+
+export function printTaskFrequency(model, deps) {
+  return deliverTaskDashboardPrint(buildFrequencyPrintDocument(model), deps);
 }

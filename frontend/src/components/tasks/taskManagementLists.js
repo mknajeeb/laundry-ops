@@ -31,6 +31,16 @@ export function groupActivitiesByCategory(groups, categories) {
     }));
 }
 
+const OPERATIONAL_CATEGORIES = new Set(["start_of_day", "intra_day", "end_of_day", "inventory"]);
+
+export function isOperationalActivity(group) {
+  if (!isActiveCatalogRow(group)) return false;
+  const code = group?.category_code || "intra_day";
+  if (!OPERATIONAL_CATEGORIES.has(code)) return false;
+  const blob = `${group?.name || ""} ${group?.code || ""} ${group?.role_code || ""}`.toLowerCase();
+  return !/\be2e\b|\btest\b|\bsample\b|\bscratch\b/.test(blob);
+}
+
 export function checklistSections(items) {
   const sections = new Map();
   for (const item of items || []) {

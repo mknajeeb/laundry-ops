@@ -1264,6 +1264,9 @@ def register_cleaning_task_activity_routes(
                     assignment_limit=_page_int("assignment_limit"),
                     history_offset=_page_int("history_offset") or 0,
                     history_limit=_page_int("history_limit"),
+                    employee_id=(request.args.get("employee_id") or "").strip() or None,
+                    activity=(request.args.get("activity") or request.args.get("role") or "").strip() or None,
+                    status_filter=(request.args.get("status") or "").strip() or None,
                 )
             except TaskDashboardRangeError as exc:
                 return jsonify({"error": str(exc)}), 400
@@ -1274,6 +1277,14 @@ def register_cleaning_task_activity_routes(
                     _strip_rinse_management_fields(row) for row in payload["assignments"]
                 ]
             payload["read_only"] = bool(rinse_only)
+            payload["can_approve"] = not rinse_only
+            payload["can_manual_complete"] = (not rinse_only) and bool(
+                (roles & HUB_ROLES)
+                or employee_allows_module(
+                    cursor, int(org_id), int(me.get("user_id") or me.get("id") or 0), "cleaning_task_review"
+                )
+            )
+            payload["can_manage_tasks"] = (not rinse_only) and bool(roles & HUB_ROLES)
             if rinse_only:
                 # Monthly chart has no labor fields; still flag for clients.
                 payload["hide_labor_metrics"] = True

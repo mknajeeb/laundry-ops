@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
-from backend.ta_helpers import table_exists, table_has_column
+from backend.ta_helpers import once_per_cursor, table_exists, table_has_column
 
 ET = ZoneInfo("America/New_York")
 
@@ -36,6 +36,7 @@ def _relax_schema(cursor, sql: str) -> None:
         raise
 
 
+@once_per_cursor("task_activity_remarks")
 def ensure_task_activity_remarks_table(cursor) -> None:
     cursor.execute(
         f"""

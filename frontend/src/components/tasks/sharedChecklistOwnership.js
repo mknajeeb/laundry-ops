@@ -1,11 +1,29 @@
 /** Split one shared checklist into the viewer's items and the rest. Each item appears once. */
 
+export const TEAM_RESPONSIBILITY_LABEL = "Any assigned employee";
+
+const GENERIC_SECTION = /^(section\s*\d+|secci[oó]n\s*\d+|general|checklist)$/i;
+const TEAM_LABELS = new Set([
+  "Anyone on Team",
+  "Cualquiera del equipo",
+  TEAM_RESPONSIBILITY_LABEL,
+]);
+
 export function responsibilityLabel(item) {
-  if (item?.responsibility_label) return item.responsibility_label;
+  const explicit = String(item?.responsibility_label || "").trim();
   const mode = String(item?.responsibility_mode || "team");
   const names = item?.responsibility_names || [];
-  if (mode !== "named" || !names.length) return "Anyone on Team";
-  return names.join(", ");
+  if (mode === "named" && names.length) return names.join(", ");
+  if (explicit && !TEAM_LABELS.has(explicit)) return explicit;
+  return TEAM_RESPONSIBILITY_LABEL;
+}
+
+/** Hide a redundant or generic section heading. Stored names are not rewritten. */
+export function visibleSectionLabel(label, sectionCount = 1) {
+  const raw = String(label || "").trim();
+  if (Number(sectionCount) <= 1) return "";
+  if (!raw || GENERIC_SECTION.test(raw)) return "";
+  return raw;
 }
 
 export function isMyChecklistItem(item, userId) {

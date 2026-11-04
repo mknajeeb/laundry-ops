@@ -11,9 +11,10 @@ import json
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
-from backend.ta_helpers import invalidate_schema_cache, table_exists, table_has_column
+from backend.ta_helpers import invalidate_schema_cache, once_per_cursor, table_exists, table_has_column
 
 MODE_TEAM = "team"
+TEAM_RESPONSIBILITY_LABEL = "Any assigned employee"
 MODE_NAMED = "named"
 MODES = frozenset({MODE_TEAM, MODE_NAMED})
 
@@ -41,6 +42,7 @@ class ItemResponsibilityError(Exception):
         self.message = message
 
 
+@once_per_cursor("item_responsibility")
 def ensure_item_responsibility_schema(cursor) -> None:
     if table_exists(cursor, GROUP_ITEMS_TABLE):
         if not table_has_column(cursor, GROUP_ITEMS_TABLE, "responsibility_mode"):
@@ -122,7 +124,7 @@ def parse_user_ids(raw: Any) -> list[int]:
 
 
 def normalize_responsibility(mode: Any, user_ids: Any) -> tuple[str, list[int]]:
-    """Anyone on Team is the default. Named requires at least one employee."""
+    """Team mode is the default: any employee assigned to the Activity. Named requires one employee."""
     chosen = str(mode or MODE_TEAM).strip().lower()
     ids = parse_user_ids(user_ids)
     if chosen not in MODES:
@@ -143,7 +145,7 @@ def responsibility_payload(mode: Any, user_ids: Any, names: Mapping[int, str] | 
         "responsibility_mode": chosen,
         "responsibility_user_ids": ids,
         "responsibility_names": label_names,
-        "responsibility_label": "Anyone on Team" if chosen == MODE_TEAM else ", ".join(label_names),
+        "responsibility_label": TEAM_RESPONSIBILITY_LABEL if chosen == MODE_TEAM else ", ".join(label_names),
     }
 
 
@@ -380,7 +382,7 @@ def save_date_overrides(
         requested_ids = parse_user_ids(raw.get("user_ids") if raw.get("user_ids") is not None else raw.get("user_ids_json"))
         if requested_mode == MODE_NAMED and not requested_ids:
             raise ItemResponsibilityError(
-                "Choose at least one employee for a named item, or switch it to Anyone on Team."
+                "Choose at least one employee for a named item, or leave it as any assigned employee."
             )
         mode, ids = normalize_responsibility(requested_mode, requested_ids)
         if mode == MODE_NAMED:

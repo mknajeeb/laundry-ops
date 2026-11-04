@@ -333,7 +333,7 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                         })
                       }
                     >
-                      <MenuItem value="team">Anyone on Team</MenuItem>
+                      <MenuItem value="team">Any assigned employee</MenuItem>
                       <MenuItem value="named">Named employees</MenuItem>
                     </TextField>
                     {row.responsibility_mode === "named" ? (

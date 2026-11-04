@@ -128,35 +128,11 @@ function TaskCard({ task, onStart, onCompleteUntimed, busy }) {
         <InstructionHint text={localizedInstruction(task, locale) || task.remarks} label={t("tasks.pin.instructions")} />
       </Stack>
       <Typography variant="body2" color="text.secondary">
-        {isGroup ? t("tasks.pin.activityGroup") : categoryLabel(t, task.category_code, task.category_name) || t("tasks.pin.task")}
-        {" · "}
         {task.timing_label || t("tasks.pin.anytime")}
         {names ? ` · ${names}` : ""}
-        {isGroup && itemCount ? ` · ${t("tasks.pin.tasksCount", { count: itemCount })}` : ""}
-        {!isGroup && needsInput ? ` · ${t("tasks.pin.inputRequired")}` : ""}
-        {untimed ? ` · ${t("tasks.pin.untimed")}` : ""}
       </Typography>
-      {isGroup && (task.group_items || []).length ? (
-        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-          {(task.group_items || [])
-            .map(
-              (it) =>
-                localizedConfigured(
-                  { task_name: it.task_name || it.task_code, task_name_es: it.task_name_es },
-                  locale,
-                  "task_name",
-                  "task_name_es",
-                ) || it.task_code,
-            )
-            .join(" · ")}
-        </Typography>
-      ) : null}
-      <PartnerLines
-        partners={task.partners}
-        executionMode={task.execution_mode}
-        assignedNames={task.assigned_employees}
-      />
-      <Typography variant="caption" sx={{ fontWeight: 700, color: "#b45309" }}>
+      <Typography variant="body2" sx={{ mt: 0.35, fontWeight: 700 }}>
+        {isGroup && itemCount ? `${t("tasks.pin.tasksCount", { count: itemCount })} · ` : ""}
         {statusLabel(task.status, t)}
       </Typography>
       {canAct ? (

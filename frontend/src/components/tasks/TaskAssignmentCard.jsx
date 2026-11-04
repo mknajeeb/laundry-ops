@@ -16,13 +16,7 @@ import { useI18n } from "../../i18n/I18nContext";
 import { localizedConfigured, localizedInstruction } from "./taskEmployeeI18n";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import { CompletionDetails } from "../../opsMobile/TaskCompletionInputs";
-import {
-  CompletionBadge,
-  VerificationBadge,
-  ChecklistBadge,
-  OverallBadge,
-  TaskStatusBadge,
-} from "./TaskStatusBadge";
+import { ChecklistBadge, TaskStatusBadge } from "./TaskStatusBadge";
 import {
   formatDashboardDateTime,
   formatDashboardTime,
@@ -31,11 +25,12 @@ import {
 import {
   formatDurationHm,
   friendlyStatusLabel,
+  overallLabel,
   participationLabel,
   participationStatusOf,
-  participationSummary,
   showPerEmployeeChecklist,
 } from "./taskDashboardLabels";
+import { responsibilityLabel, visibleSectionLabel } from "./sharedChecklistOwnership";
 
 function formatDuration(seconds) {
   if (seconds == null) return null;
@@ -81,16 +76,23 @@ export default function TaskAssignmentCard({
   const checklistDone = requiredItems.filter((item) =>
     ["completed", "approved", "verified"].includes(String(item.status || "").toLowerCase())
   ).length;
-  const finishedCount = (row.contributions || []).filter(
-    (c) => participationStatusOf(c) === "finished"
-  ).length;
-  const summary = participationSummary({
-    finished: row.employees_finished ?? finishedCount,
-    assigned: row.employees_assigned ?? (row.contributions || []).length,
-    checklistDone: row.checklist_done ?? checklistDone,
-    checklistRequired: row.checklist_required ?? requiredItems.length,
-  });
+  const checklistRequired = row.checklist_required ?? requiredItems.length;
+  const checklistProgress = row.checklist_done ?? checklistDone;
+  const statusText = row.overall_status
+    ? overallLabel(row.overall_status)
+    : friendlyStatusLabel(row.status);
   const verifyLocked = row.verification_eligible === false;
+  const sectionHeadings = (row.checklist_sections || [])
+    .map((section) => ({
+      ...section,
+      title: visibleSectionLabel(
+        (locale === "es" &&
+          checklistItems.find((item) => item.section_label === section.section_label)?.section_label_es) ||
+          section.section_label,
+        (row.checklist_sections || []).length,
+      ),
+    }))
+    .filter((section) => section.title);
 
   return (
     <Box
@@ -126,15 +128,15 @@ export default function TaskAssignmentCard({
               <TaskStatusBadge label="Manual entry" />
             ) : null}
           </Stack>
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.2 }}>
             {employees}
             {row.timing_label ? ` · ${row.timing_label}` : ""}
           </Typography>
-          {showParticipation ? (
-            <Typography variant="body2" sx={{ mt: 0.35, fontWeight: 700, color: VEEWASH_DASHBOARD.wfCharcoal }}>
-              {summary}
-            </Typography>
-          ) : null}
+          <Typography variant="body2" sx={{ mt: 0.15, color: VEEWASH_DASHBOARD.wfCharcoal }}>
+            {checklistRequired ? `${checklistProgress}/${checklistRequired} items completed` : "No checklist"}
+            {" · "}
+            {statusText}
+          </Typography>
           {hideLabor && row.activity_started_at ? (
             <Typography variant="caption" color="text.secondary" display="block">
               Started {formatDashboardDateTime(row.activity_started_at)}
@@ -142,14 +144,6 @@ export default function TaskAssignmentCard({
           ) : null}
         </Box>
         <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-          {row.overall_status ? (
-            <OverallBadge status={row.overall_status} />
-          ) : (
-            <>
-              <CompletionBadge status={row.completion_status} />
-              <VerificationBadge status={row.verification_status} />
-            </>
-          )}
           <IconButton
             size="small"
             onClick={(e) => {
@@ -192,15 +186,13 @@ export default function TaskAssignmentCard({
               >
                 CHECKLIST
               </Typography>
-              {(row.checklist_sections || []).length ? (
+              {sectionHeadings.length ? (
                 <Stack spacing={0.25} sx={{ mt: 0.5 }}>
-                  {row.checklist_sections.map((section) => (
-                    <Stack key={section.section_label} direction="row" spacing={1} alignItems="center">
+                  {sectionHeadings.map((section) => (
+                    <Stack key={section.section_label || section.title} direction="row" spacing={1} alignItems="center">
                       <Typography variant="caption" sx={{ fontWeight: 700 }}>
-                        {(locale === "es" &&
-                          checklistItems.find((item) => item.section_label === section.section_label)?.section_label_es) ||
-                          section.section_label}
-                        : {section.status_label}
+                        {section.title}
+                        {section.status_label ? ` · ${section.status_label}` : ""}
                       </Typography>
                       {canApprove && section.pending_activity_ids?.length ? (
                         <Button
@@ -237,7 +229,7 @@ export default function TaskAssignmentCard({
                         <InstructionHint text={localizedInstruction(item, locale)} label="Item instructions" />
                       </Stack>
                       <Typography variant="caption" color="text.secondary" display="block">
-                        Responsible: {item.responsibility_label || "Anyone on Team"}
+                        {responsibilityLabel(item)}
                       </Typography>
                       <CompletionDetails completionInput={item.completion_input} schema={item.input_schema} />
                     </Box>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import {
   Alert,
@@ -6,6 +6,7 @@ import {
   Button,
   CircularProgress,
   MenuItem,
+  Skeleton,
   Stack,
   Tab,
   Tabs,
@@ -16,7 +17,6 @@ import {
 import PrintIcon from "@mui/icons-material/Print";
 import { useI18n } from "../i18n/I18nContext";
 import ManagementHubNav from "../components/management/ManagementHubNav";
-import TaskDashboardMonthlyChart from "../components/tasks/TaskDashboardMonthlyChart";
 import TaskManualCompletionDialog from "../components/tasks/TaskManualCompletionDialog";
 import TaskManageDialog from "../components/tasks/TaskManageDialog";
 import TaskAssignmentCard from "../components/tasks/TaskAssignmentCard";
@@ -27,7 +27,6 @@ import {
   addManagementTaskRemark,
   approveManagementTaskDashboard,
   correctManagementTaskCompletion,
-  getManagementTaskDashboard,
   getManagementTaskDashboardMonthly,
   manualCompleteManagementTask,
   rejectManagementTaskDashboard,
@@ -37,7 +36,7 @@ import {
 import { businessTodayYmd } from "../utils/businessTime";
 import { formatDashboardDate } from "../components/tasks/taskDashboardFormat";
 import { formatDurationHm } from "../components/tasks/taskDashboardLabels";
-import { printTaskDashboard } from "../components/tasks/taskDashboardPrint";
+import { printTaskDashboard, printTaskFrequency } from "../components/tasks/taskDashboardPrint";
 import {
   MAX_TASK_RANGE_DAYS,
   TASK_RANGE_PRESETS,
@@ -47,6 +46,110 @@ import {
 
 const ASSIGNMENT_PAGE_SIZE = 25;
 const HISTORY_PAGE_SIZE = 40;
+
+function EmployeeReport({ report, hideLabor, loading }) {
+  const [openId, setOpenId] = useState(null);
+  if (loading) return <Skeleton variant="rounded" height={88} />;
+  const people = report?.employees || [];
+  return (
+    <Stack spacing={1}>
+      <Typography variant="caption" color="text.secondary">
+        {report?.unique_activities || 0} activities. A shared activity counts once in this total.
+      </Typography>
+      {people.length === 0 ? (
+        <Typography color="text.secondary">No employee activity in this range.</Typography>
+      ) : (
+        people.map((person) => {
+          const open = openId === person.employee_id;
+          return (
+            <Box
+              key={person.employee_id}
+              sx={{ bgcolor: "#fff", border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`, borderRadius: 2, px: 1.5, py: 1 }}
+            >
+              <Box onClick={() => setOpenId(open ? null : person.employee_id)} sx={{ cursor: "pointer" }}>
+                <Typography sx={{ fontWeight: 800 }}>{person.employee_name}</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {person.assigned} assigned · {person.completed} completed · {person.in_progress} in progress · {person.not_started} not started · {person.verified} verified
+                </Typography>
+              </Box>
+              {open
+                ? (person.activities || []).map((activity) => (
+                    <Box key={`${activity.assignment_key}-${activity.business_date}`} sx={{ mt: 0.75, pl: 0.5 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                        {activity.activity} · {formatDashboardDate(activity.business_date)}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        {activity.status_label}
+                        {activity.verification_label ? ` · ${activity.verification_label}` : ""}
+                        {activity.participation_status ? ` · ${activity.participation_status}` : ""}
+                        {!hideLabor && activity.duration_seconds != null
+                          ? ` · ${formatDurationHm(activity.duration_seconds)}`
+                          : ""}
+                        {activity.checklist_required
+                          ? ` · checklist ${activity.checklist_done || 0}/${activity.checklist_required}`
+                          : ""}
+                        {activity.checklist_completed_by_employee
+                          ? ` · ${activity.checklist_completed_by_employee} items by this employee`
+                          : ""}
+                      </Typography>
+                      {(activity.started_at || activity.ended_at) && !hideLabor ? (
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          {activity.started_at ? `Start ${formatDashboardDate(activity.started_at)}` : "Not started"}
+                          {activity.ended_at ? ` · Finish ${formatDashboardDate(activity.ended_at)}` : ""}
+                        </Typography>
+                      ) : null}
+                    </Box>
+                  ))
+                : null}
+            </Box>
+          );
+        })
+      )}
+    </Stack>
+  );
+}
+
+function FrequencyReport({ groups, loading }) {
+  const [openRole, setOpenRole] = useState("");
+  if (loading) return <Skeleton variant="rounded" height={88} />;
+  const rows = Array.isArray(groups) ? groups : [];
+  if (!rows.length) return <Typography color="text.secondary">No activities in this range.</Typography>;
+  return (
+    <Stack spacing={1}>
+      {rows.map((group) => {
+        const open = openRole === (group.role || group.activity);
+        return (
+          <Box
+            key={group.role || group.activity}
+            sx={{ bgcolor: "#fff", border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`, borderRadius: 2, px: 1.5, py: 1 }}
+          >
+            <Box
+              onClick={() => setOpenRole(open ? "" : group.role || group.activity)}
+              sx={{ cursor: "pointer" }}
+            >
+              <Typography sx={{ fontWeight: 800 }}>{group.activity}</Typography>
+              <Typography variant="body2" color="text.secondary">
+                {group.assigned} times
+                {group.completion_rate == null ? "" : ` · ${group.completion_rate}% completed`}
+              </Typography>
+            </Box>
+            {open
+              ? (group.dates || []).map((row) => (
+                  <Typography
+                    key={`${group.role}-${row.business_date}-${row.status}`}
+                    variant="body2"
+                    sx={{ mt: 0.5 }}
+                  >
+                    {formatDashboardDate(row.business_date)} — {row.status_label} — {(row.employees || []).join(", ") || "—"}
+                  </Typography>
+                ))
+              : null}
+          </Box>
+        );
+      })}
+    </Stack>
+  );
+}
 
 function Metric({ label, value, hint }) {
   return (
@@ -100,6 +203,12 @@ export default function ManagementTasksPage() {
   const [recordOpen, setRecordOpen] = useState(false);
   const [recordMode, setRecordMode] = useState("edit");
   const [recordContext, setRecordContext] = useState(null);
+  const [view, setView] = useState("operations");
+  const [activityRole, setActivityRole] = useState("");
+  const [employeeId, setEmployeeId] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const requestSeq = useRef(0);
 
   const readOnly = Boolean(data?.read_only);
   const hideLabor = Boolean(data?.hide_labor_metrics || data?.labor_fields_hidden);
@@ -107,46 +216,43 @@ export default function ManagementTasksPage() {
   const canManage = Boolean(data?.can_manage_tasks) && !readOnly;
   const canApprove = Boolean(data?.can_approve !== false) && !readOnly;
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await getManagementTaskDashboard({ business_date: today });
-      setData(res.data || null);
-    } catch (err) {
-      setError(err?.response?.data?.error || err?.message || "Failed to load");
-      setData(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [today]);
-
   const activeRange = taskDashboardRange(rangePreset, today, customStart, customEnd);
   const rangeSpan = inclusiveSpanDays(activeRange.start, activeRange.end);
-  const loadMonthly = useCallback(async () => {
+  const load = useCallback(async () => {
     if (rangeSpan > MAX_TASK_RANGE_DAYS) {
       setMonthly(null);
-      setError(
-        `This range is ${rangeSpan} days. Choose ${MAX_TASK_RANGE_DAYS} days or fewer.`
-      );
+      setData(null);
+      setError(`This range is ${rangeSpan} days. Choose ${MAX_TASK_RANGE_DAYS} days or fewer.`);
+      setLoading(false);
       return;
     }
+    const seq = requestSeq.current + 1;
+    requestSeq.current = seq;
+    setLoading(true);
     try {
       const res = await getManagementTaskDashboardMonthly({
         start: activeRange.start,
         end: activeRange.end,
         group_by: groupBy,
         category: categoryTab === "all" ? "" : categoryTab,
+        activity: activityRole,
+        employee_id: employeeId,
+        status: statusFilter,
         include_assignments: 1,
         assignment_offset: assignmentPage * ASSIGNMENT_PAGE_SIZE,
         assignment_limit: ASSIGNMENT_PAGE_SIZE,
-        history_offset: historyPage * HISTORY_PAGE_SIZE,
-        history_limit: HISTORY_PAGE_SIZE,
+        history_offset: historyOpen ? historyPage * HISTORY_PAGE_SIZE : 0,
+        history_limit: historyOpen ? HISTORY_PAGE_SIZE : 0,
       });
+      if (seq !== requestSeq.current) return;
       setMonthly(res.data || null);
+      setData(res.data || null);
       setError("");
     } catch (err) {
-      setMonthly(null);
+      if (seq !== requestSeq.current) return;
       setError(err?.response?.data?.error || err?.message || "Failed to load this date range");
+    } finally {
+      if (seq === requestSeq.current) setLoading(false);
     }
   }, [
     activeRange.start,
@@ -154,14 +260,17 @@ export default function ManagementTasksPage() {
     rangeSpan,
     groupBy,
     categoryTab,
+    activityRole,
+    employeeId,
+    statusFilter,
     assignmentPage,
     historyPage,
+    historyOpen,
   ]);
 
   useEffect(() => {
     load();
-    loadMonthly();
-  }, [load, loadMonthly]);
+  }, [load]);
 
   // Collapse-by-default for a cleaner first view.
   useEffect(() => {
@@ -177,10 +286,30 @@ export default function ManagementTasksPage() {
   }, [data, monthly]);
 
   const filteredAssignments = useMemo(() => {
-    const rows = Array.isArray(monthly?.assignments) ? monthly.assignments : [];
-    if (categoryTab === "all") return rows;
-    return rows.filter((r) => String(r.category_code || "intra_day") === categoryTab);
-  }, [categoryTab, monthly]);
+    return Array.isArray(monthly?.assignments) ? monthly.assignments : [];
+  }, [monthly]);
+  const activityOptions = monthly?.filter_options?.activities || [];
+  const employeeOptions = monthly?.filter_options?.employees || [];
+  const groupedAssignments = useMemo(() => {
+    const order = categoryTabs.map((tab) => tab.code);
+    const buckets = new Map();
+    for (const row of filteredAssignments) {
+      const code = row.category_code || "intra_day";
+      if (!buckets.has(code)) buckets.set(code, []);
+      buckets.get(code).push(row);
+    }
+    return [...buckets.keys()]
+      .sort((left, right) => {
+        const leftAt = order.indexOf(left);
+        const rightAt = order.indexOf(right);
+        return (leftAt === -1 ? 999 : leftAt) - (rightAt === -1 ? 999 : rightAt);
+      })
+      .map((code) => ({
+        code,
+        name: categoryTabs.find((tab) => tab.code === code)?.name || code,
+        rows: buckets.get(code),
+      }));
+  }, [filteredAssignments, categoryTabs]);
 
   const categoryMetrics = useMemo(() => {
     const totals = monthly?.totals || {};
@@ -340,9 +469,22 @@ export default function ManagementTasksPage() {
         end: activeRange.end,
         group_by: groupBy,
         category: categoryTab === "all" ? "" : categoryTab,
+        activity: activityRole,
+        employee_id: employeeId,
+        status: statusFilter,
         include_assignments: 1,
         assignment_limit: 0,
+        history_limit: 0,
       });
+      if (view === "frequency") {
+        printTaskFrequency({
+          rangeStart: activeRange.start,
+          rangeEnd: activeRange.end,
+          categoryLabel,
+          groups: res.data?.activity_frequency || [],
+        });
+        return;
+      }
       printTaskDashboard({
         rangeStart: activeRange.start,
         rangeEnd: activeRange.end,
@@ -432,11 +574,6 @@ export default function ManagementTasksPage() {
           </Alert>
         ) : null}
 
-        {loading && !data ? (
-          <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
-            <CircularProgress />
-          </Box>
-        ) : (
           <>
             <Stack direction={{ xs: "column", md: "row" }} spacing={1} sx={{ mb: 1 }} className="no-print">
               <TextField
@@ -497,38 +634,90 @@ export default function ManagementTasksPage() {
                   />
                 </>
               ) : null}
-              <Typography variant="caption" color="text.secondary" sx={{ alignSelf: "center" }}>
-                {activeRange.start} – {activeRange.end} ET
-              </Typography>
+              <TextField
+                select
+                size="small"
+                label="Activity"
+                value={activityRole}
+                onChange={(e) => {
+                  setActivityRole(e.target.value);
+                  setAssignmentPage(0);
+                }}
+                sx={{ minWidth: 160 }}
+              >
+                <MenuItem value="">All activities</MenuItem>
+                {activityOptions.map((option) => (
+                  <MenuItem key={option.role} value={option.role}>
+                    {option.label}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <TextField
+                select
+                size="small"
+                label="Employee"
+                value={employeeId}
+                onChange={(e) => {
+                  setEmployeeId(e.target.value);
+                  setAssignmentPage(0);
+                }}
+                sx={{ minWidth: 160 }}
+              >
+                <MenuItem value="">All employees</MenuItem>
+                {employeeOptions.map((option) => (
+                  <MenuItem key={option.employee_id} value={String(option.employee_id)}>
+                    {option.employee_name}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <TextField
+                select
+                size="small"
+                label="Status"
+                value={statusFilter}
+                onChange={(e) => {
+                  setStatusFilter(e.target.value);
+                  setAssignmentPage(0);
+                }}
+                sx={{ minWidth: 150 }}
+              >
+                <MenuItem value="">All statuses</MenuItem>
+                <MenuItem value="not_started">Not Started</MenuItem>
+                <MenuItem value="in_progress">In Progress</MenuItem>
+                <MenuItem value="pending_verification">Pending Verification</MenuItem>
+                <MenuItem value="verified">Verified</MenuItem>
+                <MenuItem value="overdue">Overdue</MenuItem>
+                <MenuItem value="needs_correction">Needs Correction</MenuItem>
+              </TextField>
             </Stack>
-            <Typography variant="caption" sx={{ fontWeight: 700, color: "text.secondary" }}>
-              Activities
-            </Typography>
-            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mb: 0.75 }}>
+            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mb: 1.25 }}>
               <Metric label="Assigned" value={categoryMetrics.activitiesAssigned} hint="Shared assignments count once." />
               <Metric label="Completed" value={categoryMetrics.completedActivities} hint="Finished assignments. Includes pending verification and verified." />
-              <Metric label="Pending Verification" value={categoryMetrics.pendingVerification} hint="Finished and waiting for a supervisor. Also included in Completed." />
-              <Metric label="Verified" value={categoryMetrics.verifiedActivities} hint="Supervisor approved. Also included in Completed." />
+              <Metric label="Pending" value={categoryMetrics.pendingVerification} hint="Finished and waiting for verification." />
+              <Metric label="Verified" value={categoryMetrics.verifiedActivities} hint="Supervisor approved." />
               <Metric label="Overdue" value={categoryMetrics.overdue} hint="Not finished after the planned time." />
-            </Stack>
-            <Typography variant="caption" sx={{ fontWeight: 700, color: "text.secondary" }}>
-              Employee participation
-            </Typography>
-            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mb: 1.25 }}>
-              <Metric label="Assigned" value={categoryMetrics.employeesAssigned} hint="Each employee on each assignment." />
-              <Metric label="Started" value={categoryMetrics.employeesStarted} hint="Participations that have started." />
-              <Metric label="Finished" value={categoryMetrics.employeesFinished} hint="Participations that have finished." />
               {!hideLabor ? (
-                <Metric label="Total Time" value={categoryMetrics.totalTimeLabel} hint="Sum of each employee's participation time." />
+                <Metric label="Time" value={categoryMetrics.totalTimeLabel} hint="Sum of each employee's participation time." />
               ) : null}
             </Stack>
 
-            {monthly ? (
-              <Box sx={{ mb: 2 }}>
-                <TaskDashboardMonthlyChart data={monthly} hideLabor={hideLabor} />
-              </Box>
-            ) : null}
+            <Tabs
+              value={view}
+              onChange={(_, value) => setView(value)}
+              sx={{
+                mb: 1,
+                minHeight: 36,
+                "& .MuiTab-root": { minHeight: 36, textTransform: "none", fontWeight: 700 },
+                "& .Mui-selected": { color: `${VEEWASH_DASHBOARD.primaryBlue} !important` },
+                "& .MuiTabs-indicator": { bgcolor: VEEWASH_DASHBOARD.primaryBlue },
+              }}
+            >
+              <Tab value="operations" label="Operations" />
+              <Tab value="employee" label="By Employee" />
+              <Tab value="frequency" label="Frequency" />
+            </Tabs>
 
+            {view === "operations" ? (
             <Tabs
               value={categoryTab}
                 onChange={(_, v) => {
@@ -551,12 +740,27 @@ export default function ManagementTasksPage() {
                 <Tab key={t.code} value={t.code} label={t.name} />
               ))}
             </Tabs>
+            ) : null}
 
-            <Stack spacing={1.25}>
+            {view === "employee" ? (
+              <EmployeeReport
+                report={monthly?.employee_report}
+                hideLabor={hideLabor}
+                loading={monthly == null}
+              />
+            ) : null}
+            {view === "frequency" ? (
+              <FrequencyReport groups={monthly?.activity_frequency} loading={monthly == null} />
+            ) : null}
+
+            {view === "operations" ? (
+            <Stack spacing={1.5}>
               {monthly == null ? (
-                <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
-                  <CircularProgress size={28} />
-                </Box>
+                <Stack spacing={1}>
+                  <Skeleton variant="rounded" height={72} />
+                  <Skeleton variant="rounded" height={72} />
+                  <Skeleton variant="rounded" height={72} />
+                </Stack>
               ) : filteredAssignments.length === 0 ? (
                 <Box
                   sx={{
@@ -570,38 +774,48 @@ export default function ManagementTasksPage() {
                   <Typography color="text.secondary">No assignments in this range.</Typography>
                 </Box>
               ) : (
-                filteredAssignments.map((row) => {
-                  const key = row.assignment_key || `${row.role}-${row.assignment_group_id}`;
-                  return (
-                    <TaskAssignmentCard
-                      key={key}
-                      row={row}
-                      expanded={openKeys.has(key)}
-                      onToggle={() => toggle(key)}
-                      readOnly={readOnly}
-                      hideLabor={hideLabor}
-                      canApprove={canApprove}
-                      canManual={canManual}
-                      onApprove={approve}
-                      onReject={(id) => {
-                        setRejectId(id);
-                        setReason("");
-                      }}
-                      onManual={openManual}
-                      onEditRecord={(r, c, act) => openRecord(r, c, act, "edit")}
-                      onVoidRecord={(r, c, act) => openRecord(r, c, act, "void")}
-                      rejectId={rejectId}
-                      reason={reason}
-                      setReason={setReason}
-                      onConfirmReject={confirmReject}
-                      onCancelReject={() => setRejectId(null)}
-                      onAddRemark={readOnly ? undefined : (body, taskCode) => addRemark(row, body, taskCode)}
-                    />
-                  );
-                })
+                groupedAssignments.map((bucket) => (
+                  <Box key={bucket.code}>
+                    <Typography variant="caption" sx={{ fontWeight: 800, color: "text.secondary" }}>
+                      {bucket.name}
+                    </Typography>
+                    <Stack spacing={1} sx={{ mt: 0.5 }}>
+                      {bucket.rows.map((row) => {
+                        const key = row.assignment_key || `${row.role}-${row.assignment_group_id}-${row.business_date}`;
+                        return (
+                          <TaskAssignmentCard
+                            key={key}
+                            row={row}
+                            expanded={openKeys.has(key)}
+                            onToggle={() => toggle(key)}
+                            readOnly={readOnly}
+                            hideLabor={hideLabor}
+                            canApprove={canApprove}
+                            canManual={canManual}
+                            onApprove={approve}
+                            onReject={(id) => {
+                              setRejectId(id);
+                              setReason("");
+                            }}
+                            onManual={openManual}
+                            onEditRecord={(r, c, act) => openRecord(r, c, act, "edit")}
+                            onVoidRecord={(r, c, act) => openRecord(r, c, act, "void")}
+                            rejectId={rejectId}
+                            reason={reason}
+                            setReason={setReason}
+                            onConfirmReject={confirmReject}
+                            onCancelReject={() => setRejectId(null)}
+                            onAddRemark={readOnly ? undefined : (body, taskCode) => addRemark(row, body, taskCode)}
+                          />
+                        );
+                      })}
+                    </Stack>
+                  </Box>
+                ))
               )}
             </Stack>
-            {assignmentTotal > ASSIGNMENT_PAGE_SIZE ? (
+            ) : null}
+            {view === "operations" && assignmentTotal > ASSIGNMENT_PAGE_SIZE ? (
               <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }} className="no-print">
                 <Button
                   size="small"
@@ -626,12 +840,15 @@ export default function ManagementTasksPage() {
 
             {!readOnly ? (
               <Box className="no-print" sx={{ mt: 3 }}>
-                <Typography
-                  variant="subtitle2"
-                  sx={{ fontWeight: 800, color: VEEWASH_DASHBOARD.wfCharcoal, mb: 0.5 }}
+                <Button
+                  size="small"
+                  onClick={() => setHistoryOpen((open) => !open)}
+                  sx={{ textTransform: "none", fontWeight: 800, px: 0 }}
                 >
-                  Management history
-                </Typography>
+                  {historyOpen ? "Hide audit history" : "Audit history"}
+                </Button>
+                {historyOpen ? (
+                <>
                 <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
                   {activeRange.start} – {activeRange.end} ET. Completion and verification stay separate.
                   {historyTotal ? ` ${historyTotal} records.` : ""}
@@ -699,10 +916,15 @@ export default function ManagementTasksPage() {
                     </Button>
                   </Stack>
                 ) : null}
+                </>
+                ) : (
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    Detailed audit rows stay unloaded until you open them.
+                  </Typography>
+                )}
               </Box>
             ) : null}
           </>
-        )}
 
         {busy ? (
           <Box sx={{ position: "fixed", bottom: 16, right: 16 }}>

@@ -16,7 +16,7 @@ import json
 import re
 from typing import Any, Mapping, Optional, Sequence
 
-from backend.ta_helpers import invalidate_schema_cache, table_exists, table_has_column
+from backend.ta_helpers import invalidate_schema_cache, once_per_cursor, table_exists, table_has_column
 from backend.task_catalog import (
     ensure_task_catalog_tables,
     get_task_definition,
@@ -53,6 +53,7 @@ def activity_group_slug_from_code(code: Any) -> str:
     return text
 
 
+@once_per_cursor("task_activity_groups")
 def ensure_task_activity_group_tables(cursor) -> None:
     ensure_task_catalog_tables(cursor)
     if not table_exists(cursor, GROUPS_TABLE):

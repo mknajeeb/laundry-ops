@@ -9,6 +9,29 @@ from decimal import Decimal
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
+def once_per_cursor(name: str):
+    """Skip a schema ensure after it has succeeded on this request cursor."""
+
+    def deco(fn):
+        flag = f"_vw_ensured_{name}"
+
+        def wrapped(cursor, *args, **kwargs):
+            if getattr(cursor, flag, False):
+                return None
+            result = fn(cursor, *args, **kwargs)
+            try:
+                setattr(cursor, flag, True)
+            except Exception:
+                pass
+            return result
+
+        wrapped.__name__ = getattr(fn, "__name__", "wrapped")
+        wrapped.__doc__ = getattr(fn, "__doc__", None)
+        return wrapped
+
+    return deco
+
+
 def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     r = 6371000.0
     p1, p2 = math.radians(lat1), math.radians(lat2)

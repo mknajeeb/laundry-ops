@@ -5,6 +5,7 @@ import {
   Box,
   Button,
   CircularProgress,
+  Collapse,
   Stack,
   Typography,
 } from "@mui/material";
@@ -22,6 +23,25 @@ import {
   loadPinHubSession,
   pinHubMenuPath,
 } from "../utils/pinHubSession";
+
+function ReviewGroup({ label, count, startOpen, children }) {
+  const [open, setOpen] = useState(startOpen);
+  return (
+    <Box>
+      <Button
+        fullWidth
+        onClick={() => setOpen((value) => !value)}
+        sx={{ justifyContent: "space-between", textTransform: "none", fontWeight: 800, px: 0, color: OPS_MOBILE.navy }}
+      >
+        <span>
+          {label} ({count})
+        </span>
+        <span>{open ? "−" : "+"}</span>
+      </Button>
+      <Collapse in={open}>{children}</Collapse>
+    </Box>
+  );
+}
 
 function sanitizeSlug(raw) {
   if (!raw) return "";
@@ -44,7 +64,7 @@ function reviewClock(value) {
  * Supervisor PIN Task Review — verify / reject completed tasks.
  */
 export default function CleaningTaskReviewPinPage() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { orgSlug: routeSlug } = useParams();
   const navigate = useNavigate();
   const slug = sanitizeSlug(routeSlug);
@@ -183,19 +203,40 @@ export default function CleaningTaskReviewPinPage() {
         </Box>
       ) : (
         <Stack spacing={2}>
-          {queue?.approval_policy_label ? (
-            <Alert severity="info">{queue.approval_policy_label}</Alert>
-          ) : null}
+          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+            {[
+              [locale === "es" ? "Pendiente" : "Pending", reviewCards.length],
+              [t("tasks.pin.inProgress"), (queue?.in_progress || []).length],
+              [t("tasks.pin.status.overdue"), (queue?.overdue || []).length],
+              [t("tasks.pin.approved"), (queue?.approved || []).length],
+              [t("tasks.pin.rejectedRedo"), (queue?.rejected || []).length],
+            ].map(([label, count]) => (
+              <Box
+                key={label}
+                sx={{
+                  px: 1,
+                  py: 0.5,
+                  borderRadius: 1.5,
+                  bgcolor: "#fff",
+                  border: `1px solid ${OPS_MOBILE.border}`,
+                  minWidth: 72,
+                }}
+              >
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ lineHeight: 1.1 }}>
+                  {label}
+                </Typography>
+                <Typography sx={{ fontWeight: 800, lineHeight: 1.2 }}>{count}</Typography>
+              </Box>
+            ))}
+          </Stack>
           {(queue?.shift_end?.blocking_close || []).length ? (
-            <Alert severity="warning">
+            <Typography variant="body2" color="error">
               {t("tasks.pin.blockingClose", {
                 count: (queue.shift_end.blocking_close || []).length,
                 plural: (queue.shift_end.blocking_close || []).length === 1 ? "" : "s",
               })}
-            </Alert>
-          ) : (
-            <Alert severity="success">{t("tasks.pin.noBlocking")}</Alert>
-          )}
+            </Typography>
+          ) : null}
           <Box>
             <Typography sx={{ fontWeight: 800, mb: 1, color: OPS_MOBILE.navy }}>
               {t("tasks.pin.pendingApprovals", { count: reviewCards.length })}
@@ -219,11 +260,13 @@ export default function CleaningTaskReviewPinPage() {
               )}
             </Stack>
           </Box>
-          {sections.map(([label, rows]) => (
-            <Box key={label}>
-              <Typography sx={{ fontWeight: 800, mb: 1, color: OPS_MOBILE.navy }}>
-                {label} ({rows.length})
-              </Typography>
+          {sections.map(([label, rows], index) => (
+            <ReviewGroup
+              key={label}
+              label={label}
+              count={rows.length}
+              startOpen={index === 0 || index === 1 || index === 4}
+            >
               <Stack spacing={1}>
                 {rows.length ? (
                   rows.map((row) => {
@@ -270,7 +313,7 @@ export default function CleaningTaskReviewPinPage() {
                   </Typography>
                 )}
               </Stack>
-            </Box>
+            </ReviewGroup>
           ))}
         </Stack>
       )}

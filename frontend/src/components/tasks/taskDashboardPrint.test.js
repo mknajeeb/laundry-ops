@@ -174,8 +174,8 @@ describe("task dashboard print document", () => {
     expect(page).toContain("Completion:");
     expect(page).toContain("Verification:");
     expect(config.indexOf(">Activity Groups<")).toBeLessThan(config.indexOf(">Standalone Tasks<"));
-    expect(config).toContain("Show inactive records");
-    expect(config).toContain("Nothing is saved until you click Save activity group.");
+    expect(config).toContain("Legacy / Archived");
+    expect(config).toContain("Nothing is deleted.");
   });
 
   it("omits labor duration when the dashboard hides labor", () => {

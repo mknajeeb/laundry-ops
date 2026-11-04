@@ -24,7 +24,7 @@ from backend.planned_weekly_schedule_task_timing import (
     normalize_timing,
     timing_display,
 )
-from backend.ta_helpers import invalidate_schema_cache, table_exists
+from backend.ta_helpers import invalidate_schema_cache, once_per_cursor, table_exists
 
 TABLE = "planned_weekly_schedule_responsibilities"
 
@@ -88,6 +88,7 @@ def _ensure_task_group_columns(cursor) -> None:
     _group_columns_ready = True
 
 
+@once_per_cursor("weekly_responsibilities")
 def ensure_responsibilities_table(cursor) -> None:
     if table_exists(cursor, TABLE):
         _ensure_task_group_columns(cursor)

@@ -21,7 +21,7 @@ import ActivityChecklistEditor, {
 import {
   checklistSections,
   groupActivitiesByCategory,
-  visibleCatalogRows,
+  isOperationalActivity,
 } from "../components/tasks/taskManagementLists";
 import {
   getEndOfDayClosingTemplate,
@@ -82,7 +82,6 @@ export default function ManagementTaskConfigPage() {
   const [globalDraft, setGlobalDraft] = useState(null);
   const [busy, setBusy] = useState(false);
   const [assignees, setAssignees] = useState([]);
-  const [showInactive, setShowInactive] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -375,14 +374,18 @@ export default function ManagementTaskConfigPage() {
     });
   };
 
-  const visibleTasks = useMemo(
-    () => visibleCatalogRows(tasks, { showInactive }),
-    [tasks, showInactive]
+  const visibleTasks = tasks;
+  const operationalGroups = useMemo(
+    () => activityGroups.filter(isOperationalActivity),
+    [activityGroups]
+  );
+  const legacyGroups = useMemo(
+    () => activityGroups.filter((group) => !isOperationalActivity(group)),
+    [activityGroups]
   );
   const activityBuckets = useMemo(
-    () =>
-      groupActivitiesByCategory(visibleCatalogRows(activityGroups, { showInactive }), categories),
-    [activityGroups, categories, showInactive]
+    () => groupActivitiesByCategory(operationalGroups, categories),
+    [operationalGroups, categories]
   );
 
   return (
@@ -394,10 +397,7 @@ export default function ManagementTaskConfigPage() {
             Task Management
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Activity Groups are the assignment for routine cleaning. Washer Cleaning, Floor Sweeping,
-            and Dryer Lint Cleaning each have one shared checklist. Standalone tasks remain for history
-            and for work that is not one of those groups. Assign on Weekly Schedule. Policy changes apply
-            to new activity only.
+            Start of Day, Intra-Day, End of Day, and Inventory. Assign employees on the Weekly Schedule.
           </Typography>
         </Box>
         <Button component={RouterLink} to="/management/tasks" size="small" variant="outlined">
@@ -560,15 +560,8 @@ export default function ManagementTaskConfigPage() {
               </Stack>
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-              Each group has one timer and a checklist. End of Day Closing opens the template here.
-              Nothing is saved until you click Save activity group.
+              Active groups only. Open Legacy / Archived for inactive, test, and older tasks.
             </Typography>
-            <FormControlLabel
-              control={
-                <Switch checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
-              }
-              label="Show inactive records"
-            />
             <Stack spacing={1.5}>
               {activityBuckets.length ? (
                 activityBuckets.map((bucket) => (
@@ -810,6 +803,48 @@ export default function ManagementTaskConfigPage() {
             </Paper>
           ) : null}
 
+          <Box component="details" sx={{ border: "1px solid", borderColor: "divider", borderRadius: 1, px: 1.5, py: 1 }}>
+            <Box component="summary" sx={{ cursor: "pointer", fontWeight: 800 }}>
+              Legacy / Archived
+            </Box>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1, mb: 1 }}>
+              Inactive groups, test records, and standalone tasks stay here. Nothing is deleted.
+            </Typography>
+            <Stack spacing={1} sx={{ mb: 1.5 }}>
+              {legacyGroups.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">
+                  No archived activity groups.
+                </Typography>
+              ) : (
+                legacyGroups.map((g) => (
+                  <Paper key={g.id || g.code} variant="outlined" sx={{ p: 1.25 }}>
+                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                      <Box>
+                        <Typography sx={{ fontWeight: 800 }}>
+                          {g.name}
+                          {!g.active ? <Chip size="small" label="Inactive" sx={{ ml: 0.5 }} /> : null}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {g.category_code || "intra_day"} · {g.role_code}
+                        </Typography>
+                      </Box>
+                      <Button
+                        size="small"
+                        onClick={() =>
+                          setGroupDraft({
+                            ...g,
+                            itemRows: itemsFromGroup(g.items),
+                            requireChecklistTouched: false,
+                          })
+                        }
+                      >
+                        Edit
+                      </Button>
+                    </Stack>
+                  </Paper>
+                ))
+              )}
+            </Stack>
           <Paper variant="outlined" sx={{ p: 1.5 }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
               <Typography sx={{ fontWeight: 800 }}>Standalone Tasks</Typography>
@@ -839,8 +874,7 @@ export default function ManagementTaskConfigPage() {
               </Button>
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-              These codes stay on existing assignments. Inactive rows stay in the catalog and appear
-              when Show inactive records is on.
+              These codes stay on existing assignments. Inactive rows stay in the catalog.
             </Typography>
             <Stack spacing={1}>
               {visibleTasks.length === 0 ? (
@@ -875,6 +909,7 @@ export default function ManagementTaskConfigPage() {
               ))}
             </Stack>
           </Paper>
+          </Box>
 
           {draft ? (
             <Paper variant="outlined" sx={{ p: 1.5 }}>

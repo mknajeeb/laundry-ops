@@ -139,7 +139,9 @@ export default function TaskVerificationReviewCard({
                   <Typography variant="caption" color="text.secondary" display="block">
                     {t("tasks.pin.responsible", {
                       name:
-                        item.responsibility_label && item.responsibility_label !== "Anyone on Team"
+                        item.responsibility_label &&
+                        item.responsibility_label !== "Anyone on Team" &&
+                        item.responsibility_label !== "Any assigned employee"
                           ? item.responsibility_label
                           : t("tasks.pin.anyone"),
                     })}
