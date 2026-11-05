@@ -305,11 +305,61 @@ def resolve_verification_policy(
             else:
                 chain.append("task_inherit")
 
+    return _policy_result(effective, inherited_from, chain)
+
+
+def resolve_checklist_item_policy(
+    cursor,
+    organization_id: int,
+    *,
+    activity_group: Mapping[str, Any] | None,
+    item: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Activity policy, unless this checklist item stores an explicit override.
+
+    A task definition's default verifier is not an item override. Historical
+    activity rows are not rewritten; callers snapshot the result onto new children.
+    """
+    group_policy = resolve_verification_policy(
+        cursor,
+        int(organization_id),
+        activity_group=activity_group,
+    )
+    row = item or {}
+    explicit = "verification_inherits" in row and row.get("verification_inherits") not in (
+        None,
+        "",
+        1,
+        True,
+        "1",
+    )
+    if not explicit:
+        inherited = dict(group_policy)
+        inherited["source"] = group_policy.get("source") or "activity_group"
+        chain = list(group_policy.get("resolution_chain") or [])
+        chain.append("checklist_item_inherit")
+        inherited["resolution_chain"] = chain
+        inherited["inherited"] = True
+        return inherited
+    item_policy = _normalize_policy_fields(
+        verification_required=row.get("verification_required"),
+        verification_method=row.get("verification_method"),
+        verification_timing=row.get("verification_timing"),
+        verifier_config=row.get("verifier_config")
+        if "verifier_config" in row
+        else row.get("verifier_config_json"),
+    )
+    chain = list(group_policy.get("resolution_chain") or ["global"])
+    chain.append("checklist_item_override")
+    return _policy_result(item_policy, "checklist_item", chain)
+
+
+def _policy_result(effective: Mapping[str, Any], inherited_from: str, chain: list[str]) -> dict[str, Any]:
     return {
         **effective,
         "source": inherited_from,
         "resolution_chain": chain,
-        "inherited": inherited_from != "task",
+        "inherited": inherited_from != "task" and inherited_from != "checklist_item",
         "policy_snapshot": {
             "verification_required": effective["verification_required"],
             "verification_method": effective["verification_method"],
@@ -318,6 +368,11 @@ def resolve_verification_policy(
             "source": inherited_from,
         },
     }
+
+
+def invalidate_schema_cache() -> None:
+    """Schema caches are cursor-scoped. This hook exists for policy tests."""
+    return None
 
 
 def snapshot_columns(policy: Mapping[str, Any]) -> dict[str, Any]:

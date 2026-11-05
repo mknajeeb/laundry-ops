@@ -37,6 +37,29 @@ export function employeeCheckSummary(checks) {
   }));
 }
 
+function itemIsDone(item) {
+  const checks = Array.isArray(item?.employee_checks) ? item.employee_checks : [];
+  if (checks.length) {
+    const live = checks.filter((check) => String(check?.status || "").toLowerCase() !== "excused");
+    if (!live.length) return false;
+    return live.every((check) => CHECK_DONE.has(String(check?.status || "").toLowerCase()));
+  }
+  return CHECK_DONE.has(String(item?.status || "").toLowerCase());
+}
+
+/** Required checklist progress for the card. Templates count when a session has not started. */
+export function checklistSummary(row) {
+  const shared = Array.isArray(row?.shared_checklist_items) ? row.shared_checklist_items : [];
+  const fromEmployees = (row?.contributions || []).flatMap((contribution) =>
+    Array.isArray(contribution?.group_items) ? contribution.group_items : [],
+  );
+  const templates = Array.isArray(row?.activity_group_items) ? row.activity_group_items : [];
+  const source = shared.length ? shared : fromEmployees.length ? fromEmployees : templates;
+  const required = source.filter((item) => item && item.required !== false && (item.task_code || item.task_name));
+  const done = required.filter((item) => itemIsDone(item)).length;
+  return { required: required.length, done: shared.length || fromEmployees.length ? done : 0 };
+}
+
 export function isMyChecklistItem(item, userId) {
   const mode = String(item?.responsibility_mode || "team");
   const ids = item?.responsibility_user_ids || [];

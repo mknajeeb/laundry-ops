@@ -133,9 +133,15 @@ def test_employee_report_counts_a_shared_activity_once():
     assert report["unique_activities"] == 1
     assert len(report["employees"]) == 2
     evelin = next(person for person in report["employees"] if person["employee_name"] == "Evelin")
+    florentina = next(person for person in report["employees"] if person["employee_name"] == "Florentina")
     assert evelin["assigned"] == 1
     assert evelin["in_progress"] == 1
+    assert evelin["verified"] == 0
+    assert florentina["not_started"] == 1
+    assert florentina["completed"] == 0
+    assert florentina["verified"] == 0
     assert evelin["activities"][0]["checklist_completed_by_employee"] == 1
+    assert florentina["activities"][0]["checklist_completed_by_employee"] == 0
     frequency = build_activity_frequency(
         [
             {

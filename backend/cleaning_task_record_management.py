@@ -46,6 +46,9 @@ _VOID_COLUMNS: tuple[tuple[str, str], ...] = (
 def ensure_record_management_schema(cursor) -> None:
     ensure_cleaning_task_activity_tables(cursor)
     ensure_manual_completion_schema(cursor)
+    if not table_has_column(cursor, TABLE, "participation_sessions_json"):
+        cursor.execute(f"ALTER TABLE {TABLE} ADD COLUMN participation_sessions_json TEXT NULL")
+        remember_column(TABLE, "participation_sessions_json")
     for col, ddl in _VOID_COLUMNS:
         if not table_has_column(cursor, TABLE, col):
             cursor.execute(f"ALTER TABLE {TABLE} ADD COLUMN {col} {ddl}")
@@ -126,6 +129,7 @@ def _snapshot(row: Mapping[str, Any]) -> dict[str, Any]:
         "assignment_group_id",
         "activity_kind",
         "parent_activity_id",
+        "participation_sessions_json",
     )
     out: dict[str, Any] = {}
     for key in keys:
@@ -394,3 +398,296 @@ def list_activity_revisions(cursor, organization_id: int, activity_id: int) -> l
                 item[key.replace("_json", "")] = {}
         out.append(item)
     return out
+
+
+def plan_participation_sessions(status: str, sessions: list[Mapping[str, Any]] | None) -> dict[str, Any]:
+    """Validate one employee's work sessions. A gap between sessions is a break.
+
+    Times are America/New_York wall times. This does not touch checklist rows.
+    """
+    chosen = str(status or "").strip().lower()
+    if chosen not in {"not_started", "in_progress", "finished"}:
+        raise CleaningTaskError("Participation status must be Not Started, In Progress, or Finished.", status=400)
+    raw_sessions = list(sessions or [])
+    if chosen == "not_started":
+        if raw_sessions:
+            raise CleaningTaskError("Not Started cannot include work sessions.", status=400)
+        return {
+            "participation_status": chosen,
+            "sessions": [],
+            "started_at": None,
+            "ended_at": None,
+            "duration_seconds": None,
+        }
+    if not raw_sessions:
+        raise CleaningTaskError("Add at least one work session.", status=400)
+    parsed: list[dict[str, datetime | None]] = []
+    for index, item in enumerate(raw_sessions):
+        if not isinstance(item, Mapping):
+            raise CleaningTaskError("Each work session needs a start time.", status=400)
+        start = item.get("started_at")
+        end = item.get("ended_at")
+        if not isinstance(start, datetime):
+            raise CleaningTaskError("Each work session needs a start time.", status=400)
+        if end is not None and not isinstance(end, datetime):
+            raise CleaningTaskError("Finish time is not a valid America/New_York time.", status=400)
+        parsed.append({"started_at": start.replace(microsecond=0), "ended_at": end.replace(microsecond=0) if isinstance(end, datetime) else None})
+    parsed.sort(key=lambda item: item["started_at"] or datetime.min)
+    for index, item in enumerate(parsed):
+        start = item["started_at"]
+        end = item["ended_at"]
+        last = index == len(parsed) - 1
+        if chosen == "in_progress" and last:
+            if end is not None:
+                raise CleaningTaskError("In Progress must end with an open session.", status=400)
+        elif end is None:
+            raise CleaningTaskError("Only the last session of in-progress work can omit a finish time.", status=400)
+        elif end < start:
+            raise CleaningTaskError("Finish time cannot be before start time.", status=400)
+        if index:
+            previous_end = parsed[index - 1]["ended_at"]
+            if previous_end is not None and start < previous_end:
+                raise CleaningTaskError("Work sessions cannot overlap. Leave a gap for a break.", status=400)
+    duration = 0
+    counted = False
+    for item in parsed:
+        if item["ended_at"] is not None and item["started_at"] is not None:
+            duration += max(0, int((item["ended_at"] - item["started_at"]).total_seconds()))
+            counted = True
+    stored = [
+        {
+            "started_at": item["started_at"].strftime("%Y-%m-%d %H:%M:%S") if item["started_at"] else None,
+            "ended_at": item["ended_at"].strftime("%Y-%m-%d %H:%M:%S") if item["ended_at"] else None,
+        }
+        for item in parsed
+    ]
+    return {
+        "participation_status": chosen,
+        "sessions": stored,
+        "started_at": parsed[0]["started_at"],
+        "ended_at": parsed[-1]["ended_at"],
+        "duration_seconds": duration if counted else None,
+    }
+
+
+def _latest_participation_activity(cursor, organization_id: int, responsibility_id: int, user_id: int):
+    void_sql = " AND voided_at IS NULL" if table_has_column(cursor, TABLE, "voided_at") else ""
+    cursor.execute(
+        f"""
+        SELECT * FROM {TABLE}
+        WHERE organization_id=%s AND responsibility_id=%s AND user_id=%s
+          AND parent_activity_id IS NULL
+          {void_sql}
+        ORDER BY id DESC LIMIT 1
+        """,
+        (int(organization_id), int(responsibility_id), int(user_id)),
+    )
+    return cursor.fetchone()
+
+
+def correct_employee_participation(
+    conn,
+    cursor,
+    *,
+    organization_id: int,
+    supervisor_user_id: int,
+    responsibility_id: int,
+    employee_user_id: int,
+    business_date: Any,
+    participation_status: str,
+    sessions: list[Mapping[str, Any]] | None,
+    reason: str,
+    activity_id: int | None = None,
+) -> dict[str, Any]:
+    """Correct one employee's timer. Does not check off checklist items or open verification."""
+    reason_text = str(reason or "").strip()
+    if len(reason_text) < 3:
+        raise CleaningTaskError("A correction reason is required.", status=400)
+    ensure_record_management_schema(cursor)
+    from backend.cleaning_task_manual_completion import _parse_et_datetime
+
+    parsed_sessions = []
+    for item in sessions or []:
+        if not isinstance(item, Mapping):
+            raise CleaningTaskError("Each work session needs a start time.", status=400)
+        parsed_sessions.append(
+            {
+                "started_at": _parse_et_datetime(item.get("started_at"), field="started_at"),
+                "ended_at": _parse_et_datetime(item.get("ended_at"), field="ended_at")
+                if item.get("ended_at") not in (None, "")
+                else None,
+            }
+        )
+    plan = plan_participation_sessions(participation_status, parsed_sessions)
+    day = _parse_et_date(business_date)
+    if day is None:
+        raise CleaningTaskError("A business date is required.", status=400)
+    oid = int(organization_id)
+    employee = int(employee_user_id)
+    from backend.cleaning_task_activity import (
+        STATUS_APPROVED,
+        STATUS_COMPLETED,
+        STATUS_IN_PROGRESS,
+        STATUS_PENDING_APPROVAL,
+        _day_responsibilities,
+    )
+
+    assignments = _day_responsibilities(cursor, oid, business_date=day, user_id=employee)
+    target = next((row for row in assignments if int(row.get("id") or 0) == int(responsibility_id)), None)
+    if not target or int(target.get("user_id") or 0) != employee:
+        raise CleaningTaskError("Assignment not found for that employee on the selected date.", status=404)
+
+    row = None
+    if activity_id:
+        row = get_activity(cursor, oid, int(activity_id))
+        if not row or int(row.get("user_id") or 0) != employee or int(row.get("responsibility_id") or 0) != int(responsibility_id):
+            raise CleaningTaskError("That participation record does not belong to this employee.", status=404)
+        if activity_is_voided(row):
+            raise CleaningTaskError("Cannot edit a voided activity.", status=409)
+    else:
+        row = _latest_participation_activity(cursor, oid, int(responsibility_id), employee)
+
+    chosen = plan["participation_status"]
+    if chosen == "not_started":
+        if not row:
+            return {"ok": True, "participation_status": "not_started", "activity": None}
+        if str(row.get("status") or "") == STATUS_APPROVED:
+            raise CleaningTaskError(
+                "Approved participation cannot be reset to Not Started. Correct the times instead.",
+                status=409,
+            )
+        before = _snapshot(row)
+        now = datetime.utcnow().replace(microsecond=0)
+        cursor.execute(
+            f"""
+            UPDATE {TABLE}
+            SET voided_at=%s, voided_by_user_id=%s, void_reason=%s,
+                completion_source=%s, times_manual=1, recorded_by_user_id=%s,
+                manual_reason=%s, updated_at=UTC_TIMESTAMP()
+            WHERE id=%s AND organization_id=%s
+            """,
+            (
+                now,
+                int(supervisor_user_id),
+                reason_text[:500],
+                SOURCE_CORRECTED,
+                int(supervisor_user_id),
+                reason_text[:500],
+                int(row["id"]),
+                oid,
+            ),
+        )
+        after_row = get_activity(cursor, oid, int(row["id"])) or {}
+        after = _snapshot(after_row)
+        _insert_revision(
+            cursor,
+            organization_id=oid,
+            activity_id=int(row["id"]),
+            revised_by_user_id=int(supervisor_user_id),
+            change_type=CHANGE_VOID,
+            reason=reason_text,
+            remarks=None,
+            before=before,
+            after=after,
+        )
+        _record_event(
+            cursor,
+            organization_id=oid,
+            activity_id=int(row["id"]),
+            event_type="participation_corrected",
+            actor_user_id=int(supervisor_user_id),
+            payload={"reason": reason_text, "before": before, "after": after},
+        )
+        conn.commit()
+        return {"ok": True, "participation_status": "not_started", "activity": serialize_activity(after_row)}
+
+    if row and str(row.get("status") or "") == STATUS_APPROVED and chosen != "finished":
+        raise CleaningTaskError("Approved participation can only have its times corrected.", status=409)
+    if row and str(row.get("status") or "") == "rejected":
+        row = None
+
+    if row is None:
+        from backend.cleaning_task_group_execution import start_group_activity
+        from backend.cleaning_task_activity import start_task
+        from backend.task_activity_groups import is_activity_group_code
+
+        if is_activity_group_code(str(target.get("role") or "")):
+            started = start_group_activity(
+                conn,
+                cursor,
+                organization_id=oid,
+                user_id=employee,
+                responsibility_id=int(responsibility_id),
+                shift_session_id=None,
+                business_date=day,
+            )
+        else:
+            started = start_task(
+                conn,
+                cursor,
+                organization_id=oid,
+                user_id=employee,
+                responsibility_id=int(responsibility_id),
+                shift_session_id=None,
+                business_date=day,
+            )
+        row = get_activity(cursor, oid, int(started["id"]))
+        if not row:
+            raise CleaningTaskError("Participation record could not be created.", status=500)
+
+    before = _snapshot(row)
+    current_status = str(row.get("status") or "")
+    if current_status == STATUS_APPROVED:
+        next_status = current_status
+    elif chosen == "in_progress":
+        next_status = STATUS_IN_PROGRESS
+    elif current_status == STATUS_PENDING_APPROVAL:
+        next_status = current_status
+    else:
+        next_status = STATUS_COMPLETED
+    sessions_json = json.dumps(plan["sessions"])
+    cursor.execute(
+        f"""
+        UPDATE {TABLE}
+        SET started_at=%s, ended_at=%s, duration_seconds=%s, status=%s, business_date=%s,
+            completion_source=%s, times_manual=1, recorded_by_user_id=%s, manual_reason=%s,
+            participation_sessions_json=%s, updated_at=UTC_TIMESTAMP()
+        WHERE id=%s AND organization_id=%s
+        """,
+        (
+            plan["started_at"],
+            plan["ended_at"],
+            plan["duration_seconds"],
+            next_status,
+            day,
+            SOURCE_CORRECTED,
+            int(supervisor_user_id),
+            reason_text[:500],
+            sessions_json,
+            int(row["id"]),
+            oid,
+        ),
+    )
+    after_row = get_activity(cursor, oid, int(row["id"])) or {}
+    after = _snapshot(after_row)
+    _insert_revision(
+        cursor,
+        organization_id=oid,
+        activity_id=int(row["id"]),
+        revised_by_user_id=int(supervisor_user_id),
+        change_type=CHANGE_CORRECTION,
+        reason=reason_text,
+        remarks=None,
+        before=before,
+        after=after,
+    )
+    _record_event(
+        cursor,
+        organization_id=oid,
+        activity_id=int(row["id"]),
+        event_type="participation_corrected",
+        actor_user_id=int(supervisor_user_id),
+        payload={"reason": reason_text, "before": before, "after": after, "sessions": plan["sessions"]},
+    )
+    conn.commit()
+    return {"ok": True, "participation_status": chosen, "activity": serialize_activity(after_row)}

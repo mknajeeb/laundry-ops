@@ -312,8 +312,8 @@ def test_each_assigned_employee_checks_off_the_same_items():
         business_date=date(2026, 11, 4),
         role="agroup_washer_and_floor_cleaning",
         group_items=[
-            {"task_code": "washer_cleaning", "display_order": 0, "required": True},
-            {"task_code": "floor_cleaning", "display_order": 1, "required": True},
+            {"task_code": "washer_cleaning", "display_order": 0, "required": True, "acknowledgment_mode": "each"},
+            {"task_code": "floor_cleaning", "display_order": 1, "required": True, "acknowledgment_mode": "each"},
         ],
         assigned_user_ids=[23, 36],
     )

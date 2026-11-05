@@ -37,6 +37,7 @@ def chart_status(row: Mapping[str, Any]) -> str:
         VERIFICATION_WAITING,
         assignment_is_completed,
         assignment_is_started,
+        VERIFICATION_NOT_REQUIRED,
         assignment_is_verified,
         assignment_needs_correction,
     )
@@ -52,6 +53,8 @@ def chart_status(row: Mapping[str, Any]) -> str:
     if verification in {VERIFICATION_WAITING, VERIFICATION_PARTIAL} or overall == "pending_verification":
         return "pending_verification"
     if assignment_is_completed(row):
+        if verification == VERIFICATION_NOT_REQUIRED:
+            return "completed"
         return "pending_verification"
     if assignment_is_started(row) or str(row.get("completion_status") or "") == COMPLETION_IN_PROGRESS:
         return "in_progress"
@@ -90,6 +93,7 @@ def stack_chart_buckets(days: list[Mapping[str, Any]], group_by: str = "daily") 
                 "verified": 0,
                 "overdue": 0,
                 "needs_correction": 0,
+                "completed": 0,
             }
         chart = row.get("chart") if isinstance(row.get("chart"), Mapping) else {}
         for name in grouped[key]:
@@ -181,6 +185,8 @@ def participation_rollup(shared_rows: list[Mapping[str, Any]]) -> dict[str, int]
 _REPORT_STATUS_LABELS = {
     "not_started": "Not Started",
     "in_progress": "In Progress",
+    "finished": "Finished",
+    "completed": "Completed",
     "pending_verification": "Waiting for Verification",
     "verified": "Verified",
     "overdue": "Overdue",
@@ -243,6 +249,35 @@ def _row_matches_filters(
     return True
 
 
+def _personal_checklist_counts(row: Mapping[str, Any], employee_id: int) -> tuple[int, int]:
+    """This employee's required check-offs. A partner's check does not count."""
+    done_states = {"completed", "approved", "verified"}
+    items = [
+        item
+        for item in (row.get("shared_checklist_items") or [])
+        if isinstance(item, Mapping) and item.get("required", True)
+    ]
+    if not items:
+        templates = [
+            item
+            for item in (row.get("activity_group_items") or [])
+            if isinstance(item, Mapping) and item.get("required", True) and item.get("task_code")
+        ]
+        return 0, len(templates)
+    done = 0
+    for item in items:
+        checks = [check for check in (item.get("employee_checks") or []) if isinstance(check, Mapping)]
+        mine = [check for check in checks if int(check.get("user_id") or 0) == int(employee_id)]
+        if mine:
+            if str(mine[0].get("status") or "").lower() in done_states:
+                done += 1
+        elif not checks:
+            completed_by = int(item.get("completed_by_user_id") or 0)
+            if completed_by == int(employee_id) and str(item.get("status") or "").lower() in done_states:
+                done += 1
+    return done, len(items)
+
+
 def build_employee_report(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     """One shared Activity counts once in the overall total, and once per assigned employee."""
     people: dict[int, dict[str, Any]] = {}
@@ -250,14 +285,6 @@ def build_employee_report(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     for row in rows or []:
         key = str(row.get("assignment_key") or id(row))
         seen.add(key)
-        status = chart_status(row)
-        checklist_by_user: dict[int, int] = {}
-        for item in row.get("shared_checklist_items") or []:
-            if not isinstance(item, Mapping):
-                continue
-            raw = item.get("completed_by_user_id")
-            if raw:
-                checklist_by_user[int(raw)] = checklist_by_user.get(int(raw), 0) + 1
         contributions = [c for c in (row.get("contributions") or []) if isinstance(c, Mapping)]
         if not contributions:
             continue
@@ -265,6 +292,9 @@ def build_employee_report(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
             eid = int(contrib.get("employee_id") or contrib.get("user_id") or 0)
             if not eid:
                 continue
+            part = str(contrib.get("participation_status") or "not_started")
+            own_verification = str(contrib.get("verification_status") or row.get("verification_status") or "")
+            checklist_done, checklist_required = _personal_checklist_counts(row, eid)
             person = people.setdefault(
                 eid,
                 {
@@ -279,34 +309,31 @@ def build_employee_report(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
                 },
             )
             person["assigned"] += 1
-            if status == "verified":
-                person["verified"] += 1
+            if part == "finished":
                 person["completed"] += 1
-            elif status == "pending_verification":
-                person["completed"] += 1
-            elif status == "in_progress":
+            elif part == "in_progress":
                 person["in_progress"] += 1
-            elif status == "not_started":
+            else:
                 person["not_started"] += 1
-            elif status == "overdue":
-                person["not_started"] += 1
+            if part == "finished" and own_verification == "verified":
+                person["verified"] += 1
             act = contrib.get("activity") if isinstance(contrib.get("activity"), Mapping) else {}
             person["activities"].append(
                 {
                     "assignment_key": key,
                     "activity": str(row.get("role_label") or row.get("role") or ""),
                     "business_date": str(row.get("business_date") or ""),
-                    "status": status,
-                    "status_label": _REPORT_STATUS_LABELS.get(status, str(row.get("status_label") or status)),
-                    "verification_status": str(row.get("verification_status") or ""),
-                    "verification_label": str(row.get("verification_label") or ""),
-                    "participation_status": str(contrib.get("participation_status") or ""),
+                    "status": part,
+                    "status_label": _REPORT_STATUS_LABELS.get(part, part.replace("_", " ").title()),
+                    "verification_status": own_verification,
+                    "verification_label": str(contrib.get("verification_label") or row.get("verification_label") or ""),
+                    "participation_status": part,
                     "started_at": act.get("started_at"),
                     "ended_at": act.get("ended_at"),
                     "duration_seconds": act.get("duration_seconds"),
-                    "checklist_done": row.get("checklist_done"),
-                    "checklist_required": row.get("checklist_required"),
-                    "checklist_completed_by_employee": checklist_by_user.get(eid, 0),
+                    "checklist_done": checklist_done,
+                    "checklist_required": checklist_required,
+                    "checklist_completed_by_employee": checklist_done,
                 }
             )
     employees = sorted(people.values(), key=lambda person: person["employee_name"].lower())
@@ -510,6 +537,7 @@ def monthly_task_performance(
             "verified": 0,
             "overdue": 0,
             "needs_correction": 0,
+            "completed": 0,
         }
         # Same assignment rules as the day dashboard. A group is one assignment and is
         # verified only when every required item is verified, not when the parent timer closes.

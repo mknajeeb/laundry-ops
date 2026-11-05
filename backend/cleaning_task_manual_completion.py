@@ -193,8 +193,14 @@ def record_manual_completion(
     group_item_codes: Sequence[str] | None = None,
     shared_item_completions: Sequence[Mapping[str, Any]] | None = None,
     business_date: date | None = None,
+    administrative_acknowledgment: bool = False,
 ) -> dict[str, Any]:
     """Record that work was done outside the PIN app (audited, not auto-verified)."""
+    if (shared_item_completions or group_item_codes) and not administrative_acknowledgment:
+        raise CleaningTaskError(
+            "Manual completion cannot acknowledge checklist items. Name the responsible employee with an administrative acknowledgment, or correct participation time only.",
+            status=400,
+        )
     ensure_manual_completion_schema(cursor)
     ensure_group_activity_schema(cursor)
     ensure_shared_activity_schema(cursor)
@@ -298,24 +304,20 @@ def record_manual_completion(
         from backend.cleaning_task_shared_execution import list_shared_session_items
         from backend.task_activity_groups import get_activity_group
 
-        if not (shared_item_completions or group_item_codes):
-            raise CleaningTaskError(
-                "Attribute every required shared checklist item before recording completion.",
-                status=400,
+        if shared_item_completions or group_item_codes:
+            attributed_items = _apply_shared_item_attributions(
+                conn,
+                cursor,
+                organization_id=oid,
+                supervisor_user_id=supervisor,
+                primary_user_id=employee,
+                primary_activity_id=activity_id,
+                primary_responsibility_id=int(responsibility_id),
+                business_date=day,
+                completed_at=end_dt,
+                shared_item_completions=shared_item_completions or [],
+                fallback_item_codes=list(group_item_codes or []),
             )
-        attributed_items = _apply_shared_item_attributions(
-            conn,
-            cursor,
-            organization_id=oid,
-            supervisor_user_id=supervisor,
-            primary_user_id=employee,
-            primary_activity_id=activity_id,
-            primary_responsibility_id=int(responsibility_id),
-            business_date=day,
-            completed_at=end_dt,
-            shared_item_completions=shared_item_completions or [],
-            fallback_item_codes=list(group_item_codes or []),
-        )
         refreshed = get_activity(cursor, oid, activity_id) or row or {}
         session_id = refreshed.get("shared_session_id")
         if session_id is not None:
@@ -574,16 +576,57 @@ def _apply_shared_item_attributions(
                 status=400,
             )
         if by_uid not in activity_by_user:
-            resp_id = by_user_resp[by_uid]
-            activity_by_user[by_uid] = _ensure_member_shared_activity(
-                conn,
-                cursor,
-                organization_id=oid,
-                user_id=by_uid,
-                responsibility_id=resp_id,
-                business_date=business_date,
-                started_at=completed_at,
+            cursor.execute(
+                f"""
+                SELECT * FROM {TABLE}
+                WHERE organization_id=%s AND responsibility_id=%s AND user_id=%s AND status=%s
+                ORDER BY id DESC LIMIT 1
+                """,
+                (oid, int(by_user_resp[by_uid]), by_uid, STATUS_IN_PROGRESS),
             )
+            existing_open = cursor.fetchone()
+            if isinstance(existing_open, dict):
+                activity_by_user[by_uid] = existing_open
+            else:
+                session_id = primary.get("shared_session_id")
+                if session_id is None:
+                    raise CleaningTaskError("Shared session is missing.", status=400)
+                cursor.execute(
+                    """
+                    UPDATE cleaning_task_shared_item_checks c
+                    INNER JOIN cleaning_task_shared_session_items i ON i.id = c.session_item_id
+                    SET c.status='completed', c.completed_at=%s
+                    WHERE c.organization_id=%s AND i.shared_session_id=%s AND i.task_code=%s
+                      AND c.user_id=%s AND c.status='pending'
+                    """,
+                    (completed_at, oid, int(session_id), code, by_uid),
+                )
+                if int(getattr(cursor, "rowcount", 0) or 0) == 0:
+                    cursor.execute(
+                        """
+                        UPDATE cleaning_task_shared_session_items
+                        SET status='completed', completed_at=%s, completed_by_user_id=%s
+                        WHERE organization_id=%s AND shared_session_id=%s AND task_code=%s
+                          AND status='pending'
+                        """,
+                        (completed_at, by_uid, oid, int(session_id), code),
+                    )
+                _record_event(
+                    cursor,
+                    organization_id=oid,
+                    activity_id=int(primary["id"]),
+                    event_type="administrative_acknowledgment",
+                    actor_user_id=int(supervisor_user_id),
+                    payload={
+                        "task_code": code,
+                        "completed_by_user_id": by_uid,
+                        "completed_at": completed_at.isoformat(sep=" "),
+                        "shared_session_id": int(session_id),
+                        "administrative_acknowledgment": True,
+                    },
+                )
+                applied.append({"task_code": code, "completed_by_user_id": by_uid, "administrative_acknowledgment": True})
+                continue
         member_act = activity_by_user[by_uid]
         if str(member_act.get("status")) != STATUS_IN_PROGRESS:
             # Re-open is not supported; still allow attribution if already in progress path failed.
@@ -638,45 +681,8 @@ def _apply_shared_item_attributions(
                 "shared_session_id": int(session_id) if session_id is not None else None,
             },
         )
-        applied.append({"task_code": code, "completed_by_user_id": by_uid})
+        applied.append({"task_code": code, "completed_by_user_id": by_uid, "administrative_acknowledgment": True})
 
-    # Finish other collaborators we started solely for attribution (independent timers).
-    for uid, act in activity_by_user.items():
-        if int(uid) == int(primary_user_id):
-            continue
-        if str(act.get("status")) != STATUS_IN_PROGRESS:
-            continue
-        try:
-            from backend.cleaning_task_group_execution import complete_group_activity
-
-            complete_group_activity(
-                conn,
-                cursor,
-                organization_id=oid,
-                user_id=int(uid),
-                activity_id=int(act["id"]),
-            )
-            _apply_manual_fields(
-                cursor,
-                oid=oid,
-                activity_id=int(act["id"]),
-                recorded_by=int(supervisor_user_id),
-                source=SOURCE_MANUAL,
-                reason="Shared item attribution (supervisor manual entry)",
-                remarks=None,
-                times_manual=True,
-            )
-            _record_event(
-                cursor,
-                organization_id=oid,
-                activity_id=int(act["id"]),
-                event_type="manual_shared_participation_closed",
-                actor_user_id=int(supervisor_user_id),
-                payload={"employee_user_id": int(uid)},
-            )
-        except CleaningTaskError:
-            # If group complete blocked (e.g. individual-mode remaining items), leave open.
-            pass
     return applied
 
 
@@ -831,4 +837,5 @@ def parse_manual_payload(data: Mapping[str, Any], *, require_completed_at: bool 
         ],
         "shared_item_completions": list(data.get("shared_item_completions") or []),
         "business_date": _parse_et_date(data.get("business_date")),
+        "administrative_acknowledgment": data.get("administrative_acknowledgment") in (True, 1, "1", "true"),
     }

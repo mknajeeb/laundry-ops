@@ -24,6 +24,7 @@ from backend.cleaning_task_activity import (
 from backend.task_catalog import VERIFY_NONE, VERIFY_SUPERVISOR
 from backend.task_verification_policy import (
     get_global_verification_policy,
+    resolve_checklist_item_policy,
     resolve_verification_policy,
     snapshot_columns,
     upsert_global_verification_policy,
@@ -153,6 +154,38 @@ def test_group_level_override(policy_env):
     assert resolved["verification_method"] == "employee"
     assert resolved["verification_timing"] == "next_day"
     assert resolved["source"] == "activity_group"
+
+
+def test_checklist_item_inherits_activity_unless_it_overrides(policy_env):
+    cur = policy_env
+    upsert_global_verification_policy(
+        cur, 3, {"verification_method": "supervisor", "verification_required": True, "verification_timing": "same_shift"}
+    )
+    group = {
+        "verification_inherits": False,
+        "verification_required": True,
+        "verification_method": "employee",
+        "verification_timing": "later_shift",
+        "verifier_config": {"user_ids": [4]},
+    }
+    inherited = resolve_checklist_item_policy(cur, 3, activity_group=group, item={"task_code": "floor", "verification_inherits": True})
+    assert inherited["verification_method"] == "employee"
+    assert inherited["verification_timing"] == "later_shift"
+    override = resolve_checklist_item_policy(
+        cur,
+        3,
+        activity_group=group,
+        item={
+            "verification_inherits": False,
+            "verification_required": True,
+            "verification_method": "role",
+            "verification_timing": "next_day",
+            "verifier_config": {"role_codes": ["supervisor"]},
+        },
+    )
+    assert override["source"] == "checklist_item"
+    assert override["verification_method"] == "role"
+    assert override["verification_timing"] == "next_day"
 
 
 def test_task_level_override_beats_group(policy_env):

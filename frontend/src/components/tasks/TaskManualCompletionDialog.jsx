@@ -76,11 +76,13 @@ export default function TaskManualCompletionDialog({
   const [itemCodes, setItemCodes] = useState([]);
   /** @type {Record<string, number|''>} */
   const [itemOwners, setItemOwners] = useState({});
+  const [administrativeAck, setAdministrativeAck] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setReason("");
     setRemarks("");
+    setAdministrativeAck(false);
     setIncludeStart(false);
     setCompletionDate(businessTodayYmd());
     setCompletionTime("10:00");
@@ -119,14 +121,16 @@ export default function TaskManualCompletionDialog({
       body.start_date = startDate;
       body.start_time = startTime;
     }
-    if (isShared && checklistItems.length) {
+    if (administrativeAck && isShared && checklistItems.length) {
+      body.administrative_acknowledgment = true;
       body.shared_item_completions = checklistItems
         .filter((it) => itemOwners[it.task_code])
         .map((it) => ({
           task_code: it.task_code,
           completed_by_user_id: Number(itemOwners[it.task_code]),
         }));
-    } else if (itemCodes.length) {
+    } else if (administrativeAck && itemCodes.length) {
+      body.administrative_acknowledgment = true;
       body.group_item_codes = itemCodes;
     }
     onSubmit?.(body);
@@ -143,6 +147,10 @@ export default function TaskManualCompletionDialog({
             : " — audited revision; original history is preserved."}
         </Typography>
         <Stack spacing={1.5}>
+          <FormControlLabel
+            control={<Switch checked={administrativeAck} onChange={(e) => setAdministrativeAck(e.target.checked)} />}
+            label="Administrative acknowledgment (names the employee and is audited)"
+          />
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
             <TextField
               type="date"

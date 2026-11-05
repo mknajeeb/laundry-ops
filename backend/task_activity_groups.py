@@ -139,6 +139,30 @@ def ensure_task_activity_group_tables(cursor) -> None:
         ensure_item_responsibility_schema(cursor)
     except Exception:
         pass
+    if table_exists(cursor, GROUPS_TABLE) and not table_has_column(cursor, GROUPS_TABLE, "archived"):
+        cursor.execute(
+            f"ALTER TABLE {GROUPS_TABLE} ADD COLUMN archived TINYINT(1) NOT NULL DEFAULT 0"
+        )
+        remember_column(GROUPS_TABLE, "archived")
+    if table_exists(cursor, GROUP_ITEMS_TABLE) and not table_has_column(
+        cursor, GROUP_ITEMS_TABLE, "acknowledgment_mode"
+    ):
+        cursor.execute(
+            f"ALTER TABLE {GROUP_ITEMS_TABLE} ADD COLUMN acknowledgment_mode VARCHAR(16) NOT NULL DEFAULT 'any'"
+        )
+        remember_column(GROUP_ITEMS_TABLE, "acknowledgment_mode")
+    for column, ddl in (
+        ("verification_inherits", "TINYINT(1) NOT NULL DEFAULT 1"),
+        ("verification_required", "TINYINT(1) NULL"),
+        ("verification_method", "VARCHAR(32) NULL"),
+        ("verification_timing", "VARCHAR(32) NULL"),
+        ("verifier_config_json", "TEXT NULL"),
+    ):
+        if table_exists(cursor, GROUP_ITEMS_TABLE) and not table_has_column(
+            cursor, GROUP_ITEMS_TABLE, column
+        ):
+            cursor.execute(f"ALTER TABLE {GROUP_ITEMS_TABLE} ADD COLUMN {column} {ddl}")
+            remember_column(GROUP_ITEMS_TABLE, column)
 
 
 def _slug_code(raw: str, *, max_len: int = 28) -> str:
@@ -230,6 +254,27 @@ def _serialize_group(
                 "section_label": (str(it.get("section_label") or "").strip() or None),
                 "section_order": int(it.get("section_order") or 0),
                 "active": it.get("active", True) not in (0, False, "0"),
+                "acknowledgment_mode": (
+                    "each"
+                    if str(it.get("acknowledgment_mode") or "").strip().lower() in {"each", "all", "every"}
+                    else "any"
+                ),
+                "verification_inherits": it.get("verification_inherits", 1) not in (0, False, "0"),
+                "verification_required": (
+                    None
+                    if it.get("verification_inherits", 1) not in (0, False, "0")
+                    else bool(it.get("verification_required", True))
+                ),
+                "verification_method": (
+                    None
+                    if it.get("verification_inherits", 1) not in (0, False, "0")
+                    else it.get("verification_method")
+                ),
+                "verification_timing": (
+                    None
+                    if it.get("verification_inherits", 1) not in (0, False, "0")
+                    else it.get("verification_timing")
+                ),
                 "instructions": (str(it.get("instructions") or "").strip() or None)
                 or meta.get("description")
                 or meta.get("instructions")
@@ -239,9 +284,6 @@ def _serialize_group(
                 "task_name_es": (str(it.get("task_name_es") or "").strip() or None),
                 "completion_type": meta.get("completion_type"),
                 "timer_enabled": meta.get("timer_enabled"),
-                "verification_required": meta.get("verification_required"),
-                "verification_method": meta.get("verification_method"),
-                "verification_inherits": bool(meta.get("verification_inherits", False)),
                 "input_schema": meta.get("input_schema") or [],
                 **responsibility,
             }
@@ -259,6 +301,7 @@ def _serialize_group(
         "category_code": str(row.get("category_code") or ""),
         "display_order": int(row.get("display_order") or 0),
         "active": bool(row.get("active", True)),
+        "archived": row.get("archived") in (1, True, "1"),
         "kind": KIND_ACTIVITY_GROUP,
         "verification_inherits": inherits,
         "verification_required": bool(
@@ -458,6 +501,105 @@ def _sync_schedule_role(cursor, organization_id: int, group: Mapping[str, Any]) 
     )
 
 
+def _save_item_rules(cursor, organization_id: int, item_id: int, item: Mapping[str, Any]) -> None:
+    """Store acknowledgment and item verification without rewriting completed sessions."""
+    if not item_id or not table_has_column(cursor, GROUP_ITEMS_TABLE, "acknowledgment_mode"):
+        return
+    import json as _json
+
+    inherits = item.get("verification_inherits", True) not in (0, False, "0")
+    verifier = item.get("verifier_config") or {}
+    cursor.execute(
+        f"""
+        UPDATE {GROUP_ITEMS_TABLE}
+        SET acknowledgment_mode=%s, verification_inherits=%s, verification_required=%s,
+            verification_method=%s, verification_timing=%s, verifier_config_json=%s
+        WHERE id=%s AND organization_id=%s
+        """,
+        (
+            "each" if str(item.get("acknowledgment_mode") or "") == "each" else "any",
+            1 if inherits else 0,
+            None if inherits else (1 if item.get("verification_required", True) else 0),
+            None if inherits else (item.get("verification_method") or None),
+            None if inherits else (item.get("verification_timing") or None),
+            None if inherits else _json.dumps(verifier if isinstance(verifier, dict) else {}),
+            int(item_id),
+            int(organization_id),
+        ),
+    )
+
+
+def _group_has_execution(cursor, organization_id: int, role_code: str) -> bool:
+    oid = int(organization_id)
+    role = str(role_code or "")
+    if role and table_exists(cursor, "cleaning_task_activities"):
+        cursor.execute(
+            "SELECT id FROM cleaning_task_activities WHERE organization_id=%s AND role=%s LIMIT 1",
+            (oid, role),
+        )
+        if cursor.fetchone():
+            return True
+    if role and table_exists(cursor, "cleaning_task_shared_sessions"):
+        cursor.execute(
+            "SELECT id FROM cleaning_task_shared_sessions WHERE organization_id=%s AND role=%s LIMIT 1",
+            (oid, role),
+        )
+        if cursor.fetchone():
+            return True
+    return False
+
+
+def retire_activity_group(
+    cursor,
+    organization_id: int,
+    group_id: int,
+    *,
+    permanent: bool = False,
+) -> dict[str, Any]:
+    """Archive a group that has history. Delete a group only when nothing has run."""
+    ensure_task_activity_group_tables(cursor)
+    oid = int(organization_id)
+    group = get_activity_group(cursor, oid, group_id=int(group_id))
+    if not group:
+        raise ActivityGroupError("Activity not found.", status=404)
+    role_code = str(group.get("role_code") or "")
+    has_history = _group_has_execution(cursor, oid, role_code)
+    if permanent and not has_history:
+        cursor.execute(
+            f"DELETE FROM {GROUP_ITEMS_TABLE} WHERE organization_id=%s AND group_id=%s",
+            (oid, int(group["id"])),
+        )
+        cursor.execute(
+            f"DELETE FROM {GROUPS_TABLE} WHERE organization_id=%s AND id=%s",
+            (oid, int(group["id"])),
+        )
+        if role_code and table_exists(cursor, "weekly_schedule_roles"):
+            cursor.execute(
+                "DELETE FROM weekly_schedule_roles WHERE organization_id=%s AND code=%s",
+                (oid, role_code),
+            )
+        return {"deleted": True, "archived": False, "activity_group_id": int(group["id"])}
+    cursor.execute(
+        f"UPDATE {GROUPS_TABLE} SET active=0, archived=1 WHERE organization_id=%s AND id=%s",
+        (oid, int(group["id"])),
+    )
+    if role_code and table_exists(cursor, "weekly_schedule_roles"):
+        cursor.execute(
+            "UPDATE weekly_schedule_roles SET active=0 WHERE organization_id=%s AND code=%s",
+            (oid, role_code),
+        )
+    cached = getattr(cursor, "_vw_activity_group", None)
+    if isinstance(cached, dict):
+        cached.clear()
+    saved = get_activity_group(cursor, oid, group_id=int(group["id"]))
+    return {
+        "deleted": False,
+        "archived": True,
+        "had_history": has_history,
+        "activity_group": saved,
+    }
+
+
 def upsert_activity_group(
     cursor,
     organization_id: int,
@@ -562,6 +704,15 @@ def upsert_activity_group(
                 else None
             )
             active = item.get("active", True) not in (0, False, "0")
+            acknowledgment_mode = (
+                "each"
+                if str(item.get("acknowledgment_mode") or "").strip().lower() in {"each", "all", "every"}
+                else "any"
+            )
+            verification_inherits = item.get("verification_inherits", True) not in (0, False, "0")
+        if isinstance(item, str):
+            acknowledgment_mode = "any"
+            verification_inherits = True
         if not tc:
             continue
         if is_activity_group_code(tc):
@@ -592,6 +743,12 @@ def upsert_activity_group(
                 "set_section_label_es": isinstance(item, Mapping) and "section_label_es" in item,
                 "set_task_name_es": isinstance(item, Mapping) and "task_name_es" in item,
                 "active": active,
+                "acknowledgment_mode": acknowledgment_mode,
+                "verification_inherits": verification_inherits,
+                "verification_required": None if verification_inherits or not isinstance(item, Mapping) else item.get("verification_required"),
+                "verification_method": None if verification_inherits or not isinstance(item, Mapping) else item.get("verification_method"),
+                "verification_timing": None if verification_inherits or not isinstance(item, Mapping) else item.get("verification_timing"),
+                "verifier_config": {} if verification_inherits or not isinstance(item, Mapping) else (item.get("verifier_config") or {}),
             }
         )
     if not normalized:
@@ -766,6 +923,7 @@ def upsert_activity_group(
                         oid,
                     ),
                 )
+            _save_item_rules(cursor, oid, int(current["id"]), item)
             continue
         if has_responsibility:
             columns = (
@@ -802,6 +960,7 @@ def upsert_activity_group(
                 f"INSERT INTO {GROUP_ITEMS_TABLE} ({columns}) VALUES ({placeholders})",
                 tuple(values),
             )
+            _save_item_rules(cursor, oid, int(cursor.lastrowid), item)
         else:
             cursor.execute(
                 f"""
@@ -817,6 +976,7 @@ def upsert_activity_group(
                     1 if item["required"] else 0,
                 ),
             )
+            _save_item_rules(cursor, oid, int(cursor.lastrowid), item)
     for code, row in by_code.items():
         if code in keep_codes or row.get("id") is None:
             continue

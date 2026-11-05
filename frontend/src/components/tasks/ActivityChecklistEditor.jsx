@@ -101,6 +101,10 @@ function blankItem(sectionLabel, sectionOrder) {
     section_order: sectionOrder || 0,
     responsibility_mode: "team",
     responsibility_user_ids: [],
+    acknowledgment_mode: "any",
+    verification_inherits: true,
+    verification_method: "supervisor",
+    verification_timing: "same_shift",
     input_schema: [],
     fields: [],
   };
@@ -120,6 +124,10 @@ export function itemsFromGroup(items) {
     section_order: item.section_order || 0,
     responsibility_mode: item.responsibility_mode === "named" ? "named" : "team",
     responsibility_user_ids: item.responsibility_user_ids || [],
+    acknowledgment_mode: item.acknowledgment_mode === "each" ? "each" : "any",
+    verification_inherits: item.verification_inherits !== false,
+    verification_method: item.verification_method || "supervisor",
+    verification_timing: item.verification_timing || "same_shift",
     input_schema: item.input_schema || [],
     fields: schemaToFields(item.input_schema),
   }));
@@ -142,6 +150,10 @@ export function itemsToPayload(rows) {
       display_order: (index + 1) * 10,
       responsibility_mode: row.responsibility_mode === "named" ? "named" : "team",
       responsibility_user_ids: row.responsibility_user_ids || [],
+      acknowledgment_mode: row.acknowledgment_mode === "each" ? "each" : "any",
+      verification_inherits: row.verification_inherits !== false,
+      verification_method: row.verification_inherits === false ? row.verification_method || "supervisor" : null,
+      verification_timing: row.verification_inherits === false ? row.verification_timing || "same_shift" : null,
       input_schema: (row.fields || []).filter((field) => field.label).map(fieldToSchema),
     }));
 }
@@ -154,6 +166,8 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
     { value: "text", label: t("tasks.config.text") },
     { value: "machine_numbers", label: t("tasks.config.machineNumbers") },
     { value: "photo", label: t("tasks.config.photo") },
+    { value: "yes_no", label: t("tasks.config.yesNo") },
+    { value: "checkbox", label: t("tasks.config.checkbox") },
   ];
   const rows = items || [];
   const sections = [];
@@ -359,6 +373,52 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                           </MenuItem>
                         ))}
                       </TextField>
+                    ) : null}
+                    <TextField
+                      select
+                      size="small"
+                      label={t("tasks.config.acknowledgment")}
+                      value={row.acknowledgment_mode === "each" ? "each" : "any"}
+                      onChange={(e) => update(index, { acknowledgment_mode: e.target.value })}
+                    >
+                      <MenuItem value="any">{t("tasks.config.acknowledgmentAny")}</MenuItem>
+                      <MenuItem value="each">{t("tasks.config.acknowledgmentEach")}</MenuItem>
+                    </TextField>
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          checked={row.verification_inherits !== false}
+                          onChange={(e) => update(index, { verification_inherits: e.target.checked })}
+                        />
+                      }
+                      label={t("tasks.config.inheritVerification")}
+                    />
+                    {row.verification_inherits === false ? (
+                      <Stack direction={{ xs: "column", sm: "row" }} spacing={0.5}>
+                        <TextField
+                          select
+                          size="small"
+                          label={t("tasks.config.verificationMethod")}
+                          value={row.verification_method || "supervisor"}
+                          onChange={(e) => update(index, { verification_method: e.target.value })}
+                        >
+                          <MenuItem value="supervisor">{t("tasks.config.supervisor")}</MenuItem>
+                          <MenuItem value="employee">{t("tasks.config.employeePeer")}</MenuItem>
+                          <MenuItem value="role">{t("tasks.config.roleBased")}</MenuItem>
+                          <MenuItem value="none">{t("tasks.config.none")}</MenuItem>
+                        </TextField>
+                        <TextField
+                          select
+                          size="small"
+                          label={t("tasks.config.verificationTiming")}
+                          value={row.verification_timing || "same_shift"}
+                          onChange={(e) => update(index, { verification_timing: e.target.value })}
+                        >
+                          <MenuItem value="same_shift">{t("tasks.config.sameShift")}</MenuItem>
+                          <MenuItem value="later_shift">{t("tasks.config.laterShift")}</MenuItem>
+                          <MenuItem value="next_day">{t("tasks.config.nextDay")}</MenuItem>
+                        </TextField>
+                      </Stack>
                     ) : null}
                     <Typography variant="caption" sx={{ fontWeight: 800 }}>
                       Input fields

@@ -548,7 +548,10 @@ def complete_group_activity(
 
     # Spawn verification child activities (no duration) for items that need verify.
     catalog = _role_catalog(cursor, oid)
-    from backend.task_verification_policy import resolve_verification_policy, snapshot_columns
+    from backend.task_verification_policy import resolve_checklist_item_policy, snapshot_columns
+    definition_items = {
+        str(row.get("task_code") or ""): row for row in ((parent_group or {}).get("items") or [])
+    }
     for it in items:
         if str(it.get("status")) != ITEM_COMPLETED:
             continue
@@ -556,12 +559,11 @@ def complete_group_activity(
             continue
         code = str(it.get("task_code") or "")
         meta = _task_meta_for_role(cursor, oid, code)
-        policy = resolve_verification_policy(
+        policy = resolve_checklist_item_policy(
             cursor,
             oid,
-            task_code=code,
             activity_group=parent_group,
-            task_definition=meta,
+            item=definition_items.get(code),
         )
         snap = snapshot_columns(policy)
         verify_required = bool(snap["verification_required"])

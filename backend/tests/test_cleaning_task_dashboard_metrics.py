@@ -320,7 +320,7 @@ def test_october_28_completed_rows_are_not_counted_twice():
     assert metrics["total_assigned"] == 4
     assert metrics["started"] == 4
     assert metrics["completed"] == 4
-    assert metrics["verified"] == 4
+    assert metrics["verified"] == 2
     assert metrics["completion_rate"] == 100
     assert metrics["started"] <= metrics["total_assigned"]
     assert metrics["completed"] <= metrics["total_assigned"]
@@ -392,7 +392,7 @@ def test_shared_pair_counts_once_and_keeps_both_timers():
     assert out["metrics"]["total_assigned"] == 1
     assert out["metrics"]["started"] == 1
     assert out["metrics"]["completed"] == 1
-    assert out["metrics"]["verified"] == 1
+    assert out["metrics"]["verified"] == 0
     assert out["metrics"]["completion_rate"] == 100
     assert out["metrics"]["contributions_assigned"] == 2
     assert len(out["durations"]) == 2

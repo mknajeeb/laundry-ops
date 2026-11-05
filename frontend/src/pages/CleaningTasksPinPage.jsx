@@ -796,7 +796,7 @@ export default function CleaningTasksPinPage() {
               {activeGroupName}
             </Typography>
             <InstructionHint
-              text={activeGroupInstructions || active.remarks}
+              text={activeGroupInstructions}
               label={t("tasks.pin.instructions")}
             />
           </Stack>
@@ -868,7 +868,7 @@ export default function CleaningTasksPinPage() {
             <Typography variant="h6" sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
               {activeName}
             </Typography>
-            <InstructionHint text={activeInstructions || active.remarks} label={t("tasks.pin.instructions")} />
+            <InstructionHint text={activeInstructions} label={t("tasks.pin.instructions")} />
           </Stack>
           <Typography variant="body2" color="text.secondary">
             {active.timing_label || t("tasks.pin.anytime")}
@@ -948,7 +948,9 @@ export default function CleaningTasksPinPage() {
                     }}
                   >
                     <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
+                      {item.verification_queue_kind === "previous_shift" ? `${t("tasks.dashboard.previousShift")} · ` : ""}
                       {item.role_label || item.role}
+                      {item.verification_overdue ? ` · ${t("tasks.pin.status.overdue")}` : ""}
                     </Typography>
                     <Typography variant="body2" color="text.secondary">
                       {categoryLabel(t, item.category_code, item.category_name) || t("tasks.pin.task")} ·{" "}

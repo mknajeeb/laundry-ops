@@ -36,6 +36,7 @@ from backend.task_activity_groups import (
     ActivityGroupError,
     is_activity_group_code,
     list_activity_groups,
+    retire_activity_group,
     upsert_activity_group,
 )
 from backend.task_catalog import (
@@ -1329,6 +1330,7 @@ def register_cleaning_task_activity_routes(
                 group_item_codes=parsed.get("group_item_codes") or [],
                 shared_item_completions=parsed.get("shared_item_completions") or [],
                 business_date=parsed.get("business_date"),
+                administrative_acknowledgment=bool(parsed.get("administrative_acknowledgment")),
             )
             conn.commit()
             return jsonify({"ok": True, "activity": activity})
@@ -1413,6 +1415,109 @@ def register_cleaning_task_activity_routes(
                 business_date=data.get("business_date"),
             )
             return jsonify({"ok": True, "activity": activity})
+        except CleaningTaskError as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"error": exc.message, **exc.payload}), exc.status
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @app.route("/api/management/task-dashboard/excuse-participant", methods=["POST"])
+    def management_task_dashboard_excuse_participant():
+        """Excuse or reassign an absent employee without creating time or check-offs."""
+        from backend.cleaning_task_shared_execution import excuse_or_reassign_participant
+
+        conn, cursor, org_id, me, err = _mgmt_write_gate(require_hub=False)
+        if err:
+            return err
+        try:
+            data = request.json or {}
+            result = excuse_or_reassign_participant(
+                cursor,
+                organization_id=int(org_id),
+                actor_user_id=int(me.get("user_id") or me.get("id") or 0),
+                shared_session_id=int(data["shared_session_id"]) if data.get("shared_session_id") else None,
+                employee_user_id=int(data.get("employee_user_id") or 0),
+                reason=str(data.get("reason") or ""),
+                action=str(data.get("action") or "excuse"),
+                replacement_user_id=int(data["replacement_user_id"]) if data.get("replacement_user_id") else None,
+                assignment_group_id=data.get("assignment_group_id"),
+                role=data.get("role"),
+                business_date=data.get("business_date"),
+                assigned_user_ids=data.get("assigned_user_ids") or [],
+            )
+            conn.commit()
+            return jsonify(result)
+        except CleaningTaskError as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"error": exc.message, **exc.payload}), exc.status
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @app.route("/api/management/task-catalog/activity-groups/<int:group_id>/retire", methods=["POST"])
+    def management_task_catalog_activity_group_retire(group_id: int):
+        conn, cursor, org_id, err = _mgmt_catalog_gate()
+        if err:
+            return err
+        try:
+            data = request.json or {}
+            result = retire_activity_group(
+                cursor,
+                int(org_id),
+                int(group_id),
+                permanent=bool(data.get("permanent")),
+            )
+            conn.commit()
+            return jsonify({"ok": True, **result})
+        except ActivityGroupError as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"error": exc.message}), exc.status
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @app.route("/api/management/task-dashboard/correct-participation", methods=["POST"])
+    def management_task_dashboard_correct_participation():
+        """Correct one employee's timer without checking off checklist items."""
+        from backend.cleaning_task_record_management import correct_employee_participation
+
+        conn, cursor, org_id, me, err = _mgmt_write_gate(require_hub=False)
+        if err:
+            return err
+        try:
+            data = request.json or {}
+            if not data.get("responsibility_id") or not data.get("employee_user_id"):
+                return jsonify({"error": "responsibility_id and employee_user_id are required"}), 400
+            result = correct_employee_participation(
+                conn,
+                cursor,
+                organization_id=int(org_id),
+                supervisor_user_id=int(me.get("user_id") or me.get("id") or 0),
+                responsibility_id=int(data.get("responsibility_id")),
+                employee_user_id=int(data.get("employee_user_id")),
+                business_date=data.get("business_date"),
+                participation_status=str(data.get("participation_status") or ""),
+                sessions=data.get("sessions") or [],
+                reason=str(data.get("reason") or ""),
+                activity_id=int(data["activity_id"]) if data.get("activity_id") else None,
+            )
+            return jsonify(result)
         except CleaningTaskError as exc:
             try:
                 conn.rollback()

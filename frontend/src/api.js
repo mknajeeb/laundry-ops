@@ -509,6 +509,15 @@ export const manualCompleteManagementTask = (body) =>
 export const correctManagementTaskCompletion = (body) =>
   axios.post(`${API_BASE}/api/management/task-dashboard/correct-completion`, body);
 
+export const correctManagementTaskParticipation = (body) =>
+  axios.post(`${API_BASE}/api/management/task-dashboard/correct-participation`, body);
+
+export const excuseManagementParticipant = (body) =>
+  axios.post(`${API_BASE}/api/management/task-dashboard/excuse-participant`, body);
+
+export const retireManagementActivityGroup = (groupId, body) =>
+  axios.post(`${API_BASE}/api/management/task-catalog/activity-groups/${groupId}/retire`, body);
+
 export const updateManagementTaskRecord = (body) =>
   axios.post(`${API_BASE}/api/management/task-dashboard/update-record`, body);
 

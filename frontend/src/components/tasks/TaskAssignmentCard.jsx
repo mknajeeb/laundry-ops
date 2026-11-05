@@ -18,6 +18,7 @@ import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import { CompletionDetails } from "../../opsMobile/TaskCompletionInputs";
 import { ChecklistBadge, TaskStatusBadge } from "./TaskStatusBadge";
 import {
+  formatDashboardDate,
   formatDashboardDateTime,
   formatDashboardTime,
   participationTimeLine,
@@ -27,7 +28,7 @@ import {
   participationStatusOf,
   showPerEmployeeChecklist,
 } from "./taskDashboardLabels";
-import { employeeCheckSummary, responsibilityLabel, visibleSectionLabel } from "./sharedChecklistOwnership";
+import { checklistSummary, employeeCheckSummary, responsibilityLabel, visibleSectionLabel } from "./sharedChecklistOwnership";
 
 function ChecklistItemTitle({ item, label }) {
   const { locale } = useI18n();
@@ -67,7 +68,8 @@ export default function TaskAssignmentCard({
   canManual,
   onApprove,
   onReject,
-  onManual,
+  onEditParticipation,
+  onExcuse,
   onEditRecord,
   onVoidRecord,
   rejectId,
@@ -89,15 +91,13 @@ export default function TaskAssignmentCard({
     "name_es",
   );
   const showParticipation = Boolean(row.shared || row.execution_mode === "shared" || row.overall_status);
-  const requiredItems = checklistItems.filter((item) => item.required !== false);
-  const checklistDone = requiredItems.filter((item) =>
-    ["completed", "approved", "verified"].includes(String(item.status || "").toLowerCase())
-  ).length;
-  const checklistRequired = row.checklist_required ?? requiredItems.length;
-  const checklistProgress = row.checklist_done ?? checklistDone;
-  const statusText = row.overall_status
-    ? taskStatusLabel(t, row.overall_status)
-    : taskStatusLabel(t, row.status);
+  const summary = checklistSummary(row);
+  const checklistRequired = summary.required;
+  const checklistProgress = summary.done;
+  const statusText =
+    row.overall_status === "verified" && row.verification_status && row.verification_status !== "verified"
+      ? taskStatusLabel(t, row.completion_status || "completed")
+      : taskStatusLabel(t, row.overall_status || row.status);
   const verifyLocked = row.verification_eligible === false;
   const sectionHeadings = (row.checklist_sections || [])
     .map((section) => ({
@@ -146,6 +146,8 @@ export default function TaskAssignmentCard({
             ) : null}
           </Stack>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.2 }}>
+            {formatDashboardDate(row.business_date)}
+            {" · "}
             {employees}
             {row.timing_label ? ` · ${row.timing_label}` : ""}
           </Typography>
@@ -364,14 +366,14 @@ export default function TaskAssignmentCard({
                           </Button>
                         </>
                       ) : null}
-                      {!readOnly && canManual && c.can_manual_complete ? (
-                        <Button size="small" variant="outlined" onClick={() => onManual(row, c, "record")}>
-                          Add / Record
+                      {!readOnly && canManual ? (
+                        <Button size="small" variant="outlined" onClick={() => onEditParticipation?.(row, c)}>
+                          {t("tasks.dashboard.editParticipation")}
                         </Button>
                       ) : null}
-                      {!readOnly && canManual && c.can_correct && act.id ? (
-                        <Button size="small" onClick={() => onManual(row, c, "correct")}>
-                          Correct
+                      {!readOnly && canManual && c.participation_requirement !== "excused" ? (
+                        <Button size="small" onClick={() => onExcuse?.(row, c)}>
+                          {t("tasks.dashboard.excuse")}
                         </Button>
                       ) : null}
                     </Stack>

@@ -31,6 +31,7 @@ import {
   getManagementTaskCatalog,
   upsertManagementTaskChecklist,
   upsertManagementTaskDefinition,
+  retireManagementActivityGroup,
   upsertManagementTaskActivityGroup,
   upsertManagementTaskVerificationPolicy,
   updateManagementTaskCategory,
@@ -155,6 +156,24 @@ export default function ManagementTaskConfigPage() {
       await load();
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || t("tasks.config.updateFailed"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const retireGroup = async (group, permanent) => {
+    setBusy(true);
+    setError("");
+    try {
+      const saved = await retireManagementActivityGroup(group.id, { permanent });
+      setOkMsg(
+        saved.data?.deleted
+          ? t("tasks.config.deletedUnused")
+          : t("tasks.config.archivedInstead"),
+      );
+      await load();
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || t("tasks.config.saveFailed"));
     } finally {
       setBusy(false);
     }
@@ -636,6 +655,12 @@ export default function ManagementTaskConfigPage() {
                               }
                             >
                               {t("tasks.config.edit")}
+                            </Button>
+                            <Button size="small" disabled={busy} onClick={() => retireGroup(g, false)}>
+                              {t("tasks.config.archive")}
+                            </Button>
+                            <Button size="small" color="error" disabled={busy} onClick={() => retireGroup(g, true)}>
+                              {t("tasks.config.deleteUnused")}
                             </Button>
                           </Stack>
                         </Paper>

@@ -49,6 +49,9 @@ SESSION_OPEN = "open"
 SESSION_CHECKLIST_COMPLETE = "checklist_complete"
 ITEM_PENDING = "pending"
 ITEM_COMPLETED = "completed"
+ITEM_EXCUSED = "excused"
+ACK_ANY = "any"
+ACK_EACH = "each"
 KIND_GROUP = "group"
 KIND_GROUP_ITEM = "group_item"
 
@@ -125,6 +128,44 @@ def ensure_shared_activity_schema(cursor) -> None:
             )
         except Exception:
             pass
+    if table_exists(cursor, SESSIONS_TABLE) and not table_has_column(
+        cursor, SESSIONS_TABLE, "participation_adjustments_json"
+    ):
+        cursor.execute(f"ALTER TABLE {SESSIONS_TABLE} ADD COLUMN participation_adjustments_json TEXT NULL")
+        remember_column(SESSIONS_TABLE, "participation_adjustments_json")
+    if table_exists(cursor, SESSION_ITEMS_TABLE) and not table_has_column(
+        cursor, SESSION_ITEMS_TABLE, "acknowledgment_mode"
+    ):
+        cursor.execute(f"ALTER TABLE {SESSION_ITEMS_TABLE} ADD COLUMN acknowledgment_mode VARCHAR(16) NULL")
+        remember_column(SESSION_ITEMS_TABLE, "acknowledgment_mode")
+
+
+def normalize_acknowledgment_mode(value: Any) -> str:
+    return ACK_EACH if str(value or "").strip().lower() in {"each", "all", "every"} else ACK_ANY
+
+
+def required_acknowledger_ids(
+    *,
+    acknowledgment_mode: Any,
+    responsibility_mode: Any,
+    responsibility_user_ids: Sequence[int] | None,
+    assigned_user_ids: Sequence[int] | None,
+) -> list[int]:
+    """Employees who must personally acknowledge. Empty means one assigned employee can."""
+    if normalize_acknowledgment_mode(acknowledgment_mode) != ACK_EACH:
+        return []
+    assigned = _assigned_user_ids(assigned_user_ids)
+    named = _assigned_user_ids(responsibility_user_ids or [])
+    if str(responsibility_mode or "").strip().lower() == "named" and named:
+        chosen = [uid for uid in named if uid in assigned] or named
+        return chosen
+    return assigned
+
+
+def item_acknowledgments_satisfied(statuses: Sequence[str]) -> bool:
+    """Excused checks are not completions. An item with only excuses stays open."""
+    live = [str(status or "") for status in statuses or [] if str(status or "") != ITEM_EXCUSED]
+    return bool(live) and all(status == ITEM_COMPLETED for status in live)
 
 
 def is_shared_execution(target: Mapping[str, Any] | None) -> bool:
@@ -238,7 +279,11 @@ def open_required_codes_for_user(
             if not rows:
                 continue
             mine = next((row for row in rows if int(row.get("user_id") or 0) == uid), None)
-            if mine is None or str(mine.get("status") or "") != ITEM_COMPLETED:
+            if mine is None:
+                missing.append(code)
+            elif str(mine.get("status") or "") == ITEM_EXCUSED:
+                continue
+            elif str(mine.get("status") or "") != ITEM_COMPLETED:
                 missing.append(code)
             continue
         if str(item.get("status") or "") != ITEM_COMPLETED:
@@ -258,14 +303,27 @@ def _insert_check(cursor, organization_id: int, session_item_id: int, user_id: i
 
 
 def _seed_checks(cursor, organization_id: int, items: Sequence[Mapping[str, Any]], user_ids: Sequence[int]) -> None:
+    """Seed personal checks only for items configured as every selected employee.
+
+    Older sessions are not passed here. A missing acknowledgment mode stays one-check.
+    """
     assigned = _assigned_user_ids(user_ids)
     if len(assigned) < 2:
         return
+    from backend.task_activity_item_responsibility import parse_snapshot
+
     for item in items or []:
         item_id = int(item.get("id") or 0)
         if not item_id or str(item.get("status") or ITEM_PENDING) == ITEM_COMPLETED:
             continue
-        for uid in assigned:
+        snap = parse_snapshot(item.get("responsibility_snapshot_json"))
+        required = required_acknowledger_ids(
+            acknowledgment_mode=item.get("acknowledgment_mode"),
+            responsibility_mode=None if not snap else snap.get("responsibility_mode"),
+            responsibility_user_ids=None if not snap else snap.get("responsibility_user_ids"),
+            assigned_user_ids=assigned,
+        )
+        for uid in required:
             _insert_check(cursor, organization_id, item_id, uid)
 
 
@@ -290,7 +348,10 @@ def _extend_personal_checks(
         if str(item.get("status") or "") == ITEM_COMPLETED:
             continue
         item_id = int(item.get("id") or 0)
-        have = {int(row.get("user_id") or 0) for row in existing.get(item_id) or []}
+        rows = existing.get(item_id) or []
+        if not rows:
+            continue
+        have = {int(row.get("user_id") or 0) for row in rows}
         for uid in assigned:
             if uid not in have:
                 _insert_check(cursor, organization_id, item_id, uid)
@@ -409,6 +470,19 @@ def ensure_shared_session(
                 ),
             )
     created_items = list_shared_session_items(cursor, oid, session_id)
+    modes = {
+        str(item.get("task_code") or ""): normalize_acknowledgment_mode(item.get("acknowledgment_mode"))
+        for item in (group_items or [])
+    }
+    store_mode = table_has_column(cursor, SESSION_ITEMS_TABLE, "acknowledgment_mode")
+    for created in created_items:
+        mode = modes.get(str(created.get("task_code") or ""), ACK_ANY)
+        created["acknowledgment_mode"] = mode
+        if store_mode:
+            cursor.execute(
+                f"UPDATE {SESSION_ITEMS_TABLE} SET acknowledgment_mode=%s WHERE id=%s AND organization_id=%s",
+                (mode, int(created["id"]), oid),
+            )
     _seed_checks(cursor, oid, created_items, assigned_user_ids or [])
     return get_shared_session(cursor, oid, session_id) or {
         "id": session_id,
@@ -447,6 +521,14 @@ def serialize_shared_item(
         }
         for field in ("instructions_es", "section_label_es", "task_name_es"):
             info[field] = frozen.get(field) if field in frozen else None
+        # An open item shows the current saved wording. A completed item keeps the
+        # snapshot from when the session started, and that snapshot is not rewritten.
+        if str(row.get("status") or ITEM_PENDING) == ITEM_PENDING and meta is not None:
+            live_name = str(meta.get("name") or meta.get("task_name") or "").strip()
+            if live_name:
+                info["name"] = live_name
+            info["instructions"] = str(meta.get("instructions") or meta.get("description") or "").strip() or None
+            info["instructions_es"] = str(meta.get("instructions_es") or "").strip() or None
     completed_by = int(row["completed_by_user_id"]) if row.get("completed_by_user_id") is not None else None
     from backend.task_activity_item_responsibility import parse_snapshot, responsibility_payload
 
@@ -465,6 +547,9 @@ def serialize_shared_item(
         "task_name": info.get("name") or _role_label(code, catalog),
         "display_order": int(row.get("display_order") or 0),
         "required": bool(row.get("required", True)),
+        "acknowledgment_mode": normalize_acknowledgment_mode(row.get("acknowledgment_mode"))
+        if row.get("acknowledgment_mode")
+        else None,
         "status": str(row.get("status") or ITEM_PENDING),
         "completed_at": str(row.get("completed_at") or "")[:19] or None,
         "completed_by_user_id": completed_by,
@@ -637,11 +722,27 @@ def _spawn_shared_item_verification(
         return int(item["child_activity_id"])
     code = str(item.get("task_code") or "")
     meta = _task_meta_for_role(cursor, int(organization_id), code)
-    verify_required = bool(meta.get("verification_required", True))
-    verify_method = str(meta.get("verification_method") or VERIFY_SUPERVISOR)
-    if not verify_required:
-        verify_method = VERIFY_NONE
-    if verify_method == VERIFY_NONE:
+    from backend.task_verification_policy import resolve_checklist_item_policy, snapshot_columns
+
+    parent_group = get_activity_group(cursor, int(organization_id), role_code=str(parent_activity.get("role") or ""))
+    definition = next(
+        (
+            row
+            for row in ((parent_group or {}).get("items") or [])
+            if str(row.get("task_code") or "") == code
+        ),
+        None,
+    )
+    policy = resolve_checklist_item_policy(
+        cursor,
+        int(organization_id),
+        activity_group=parent_group,
+        item=definition,
+    )
+    snap = snapshot_columns(policy)
+    verify_required = bool(snap["verification_required"])
+    verify_method = str(snap["verification_method"])
+    if not verify_required or verify_method == VERIFY_NONE:
         return None
     completed_by = int(item["completed_by_user_id"]) if item.get("completed_by_user_id") is not None else int(
         parent_activity.get("user_id") or 0
@@ -677,7 +778,7 @@ def _spawn_shared_item_verification(
             0,
             1,
             verify_method,
-            meta.get("verification_timing") or "same_shift",
+            snap.get("verification_timing") or "same_shift",
             meta.get("checklist_id"),
             item.get("completion_input_json"),
             int(parent_activity["id"]),
@@ -792,6 +893,13 @@ def checkoff_shared_item(
     item = cursor.fetchone()
     if not item:
         raise CleaningTaskError("That task is not part of this activity group.", status=404)
+    from backend.task_activity_item_responsibility import parse_snapshot
+
+    responsibility = parse_snapshot(item.get("responsibility_snapshot_json"))
+    if responsibility and str(responsibility.get("responsibility_mode") or "") == "named":
+        allowed = {int(value) for value in (responsibility.get("responsibility_user_ids") or [])}
+        if allowed and uid not in allowed:
+            raise CleaningTaskError("That checklist item is assigned to someone else.", status=403)
 
     meta = _task_meta_for_role(cursor, oid, code)
     from backend.task_activity_item_responsibility import parse_definition_snapshot
@@ -821,6 +929,8 @@ def checkoff_shared_item(
         mine = next((row for row in personal if int(row.get("user_id") or 0) == uid), None)
         if mine is None:
             raise CleaningTaskError("That task is not on your checklist.", status=404)
+        if str(mine.get("status") or "") == ITEM_EXCUSED:
+            raise CleaningTaskError("That employee is excused from this item.", status=409)
         if str(mine.get("status") or "") == ITEM_COMPLETED:
             raise CleaningTaskError("That task is already checked off.", status=409)
         cursor.execute(
@@ -834,7 +944,7 @@ def checkoff_shared_item(
         if int(getattr(cursor, "rowcount", 0) or 0) == 0:
             raise CleaningTaskError("That task was already checked off.", status=409)
         refreshed = load_employee_checks(cursor, oid, [int(item["id"])]).get(int(item["id"])) or []
-        if refreshed and all(str(row.get("status") or "") == ITEM_COMPLETED for row in refreshed):
+        if item_acknowledgments_satisfied([str(row.get("status") or "") for row in refreshed]):
             cursor.execute(
                 f"""
                 UPDATE {SESSION_ITEMS_TABLE}
@@ -980,3 +1090,171 @@ def finish_shared_participation(
     activity = serialize_activity(get_activity(cursor, oid, int(activity_id)), catalog=_role_catalog(cursor, oid))
     activity["shared_session_id"] = int(session_id)
     return enrich_shared_group_activity(cursor, oid, activity)
+
+
+def _adjustment_rows(session: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    raw = None if not session else session.get("participation_adjustments_json")
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return [row for row in parsed if isinstance(row, dict)] if isinstance(parsed, list) else []
+
+
+def excused_user_ids_for_session(cursor, organization_id: int, session_id: int) -> list[int]:
+    session = get_shared_session(cursor, int(organization_id), int(session_id))
+    found: list[int] = []
+    for row in _adjustment_rows(session):
+        if str(row.get("action") or "") not in {"excuse", "reassign"}:
+            continue
+        try:
+            uid = int(row.get("user_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if uid > 0 and uid not in found:
+            found.append(uid)
+    return found
+
+
+def excuse_or_reassign_participant(
+    cursor,
+    *,
+    organization_id: int,
+    actor_user_id: int,
+    shared_session_id: int | None,
+    employee_user_id: int,
+    reason: str,
+    action: str = "excuse",
+    replacement_user_id: int | None = None,
+    assignment_group_id: str | None = None,
+    role: str | None = None,
+    business_date=None,
+    assigned_user_ids: Sequence[int] | None = None,
+) -> dict[str, Any]:
+    """Remove an absent employee from the requirement. Does not create time or check-offs."""
+    ensure_shared_activity_schema(cursor)
+    reason_clean = str(reason or "").strip()
+    if len(reason_clean) < 3:
+        raise CleaningTaskError("A reason is required.", status=400)
+    chosen = str(action or "excuse").strip().lower()
+    if chosen not in {"excuse", "reassign"}:
+        raise CleaningTaskError("Action must be excuse or reassign.", status=400)
+    oid = int(organization_id)
+    employee = int(employee_user_id)
+    actor = int(actor_user_id)
+    replacement = int(replacement_user_id or 0)
+    assigned = _assigned_user_ids(assigned_user_ids)
+    if chosen == "reassign":
+        if replacement <= 0 or replacement == employee:
+            raise CleaningTaskError("Choose a different employee already assigned to this activity.", status=400)
+        if assigned and replacement not in assigned:
+            raise CleaningTaskError(
+                "Assign that employee on the Weekly Schedule before reassigning this activity.",
+                status=400,
+            )
+    session_id = int(shared_session_id or 0)
+    if session_id <= 0:
+        if not assignment_group_id or not role:
+            raise CleaningTaskError("This activity has no shared session to update.", status=400)
+        group = get_activity_group(cursor, oid, role_code=str(role))
+        session = ensure_shared_session(
+            cursor,
+            organization_id=oid,
+            assignment_group_id=str(assignment_group_id),
+            business_date=business_date,
+            role=str(role),
+            group_items=(group or {}).get("items") or [],
+            assigned_user_ids=assigned,
+        )
+        session_id = int(session["id"])
+    else:
+        session = get_shared_session(cursor, oid, session_id)
+        if not session:
+            raise CleaningTaskError("Shared session not found.", status=404)
+    prior = [int(row.get("user_id") or 0) for row in _adjustment_rows(session)]
+    at = eastern_now_naive()
+    entry = {
+        "action": chosen,
+        "user_id": employee,
+        "replacement_user_id": replacement or None,
+        "reason": reason_clean,
+        "actor_user_id": actor,
+        "at": at.strftime("%Y-%m-%d %H:%M:%S"),
+        "original_assigned_user_ids": assigned or prior,
+    }
+    rows = _adjustment_rows(session)
+    rows.append(entry)
+    cursor.execute(
+        f"UPDATE {SESSIONS_TABLE} SET participation_adjustments_json=%s WHERE id=%s AND organization_id=%s",
+        (json.dumps(rows), session_id, oid),
+    )
+    items = list_shared_session_items(cursor, oid, session_id)
+    for item in items:
+        if str(item.get("status") or "") == ITEM_COMPLETED:
+            continue
+        cursor.execute(
+            f"""
+            UPDATE {CHECKS_TABLE}
+            SET status=%s
+            WHERE organization_id=%s AND session_item_id=%s AND user_id=%s AND status=%s
+            """,
+            (ITEM_EXCUSED, oid, int(item["id"]), employee, ITEM_PENDING),
+        )
+        if chosen == "reassign" and replacement > 0 and normalize_acknowledgment_mode(item.get("acknowledgment_mode")) == ACK_EACH:
+            existing = load_employee_checks(cursor, oid, [int(item["id"])]).get(int(item["id"])) or []
+            have = {int(row.get("user_id") or 0) for row in existing}
+            if replacement not in have:
+                _insert_check(cursor, oid, int(item["id"]), replacement)
+        refreshed = load_employee_checks(cursor, oid, [int(item["id"])]).get(int(item["id"])) or []
+        if item_acknowledgments_satisfied([str(row.get("status") or "") for row in refreshed]):
+            done = next(row for row in refreshed if str(row.get("status") or "") == ITEM_COMPLETED)
+            cursor.execute(
+                f"""
+                UPDATE {SESSION_ITEMS_TABLE}
+                SET status=%s, completed_at=%s, completed_by_user_id=%s
+                WHERE id=%s AND status=%s
+                """,
+                (
+                    ITEM_COMPLETED,
+                    done.get("completed_at"),
+                    int(done.get("user_id") or 0),
+                    int(item["id"]),
+                    ITEM_PENDING,
+                ),
+            )
+    cursor.execute(
+        f"""
+        SELECT id FROM {TABLE}
+        WHERE organization_id=%s AND shared_session_id=%s AND user_id=%s
+        ORDER BY id DESC LIMIT 1
+        """,
+        (oid, session_id, employee),
+    )
+    host = cursor.fetchone()
+    if not host:
+        cursor.execute(
+            f"""
+            SELECT id FROM {TABLE}
+            WHERE organization_id=%s AND shared_session_id=%s
+            ORDER BY id ASC LIMIT 1
+            """,
+            (oid, session_id),
+        )
+        host = cursor.fetchone()
+    if host and host.get("id"):
+        _record_event(
+            cursor,
+            organization_id=oid,
+            activity_id=int(host["id"]),
+            event_type="participation_excused" if chosen == "excuse" else "participation_reassigned",
+            actor_user_id=actor,
+            payload=entry,
+        )
+    return {
+        "ok": True,
+        "shared_session_id": session_id,
+        "excused_user_ids": excused_user_ids_for_session(cursor, oid, session_id),
+        "adjustment": entry,
+    }

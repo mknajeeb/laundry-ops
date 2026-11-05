@@ -176,6 +176,9 @@ def definition_snapshot(item: Mapping[str, Any]) -> dict[str, Any]:
         "display_order": int(item.get("display_order") or 0),
         "completion_type": item.get("completion_type") or "simple",
         "input_schema": schema if isinstance(schema, list) else [],
+        "acknowledgment_mode": (
+            "each" if str(item.get("acknowledgment_mode") or "").strip().lower() in {"each", "all", "every"} else "any"
+        ),
     }
     for field in ("instructions_es", "section_label_es", "task_name_es"):
         text = str(item.get(field) or "").strip()

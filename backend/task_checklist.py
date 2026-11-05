@@ -628,7 +628,10 @@ def list_checklists_to_verify(
         biz = day - timedelta(days=offset)
         for cl in checklists:
             timing = str(cl.get("verification_timing") or VERIFY_TIMING_NEXT_DAY)
-            if timing == VERIFY_TIMING_NEXT_DAY and biz >= day:
+            from backend.cleaning_task_activity import verification_queue_decision
+
+            decision = verification_queue_decision(timing=timing, business_date=biz, as_of=day)
+            if not decision["eligible"]:
                 continue
             method = str(cl.get("verification_method") or VERIFY_EMPLOYEE)
             config = cl.get("verifier_config") or {}

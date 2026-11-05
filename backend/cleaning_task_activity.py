@@ -36,6 +36,7 @@ from backend.task_catalog import (
     VERIFY_NONE,
     VERIFY_ROLE,
     VERIFY_SUPERVISOR,
+    VERIFY_TIMING_LATER_SHIFT,
     VERIFY_TIMING_NEXT_DAY,
     get_task_definition,
     list_categories,
@@ -326,6 +327,28 @@ def _stored_remark(completion_input: Any, key: str) -> dict[str, Any] | None:
     }
 
 
+def _participation_sessions(raw: Any) -> list[dict[str, Any]]:
+    if raw in (None, ""):
+        return []
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    out = []
+    for item in parsed:
+        if not isinstance(item, Mapping):
+            continue
+        out.append(
+            {
+                "started_at": str(item.get("started_at") or "")[:19] or None,
+                "ended_at": str(item.get("ended_at") or "")[:19] or None,
+            }
+        )
+    return out
+
+
 def serialize_activity(row: Mapping[str, Any], *, catalog: Mapping[str, Any] | None = None) -> dict[str, Any]:
     mode = str(row.get("timing_mode") or "anytime")
     start = _serialize_time(row.get("planned_start_time"))
@@ -425,6 +448,7 @@ def serialize_activity(row: Mapping[str, Any], *, catalog: Mapping[str, Any] | N
         else None,
         "void_reason": (str(row.get("void_reason") or "").strip() or None),
         "is_voided": row.get("voided_at") not in (None, ""),
+        "participation_sessions": _participation_sessions(row.get("participation_sessions_json")),
         "superseded_by_activity_id": int(row["superseded_by_activity_id"])
         if row.get("superseded_by_activity_id") is not None
         else None,
@@ -2112,6 +2136,11 @@ def _group_shared_assignments(
                             )
                         entry["shared_checklist_items"] = shared_checklist_cache[session_id]
                         entry["shared_session_id"] = session_id
+                        from backend.cleaning_task_shared_execution import excused_user_ids_for_session
+
+                        entry["excused_user_ids"] = excused_user_ids_for_session(
+                            cursor, int(organization_id), session_id
+                        )
                     except Exception:
                         pass
             subjects = verification_subjects_for_contribution(entry)
@@ -2216,6 +2245,13 @@ def _group_shared_assignments(
                 ),
                 "contributions": contributions,
                 "shared_session_id": shared_session_id,
+                "excused_user_ids": sorted(
+                    {
+                        int(uid)
+                        for contrib in contributions
+                        for uid in (contrib.get("excused_user_ids") or [])
+                    }
+                ),
                 "shared_checklist_items": shared_checklist,
                 "has_manual_completion": any(
                     (c.get("activity") or {}).get("is_manual_completion") for c in contributions
@@ -2272,8 +2308,7 @@ def _assignment_copy(cursor, organization_id: int, sample: Mapping[str, Any]) ->
                 }
     except Exception:
         pass
-    text = str(sample.get("remarks") or "").strip()
-    return {"instructions": text or None, "instructions_es": None, "name_es": None}
+    return {"instructions": None, "instructions_es": None, "name_es": None}
 
 
 def _assignment_instructions(cursor, organization_id: int, sample: Mapping[str, Any]) -> str | None:
@@ -2409,7 +2444,11 @@ def shared_required_checklist_progress(
             continue
         checks = [check for check in (item.get("employee_checks") or []) if isinstance(check, Mapping)]
         if checks:
-            required.extend(checks)
+            live = [check for check in checks if str(check.get("status") or "").lower() != "excused"]
+            if live:
+                required.extend(live)
+            elif str(item.get("status") or "").lower() not in _SHARED_CHECKLIST_DONE:
+                required.append(item)
         else:
             required.append(item)
     if not required:
@@ -2626,7 +2665,13 @@ def _contribution_verification_satisfied(contrib: Mapping[str, Any]) -> bool:
     if status not in _SUCCESS_DISPLAY:
         return False
     rolled = verification_status_from_subjects(verification_subjects_for_contribution(contrib))
-    return rolled in {VERIFICATION_NOT_REQUIRED, VERIFICATION_VERIFIED}
+    if rolled == VERIFICATION_VERIFIED:
+        return True
+    if rolled != VERIFICATION_NOT_REQUIRED:
+        return False
+    activity = contrib.get("activity") if isinstance(contrib.get("activity"), Mapping) else {}
+    approved = {STATUS_APPROVED, DISPLAY_APPROVED, "approved", "verified"}
+    return status in approved or str(activity.get("status") or "") in approved
 
 
 def assignment_is_verified(row: Mapping[str, Any]) -> bool:
@@ -3116,16 +3161,34 @@ def apply_assignment_reporting(row: dict[str, Any]) -> dict[str, Any]:
         copy = dict(contrib)
         copy["participation_status"] = participation_status_from_display(copy.get("status"))
         contributions.append(copy)
+    excused_ids = set()
+    for raw in row.get("excused_user_ids") or []:
+        try:
+            excused_ids.add(int(raw))
+        except (TypeError, ValueError):
+            continue
+    for copy in contributions:
+        try:
+            uid = int(copy.get("employee_id") or copy.get("user_id") or 0)
+        except (TypeError, ValueError):
+            uid = 0
+        if uid and uid in excused_ids:
+            copy["participation_status"] = "excused"
+            copy["participation_requirement"] = "excused"
+        else:
+            copy["participation_requirement"] = copy.get("participation_requirement") or "required"
     row["contributions"] = contributions
 
     finished_n = sum(
         1 for c in contributions if c["participation_status"] == PARTICIPATION_FINISHED
     )
+    excused_n = sum(1 for c in contributions if c["participation_status"] == "excused")
     progress_n = sum(
         1 for c in contributions if c["participation_status"] == PARTICIPATION_IN_PROGRESS
     )
     assigned_n = len(contributions)
-    all_finished = assigned_n > 0 and finished_n == assigned_n
+    required_n = max(0, assigned_n - excused_n)
+    all_finished = required_n > 0 and finished_n >= required_n
     is_shared = bool(row.get("shared")) or str(row.get("execution_mode") or "") == "shared"
 
     items = row.get("shared_checklist_items")
@@ -3507,6 +3570,65 @@ def user_can_verify_activity(
     return bool(has_supervisor_review)
 
 
+def shift_boundary_reached(now_minutes: int | None, start_minutes: int | None, end_minutes: int | None) -> bool:
+    """True once the scheduled shift end has passed. No end time means not yet eligible."""
+    if now_minutes is None or end_minutes is None:
+        return False
+    if start_minutes is not None and end_minutes <= start_minutes:
+        on_shift = now_minutes >= start_minutes or now_minutes < end_minutes
+        return not on_shift
+    return now_minutes >= end_minutes
+
+
+def verification_queue_decision(
+    *,
+    timing: str,
+    business_date: date,
+    as_of: date,
+    now_minutes: int | None = None,
+    shift_start_minutes: int | None = None,
+    shift_end_minutes: int | None = None,
+) -> dict[str, Any]:
+    """Same-shift is eligible now. Later-shift waits for the shift end. Next-day waits for the next Eastern date."""
+    mode = str(timing or "same_shift")
+    if mode == VERIFY_TIMING_NEXT_DAY:
+        eligible = business_date < as_of
+        return {
+            "eligible": eligible,
+            "queue_kind": "previous_shift" if eligible else None,
+            "verification_overdue": eligible and business_date < as_of,
+            "awaiting_shift_boundary": not eligible,
+        }
+    if mode == VERIFY_TIMING_LATER_SHIFT:
+        if business_date > as_of:
+            return {
+                "eligible": False,
+                "queue_kind": None,
+                "verification_overdue": False,
+                "awaiting_shift_boundary": True,
+            }
+        if business_date < as_of:
+            return {
+                "eligible": True,
+                "queue_kind": "previous_shift",
+                "verification_overdue": True,
+                "awaiting_shift_boundary": False,
+            }
+        reached = shift_boundary_reached(now_minutes, shift_start_minutes, shift_end_minutes)
+        return {
+            "eligible": reached,
+            "queue_kind": None,
+            "verification_overdue": False,
+            "awaiting_shift_boundary": not reached,
+        }
+    return {
+        "eligible": True,
+        "queue_kind": None,
+        "verification_overdue": business_date < as_of,
+        "awaiting_shift_boundary": False,
+    }
+
+
 def list_tasks_to_verify(
     cursor,
     organization_id: int,
@@ -3560,12 +3682,26 @@ def list_tasks_to_verify(
                 biz_day = date.fromisoformat(str(biz)[:10])
             except ValueError:
                 biz_day = day
-        if timing == VERIFY_TIMING_NEXT_DAY and biz_day >= day:
-            # Next-day items stay on the original date until the following business day.
+        now = business_now()
+        now_minutes = int(getattr(now, "hour", 0) or 0) * 60 + int(getattr(now, "minute", 0) or 0)
+        anchors = _shift_break_anchors(_day_shifts_for_user(cursor, int(organization_id), int(row["user_id"]), biz_day))
+        decision = verification_queue_decision(
+            timing=timing,
+            business_date=biz_day,
+            as_of=day,
+            now_minutes=now_minutes,
+            shift_start_minutes=_minutes(anchors.get("shift_start")),
+            shift_end_minutes=_minutes(anchors.get("shift_end")),
+        )
+        if not decision["eligible"]:
             continue
         ser = serialize_activity(row, catalog=catalog)
         ser["employee_name"] = names.get(int(row["user_id"]), f"User #{row['user_id']}")
         ser["original_business_date"] = ser["business_date"]
+        ser["verification_queue_kind"] = decision["queue_kind"]
+        ser["verification_overdue"] = bool(decision["verification_overdue"])
+        if decision["queue_kind"] == "previous_shift":
+            ser["verification_queue_label"] = "Previous Shift Verification"
         meta = _task_meta_for_role(cursor, int(organization_id), str(row.get("role") or ""))
         ser["category_code"] = ser.get("category_code") or meta.get("category_code")
         ser["category_name"] = meta.get("category_name")
@@ -3657,6 +3793,8 @@ _RINSE_HIDDEN_KEYS = frozenset(
         "revision_history",
         "audit_events",
         "corrections",
+        "participation_sessions",
+        "participation_sessions_json",
     }
 )
 

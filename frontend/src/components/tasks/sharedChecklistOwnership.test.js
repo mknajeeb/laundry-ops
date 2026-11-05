@@ -1,4 +1,5 @@
 import {
+  checklistSummary,
   employeeCheckSummary,
   groupChecklistSections,
   isMyChecklistItem,
@@ -22,6 +23,55 @@ const theirs = {
   responsibility_user_ids: [9],
   status: "pending",
 };
+
+describe("checklistSummary", () => {
+  it("shows required items instead of an empty checklist", () => {
+    expect(
+      checklistSummary({
+        activity_group_items: [
+          { task_code: "washer", required: true },
+          { task_code: "floor", required: true },
+        ],
+      }),
+    ).toEqual({ required: 2, done: 0 });
+  });
+
+  it("lets an excused employee leave the remaining acknowledgment in place", () => {
+    expect(
+      checklistSummary({
+        shared_checklist_items: [
+          {
+            task_code: "floor",
+            required: true,
+            status: "pending",
+            employee_checks: [
+              { user_id: 1, status: "completed" },
+              { user_id: 2, status: "excused" },
+            ],
+          },
+        ],
+      }),
+    ).toEqual({ required: 1, done: 1 });
+  });
+
+  it("does not treat one employee's check as the whole item", () => {
+    expect(
+      checklistSummary({
+        shared_checklist_items: [
+          {
+            task_code: "washer",
+            required: true,
+            status: "pending",
+            employee_checks: [
+              { status: "completed" },
+              { status: "pending" },
+            ],
+          },
+        ],
+      }),
+    ).toEqual({ required: 1, done: 0 });
+  });
+});
 
 describe("employeeCheckSummary", () => {
   it("keeps each assigned employee's check-off separate", () => {

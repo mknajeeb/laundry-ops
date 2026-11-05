@@ -25,6 +25,9 @@ import {
 } from "../components/tasks/taskEmployeeI18n";
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import TaskManualCompletionDialog from "../components/tasks/TaskManualCompletionDialog";
+import TaskExcuseDialog from "../components/tasks/TaskExcuseDialog";
+import TaskParticipationDialog from "../components/tasks/TaskParticipationDialog";
+import { groupOperations, operationsBucketLabel } from "../components/tasks/operationsGrouping";
 import TaskManageDialog from "../components/tasks/TaskManageDialog";
 import TaskAssignmentCard from "../components/tasks/TaskAssignmentCard";
 import TaskRecordDialog from "../components/tasks/TaskRecordDialog";
@@ -34,6 +37,8 @@ import {
   addManagementTaskRemark,
   approveManagementTaskDashboard,
   correctManagementTaskCompletion,
+  correctManagementTaskParticipation,
+  excuseManagementParticipant,
   getManagementTaskDashboardMonthly,
   manualCompleteManagementTask,
   rejectManagementTaskDashboard,
@@ -104,7 +109,7 @@ function EmployeeReport({ report, hideLabor, loading, t, locale }) {
                           : activity.verification_label
                             ? ` · ${localizedStatusPhrase(t, activity.verification_label)}`
                             : ""}
-                        {activity.participation_status
+                        {activity.participation_status && activity.participation_status !== activity.status
                           ? ` · ${taskStatusLabel(t, activity.participation_status)}`
                           : ""}
                         {!hideLabor && activity.duration_seconds != null
@@ -242,6 +247,10 @@ export default function ManagementTasksPage() {
   const [historyPage, setHistoryPage] = useState(0);
   const [manageOpen, setManageOpen] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
+  const [participationOpen, setParticipationOpen] = useState(false);
+  const [excuseOpen, setExcuseOpen] = useState(false);
+  const [excuseContext, setExcuseContext] = useState(null);
+  const [participationContext, setParticipationContext] = useState(null);
   const [manualMode, setManualMode] = useState("record");
   const [manualContext, setManualContext] = useState(null);
   const [monthly, setMonthly] = useState(null);
@@ -352,25 +361,15 @@ export default function ManagementTasksPage() {
   }, [monthly, locale]);
   const employeeOptions = monthly?.filter_options?.employees || [];
   const groupedAssignments = useMemo(() => {
-    const order = categoryTabs.map((tab) => tab.code);
-    const buckets = new Map();
-    for (const row of filteredAssignments) {
-      const code = row.category_code || "intra_day";
-      if (!buckets.has(code)) buckets.set(code, []);
-      buckets.get(code).push(row);
-    }
-    return [...buckets.keys()]
-      .sort((left, right) => {
-        const leftAt = order.indexOf(left);
-        const rightAt = order.indexOf(right);
-        return (leftAt === -1 ? 999 : leftAt) - (rightAt === -1 ? 999 : rightAt);
-      })
-      .map((code) => ({
-        code,
-        name: categoryTabs.find((tab) => tab.code === code)?.name || code,
-        rows: buckets.get(code),
-      }));
-  }, [filteredAssignments, categoryTabs]);
+    return groupOperations(filteredAssignments, groupBy).map((bucket) => ({
+      ...bucket,
+      code: bucket.key,
+      name:
+        bucket.kind === "weekly"
+          ? t("tasks.dashboard.weekOf", { date: formatDashboardDate(bucket.start) })
+          : operationsBucketLabel(bucket),
+    }));
+  }, [filteredAssignments, groupBy, t]);
 
   const categoryMetrics = useMemo(() => {
     const totals = monthly?.totals || {};
@@ -861,6 +860,14 @@ export default function ManagementTasksPage() {
                               setReason("");
                             }}
                             onManual={openManual}
+                            onEditParticipation={(assignment, contribution) => {
+                              setParticipationContext({ row: assignment, contribution });
+                              setParticipationOpen(true);
+                            }}
+                            onExcuse={(assignment, contribution) => {
+                              setExcuseContext({ row: assignment, contribution });
+                              setExcuseOpen(true);
+                            }}
                             onEditRecord={(r, c, act) => openRecord(r, c, act, "edit")}
                             onVoidRecord={(r, c, act) => openRecord(r, c, act, "void")}
                             rejectId={rejectId}
@@ -1016,6 +1023,48 @@ export default function ManagementTasksPage() {
 
       {canManage ? (
         <TaskManageDialog open={manageOpen} onClose={() => setManageOpen(false)} onSaved={load} />
+      ) : null}
+      {canManual ? (
+        <TaskParticipationDialog
+          open={participationOpen}
+          row={participationContext?.row}
+          contribution={participationContext?.contribution}
+          busy={busy}
+          onClose={() => setParticipationOpen(false)}
+          onSubmit={async (body) => {
+            setBusy(true);
+            try {
+              await correctManagementTaskParticipation(body);
+              setParticipationOpen(false);
+              await load();
+            } catch (err) {
+              setError(err?.response?.data?.error || err?.message || t("tasks.dashboard.loadFailed"));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
+      ) : null}
+      {canManual ? (
+        <TaskExcuseDialog
+          open={excuseOpen}
+          row={excuseContext?.row}
+          contribution={excuseContext?.contribution}
+          busy={busy}
+          onClose={() => setExcuseOpen(false)}
+          onSubmit={async (body) => {
+            setBusy(true);
+            try {
+              await excuseManagementParticipant(body);
+              setExcuseOpen(false);
+              await load();
+            } catch (err) {
+              setError(err?.response?.data?.error || err?.message || t("tasks.dashboard.loadFailed"));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
       ) : null}
       {canManual ? (
         <TaskManualCompletionDialog
