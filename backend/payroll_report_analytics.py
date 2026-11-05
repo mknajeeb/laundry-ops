@@ -679,6 +679,72 @@ def category_breakdown(rows: list[dict]) -> list[dict[str, Any]]:
     return out
 
 
+def _mixed_classification_week(rows: list[dict]) -> Optional[dict[str, Any]]:
+    """One employee week when hours are split across payout classifications.
+
+    Overtime is already allocated on the rows. This adds the week total so a
+    W-2 row with no overtime still shows the hours that landed on Temp.
+    Stored wages stay as stored. Estimated burden stays labeled estimated.
+    """
+    order: list[str] = []
+    for row in rows or []:
+        cat = str(row.get("worker_category") or "unknown")
+        if cat not in order:
+            order.append(cat)
+    if len(order) < 2:
+        return None
+    metrics = aggregate_period_metrics(rows)
+    bases = {str(row.get("employer_cost_basis") or "") for row in rows}
+    bases.discard("")
+    if not bases:
+        bases = {"estimated"}
+    if bases <= {"actual"} or bases <= {"actual", "gross_only"}:
+        cost_basis = "actual"
+        cost_label = "Stored employer cost"
+    elif "actual" in bases and ("estimated" in bases or "configured" in bases):
+        cost_basis = "mixed"
+        cost_label = "Stored wages and estimated burden"
+    elif bases <= {"gross_only"}:
+        cost_basis = "gross_only"
+        cost_label = "Gross only"
+    elif "configured" in bases and "estimated" not in bases:
+        cost_basis = "configured"
+        cost_label = "Configured employer burden"
+    else:
+        cost_basis = "estimated"
+        cost_label = "Estimated employer burden"
+    classifications = []
+    for cat in order:
+        cat_rows = [row for row in rows if str(row.get("worker_category") or "unknown") == cat]
+        cat_metrics = aggregate_period_metrics(cat_rows)
+        cat_bases = {str(row.get("employer_cost_basis") or "") for row in cat_rows}
+        cat_bases.discard("")
+        classifications.append(
+            {
+                "worker_category": cat,
+                "regular_hours": cat_metrics.get("regular_hours"),
+                "ot_hours": cat_metrics.get("ot_hours"),
+                "ot_premium": cat_metrics.get("ot_premium"),
+                "gross_pay": cat_metrics.get("gross_pay"),
+                "employer_taxes": cat_metrics.get("employer_taxes"),
+                "total_payroll_cost": cat_metrics.get("total_payroll_cost"),
+                "employer_cost_basis": next(iter(cat_bases)) if len(cat_bases) == 1 else ("mixed" if cat_bases else ""),
+            }
+        )
+    return {
+        "total_hours": metrics.get("total_hours"),
+        "ot_hours": metrics.get("ot_hours"),
+        "ot_premium": metrics.get("ot_premium"),
+        "gross_pay": metrics.get("gross_pay"),
+        "employer_taxes": metrics.get("employer_taxes"),
+        "total_payroll_cost": metrics.get("total_payroll_cost"),
+        "avg_cost_per_hour": metrics.get("avg_cost_per_hour"),
+        "cost_basis": cost_basis,
+        "cost_basis_label": cost_label,
+        "classifications": classifications,
+    }
+
+
 def employee_summaries_by_category(
     rows: list[dict],
     *,
@@ -694,13 +760,19 @@ def employee_summaries_by_category(
     if not include_identities:
         return {}
 
+    def _employee_key(row: dict):
+        uid = row.get("user_id")
+        if uid is not None:
+            return uid
+        name = " ".join(str(row.get("employee_name") or "").split()).lower()
+        return name or id(row)
+
+    by_user: dict[Any, list[dict]] = defaultdict(list)
     by_cat: dict[str, dict[Any, list[dict]]] = defaultdict(lambda: defaultdict(list))
     for row in rows or []:
         cat = str(row.get("worker_category") or "unknown")
-        uid = row.get("user_id")
-        key = uid if uid is not None else (
-            " ".join(str(row.get("employee_name") or "").split()).lower() or id(row)
-        )
+        key = _employee_key(row)
+        by_user[key].append(row)
         by_cat[cat][key].append(row)
 
     out: dict[str, list[dict[str, Any]]] = {}
@@ -738,6 +810,7 @@ def employee_summaries_by_category(
                     "is_supplemental": all(bool(r.get("is_supplemental")) for r in emp_rows),
                     "includes_supplemental": any(bool(r.get("is_supplemental")) for r in emp_rows),
                     "hourly_cost": hourly_cost,
+                    "week": _mixed_classification_week(by_user.get(key) or emp_rows),
                 }
             )
         summaries.sort(

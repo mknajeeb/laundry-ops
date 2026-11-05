@@ -95,6 +95,7 @@ _CATEGORY_LABELS = {
     "w2": "W-2",
     "contractor_1099": "1099",
     "temp": "Temp",
+    "all": "All classifications",
 }
 
 
@@ -1164,28 +1165,55 @@ def _employee_rows(
     comparison_slices: Optional[dict] = None,
     comparison_meta: Optional[dict] = None,
 ) -> list[dict]:
-    grouped: dict[tuple, list] = defaultdict(list)
+    grouped: dict[int, list] = defaultdict(list)
     for row in slices:
-        grouped[(row["user_id"], row.get("worker_category") or "")].append(row)
-    compared: dict[tuple, list] = defaultdict(list)
+        grouped[int(row["user_id"])].append(row)
+    compared: dict[int, list] = defaultdict(list)
     for row in comparison_slices or []:
-        compared[(row["user_id"], row.get("worker_category") or "")].append(row)
+        compared[int(row["user_id"])].append(row)
     employees = []
-    for key, current_slices in grouped.items():
+    for user_id, current_slices in grouped.items():
         if not current_slices:
             continue
-        summary = summarize_slices(current_slices, target=target, category=key[1] or "all")
+        categories = []
+        by_cat: dict[str, list] = defaultdict(list)
+        for row in current_slices:
+            by_cat[str(row.get("worker_category") or "unknown")].append(row)
+        for cat, cat_slices in by_cat.items():
+            cat_summary = summarize_slices(cat_slices, target=target, category=cat)
+            bases = {str(row.get("cost_basis") or "") for row in cat_slices}
+            bases.discard("")
+            categories.append(
+                {
+                    "worker_category": cat,
+                    "classification_label": classification_label(cat),
+                    "payable_hours": cat_summary.get("payable_hours"),
+                    "ot_hours": cat_summary.get("ot_hours"),
+                    "ot_percent": cat_summary.get("ot_percent"),
+                    "ot_premium": cat_summary.get("ot_premium"),
+                    "gross_pay": cat_summary.get("gross_pay"),
+                    "employer_expenses": cat_summary.get("employer_expenses"),
+                    "total_employer_cost": cat_summary.get("total_employer_cost"),
+                    "employer_burden_percent": cat_summary.get("employer_burden_percent"),
+                    "employer_burden_label": cat_summary.get("employer_burden_label"),
+                    "burden_status": cat_slices[0].get("burden_status"),
+                    "estimated": any(row.get("estimated") for row in cat_slices),
+                    "cost_basis": next(iter(bases)) if len(bases) == 1 else "mixed",
+                }
+            )
+        categories.sort(key=lambda item: {"w2": 0, "contractor_1099": 1, "temp": 2}.get(item["worker_category"], 9))
+        category = next(iter(by_cat)) if len(by_cat) == 1 else "all"
+        summary = summarize_slices(current_slices, target=target, category=category)
         summary["target_scope"] = "employee"
-        user_id, category = key
         name = ""
-        for row in current_slices or compared.get(key, []):
+        for row in current_slices or compared.get(user_id, []):
             if row.get("employee_name"):
                 name = row["employee_name"]
                 break
         comparison = None
         if comparison_meta:
             previous_summary = summarize_slices(
-                compared.get(key, []),
+                compared.get(user_id, []),
                 target=target,
                 category=category or "all",
             )
@@ -1203,6 +1231,7 @@ def _employee_rows(
                 "worker_category": category,
                 "classification_label": classification_label(category),
                 "employee_rate_label": employee_rate_label(category),
+                "classifications": categories,
                 **summary,
                 "periods": _employee_periods(
                     current_slices,
@@ -1763,7 +1792,100 @@ def _estimate_open_slice(
     )
 
 
+def estimate_open_week_slices(
+    records: list[dict],
+    history_rows: list[dict],
+    *,
+    tax_settings: dict,
+    target: float,
+    week_start: date,
+    week_end: date,
+    policy: dict,
+) -> list[dict]:
+    """Price one employee week once, then split the result by classification.
+
+    Overtime walks every classification in clock order. Employer burden is
+    applied only to the W-2 slice. Temp and 1099 stay at gross unless that
+    classification has its own configured percent. Nothing is written.
+    """
+    from backend.payroll_hourly_cost import (
+        aggregate_finalized_w2_periods,
+        apply_historical_rates,
+        price_time_records,
+        weighted_burden_from_periods,
+    )
+
+    if not records:
+        return []
+    user_id = int(records[0].get("user_id") or 0)
+    name = ""
+    for record in records:
+        if record.get("worker_name"):
+            name = record["worker_name"]
+    rate_by_date = {}
+    for record in records:
+        work_date = str(record.get("work_date") or "")[:10]
+        if work_date and record.get("_historical_rate") is not None:
+            rate_by_date[work_date] = record.get("_historical_rate")
+    prepared, changed = apply_historical_rates(records, rate_by_date)
+    threshold = (policy or {}).get("threshold_hours") or 40
+    multiplier = (policy or {}).get("multiplier") or 1.5
+    periods = aggregate_finalized_w2_periods(
+        history_rows,
+        exclude_period=(_iso(week_start), _iso(week_end)),
+    )
+    burden = weighted_burden_from_periods(periods)
+    shared = {
+        "enabled": True,
+        "threshold_hours": threshold,
+        "multiplier": multiplier,
+        "employer_burden_percent": None,
+    }
+    rate_note = None
+    if changed:
+        rate_note = "Hourly wage uses the user rate in effect on each work date."
+    priced = price_time_records(
+        prepared,
+        ot_threshold=threshold,
+        ot_multiplier=multiplier,
+        category_policies={
+            "w2": dict(shared),
+            "temp": dict(shared),
+            "contractor_1099": dict(shared),
+        },
+        historical_w2_percent=burden.get("burden_percent"),
+        burden_sources=burden.get("sources") or [],
+        tax_settings=tax_settings,
+        labor_cost_target=target,
+        rate_note=rate_note,
+    )
+    analyses = list(priced.get("category_analyses") or [])
+    if not analyses and (priced.get("payable_hours") or 0) > 0:
+        analyses = [priced]
+    slices = []
+    for analysis in analyses:
+        if (analysis.get("payable_hours") or 0) <= 0:
+            continue
+        slices.append(
+            slice_from_analysis(
+                analysis,
+                user_id=user_id,
+                employee_name=name,
+                period_start=week_start,
+                period_end=week_end,
+                ot_wages=analysis.get("ot_earnings") or 0,
+                estimated=True,
+            )
+        )
+    return slices
+
+
 def _group_time_records(records: list[dict], week_starts_on: int) -> dict[tuple, list]:
+    """Group a workweek before overtime is allocated.
+
+    Classification stays on each record. It is not part of the group key, so
+    W-2 and Temp hours share one weekly threshold.
+    """
     grouped: dict[tuple, list] = defaultdict(list)
     for record in records or []:
         work_day = _parse_date(record.get("work_date") or record.get("clock_in_at"))
@@ -1771,8 +1893,7 @@ def _group_time_records(records: list[dict], week_starts_on: int) -> dict[tuple,
             continue
         week_start = align_week_start(work_day, week_starts_on)
         week_end = week_start + timedelta(days=6)
-        category = str(record.get("worker_category") or "w2")
-        grouped[(int(record["user_id"]), _iso(week_start), _iso(week_end), category)].append(record)
+        grouped[(int(record["user_id"]), _iso(week_start), _iso(week_end))].append(record)
     return grouped
 
 
@@ -1950,7 +2071,7 @@ def load_labor_cost_analysis(
             intervals = _load_rate_intervals(conn, {int(r["user_id"]) for r in records if r.get("user_id")})
             policies = _overtime_policies(conn, int(organization_id))
             for key, week_records in _group_time_records(records, week_starts_on).items():
-                user_id, week_start_text, week_end_text, category = key
+                user_id, week_start_text, week_end_text = key
                 week_start = _parse_date(week_start_text)
                 week_end = _parse_date(week_end_text)
                 if week_start is None or not _overlaps(week_start, week_end, fetch_start, fetch_end):
@@ -1968,17 +2089,17 @@ def load_labor_cost_analysis(
                     if historical is not None:
                         copy["_historical_rate"] = historical
                     stamped.append(copy)
-                piece = _estimate_open_slice(
-                    stamped,
-                    rows_by_user.get(user_id) or [],
-                    tax_settings=tax_settings,
-                    target=target,
-                    week_start=week_start,
-                    week_end=week_end,
-                    policy=policies.get(category) or policies.get("w2") or {},
+                slices.extend(
+                    estimate_open_week_slices(
+                        stamped,
+                        rows_by_user.get(user_id) or [],
+                        tax_settings=tax_settings,
+                        target=target,
+                        week_start=week_start,
+                        week_end=week_end,
+                        policy=policies.get("w2") or {},
+                    )
                 )
-                if piece:
-                    slices.append(piece)
 
     wanted = None
     if user_ids:
