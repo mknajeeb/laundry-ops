@@ -556,6 +556,229 @@ def test_stored_mixed_week_shows_one_overtime_total_and_estimated_burden():
     assert amna_temp["week"]["gross_pay"] == 836.06
 
 
+def test_mixed_rate_week_matches_time_records_and_keeps_burden_on_w2():
+    """One walk across two rates. The later rate earns the premium. W-2 keeps the burden."""
+    from backend.labor_cost_analysis import estimate_open_week_slices
+    from backend.payroll_hourly_cost import group_batch_sync_lines
+    from backend.payroll_report_analytics import employee_summaries_by_category
+
+    records = [
+        {
+            "id": 1,
+            "user_id": 70,
+            "worker_name": "Mixed Rate",
+            "approved_hours": 25,
+            "clock_in_at": "2026-10-26 08:00:00",
+            "work_date": "2026-10-26",
+            "hourly_rate": 17,
+            "worker_category": "w2",
+            "payroll_week_start": "2026-10-26",
+        },
+        {
+            "id": 2,
+            "user_id": 70,
+            "worker_name": "Mixed Rate",
+            "approved_hours": 20,
+            "clock_in_at": "2026-10-27 08:00:00",
+            "work_date": "2026-10-27",
+            "hourly_rate": 21,
+            "worker_category": "temp",
+            "payroll_week_start": "2026-10-26",
+        },
+    ]
+    history = [
+        {
+            "worker_category": "w2",
+            "employer_cost_recorded": True,
+            "batch_status": "paid",
+            "pay_period_start": "2026-09-28",
+            "pay_period_end": "2026-10-04",
+            "gross_pay": 1000,
+            "total_payroll_cost": 1100,
+        }
+    ]
+    economics = economics_from_time_records(records)
+    slices = estimate_open_week_slices(
+        records,
+        history,
+        tax_settings={},
+        target=19,
+        week_start=date(2026, 10, 26),
+        week_end=date(2026, 11, 1),
+        policy={"enabled": True, "threshold_hours": 40, "multiplier": 1.5},
+    )
+    by_cat = {row["worker_category"]: row for row in slices}
+    assert economics["ot_hours"] == 5
+    assert economics["ot_premium"] == 52.50
+    assert economics["gross_pay"] == 897.50
+    assert by_cat["w2"]["payable_hours"] == 25
+    assert by_cat["w2"]["ot_hours"] == 0
+    assert by_cat["w2"]["gross_pay"] == 425
+    assert by_cat["w2"]["total_employer_cost"] == 467.50
+    assert by_cat["w2"]["burden_status"] == "estimated"
+    assert by_cat["temp"]["payable_hours"] == 20
+    assert by_cat["temp"]["ot_hours"] == 5
+    assert by_cat["temp"]["ot_premium"] == 52.50
+    assert by_cat["temp"]["gross_pay"] == 472.50
+    assert by_cat["temp"]["total_employer_cost"] == 472.50
+    assert by_cat["temp"]["burden_status"] == "not_applicable"
+    assert sum(row["ot_hours"] for row in slices) == economics["ot_hours"]
+    assert sum(row["ot_premium"] for row in slices) == economics["ot_premium"]
+    w2_lines = group_batch_sync_lines(records, batch_category="w2")
+    temp_lines = group_batch_sync_lines(records, batch_category="temp")
+    assert sum(line["ot_hours"] for line in w2_lines) == 0
+    assert round(sum(line["ot_hours"] for line in temp_lines), 2) == 5
+    report_rows = [
+        {
+            "user_id": 70,
+            "employee_name": "Mixed Rate",
+            "worker_category": "w2",
+            "regular_hours": by_cat["w2"]["regular_hours"],
+            "ot_hours": by_cat["w2"]["ot_hours"],
+            "ot_premium": by_cat["w2"]["ot_premium"],
+            "gross_pay": by_cat["w2"]["gross_pay"],
+            "employer_taxes": round(by_cat["w2"]["total_employer_cost"] - by_cat["w2"]["gross_pay"], 2),
+            "total_payroll_cost": by_cat["w2"]["total_employer_cost"],
+            "employer_cost_basis": "estimated",
+            "employer_cost_recorded": False,
+        },
+        {
+            "user_id": 70,
+            "employee_name": "Mixed Rate",
+            "worker_category": "temp",
+            "regular_hours": by_cat["temp"]["regular_hours"],
+            "ot_hours": by_cat["temp"]["ot_hours"],
+            "ot_premium": by_cat["temp"]["ot_premium"],
+            "gross_pay": by_cat["temp"]["gross_pay"],
+            "employer_taxes": 0,
+            "total_payroll_cost": by_cat["temp"]["total_employer_cost"],
+            "employer_cost_basis": "gross_only",
+            "employer_cost_recorded": False,
+        },
+    ]
+    week = employee_summaries_by_category(report_rows)["w2"][0]["week"]
+    assert week["total_hours"] == 45
+    assert week["ot_hours"] == 5
+    assert week["ot_premium"] == 52.50
+    assert week["gross_pay"] == 897.50
+    assert week["total_payroll_cost"] == 940
+    assert week["cost_basis"] == "estimated"
+    assert [item["ot_hours"] for item in week["classifications"]] == [0, 5]
+
+
+def test_disabled_mixed_week_stays_straight_time_on_the_shared_walk():
+    from backend.labor_cost_analysis import estimate_open_week_slices
+
+    records = [
+        {
+            "id": 1,
+            "user_id": 28,
+            "worker_name": "Jasanpreet",
+            "approved_hours": 25,
+            "clock_in_at": "2026-10-26 08:00:00",
+            "work_date": "2026-10-26",
+            "hourly_rate": 21,
+            "worker_category": "w2",
+            "payroll_week_start": "2026-10-26",
+            "ot_week_mode": "disable_ot",
+        },
+        {
+            "id": 2,
+            "user_id": 28,
+            "worker_name": "Jasanpreet",
+            "approved_hours": 20,
+            "clock_in_at": "2026-10-27 08:00:00",
+            "work_date": "2026-10-27",
+            "hourly_rate": 17,
+            "worker_category": "temp",
+            "payroll_week_start": "2026-10-26",
+            "ot_week_mode": "disable_ot",
+        },
+    ]
+    economics = economics_from_time_records(records)
+    slices = estimate_open_week_slices(
+        records,
+        [],
+        tax_settings={},
+        target=19,
+        week_start=date(2026, 10, 26),
+        week_end=date(2026, 11, 1),
+        policy={"enabled": True, "threshold_hours": 40, "multiplier": 1.5},
+    )
+    assert economics["payable_hours"] == 45
+    assert economics["ot_hours"] == 0
+    assert economics["ot_premium"] == 0
+    assert economics["gross_pay"] == 865
+    assert sum(row["ot_hours"] for row in slices) == 0
+    assert sum(row["ot_premium"] for row in slices) == 0
+    assert sum(row["gross_pay"] for row in slices) == 865
+    by_cat = {row["worker_category"]: row for row in slices}
+    assert by_cat["w2"]["gross_pay"] == 525
+    assert by_cat["temp"]["gross_pay"] == 340
+    assert by_cat["temp"]["total_employer_cost"] == 340
+
+
+def test_finalized_zero_tax_snapshot_stays_stored_beside_an_open_classification():
+    from backend.payroll_hourly_cost import apply_open_period_burden_estimates
+    from backend.payroll_report_analytics import employee_summaries_by_category
+
+    stored = {
+        "user_id": 9,
+        "employee_name": "Paid Worker",
+        "worker_category": "w2",
+        "pay_period_start": "2026-10-19",
+        "pay_period_end": "2026-10-25",
+        "regular_hours": 30,
+        "ot_hours": 0,
+        "ot_premium": 0,
+        "gross_pay": 600,
+        "employer_taxes": 0,
+        "total_payroll_cost": 600,
+        "employer_cost_recorded": True,
+        "batch_status": "paid",
+        "details_finalized_at": "2026-10-30 12:00:00",
+        "payroll_hours_approved": 1,
+    }
+    open_temp = {
+        "user_id": 9,
+        "employee_name": "Paid Worker",
+        "worker_category": "temp",
+        "pay_period_start": "2026-10-19",
+        "pay_period_end": "2026-10-25",
+        "regular_hours": 10,
+        "ot_hours": 10,
+        "ot_premium": 100,
+        "gross_pay": 500,
+        "employer_taxes": 0,
+        "total_payroll_cost": 500,
+        "employer_cost_recorded": False,
+        "batch_status": "hours_reviewed",
+        "payroll_hours_approved": 1,
+    }
+    shown = apply_open_period_burden_estimates(
+        [stored, open_temp],
+        historical_w2_percent=12.27,
+    )
+    assert shown[0]["gross_pay"] == 600
+    assert shown[0]["employer_taxes"] == 0
+    assert shown[0]["total_payroll_cost"] == 600
+    assert shown[0]["employer_cost_basis"] == "actual"
+    assert shown[0]["payroll_hours_approved"] == 1
+    assert shown[1]["gross_pay"] == 500
+    assert shown[1]["ot_hours"] == 10
+    assert shown[1]["employer_cost_basis"] == "gross_only"
+    week = employee_summaries_by_category(shown)["w2"][0]["week"]
+    assert week["ot_hours"] == 10
+    assert week["ot_premium"] == 100
+    assert week["gross_pay"] == 1100
+    assert week["employer_taxes"] == 0
+    assert week["total_payroll_cost"] == 1100
+    assert week["cost_basis"] == "actual"
+    assert week["cost_basis_label"] == "Stored employer cost"
+    assert week["classifications"][0]["employer_taxes"] == 0
+    assert week["classifications"][1]["ot_hours"] == 10
+
+
 def test_presets_follow_payroll_weeks_not_calendar_weeks_only():
     as_of = date(2026, 11, 1)
     current = resolve_preset("current_week", as_of=as_of, week_starts_on=0)

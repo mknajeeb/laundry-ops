@@ -252,7 +252,8 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
         group.map((row) => row.employer_cost_basis || (row.employer_cost_recorded ? "actual" : "")).filter(Boolean),
       );
       let basis = "Estimated employer burden";
-      if (bases.size === 1 && bases.has("actual")) basis = "Stored employer cost";
+      const storedOnly = bases.has("actual") && [...bases].every((item) => item === "actual" || item === "gross_only");
+      if (storedOnly) basis = "Stored employer cost";
       else if (bases.has("actual") && (bases.has("estimated") || bases.has("configured"))) {
         basis = "Stored wages and estimated burden";
       } else if (bases.size === 1 && bases.has("gross_only")) basis = "Gross only";

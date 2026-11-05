@@ -698,7 +698,7 @@ def _mixed_classification_week(rows: list[dict]) -> Optional[dict[str, Any]]:
     bases.discard("")
     if not bases:
         bases = {"estimated"}
-    if bases <= {"actual"}:
+    if bases <= {"actual"} or bases <= {"actual", "gross_only"}:
         cost_basis = "actual"
         cost_label = "Stored employer cost"
     elif "actual" in bases and ("estimated" in bases or "configured" in bases):
