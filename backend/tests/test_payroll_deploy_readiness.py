@@ -53,10 +53,10 @@ def test_accountant_reports_mounted_for_admin_payroll():
     assert "AccountantEmployeePaystubsPanel" in mgmt
     assert 'key: "accountant_documents"' in mgmt
     assert 'key: "accountant_employee"' in mgmt
-    assert 'label: "For Accountant"' in mgmt
+    assert 'key: "accountant_payroll"' in mgmt
     section_block = mgmt.split("const accountantTabs = useMemo")[1].split("const sections = useMemo")[0]
-    assert section_block.index('label: "For Accountant"') < section_block.index('label: "Documents"')
-    assert section_block.index('label: "Documents"') < section_block.index('label: "By Employee"')
+    assert section_block.index('label: "Employee Detail"') < section_block.index('label: "Documents"')
+    assert 'label: "By Batch"' in section_block
     admin_block = mgmt.split("const sections = useMemo")[1].split("}, [")[0]
     admin_block = admin_block.split("if (readOnlyAccountant) return")[1]
     batches_idx = admin_block.index('key: "batches"')
@@ -101,7 +101,7 @@ def test_payout_details_unlock_after_hours_approved():
     assert not batch_ready_for_payout_details(
         {"status": "hours_reviewed", "worker_category": "w2"}
     )
-    assert not batch_ready_for_payout_details(
+    assert batch_ready_for_payout_details(
         {"status": "sent_to_accountant", "worker_category": "w2"}
     )
     assert batch_ready_for_payout_details(

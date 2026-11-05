@@ -461,6 +461,12 @@ def _sum_totals(rows: list[dict]) -> dict[str, float]:
     return totals
 
 
+def _employer_cost_basis(rows: list[dict]) -> str:
+    from backend.payroll_hourly_cost import employer_cost_basis_for_rows
+
+    return employer_cost_basis_for_rows(rows)
+
+
 def _build_summary(rows: list[dict], totals: dict[str, float]) -> dict[str, Any]:
     batch_ids = {r.get("batch_id") for r in rows if r.get("batch_id") is not None}
     user_ids = {r.get("user_id") for r in rows if r.get("user_id") is not None}
@@ -487,6 +493,7 @@ def _build_summary(rows: list[dict], totals: dict[str, float]) -> dict[str, Any]
             float(totals.get("regular_hours") or 0) + float(totals.get("ot_hours") or 0),
             2,
         ),
+        "employer_cost_basis": _employer_cost_basis(rows),
         **totals,
     }
 
@@ -547,6 +554,7 @@ def query_payroll_report(
     trend_range: Optional[int] = None,
     include_analytics: bool = True,
     include_employee_detail: bool = True,
+    estimate_open_burden: bool = True,
 ) -> dict[str, Any]:
     """Return filtered payroll report rows + totals across categories/periods."""
     from backend.payroll_operations import ensure_payout_batches_tables
@@ -795,6 +803,13 @@ def query_payroll_report(
         if line_id is not None:
             seen_line_ids.add(line_id)
         rows.append(row)
+
+    if estimate_open_burden and rows:
+        from backend.payroll_hourly_cost import annotate_open_period_rows
+
+        rows = annotate_open_period_rows(
+            conn, organization_id, rows, category_filter=worker_category
+        )
 
     totals = _sum_totals(rows)
     summary = _build_summary(rows, totals)

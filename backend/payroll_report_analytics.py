@@ -636,13 +636,9 @@ def category_breakdown(rows: list[dict]) -> list[dict[str, Any]]:
     )
     for cat in keys:
         metrics = aggregate_period_metrics(by_cat[cat])
-        # Employer true cost: W-2 = gross + ER taxes; Temp/1099 = gross.
-        if cat == "w2":
-            employer_cost = round(
-                _money(metrics.get("gross_pay")) + _money(metrics.get("employer_taxes")), 2
-            )
-        else:
-            employer_cost = _money(metrics.get("gross_pay"))
+        # Same employer cost the report total uses: stored on finalized lines,
+        # estimated on open lines. Temp and 1099 stay at gross until a burden is present.
+        employer_cost = _money(metrics.get("total_payroll_cost"))
         base = _money(metrics.get("base_earnings"))
         prem = _money(metrics.get("ot_premium"))
         reg_earn = _money(metrics.get("regular_earnings"))
@@ -776,9 +772,9 @@ def employment_mix_by_period(
                     _money(w2.get("gross_pay")) + _money(w2.get("employer_taxes")), 2
                 ),
                 "temp_gross": _money(temp.get("gross_pay")),
-                "temp_cost": _money(temp.get("gross_pay")),
+                "temp_cost": _money(temp.get("total_payroll_cost")),
                 "contractor_1099_gross": _money(c1099.get("gross_pay")),
-                "contractor_1099_cost": _money(c1099.get("gross_pay")),
+                "contractor_1099_cost": _money(c1099.get("total_payroll_cost")),
             }
         )
     return out
@@ -1101,6 +1097,12 @@ def _fetch_monthly_paid_rows(
     return list(report.get("rows") or [])
 
 
+def _employer_cost_basis_label(rows: list[dict]) -> str:
+    from backend.payroll_hourly_cost import employer_cost_basis_for_rows
+
+    return employer_cost_basis_for_rows(rows)
+
+
 def build_report_analytics(
     conn,
     organization_id: int,
@@ -1376,7 +1378,20 @@ def build_report_analytics(
                             prev_metrics = aggregate_period_metrics(prior_rows)
                             previous_label = format_focus_period_label(prior[0], prior[1])
 
-    categories = attach_category_cost_shares(category_breakdown(analytics_rows))
+    # An open selected week is the workforce on screen. Finalized-only selections
+    # and historical trend charts stay on stored costs.
+    open_selection = report_type == "payroll_period" and any(
+        str(row.get("employer_cost_basis") or "actual") != "actual" for row in detail_rows
+    )
+    breakdown_rows = detail_rows if open_selection else analytics_rows
+    if open_selection:
+        focus_metrics = aggregate_period_metrics(detail_rows)
+        period_keys = {period_key_from_row(row) for row in detail_rows}
+        if len(period_keys) == 1:
+            only = next(iter(period_keys))
+            if only[0] and only[1]:
+                focus_label = format_focus_period_label(only[0], only[1])
+    categories = attach_category_cost_shares(category_breakdown(breakdown_rows))
     workforce_totals = workforce_breakdown_totals(categories)
     kpis = build_kpi_cards(focus_metrics, prev_metrics)
     ot_summary = build_ot_summary(focus_metrics, prev_metrics)
@@ -1435,6 +1450,7 @@ def build_report_analytics(
         "focus_kind": comparison_mode,
         "focus_is_partial": focus_is_partial,
         "focus_is_incomplete": focus_is_incomplete,
+        "employer_cost_basis": _employer_cost_basis_label(detail_rows),
     }
 
     return {

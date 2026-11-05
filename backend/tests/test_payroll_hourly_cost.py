@@ -10,8 +10,10 @@ from backend.payroll_hourly_cost import (
     finalized_rows_for_period,
     hourly_cost_from_report_rows,
     payable_hours_from_net_seconds,
+    price_time_records,
     weighted_burden_from_periods,
 )
+from backend.payroll_operations import parse_record_worker_category
 from backend.payroll_report import build_report_row
 from backend.payroll_report_analytics import employee_summaries_by_category
 
@@ -639,3 +641,740 @@ def test_time_record_estimate_matches_dashboard_formula_for_same_inputs():
     assert from_time["effective_cost_per_hour"] == again["effective_cost_per_hour"]
     assert from_time["base_cost_per_hour"] == again["base_cost_per_hour"]
     assert from_time["ot_impact_per_hour"] == again["ot_impact_per_hour"]
+
+
+def _amna_week(second_category):
+    return [
+        {
+            "id": 1,
+            "approved_hours": 30,
+            "clock_in_at": "2026-11-02 08:00:00",
+            "hourly_rate": 20,
+            "worker_category": "temp",
+        },
+        {
+            "id": 2,
+            "approved_hours": 20,
+            "clock_in_at": "2026-11-03 08:00:00",
+            "hourly_rate": 20,
+            "worker_category": second_category,
+        },
+    ]
+
+
+_SHARED_OT = {
+    "w2": {"enabled": True, "threshold_hours": 40, "multiplier": 1.5, "employer_burden_percent": 10},
+    "temp": {"enabled": True, "threshold_hours": 40, "multiplier": 1.5, "employer_burden_percent": None},
+    "contractor_1099": {"enabled": True, "threshold_hours": 40, "multiplier": 1.5, "employer_burden_percent": None},
+}
+
+
+def test_single_category_price_matches_existing_w2_estimate():
+    records = [
+        {
+            "id": 1,
+            "approved_hours": 51.53,
+            "clock_in_at": "2026-10-26 08:00:00",
+            "hourly_rate": 17,
+            "worker_category": "w2",
+        }
+    ]
+    economics = economics_from_time_records(records, ot_threshold=40, ot_multiplier=1.5)
+    expected = analyze_employee_hourly_cost(
+        **economics,
+        scenario="estimated",
+        burden_percent=11.67,
+        tax_settings=TAX_SETTINGS,
+        labor_cost_target=19,
+    )
+    priced = price_time_records(
+        records,
+        historical_w2_percent=11.67,
+        tax_settings=TAX_SETTINGS,
+        labor_cost_target=19,
+    )
+    assert priced["ot_hours"] == expected["ot_hours"]
+    assert priced["gross_pay"] == expected["gross_pay"]
+    assert priced["total_employer_cost"] == expected["total_employer_cost"]
+    assert priced["base_cost_per_hour"] == expected["base_cost_per_hour"]
+    assert priced["effective_cost_per_hour"] == expected["effective_cost_per_hour"]
+    assert priced["ot_impact_per_hour"] == expected["ot_impact_per_hour"]
+    assert sum(row["total_employer_cost"] for row in priced["record_costs"]) == priced["total_employer_cost"]
+
+
+def test_category_change_changes_burden_and_keeps_overtime():
+    as_temp = price_time_records(_amna_week("temp"), category_policies=_SHARED_OT, labor_cost_target=19)
+    as_w2 = price_time_records(_amna_week("w2"), category_policies=_SHARED_OT, labor_cost_target=19)
+    back = price_time_records(_amna_week("temp"), category_policies=_SHARED_OT, labor_cost_target=19)
+
+    assert as_temp["ot_hours"] == 10
+    assert as_w2["ot_hours"] == 10
+    assert back["ot_hours"] == as_temp["ot_hours"]
+    assert as_temp["total_employer_cost"] == 1100
+    assert as_w2["total_employer_cost"] == 1150
+    assert back["total_employer_cost"] == as_temp["total_employer_cost"]
+    assert as_w2["burden_percent"] == 4.55
+    assert as_w2["effective_cost_per_hour"] == 23.00
+    assert as_w2["base_cost_per_hour"] == 20.80
+    assert as_w2["ot_impact_per_hour"] == 2.20
+    assert as_w2["target_delta_per_hour"] == 4.00
+    assert as_w2["labor_cost_target"] == 19
+    by_id = {row["id"]: row for row in as_w2["record_costs"]}
+    assert by_id[1]["worker_category"] == "temp"
+    assert by_id[1]["total_employer_cost"] == 600
+    assert by_id[1]["ot_hours"] == 0
+    assert by_id[2]["total_employer_cost"] == 550
+    assert by_id[2]["ot_hours"] == 10
+    assert sum(row["total_employer_cost"] for row in as_w2["record_costs"]) == as_w2["total_employer_cost"]
+
+
+def test_temp_and_1099_do_not_inherit_w2_burden_unless_configured():
+    mixed = price_time_records(
+        _amna_week("contractor_1099"),
+        category_policies=_SHARED_OT,
+        historical_w2_percent=11.67,
+        labor_cost_target=19,
+    )
+    assert mixed["ot_hours"] == 10
+    assert mixed["total_employer_cost"] == 1100
+    assert mixed["burden_status"] == "not_applicable"
+    configured = dict(_SHARED_OT)
+    configured["temp"] = {**_SHARED_OT["temp"], "employer_burden_percent": 5}
+    priced = price_time_records(_amna_week("w2"), category_policies=configured, historical_w2_percent=11.67)
+    by_id = {row["id"]: row for row in priced["record_costs"]}
+    assert by_id[1]["total_employer_cost"] == 630
+    assert by_id[2]["total_employer_cost"] == 550
+    assert priced["total_employer_cost"] == 1180
+
+
+def test_disabling_overtime_on_one_classification_does_not_reset_the_week():
+    policies = {
+        "w2": {"enabled": True, "threshold_hours": 40, "multiplier": 1.5, "employer_burden_percent": None},
+        "temp": {"enabled": False, "threshold_hours": 40, "multiplier": 1.5, "employer_burden_percent": None},
+    }
+    records = [
+        {"id": 1, "approved_hours": 45, "clock_in_at": "2026-11-02 08:00:00", "hourly_rate": 20, "worker_category": "w2"},
+        {"id": 2, "approved_hours": 5, "clock_in_at": "2026-11-03 08:00:00", "hourly_rate": 20, "worker_category": "temp"},
+    ]
+    priced = price_time_records(records, category_policies=policies)
+    assert priced["ot_hours"] == 5
+    by_id = {row["id"]: row for row in priced["record_costs"]}
+    assert by_id[1]["ot_hours"] == 5
+    assert by_id[2]["ot_hours"] == 0
+
+
+def test_record_worker_category_parser_rejects_unknown_values():
+    assert parse_record_worker_category(None) is None
+    assert parse_record_worker_category("") == ""
+    assert parse_record_worker_category("w2") == "w2"
+    try:
+        parse_record_worker_category("salary")
+    except ValueError as exc:
+        assert "worker_category" in str(exc)
+    else:
+        raise AssertionError("unknown classification was accepted")
+
+
+def _payout_row(
+    *,
+    user_id,
+    category,
+    gross,
+    taxes,
+    recorded,
+    status,
+    finalized_at=None,
+    start="2026-10-26",
+    end="2026-11-01",
+):
+    return {
+        "user_id": user_id,
+        "worker_category": category,
+        "gross_pay": gross,
+        "employer_taxes": taxes,
+        "total_payroll_cost": round(gross + taxes, 2),
+        "employer_cost_recorded": recorded,
+        "batch_status": status,
+        "details_finalized_at": finalized_at,
+        "pay_period_start": start,
+        "pay_period_end": end,
+        "regular_hours": 40,
+        "ot_hours": 0,
+    }
+
+
+def test_open_period_estimate_keeps_finalized_and_recorded_zero():
+    from backend.payroll_hourly_cost import apply_open_period_burden_estimates
+
+    finalized = _payout_row(
+        user_id=61,
+        category="w2",
+        gross=303.45,
+        taxes=37.25,
+        recorded=True,
+        status="paid",
+        finalized_at="2026-10-28 12:00:00",
+        start="2026-10-19",
+        end="2026-10-25",
+    )
+    recorded_zero = _payout_row(
+        user_id=61,
+        category="w2",
+        gross=400,
+        taxes=0,
+        recorded=True,
+        status="paid",
+        finalized_at="2026-09-16 12:00:00",
+        start="2026-09-14",
+        end="2026-09-20",
+    )
+    open_w2 = _payout_row(
+        user_id=61,
+        category="w2",
+        gross=3625,
+        taxes=0,
+        recorded=False,
+        status="approved_for_payment",
+    )
+    open_temp = _payout_row(
+        user_id=61,
+        category="temp",
+        gross=636.91,
+        taxes=0,
+        recorded=False,
+        status="hours_reviewed",
+    )
+    rows = apply_open_period_burden_estimates(
+        [finalized, recorded_zero, open_w2, open_temp],
+        historical_w2_percent_by_user={61: 11.59},
+    )
+    assert rows[0]["employer_taxes"] == 37.25
+    assert rows[0]["total_payroll_cost"] == 340.70
+    assert rows[0]["employer_cost_basis"] == "actual"
+    assert rows[1]["employer_taxes"] == 0
+    assert rows[1]["total_payroll_cost"] == 400
+    assert rows[1]["employer_cost_basis"] == "actual"
+    assert rows[2]["employer_taxes"] == 420.14
+    assert rows[2]["total_payroll_cost"] == 4045.14
+    assert rows[2]["employer_cost_basis"] == "estimated"
+    assert rows[2]["gross_pay"] == 3625
+    assert rows[3]["employer_taxes"] == 0
+    assert rows[3]["total_payroll_cost"] == 636.91
+    assert rows[3]["employer_cost_basis"] == "gross_only"
+
+
+def test_configured_rate_overrides_history_and_labels_configured():
+    from backend.payroll_hourly_cost import (
+        apply_open_period_burden_estimates,
+        combine_category_analyses,
+        employer_cost_basis_for_rows,
+    )
+
+    open_w2 = _payout_row(
+        user_id=7, category="w2", gross=1000, taxes=0, recorded=False, status="hours_reviewed"
+    )
+    open_temp = _payout_row(
+        user_id=7, category="temp", gross=200, taxes=0, recorded=False, status="hours_reviewed"
+    )
+    rows = apply_open_period_burden_estimates(
+        [open_w2, open_temp],
+        historical_w2_percent_by_user={7: 11.59},
+        category_burden_percent={"w2": 10, "temp": 5, "contractor_1099": None},
+    )
+    assert rows[0]["employer_taxes"] == 100
+    assert rows[0]["employer_cost_basis"] == "configured"
+    assert rows[1]["employer_taxes"] == 10
+    assert rows[1]["employer_cost_basis"] == "configured"
+    assert employer_cost_basis_for_rows(rows) == "configured"
+    combined = combine_category_analyses(
+        [
+            {"burden_status": "configured", "burden_label": "Configured", "payable_hours": 10,
+             "gross_pay": 1000, "employer_expenses": 100, "total_employer_cost": 1100,
+             "worker_category": "w2"},
+            {"burden_status": "not_applicable", "burden_label": "N/A", "payable_hours": 10,
+             "gross_pay": 200, "employer_expenses": 0, "total_employer_cost": 200,
+             "worker_category": "temp"},
+        ]
+    )
+    assert combined["burden_status"] == "configured"
+
+
+def test_report_reconciliation_keeps_finalized_total_and_estimates_open_w2():
+    from backend.payroll_hourly_cost import apply_open_period_burden_estimates
+    from backend.payroll_report import _sum_totals
+
+    finalized = _payout_row(
+        user_id=1, category="w2", gross=1000, taxes=116, recorded=True, status="paid",
+        finalized_at="2026-10-28 12:00:00", start="2026-10-19", end="2026-10-25",
+    )
+    open_w2 = _payout_row(
+        user_id=1, category="w2", gross=500, taxes=0, recorded=False, status="approved_for_payment"
+    )
+    open_temp = _payout_row(
+        user_id=2, category="temp", gross=100, taxes=0, recorded=False, status="hours_reviewed"
+    )
+    rows = apply_open_period_burden_estimates(
+        [finalized, open_w2, open_temp],
+        historical_w2_percent=10,
+    )
+    totals = _sum_totals(rows)
+    assert finalized["total_payroll_cost"] == 1116
+    assert totals["gross_pay"] == 1600
+    assert totals["employer_taxes"] == 166
+    assert totals["total_payroll_cost"] == 1766
+    assert rows[2]["total_payroll_cost"] == 100
+
+
+def test_batch_sync_walks_overtime_across_categories_and_rates():
+    from backend.payroll_hourly_cost import group_batch_sync_lines
+
+    mixed = [
+        {"id": 1, "user_id": 7, "worker_name": "A", "approved_hours": 30,
+         "clock_in_at": "2026-11-02 08:00:00", "hourly_rate": 20, "worker_category": "w2"},
+        {"id": 2, "user_id": 7, "worker_name": "A", "approved_hours": 20,
+         "clock_in_at": "2026-11-03 08:00:00", "hourly_rate": 20, "worker_category": "temp"},
+    ]
+    w2_lines = group_batch_sync_lines(mixed, batch_category="w2")
+    temp_lines = group_batch_sync_lines(mixed, batch_category="temp")
+    assert w2_lines[0]["regular_hours"] == 30
+    assert w2_lines[0]["ot_hours"] == 0
+    assert temp_lines[0]["regular_hours"] == 10
+    assert temp_lines[0]["ot_hours"] == 10
+
+    two_rates = [
+        {"id": 1, "user_id": 28, "worker_name": "J", "approved_hours": 25,
+         "clock_in_at": "2026-10-19 08:00:00", "hourly_rate": 17, "worker_category": "temp"},
+        {"id": 2, "user_id": 28, "worker_name": "J", "approved_hours": 20,
+         "clock_in_at": "2026-10-22 08:00:00", "hourly_rate": 21, "worker_category": "temp"},
+    ]
+    lines = group_batch_sync_lines(two_rates, batch_category="temp")
+    by_rate = {line["rate"]: line for line in lines}
+    assert by_rate[17]["regular_hours"] == 25
+    assert by_rate[17]["ot_hours"] == 0
+    assert by_rate[21]["regular_hours"] == 15
+    assert by_rate[21]["ot_hours"] == 5
+
+
+def test_mixed_period_keeps_stored_cost_and_estimates_the_open_category():
+    from backend.payroll_hourly_cost import combine_stored_and_open_categories
+
+    priced = {
+        "category_analyses": [
+            {
+                "worker_category": "w2",
+                "payable_hours": 30,
+                "regular_hours": 30,
+                "ot_hours": 0,
+                "gross_pay": 600,
+                "ot_premium": 0,
+                "base_earnings": 600,
+                "employer_expenses": 60,
+                "total_employer_cost": 660,
+                "straight_time_employer_cost": 660,
+                "burden_status": "estimated",
+                "base_wage": 20,
+            },
+            {
+                "worker_category": "temp",
+                "payable_hours": 20,
+                "regular_hours": 10,
+                "ot_hours": 10,
+                "gross_pay": 500,
+                "ot_premium": 100,
+                "base_earnings": 400,
+                "employer_expenses": 0,
+                "total_employer_cost": 500,
+                "straight_time_employer_cost": 400,
+                "burden_status": "not_applicable",
+                "base_wage": 20,
+            },
+        ],
+        "record_costs": [
+            {"id": 1, "worker_category": "w2", "total_employer_cost": 660},
+            {"id": 2, "worker_category": "temp", "total_employer_cost": 500},
+        ],
+    }
+    stored = {
+        "w2": {
+            "worker_category": "w2",
+            "payable_hours": 30,
+            "regular_hours": 30,
+            "ot_hours": 0,
+            "gross_pay": 600,
+            "ot_premium": 0,
+            "base_earnings": 600,
+            "employer_expenses": 70,
+            "total_employer_cost": 670,
+            "straight_time_employer_cost": 670,
+            "burden_status": "actual",
+            "burden_label": "Actual",
+            "base_wage": 20,
+        }
+    }
+    combined = combine_stored_and_open_categories(priced, stored, labor_cost_target=19)
+    assert combined["total_employer_cost"] == 1170
+    assert combined["ot_hours"] == 10
+    assert combined["record_costs"] == [
+        {"id": 2, "worker_category": "temp", "total_employer_cost": 500}
+    ]
+    assert combined["burden_status"] == "actual"
+
+
+def _open_report_row(**overrides):
+    row = {
+        "line_id": 10,
+        "batch_id": 3,
+        "user_id": 7,
+        "employee_name": "Alex",
+        "worker_category": "temp",
+        "pay_period_start": "2026-11-02",
+        "pay_period_end": "2026-11-08",
+        "payroll_period": "2026-11-02 – 2026-11-08",
+        "gross_pay": 400,
+        "regular_hours": 20,
+        "ot_hours": 0,
+        "employer_taxes": 0,
+        "employer_cost_recorded": False,
+        "total_payroll_cost": 400,
+        "batch_status": "hours_reviewed",
+        "details_finalized_at": "",
+        "payroll_status_key": "hours_reviewed",
+    }
+    row.update(overrides)
+    return row
+
+
+def _week_record(session_id, hours, category, day, rate=20, *, week_start=None, ot_mode="default"):
+    row = {
+        "id": session_id,
+        "user_id": 7,
+        "worker_name": "Alex",
+        "approved_hours": hours,
+        "clock_in_at": f"{day} 08:00:00",
+        "hourly_rate": rate,
+        "worker_category": category,
+    }
+    if week_start:
+        row["payroll_week_start"] = week_start
+        row["ot_week_mode"] = ot_mode
+    return row
+
+
+def test_open_report_follows_classification_before_sync_and_matches_after():
+    """A saved classification moves report hours before sync, without writing the batch."""
+    from backend.payroll_hourly_cost import (
+        apply_open_period_burden_estimates,
+        group_batch_sync_lines,
+        project_open_classifications,
+    )
+
+    stale_lines = [
+        _open_report_row(
+            line_id=1, batch_id=1, worker_category="w2", gross_pay=600, regular_hours=30, total_payroll_cost=600
+        ),
+        _open_report_row(line_id=2, batch_id=2, worker_category="temp"),
+    ]
+    as_temp_tail = [
+        _week_record(1, 30, "w2", "2026-11-02"),
+        _week_record(2, 20, "temp", "2026-11-03"),
+    ]
+    before_sync = project_open_classifications(stale_lines, as_temp_tail)
+    by_cat = {}
+    for row in before_sync:
+        by_cat.setdefault(row["worker_category"], row)
+    assert by_cat["w2"]["regular_hours"] == 30
+    assert by_cat["w2"]["ot_hours"] == 0
+    assert by_cat["temp"]["regular_hours"] == 10
+    assert by_cat["temp"]["ot_hours"] == 10
+    assert by_cat["temp"]["reporting_projection"] is True
+    assert by_cat["temp"]["employer_cost_recorded"] is False
+    assert by_cat["temp"]["line_id"] is None
+    assert sum(row["regular_hours"] + row["ot_hours"] for row in before_sync) == 50
+
+    priced = apply_open_period_burden_estimates(
+        before_sync,
+        category_burden_percent={"w2": 10, "temp": None, "contractor_1099": None},
+    )
+    priced_by_cat = {row["worker_category"]: row for row in priced}
+    assert priced_by_cat["w2"]["employer_taxes"] == 60
+    assert priced_by_cat["w2"]["total_payroll_cost"] == 660
+    assert priced_by_cat["w2"]["employer_cost_basis"] == "configured"
+    assert priced_by_cat["temp"]["employer_taxes"] == 0
+    assert priced_by_cat["temp"]["total_payroll_cost"] == 500
+    assert sum(row["regular_hours"] + row["ot_hours"] for row in priced) == 50
+
+    reversed_records = [
+        _week_record(1, 30, "temp", "2026-11-02"),
+        _week_record(2, 20, "w2", "2026-11-03"),
+    ]
+    reversed_rows = project_open_classifications(stale_lines, reversed_records)
+    reversed_by_cat = {row["worker_category"]: row for row in reversed_rows}
+    assert reversed_by_cat["temp"]["regular_hours"] == 30
+    assert reversed_by_cat["temp"]["ot_hours"] == 0
+    assert reversed_by_cat["w2"]["regular_hours"] == 10
+    assert reversed_by_cat["w2"]["ot_hours"] == 10
+    assert sum(row["regular_hours"] + row["ot_hours"] for row in reversed_rows) == 50
+    assert sum(row["ot_hours"] for row in reversed_rows) == 10
+
+    for category in ("w2", "temp"):
+        synced = group_batch_sync_lines(reversed_records, batch_category=category)
+        shown = reversed_by_cat[category]
+        assert synced[0]["regular_hours"] == shown["regular_hours"]
+        assert synced[0]["ot_hours"] == shown["ot_hours"]
+
+    filtered = project_open_classifications(
+        stale_lines, reversed_records, category_filter="w2"
+    )
+    assert [row["worker_category"] for row in filtered] == ["w2"]
+    assert filtered[0]["regular_hours"] + filtered[0]["ot_hours"] == 20
+
+
+def test_open_report_follows_the_batch_week_overtime_switch():
+    """Enabled weeks keep one overtime walk. A disabled week stays regular."""
+    from backend.payroll_hourly_cost import group_batch_sync_lines, project_open_classifications
+
+    open_lines = [
+        _open_report_row(
+            line_id=1, batch_id=1, worker_category="w2", gross_pay=600, regular_hours=30, total_payroll_cost=600
+        ),
+        _open_report_row(line_id=2, batch_id=2, worker_category="temp"),
+    ]
+
+    def shown_matches_sync(records, lines=None):
+        shown = project_open_classifications(lines or open_lines, records)
+        by_cat = {}
+        for row in shown:
+            by_cat.setdefault(row["worker_category"], []).append(row)
+        for category, report_rows in by_cat.items():
+            synced = group_batch_sync_lines(records, batch_category=category)
+            assert len(synced) == len(report_rows)
+            for sync_line, report_row in zip(
+                sorted(synced, key=lambda line: (line["rate"], line["regular_hours"])),
+                sorted(report_rows, key=lambda row: (row["regular_rate"], row["regular_hours"])),
+            ):
+                assert report_row["regular_hours"] == sync_line["regular_hours"]
+                assert report_row["ot_hours"] == sync_line["ot_hours"]
+                assert report_row["reporting_projection"] is True
+                assert report_row["employer_cost_recorded"] is False
+                assert report_row["line_id"] is None
+        return shown
+
+    enabled = [
+        _week_record(1, 30, "w2", "2026-11-02", week_start="2026-11-02"),
+        _week_record(2, 20, "temp", "2026-11-03", week_start="2026-11-02"),
+    ]
+    enabled_rows = shown_matches_sync(enabled)
+    assert sum(row["ot_hours"] for row in enabled_rows) == 10
+    assert sum(row["regular_hours"] + row["ot_hours"] for row in enabled_rows) == 50
+
+    disabled = [
+        _week_record(1, 30, "w2", "2026-11-02", week_start="2026-11-02", ot_mode="disable_ot"),
+        _week_record(2, 20, "temp", "2026-11-03", week_start="2026-11-02", ot_mode="disable_ot"),
+    ]
+    disabled_rows = shown_matches_sync(disabled)
+    assert sum(row["ot_hours"] for row in disabled_rows) == 0
+    assert sum(row["regular_hours"] for row in disabled_rows) == 50
+
+    two_rates = [
+        _week_record(1, 25, "temp", "2026-11-02", rate=17, week_start="2026-11-02", ot_mode="disable_ot"),
+        _week_record(2, 20, "w2", "2026-11-04", rate=21, week_start="2026-11-02", ot_mode="disable_ot"),
+    ]
+    rate_rows = shown_matches_sync(two_rates)
+    assert sum(row["ot_hours"] for row in rate_rows) == 0
+    assert {row["regular_rate"] for row in rate_rows} == {17.0, 21.0}
+
+    wide = [
+        _open_report_row(
+            line_id=1,
+            worker_category="w2",
+            pay_period_start="2026-11-02",
+            pay_period_end="2026-11-15",
+            gross_pay=900,
+            regular_hours=45,
+            total_payroll_cost=900,
+        ),
+        _open_report_row(
+            line_id=2,
+            worker_category="temp",
+            pay_period_start="2026-11-02",
+            pay_period_end="2026-11-15",
+        ),
+    ]
+    split_weeks = [
+        _week_record(1, 45, "w2", "2026-11-02", week_start="2026-11-02", ot_mode="disable_ot"),
+        _week_record(2, 45, "temp", "2026-11-09", week_start="2026-11-09"),
+    ]
+    split_rows = shown_matches_sync(split_weeks, wide)
+    by_cat = {row["worker_category"]: row for row in split_rows}
+    assert by_cat["w2"]["regular_hours"] == 45
+    assert by_cat["w2"]["ot_hours"] == 0
+    assert by_cat["temp"]["regular_hours"] == 40
+    assert by_cat["temp"]["ot_hours"] == 5
+
+    stored = _open_report_row(
+        line_id=9,
+        worker_category="w2",
+        gross_pay=600,
+        regular_hours=30,
+        ot_hours=0,
+        employer_taxes=0,
+        employer_cost_recorded=True,
+        total_payroll_cost=600,
+        batch_status="paid",
+        details_finalized_at="2026-11-09 12:00:00",
+        source_shift_session_ids=[1],
+    )
+    kept = project_open_classifications([stored, open_lines[1]], disabled)
+    assert kept[0]["gross_pay"] == 600
+    assert kept[0]["employer_taxes"] == 0
+    assert kept[0]["employer_cost_recorded"] is True
+    assert kept[0].get("reporting_projection") is not True
+
+
+def test_projection_keeps_finalized_snapshots_and_does_not_double_count():
+    from backend.payroll_hourly_cost import project_open_classifications
+
+    stored = _open_report_row(
+        line_id=9,
+        worker_category="w2",
+        gross_pay=600,
+        regular_hours=30,
+        ot_hours=0,
+        employer_taxes=0,
+        employer_cost_recorded=True,
+        total_payroll_cost=600,
+        batch_status="paid",
+        details_finalized_at="2026-11-09 12:00:00",
+        source_shift_session_ids=[1],
+    )
+    open_temp = _open_report_row(line_id=10, worker_category="temp", source_shift_session_ids=[2])
+    moved = [
+        _week_record(1, 30, "temp", "2026-11-02"),
+        _week_record(2, 20, "w2", "2026-11-03"),
+    ]
+    shown = project_open_classifications([stored, open_temp], moved)
+    assert shown[0]["worker_category"] == "w2"
+    assert shown[0]["gross_pay"] == 600
+    assert shown[0]["employer_taxes"] == 0
+    assert shown[0]["employer_cost_recorded"] is True
+    assert shown[0].get("reporting_projection") is not True
+    projected = [row for row in shown if row.get("reporting_projection")]
+    assert len(projected) == 1
+    assert projected[0]["worker_category"] == "w2"
+    assert projected[0]["regular_hours"] == 10
+    assert projected[0]["ot_hours"] == 10
+    assert sum(row["regular_hours"] + row["ot_hours"] for row in shown) == 50
+    assert sum(row["ot_hours"] for row in shown) == 10
+
+
+def test_category_reversal_keeps_shared_overtime():
+    week = [
+        {"id": 1, "approved_hours": 30, "clock_in_at": "2026-11-02 08:00:00", "hourly_rate": 20, "worker_category": "w2"},
+        {"id": 2, "approved_hours": 20, "clock_in_at": "2026-11-03 08:00:00", "hourly_rate": 20, "worker_category": "temp"},
+    ]
+    policies = {
+        "w2": {"enabled": True, "threshold_hours": 40, "multiplier": 1.5, "employer_burden_percent": 10},
+        "temp": {"enabled": True, "threshold_hours": 40, "multiplier": 1.5, "employer_burden_percent": None},
+        "contractor_1099": {"enabled": True, "threshold_hours": 40, "multiplier": 1.5, "employer_burden_percent": None},
+    }
+    first = price_time_records(week, category_policies=policies)
+    reversed_week = [dict(week[0], worker_category="temp"), dict(week[1], worker_category="w2")]
+    second = price_time_records(reversed_week, category_policies=policies)
+    assert first["ot_hours"] == 10
+    assert second["ot_hours"] == 10
+    assert first["total_employer_cost"] == 1160
+    assert second["total_employer_cost"] == 1150
+    again = price_time_records(week, category_policies=policies)
+    assert again["total_employer_cost"] == first["total_employer_cost"]
+
+
+def _jasanpreet_oct_26_records(*, ot_mode):
+    """Two Temp rates in one payroll week. Hours are the Oct 26–Nov 1 sessions."""
+    sessions = [
+        (2006, "2026-10-26", 8.77, 21),
+        (2007, "2026-10-27", 12.14, 17),
+        (2057, "2026-10-28", 9.99, 21),
+        (2077, "2026-10-29", 8.42, 17),
+        (2081, "2026-10-30", 11.71, 17),
+        (2111, "2026-10-31", 6.38, 21),
+    ]
+    return [
+        {
+            "id": session_id,
+            "user_id": 28,
+            "worker_name": "Jasanpreet",
+            "approved_hours": hours,
+            "clock_in_at": f"{day} 08:00:00",
+            "work_date": day,
+            "hourly_rate": rate,
+            "resolved_hourly_rate": rate,
+            "worker_category": "temp",
+            "payroll_week_start": "2026-10-26",
+            "ot_week_mode": ot_mode,
+        }
+        for session_id, day, hours, rate in sessions
+    ]
+
+
+def test_jasanpreet_disabled_week_matches_across_summaries_and_an_enabled_week_keeps_overtime():
+    from backend.payroll_hourly_cost import group_batch_sync_lines, project_open_classifications
+
+    disabled = _jasanpreet_oct_26_records(ot_mode="disable_ot")
+    economics = economics_from_time_records(disabled, ot_threshold=40, ot_multiplier=1.5)
+    assert economics["payable_hours"] == 57.41
+    assert economics["ot_hours"] == 0
+    assert economics["ot_premium"] == 0
+    assert economics["gross_pay"] == 1076.53
+    summary = analyze_employee_hourly_cost(
+        worker_category="temp",
+        payable_hours=economics["payable_hours"],
+        regular_hours=economics["regular_hours"],
+        ot_hours=economics["ot_hours"],
+        base_earnings=economics["base_earnings"],
+        ot_premium=economics["ot_premium"],
+        gross_pay=economics["gross_pay"],
+        total_payroll_cost=economics["gross_pay"],
+        employer_taxes=0,
+        regular_rates=economics["regular_rates"],
+        scenario="contractor",
+    )
+    assert summary["effective_cost_per_hour"] == 18.75
+    assert summary["base_cost_per_hour"] == 18.75
+    assert summary["ot_impact_per_hour"] == 0
+    priced = price_time_records(disabled, ot_threshold=40, ot_multiplier=1.5)
+    assert priced["ot_hours"] == 0
+    assert priced["ot_premium"] == 0
+    assert priced["payable_hours"] == 57.41
+    assert priced["effective_cost_per_hour"] == 18.75
+    report = project_open_classifications(
+        [
+            _open_report_row(
+                user_id=28,
+                worker_category="temp",
+                pay_period_start="2026-10-26",
+                pay_period_end="2026-11-01",
+                gross_pay=1076.53,
+                regular_hours=57.41,
+                total_payroll_cost=1076.53,
+            )
+        ],
+        disabled,
+    )
+    assert sum(row["ot_hours"] for row in report) == 0
+    assert round(sum(row["regular_hours"] + row["ot_hours"] for row in report), 2) == 57.41
+    synced = group_batch_sync_lines(disabled, batch_category="temp")
+    assert sum(line["ot_hours"] for line in synced) == 0
+    by_rate = {line["rate"]: line["regular_hours"] for line in synced}
+    assert by_rate[21.0] == 25.14
+    assert by_rate[17.0] == 32.27
+
+    enabled = _jasanpreet_oct_26_records(ot_mode="default")
+    enabled_econ = economics_from_time_records(enabled, ot_threshold=40, ot_multiplier=1.5)
+    enabled_priced = price_time_records(enabled, ot_threshold=40, ot_multiplier=1.5)
+    enabled_sync = group_batch_sync_lines(enabled, batch_category="temp")
+    assert enabled_econ["ot_hours"] == 17.41
+    assert enabled_econ["ot_premium"] == 160.75
+    assert enabled_priced["ot_hours"] == 17.41
+    assert enabled_priced["ot_premium"] == 160.75
+    assert round(sum(line["ot_hours"] for line in enabled_sync), 2) == 17.41
+    assert {line["rate"] for line in enabled_sync} == {17.0, 21.0}

@@ -622,6 +622,21 @@ export default function PayrollPlanningSettingsPanel({ onBack, onSaved }) {
                           value={row.overtime_multiplier ?? ""}
                           onChange={(e) => updateCalendarCat(key, "overtime_multiplier", e.target.value === "" ? null : Number(e.target.value))}
                         />
+                        <TextField
+                          size="small"
+                          label="Employer burden %"
+                          type="number"
+                          sx={{ width: 160 }}
+                          value={row.employer_burden_percent ?? ""}
+                          helperText="Blank = not configured"
+                          onChange={(e) =>
+                            updateCalendarCat(
+                              key,
+                              "employer_burden_percent",
+                              e.target.value === "" ? null : Number(e.target.value),
+                            )
+                          }
+                        />
                         <FormControlLabel
                           control={
                             <Switch

@@ -5,6 +5,7 @@ import {
   formatHourlyCost,
   formatOtImpact,
   formatOtImpactPercent,
+  burdenEstimateNote,
   hourlyCostTooltipLines,
   targetComparisonText,
 } from "./hourlyCostDisplay.js";
@@ -44,6 +45,17 @@ test("target comparison and tooltip name the source periods", () => {
   assert.ok(lines.some((line) => line.includes("2026-10-19")));
   assert.ok(lines.some((line) => line.includes("Estimated")));
   assert.ok(lines.some((line) => line.includes("Payable hours")));
+});
+
+test("configured burden is not described as a historical estimate", () => {
+  const note = burdenEstimateNote({
+    burden_status: "configured",
+    method: "configured_burden",
+  });
+  assert.match(note, /Configured employer burden/);
+  assert.equal(/prior finalized payroll/.test(note), false);
+  const historical = burdenEstimateNote({ burden_status: "estimated", method: "historical_burden" });
+  assert.match(historical, /prior finalized payroll/);
 });
 
 test("below-target copy stays compact", () => {

@@ -186,3 +186,81 @@ export function enrichTimeRecords(rows = [], rateMap = {}, { userId = "" } = {})
     workerTotals,
   };
 }
+
+function roundMoney(value) {
+  return Math.round(Number(value) * 100) / 100;
+}
+
+/** Sum employer-cost analyses. Dollars and hours are added before any rate is divided. */
+export function combineHourlyAnalyses(analyses, laborCostTarget = 19) {
+  const list = (analyses || []).filter((item) => item && item.payable_hours != null);
+  if (!list.length) return null;
+  if (list.length === 1) return list[0];
+  const sum = (key) => list.reduce((acc, item) => acc + Number(item[key] || 0), 0);
+  const hours = sum("payable_hours");
+  const gross = sum("gross_pay");
+  const totalKnown = list.every((item) => item.total_employer_cost != null);
+  const straightKnown = list.every((item) => item.straight_time_employer_cost != null);
+  const total = totalKnown ? sum("total_employer_cost") : null;
+  const straight = straightKnown ? sum("straight_time_employer_cost") : null;
+  const extra = totalKnown ? sum("employer_expenses") : null;
+  const burden = totalKnown && gross > 0.005 ? roundMoney((extra / gross) * 100) : null;
+  const effective = total != null && hours > 0.005 ? roundMoney(total / hours) : null;
+  const base = straight != null && hours > 0.005 ? roundMoney(straight / hours) : null;
+  const impact = effective != null && base != null ? roundMoney(effective - base) : null;
+  const wageNum = list.reduce((acc, item) => {
+    const wage = Number(item.base_wage);
+    const itemHours = Number(item.payable_hours || 0);
+    return Number.isFinite(wage) ? acc + wage * itemHours : acc;
+  }, 0);
+  const target = Number(laborCostTarget) > 0 ? Number(laborCostTarget) : 19;
+  const delta = effective == null ? null : roundMoney(effective - target);
+  const applicable = list.every((item) => item.burden_status === "not_applicable");
+  const active = list
+    .map((item) => item.burden_status)
+    .filter((status) => status && status !== "not_applicable");
+  let burdenStatus = "estimated";
+  let burdenLabel = "Mixed";
+  if (!totalKnown) {
+    burdenStatus = "unavailable";
+    burdenLabel = "Unavailable";
+  } else if (applicable) {
+    burdenStatus = "not_applicable";
+    burdenLabel = "N/A";
+  } else if (active.every((status) => status === "configured")) {
+    burdenStatus = "configured";
+    burdenLabel = "Configured";
+  } else if (active.every((status) => status === "actual")) {
+    burdenStatus = "actual";
+    burdenLabel = "Actual";
+  } else if (active.every((status) => status === "estimated")) {
+    burdenStatus = "estimated";
+    burdenLabel = "Estimated";
+  }
+  return {
+    worker_category: "mixed",
+    cost_basis: "estimated_time_records",
+    burden_status: burdenStatus,
+    burden_label: burdenLabel,
+    burden_percent: !totalKnown || applicable ? null : burden,
+    base_wage: hours > 0.005 ? roundMoney(wageNum / hours) : null,
+    base_wage_blended: new Set(list.map((item) => Number(item.base_wage))).size > 1,
+    payable_hours: roundMoney(hours),
+    regular_hours: roundMoney(sum("regular_hours")),
+    ot_hours: roundMoney(sum("ot_hours")),
+    gross_pay: roundMoney(gross),
+    ot_premium: roundMoney(sum("ot_premium")),
+    employer_expenses: extra == null ? null : roundMoney(extra),
+    total_employer_cost: total == null ? null : roundMoney(total),
+    straight_time_employer_cost: straight == null ? null : roundMoney(straight),
+    base_cost_per_hour: base,
+    effective_cost_per_hour: effective,
+    ot_impact_per_hour: impact,
+    ot_impact_percent: base ? roundMoney((impact / base) * 100) : impact === 0 ? 0 : null,
+    labor_cost_target: target,
+    target_delta_per_hour: delta,
+    target_status: delta == null ? "unavailable" : delta > 0.005 ? "above" : "at_or_below",
+    record_costs: list.flatMap((item) => item.record_costs || []),
+    notes: ["Employer burden is weighted across the selected records."],
+  };
+}

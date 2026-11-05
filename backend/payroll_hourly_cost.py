@@ -347,6 +347,7 @@ def analyze_employee_hourly_cost(
     scenario: str = "processed",
     burden_percent: Optional[float] = None,
     burden_sources: Optional[list] = None,
+    configured_burden: bool = False,
     tax_settings: Optional[dict] = None,
     labor_cost_target: Optional[float] = None,
     rate_note: Optional[str] = None,
@@ -400,7 +401,9 @@ def analyze_employee_hourly_cost(
     suspect_difference = False
 
     is_w2 = cat == "w2"
-    use_contractor = (not is_w2) or scenario == "contractor"
+    # An explicit classification percent is not the W-2 historical burden.
+    apply_configured = bool(configured_burden) and burden_percent is not None and not is_w2
+    use_contractor = ((not is_w2) or scenario == "contractor") and not apply_configured
 
     if use_contractor:
         if stored_total is None:
@@ -448,13 +451,21 @@ def analyze_employee_hourly_cost(
             total_cost = _money(gross * factor)
             employer_extra = _money(total_cost - gross)
             no_ot_cost = _money(straight * factor)
-            method = "historical_burden"
+            method = "configured_burden" if configured_burden else "historical_burden"
             if premium <= 0.005:
                 no_ot_cost = total_cost
                 method = "identical_no_overtime"
-            notes.append(
-                "Estimated from this employee's finalized payrolls. Not a finalized payroll expense."
-            )
+            if configured_burden:
+                burden_status = "configured"
+                burden_label = "Configured"
+                notes.append(
+                    "Employer burden uses the percent configured for this classification. "
+                    "Not a finalized payroll expense."
+                )
+            else:
+                notes.append(
+                    "Estimated from this employee's finalized payrolls. Not a finalized payroll expense."
+                )
     else:
         # Processed W-2. Stored total cost is the source of truth.
         if stored_total is None:
@@ -523,7 +534,14 @@ def analyze_employee_hourly_cost(
             elif impact_hr == 0:
                 impact_pct = 0.0
 
-    if method == "historical_burden":
+    if method == "configured_burden":
+        formula = (
+            "Estimated total employer cost = gross earnings × (1 + the burden configured for this classification). "
+            "W-2 historical burden is not copied onto another classification. "
+            "Base cost prices every payable hour at the regular rate, then applies that classification's burden. "
+            "Effective cost/hr = estimated total employer cost ÷ payable hours."
+        )
+    elif method == "historical_burden":
         formula = (
             "Estimated total employer cost = gross earnings × (1 + historical burden). "
             "Base cost prices every payable hour at the regular rate, then applies the same burden. "
@@ -681,14 +699,65 @@ def hourly_cost_from_report_rows(
         for row in rows
     )
     analysis["finalized"] = finalized
-    if analysis.get("worker_category") == "w2" and not finalized and analysis.get("burden_status") == "actual":
+    basis = {str(row.get("employer_cost_basis") or "") for row in rows}
+    basis.discard("")
+    if "configured" in basis and basis <= {"configured", "gross_only"}:
+        analysis["burden_status"] = "configured"
+        analysis["burden_label"] = "Configured"
+        analysis["method"] = "configured_burden"
+        analysis["cost_basis"] = "configured_open_period"
+        analysis["notes"] = list(analysis.get("notes") or []) + [
+            "Employer burden uses the percent configured for this classification. Not a finalized payroll expense."
+        ]
+    elif analysis.get("worker_category") == "w2" and not finalized and analysis.get("burden_status") == "actual":
         analysis["burden_status"] = "estimated"
         analysis["burden_label"] = "Estimated"
         analysis["cost_basis"] = "payroll_line_unfinalized"
         analysis["notes"] = list(analysis.get("notes") or []) + [
-            "Uses amounts stored on the payroll line. This payroll is not finalized."
+            "Estimated from prior finalized payroll. Not a finalized payroll expense."
         ]
     return analysis
+
+
+def _record_ot_disabled(row: dict) -> bool:
+    """True when this record's payroll week is straight-time only."""
+    if row.get("ot_week_disabled") is True:
+        return True
+    raw = row.get("ot_week_mode")
+    if raw in (None, ""):
+        return False
+    try:
+        from backend.payroll_week_ot import OT_MODE_DISABLE, normalize_ot_week_mode
+
+        return normalize_ot_week_mode(raw) == OT_MODE_DISABLE
+    except ValueError:
+        return False
+
+
+def _payroll_week_key(row: dict) -> str:
+    ws = row.get("payroll_week_start") or ""
+    if hasattr(ws, "isoformat"):
+        ws = ws.isoformat()
+    return str(ws)[:10]
+
+
+def _week_groups(records: list[dict]) -> list[tuple[str, list[dict], bool]]:
+    from backend.payroll_overtime import week_ot_enabled_flags
+
+    ordered = sorted(
+        records or [],
+        key=lambda row: (str(row.get("clock_in_at") or ""), str(row.get("id") or "")),
+    )
+    flags = week_ot_enabled_flags(ordered, default_enabled=True)
+    groups: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for row in ordered:
+        key = _payroll_week_key(row) or "_default"
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(row)
+    return [(key, groups[key], flags.get(key) is False) for key in order]
 
 
 def economics_from_time_records(
@@ -702,48 +771,62 @@ def economics_from_time_records(
     Payable hours are the record's approved hours (net of unpaid breaks).
     Each record keeps its own regular rate so a mid-period rate change is weighted
     by the hours worked at that rate. Overtime starts after the threshold,
-    in clock-in order.
+    in clock-in order, and restarts on each payroll week.
+
+    A week marked disable_ot keeps every payable hour at straight time.
     """
     threshold = _rate_num(ot_threshold) or DEFAULT_OT_THRESHOLD
     multiplier = _rate_num(ot_multiplier) or DEFAULT_OT_MULTIPLIER
-    ordered = sorted(
-        records or [],
-        key=lambda row: (str(row.get("clock_in_at") or ""), str(row.get("id") or "")),
-    )
-    cumulative = Decimal("0")
     base = Decimal("0")
     premium = Decimal("0")
     ot_wages = Decimal("0")
     reg_h = Decimal("0")
     ot_h = Decimal("0")
+    payable = Decimal("0")
     rates: list[float] = []
     category = ""
     threshold_d = Decimal(str(threshold))
     multiplier_d = Decimal(str(multiplier))
-    for row in ordered:
-        hrs = Decimal(str(max(0.0, _money(row.get("approved_hours")))))
-        rate = Decimal(str(_rate_num(row.get("hourly_rate")) or 0))
-        if not category:
-            category = str(row.get("worker_category") or "")
-        room = max(Decimal("0"), threshold_d - cumulative)
-        if rate > 0:
-            regular = min(hrs, room)
-            overtime = max(Decimal("0"), hrs - regular)
-            base += hrs * rate
-            premium += overtime * max(Decimal("0"), rate * multiplier_d - rate)
-            ot_wages += overtime * rate * multiplier_d
-            rates.append(float(rate))
-        else:
-            regular = hrs
-            overtime = Decimal("0")
-        cumulative += hrs
-        reg_h += regular
-        ot_h += overtime
+    disabled_hours = Decimal("0")
+    enabled_hours = Decimal("0")
+    for key, rows, week_disabled in _week_groups(records):
+        cumulative = Decimal("0")
+        for row in rows:
+            hrs = Decimal(str(max(0.0, _money(row.get("approved_hours")))))
+            rate = Decimal(str(_rate_num(row.get("hourly_rate")) or 0))
+            if not category:
+                category = str(row.get("worker_category") or "")
+            record_disabled = week_disabled or (key == "_default" and _record_ot_disabled(row))
+            room = max(Decimal("0"), threshold_d - cumulative)
+            if rate > 0 and not record_disabled:
+                regular = min(hrs, room)
+                overtime = max(Decimal("0"), hrs - regular)
+                base += hrs * rate
+                premium += overtime * max(Decimal("0"), rate * multiplier_d - rate)
+                ot_wages += overtime * rate * multiplier_d
+                rates.append(float(rate))
+            elif rate > 0:
+                regular = hrs
+                overtime = Decimal("0")
+                base += hrs * rate
+                rates.append(float(rate))
+            else:
+                regular = hrs
+                overtime = Decimal("0")
+            if not record_disabled:
+                cumulative += hrs
+            payable += hrs
+            reg_h += regular
+            ot_h += overtime
+            if record_disabled:
+                disabled_hours += hrs
+            else:
+                enabled_hours += hrs
     base_r = float(_q2_dec(base))
     premium_r = float(_q2_dec(premium))
-    return {
+    result = {
         "worker_category": category or "w2",
-        "payable_hours": float(_q2_dec(cumulative)),
+        "payable_hours": float(_q2_dec(payable)),
         "regular_hours": float(_q2_dec(reg_h)),
         "ot_hours": float(_q2_dec(ot_h)),
         "base_earnings": base_r,
@@ -753,6 +836,455 @@ def economics_from_time_records(
         "gross_pay": _money(base_r + premium_r),
         "regular_rates": rates,
     }
+    if disabled_hours > 0 and enabled_hours <= 0:
+        result["ot_setting_note"] = (
+            "Overtime is disabled for this payroll week. Payable hours stay at straight time."
+        )
+    elif disabled_hours > 0 and enabled_hours > 0:
+        result["ot_setting_note"] = (
+            "Overtime premium includes only the payroll weeks where overtime is enabled."
+        )
+    return result
+
+
+def _category_key(value: Any) -> str:
+    text = str(value or "").strip()
+    if text in ("w2", "contractor_1099", "temp"):
+        return text
+    return "w2"
+
+
+def classification_overtime_rule(
+    category: str,
+    category_policies: Optional[dict] = None,
+    *,
+    ot_threshold: Any = None,
+    ot_multiplier: Any = None,
+) -> dict[str, Any]:
+    """Overtime and burden assumptions for one classification.
+
+    Missing overtime settings stay enabled at the shared weekly threshold.
+    A category change therefore does not restart or erase overtime. An
+    explicit percent applies only to that classification; a blank percent
+    does not copy the W-2 burden onto 1099 or temp.
+    """
+    raw = dict((category_policies or {}).get(category) or {})
+    enabled = raw.get("enabled")
+    if enabled is None:
+        enabled = raw.get("overtime_enabled")
+    if enabled is None:
+        enabled = True
+    threshold = _rate_num(raw.get("threshold_hours"))
+    if threshold is None:
+        threshold = _rate_num(raw.get("ot_threshold"))
+    if threshold is None:
+        threshold = _rate_num(ot_threshold) or DEFAULT_OT_THRESHOLD
+    multiplier = _rate_num(raw.get("multiplier"))
+    if multiplier is None:
+        multiplier = _rate_num(raw.get("ot_multiplier"))
+    if multiplier is None:
+        multiplier = _rate_num(ot_multiplier) or DEFAULT_OT_MULTIPLIER
+    burden = raw.get("employer_burden_percent")
+    if burden in (None, ""):
+        burden_percent = None
+    else:
+        burden_percent = round(float(burden), 2)
+    return {
+        "enabled": bool(enabled),
+        "threshold_hours": float(threshold),
+        "multiplier": float(multiplier),
+        "employer_burden_percent": burden_percent,
+    }
+
+
+def allocate_weekly_overtime(
+    records: list[dict],
+    *,
+    ot_threshold: Any = DEFAULT_OT_THRESHOLD,
+    ot_multiplier: Any = DEFAULT_OT_MULTIPLIER,
+    category_policies: Optional[dict] = None,
+) -> list[dict]:
+    """One cumulative walk per payroll week. Category does not reset the hour counter."""
+    lines = []
+    for key, rows, week_disabled in _week_groups(records):
+        cumulative = Decimal("0")
+        for row in rows:
+            category = _category_key(row.get("worker_category"))
+            rule = classification_overtime_rule(
+                category,
+                category_policies,
+                ot_threshold=ot_threshold,
+                ot_multiplier=ot_multiplier,
+            )
+            hrs = Decimal(str(max(0.0, _money(row.get("approved_hours")))))
+            rate = Decimal(str(_rate_num(row.get("hourly_rate")) or 0))
+            threshold_d = Decimal(str(rule["threshold_hours"]))
+            multiplier_d = Decimal(str(rule["multiplier"]))
+            record_disabled = week_disabled or (key == "_default" and _record_ot_disabled(row))
+            room = max(Decimal("0"), threshold_d - cumulative)
+            if rate > 0 and rule["enabled"] and not record_disabled:
+                regular = min(hrs, room)
+                overtime = max(Decimal("0"), hrs - regular)
+                base = hrs * rate
+                premium = overtime * max(Decimal("0"), rate * multiplier_d - rate)
+            elif rate > 0:
+                regular = hrs
+                overtime = Decimal("0")
+                base = hrs * rate
+                premium = Decimal("0")
+            else:
+                regular = hrs
+                overtime = Decimal("0")
+                base = Decimal("0")
+                premium = Decimal("0")
+            if not record_disabled:
+                cumulative += hrs
+            lines.append(
+                {
+                    "id": row.get("id"),
+                    "worker_category": category,
+                    "hours_dec": hrs,
+                    "regular_dec": regular,
+                    "overtime_dec": overtime,
+                    "base_dec": base,
+                    "premium_dec": premium,
+                    "rate": float(rate),
+                    "rule": rule,
+                }
+            )
+    return lines
+
+
+def _rollup_lines(lines: list[dict], category: str) -> dict[str, Any]:
+    base = Decimal("0")
+    premium = Decimal("0")
+    ot_wages = Decimal("0")
+    reg_h = Decimal("0")
+    ot_h = Decimal("0")
+    hours = Decimal("0")
+    rates: list[float] = []
+    for line in lines:
+        base += line["base_dec"]
+        premium += line["premium_dec"]
+        rate = Decimal(str(line["rate"]))
+        if line["rule"]["enabled"] and rate > 0:
+            ot_wages += line["overtime_dec"] * rate * Decimal(str(line["rule"]["multiplier"]))
+        reg_h += line["regular_dec"]
+        ot_h += line["overtime_dec"]
+        hours += line["hours_dec"]
+        if line["rate"] > 0:
+            rates.append(line["rate"])
+    base_r = float(_q2_dec(base))
+    premium_r = float(_q2_dec(premium))
+    return {
+        "worker_category": category,
+        "payable_hours": float(_q2_dec(hours)),
+        "regular_hours": float(_q2_dec(reg_h)),
+        "ot_hours": float(_q2_dec(ot_h)),
+        "base_earnings": base_r,
+        "ot_premium": premium_r,
+        "ot_earnings": float(_q2_dec(ot_wages)),
+        "other_earnings": 0.0,
+        "gross_pay": _money(base_r + premium_r),
+        "regular_rates": rates,
+    }
+
+
+def _distribute_money(amounts: list[Decimal], total: Optional[float]) -> list[Optional[float]]:
+    if total is None:
+        return [None for _ in amounts]
+    if not amounts:
+        return []
+    target = Decimal(str(_money(total)))
+    whole = sum(amounts, Decimal("0"))
+    assigned: list[Optional[float]] = []
+    running = Decimal("0")
+    for index, amount in enumerate(amounts):
+        if index == len(amounts) - 1:
+            share = target - running
+        elif whole <= 0:
+            share = Decimal("0")
+        else:
+            share = _q2_dec(amount / whole * target)
+            running += share
+        assigned.append(float(share))
+    return assigned
+
+
+def _record_cost_rows(lines: list[dict], analysis: dict) -> list[dict]:
+    grosses = []
+    premiums = []
+    hours = []
+    regulars = []
+    overtime = []
+    for line in lines:
+        grosses.append(line["base_dec"] + line["premium_dec"])
+        premiums.append(line["premium_dec"])
+        hours.append(line["hours_dec"])
+        regulars.append(line["regular_dec"])
+        overtime.append(line["overtime_dec"])
+    gross_out = _distribute_money(grosses, analysis.get("gross_pay"))
+    premium_out = _distribute_money(premiums, analysis.get("ot_premium"))
+    hour_out = _distribute_money(hours, analysis.get("payable_hours"))
+    regular_out = _distribute_money(regulars, analysis.get("regular_hours"))
+    ot_out = _distribute_money(overtime, analysis.get("ot_hours"))
+    cost_out = _distribute_money(grosses, analysis.get("total_employer_cost"))
+    rows = []
+    for index, line in enumerate(lines):
+        gross = gross_out[index]
+        cost = cost_out[index]
+        rows.append(
+            {
+                "id": line["id"],
+                "worker_category": line["worker_category"],
+                "payable_hours": hour_out[index],
+                "regular_hours": regular_out[index],
+                "ot_hours": ot_out[index],
+                "gross_pay": gross,
+                "ot_premium": premium_out[index],
+                "total_employer_cost": cost,
+                "employer_expenses": None if cost is None or gross is None else _money(cost - gross),
+            }
+        )
+    return rows
+
+
+def _combined_burden_status(analyses: list[dict], categories: list[str]) -> tuple[str, str]:
+    """Caption status for a mix of classifications. Configured rates stay configured."""
+    statuses = [
+        str(item.get("burden_status") or "")
+        for item in analyses
+        if item.get("burden_status") not in (None, "", "not_applicable")
+    ]
+    if statuses and all(status == "configured" for status in statuses):
+        return "configured", "Configured"
+    if statuses and all(status == "actual" for status in statuses):
+        return "actual", "Actual"
+    if statuses and all(status == "estimated" for status in statuses):
+        label = "Estimated" if len(categories) <= 1 else "Mixed"
+        return "estimated", label
+    if len(categories) > 1 or len(set(statuses)) > 1:
+        return "mixed", "Mixed"
+    if statuses:
+        return statuses[0], analyses[0].get("burden_label") or statuses[0].title()
+    return "estimated", "Estimated"
+
+
+def combine_category_analyses(
+    analyses: list[dict],
+    *,
+    labor_cost_target: Optional[float] = None,
+) -> dict[str, Any]:
+    """Selected-record totals. Burden is extra employer cost ÷ all selected gross."""
+    if len(analyses) == 1:
+        return dict(analyses[0])
+    hours = gross = premium = base = reg = ot = 0.0
+    total_known = True
+    straight_known = True
+    total = straight = extra = 0.0
+    wage_num = 0.0
+    notes: list[str] = []
+    categories = []
+    for item in analyses:
+        h = _money(item.get("payable_hours"))
+        hours = _money(hours + h)
+        gross = _money(gross + _money(item.get("gross_pay")))
+        premium = _money(premium + _money(item.get("ot_premium")))
+        base = _money(base + _money(item.get("base_earnings")))
+        reg = _money(reg + _money(item.get("regular_hours")))
+        ot = _money(ot + _money(item.get("ot_hours")))
+        wage = item.get("base_wage")
+        if wage is not None and h > 0:
+            wage_num += float(wage) * h
+        cat = str(item.get("worker_category") or "")
+        if cat and cat not in categories:
+            categories.append(cat)
+        if item.get("total_employer_cost") is None:
+            total_known = False
+        else:
+            total = _money(total + _money(item.get("total_employer_cost")))
+            extra = _money(extra + _money(item.get("employer_expenses")))
+        if item.get("straight_time_employer_cost") is None:
+            straight_known = False
+        else:
+            straight = _money(straight + _money(item.get("straight_time_employer_cost")))
+        notes.extend(item.get("notes") or [])
+    target = DEFAULT_LABOR_COST_TARGET if labor_cost_target is None else float(labor_cost_target)
+    all_not_applicable = all(item.get("burden_status") == "not_applicable" for item in analyses)
+    burden_pct = (
+        round(extra / gross * 100.0, 2)
+        if total_known and gross > 0.005 and not all_not_applicable
+        else None
+    )
+    if not total_known:
+        burden_status = "unavailable"
+        burden_label = "Unavailable"
+        burden_pct = None
+        total_cost = None
+        straight_cost = None
+        extra_cost = None
+    elif all_not_applicable:
+        burden_status = "not_applicable"
+        burden_label = "N/A"
+        total_cost = total
+        straight_cost = straight if straight_known else None
+        extra_cost = extra
+    else:
+        burden_status, burden_label = _combined_burden_status(analyses, categories)
+        total_cost = total
+        straight_cost = straight if straight_known else None
+        extra_cost = extra
+    effective = round(total_cost / hours, 2) if total_cost is not None and hours > 0.005 else None
+    base_hr = round(straight_cost / hours, 2) if straight_cost is not None and hours > 0.005 else None
+    impact = round(effective - base_hr, 2) if effective is not None and base_hr is not None else None
+    impact_pct = None
+    if impact is not None and base_hr and abs(base_hr) > 0.005:
+        impact_pct = round(impact / base_hr * 100.0, 2)
+    elif impact == 0:
+        impact_pct = 0.0
+    distinct_wages = {round(float(item.get("base_wage") or 0), 2) for item in analyses if item.get("base_wage") is not None}
+    wage = round(wage_num / hours, 2) if hours > 0.005 and wage_num else None
+    notes.append(
+        "Employer burden is weighted across the selected records. "
+        "Each classification uses its own cost assumption."
+    )
+    return {
+        "worker_category": "mixed",
+        "worker_categories": categories,
+        "cost_basis": "estimated_time_records",
+        "burden_status": burden_status,
+        "burden_label": burden_label,
+        "burden_percent": burden_pct,
+        "burden_sources": [],
+        "base_wage": wage,
+        "base_wage_blended": len(distinct_wages) > 1,
+        "payable_hours": hours,
+        "regular_hours": reg,
+        "ot_hours": ot,
+        "base_earnings": base,
+        "ot_premium": premium,
+        "other_earnings": 0.0,
+        "gross_pay": gross,
+        "employer_expenses": extra_cost,
+        "total_employer_cost": total_cost,
+        "straight_time_gross": _money(gross - premium),
+        "straight_time_employer_cost": straight_cost,
+        "base_cost_per_hour": base_hr,
+        "effective_cost_per_hour": effective,
+        "ot_impact_per_hour": impact,
+        "ot_impact_percent": impact_pct,
+        "method": "classification_burden",
+        "formula": (
+            "Each time record keeps the burden configured for its classification. "
+            "Weekly overtime is allocated once across the employee's cumulative hours. "
+            "Weighted burden = employer cost above gross ÷ gross of the selected records."
+        ),
+        "included_expenses": [],
+        "employer_cost_recorded": False,
+        "finalized": False,
+        "notes": notes,
+        "limitations": [
+            "Employee withholding is excluded from total employer cost.",
+            "A classification with no configured burden does not inherit W-2 employer taxes.",
+        ],
+        "category_analyses": analyses,
+        **_target_comparison(effective, target),
+    }
+
+
+def price_time_records(
+    records: list[dict],
+    *,
+    ot_threshold: Any = DEFAULT_OT_THRESHOLD,
+    ot_multiplier: Any = DEFAULT_OT_MULTIPLIER,
+    category_policies: Optional[dict] = None,
+    historical_w2_percent: Optional[float] = None,
+    burden_sources: Optional[list] = None,
+    tax_settings: Optional[dict] = None,
+    labor_cost_target: Optional[float] = None,
+    rate_note: Optional[str] = None,
+) -> dict[str, Any]:
+    """Price one employee's records. Burden follows each record's classification."""
+    lines = allocate_weekly_overtime(
+        records,
+        ot_threshold=ot_threshold,
+        ot_multiplier=ot_multiplier,
+        category_policies=category_policies,
+    )
+    grouped: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for line in lines:
+        cat = line["worker_category"]
+        if cat not in grouped:
+            order.append(cat)
+            grouped[cat] = []
+        grouped[cat].append(line)
+    analyses = []
+    record_costs: list[dict] = []
+    target = labor_cost_target
+    for cat in order:
+        group = grouped[cat]
+        economics = _rollup_lines(group, cat)
+        rule = group[0]["rule"]
+        configured = rule.get("employer_burden_percent")
+        if cat == "w2" and configured is None:
+            analysis = analyze_employee_hourly_cost(
+                **economics,
+                scenario="estimated",
+                burden_percent=historical_w2_percent,
+                burden_sources=burden_sources or [],
+                tax_settings=tax_settings,
+                labor_cost_target=target,
+                rate_note=rate_note,
+                employer_cost_recorded=False,
+            )
+        elif configured is not None:
+            analysis = analyze_employee_hourly_cost(
+                **economics,
+                scenario="estimated",
+                burden_percent=configured,
+                configured_burden=True,
+                tax_settings=tax_settings,
+                labor_cost_target=target,
+                rate_note=rate_note,
+                employer_cost_recorded=False,
+            )
+        else:
+            analysis = analyze_employee_hourly_cost(
+                **economics,
+                scenario="contractor",
+                tax_settings=tax_settings,
+                labor_cost_target=target,
+                rate_note=rate_note,
+                total_payroll_cost=economics["gross_pay"],
+                employer_taxes=0.0,
+                employer_cost_recorded=False,
+            )
+        analysis["ot_earnings"] = economics.get("ot_earnings") or 0
+        analyses.append(analysis)
+        record_costs.extend(_record_cost_rows(group, analysis))
+    if not analyses:
+        empty = analyze_employee_hourly_cost(
+            worker_category="w2",
+            payable_hours=0,
+            regular_hours=0,
+            ot_hours=0,
+            base_earnings=0,
+            ot_premium=0,
+            gross_pay=0,
+            scenario="estimated",
+            burden_percent=historical_w2_percent,
+            labor_cost_target=target,
+        )
+        empty["record_costs"] = []
+        empty["category_analyses"] = []
+        return empty
+    combined = combine_category_analyses(analyses, labor_cost_target=target)
+    if len(analyses) == 1:
+        combined = dict(analyses[0])
+        combined["category_analyses"] = analyses
+    combined["record_costs"] = record_costs
+    return combined
 
 
 def apply_historical_rates(
@@ -890,9 +1422,642 @@ def _load_employee_rows(conn, organization_id: int, user_id: int) -> list[dict]:
         user_id=int(user_id),
         include_analytics=False,
         include_employee_detail=True,
+        estimate_open_burden=False,
         limit=500,
     )
     return list(report.get("rows") or [])
+
+
+def group_batch_sync_lines(
+    records: list[dict],
+    *,
+    batch_category: str,
+    category_policies: Optional[dict] = None,
+    ot_threshold: Any = DEFAULT_OT_THRESHOLD,
+    ot_multiplier: Any = DEFAULT_OT_MULTIPLIER,
+) -> list[dict]:
+    """Split one batch's lines with the same week allocator batch sync uses.
+
+    An enabled week accumulates hours across classifications and rates. A
+    ``disable_ot`` week stays regular. Only slices whose classification matches
+    this batch become payout lines.
+    """
+    from backend.payroll_overtime import (
+        aggregate_classified_batch_lines,
+        week_ot_enabled_flags,
+        weekly_ot_policy_category,
+    )
+
+    category = _category_key(batch_category)
+    by_user: dict[Any, list[dict]] = {}
+    user_order: list[Any] = []
+    for rec in records or []:
+        uid = rec.get("user_id")
+        if uid not in by_user:
+            user_order.append(uid)
+            by_user[uid] = []
+        by_user[uid].append(rec)
+    out = []
+    for uid in user_order:
+        user_records = by_user[uid]
+        policy_category = weekly_ot_policy_category(user_records)
+        rule = classification_overtime_rule(
+            policy_category,
+            category_policies,
+            ot_threshold=ot_threshold,
+            ot_multiplier=ot_multiplier,
+        )
+        flags = week_ot_enabled_flags(user_records, default_enabled=True)
+        lines = aggregate_classified_batch_lines(
+            user_records,
+            batch_category=category,
+            threshold_hours=rule["threshold_hours"],
+            ot_enabled=True,
+            week_ot_enabled=flags if flags else None,
+        )
+        for line in lines:
+            out.append(
+                {
+                    "user_id": line["user_id"],
+                    "worker_name": line["worker_name"],
+                    "rate": line["rate"],
+                    "regular_hours": line["approved_hours"],
+                    "ot_hours": line["ot_hours"],
+                    "session_ids": line["session_ids"],
+                    "multiplier": rule["multiplier"],
+                }
+            )
+    return out
+
+
+def _row_keeps_stored_employer_cost(row: dict) -> bool:
+    """Finalized payroll and any line that already has an employer-tax snapshot stay stored."""
+    from backend.payroll_report_analytics import batch_is_complete
+
+    if row.get("employer_cost_recorded"):
+        return True
+    return batch_is_complete(
+        {
+            "batch_status": row.get("batch_status"),
+            "status": row.get("batch_status"),
+            "payout_details_finalized_at": row.get("details_finalized_at"),
+        }
+    )
+
+
+def apply_open_period_burden_estimates(
+    rows: list[dict],
+    *,
+    historical_w2_percent_by_user: Optional[dict] = None,
+    historical_w2_percent: Optional[float] = None,
+    category_burden_percent: Optional[dict] = None,
+) -> list[dict]:
+    """Display estimate for open lines. Does not change finalized or already-recorded costs.
+
+    W-2 uses the classification's configured percent when one is set, otherwise
+    that employee's historical finalized burden. Temp and 1099 stay at gross
+    unless their own percent is configured. Gross, hours, and overtime stay
+    on the stored payout line.
+    """
+    configured = dict(category_burden_percent or {})
+    by_user = dict(historical_w2_percent_by_user or {})
+    out = []
+    for row in rows or []:
+        copy = dict(row)
+        if _row_keeps_stored_employer_cost(copy):
+            copy["employer_cost_basis"] = "actual"
+            out.append(copy)
+            continue
+        cat = _category_key(copy.get("worker_category"))
+        percent = configured.get(cat)
+        basis = "configured" if percent is not None else None
+        if percent is None and cat == "w2":
+            uid = copy.get("user_id")
+            percent = by_user.get(uid)
+            if percent is None and uid is not None:
+                try:
+                    percent = by_user.get(int(uid))
+                except (TypeError, ValueError):
+                    percent = None
+            if percent is None:
+                percent = historical_w2_percent
+            basis = "estimated" if percent is not None else "unavailable"
+        elif percent is None:
+            basis = "gross_only"
+        gross = _money(copy.get("gross_pay"))
+        if percent is None:
+            copy["employer_cost_basis"] = basis
+            copy["total_payroll_cost"] = _money(gross + _money(copy.get("employer_taxes")))
+            out.append(copy)
+            continue
+        try:
+            percent_num = float(percent)
+        except (TypeError, ValueError):
+            copy["employer_cost_basis"] = "unavailable" if cat == "w2" else "gross_only"
+            out.append(copy)
+            continue
+        taxes = float(
+            _q2_dec(Decimal(str(gross)) * Decimal(str(percent_num)) / Decimal("100"))
+        )
+        copy["employer_taxes"] = taxes
+        copy["total_payroll_cost"] = _money(gross + taxes)
+        copy["employer_burden_percent"] = round(float(percent), 2)
+        copy["employer_cost_basis"] = basis
+        copy["employer_cost_recorded"] = False
+        out.append(copy)
+    return out
+
+
+def employer_cost_basis_for_rows(rows: list[dict]) -> str:
+    bases = {str(row.get("employer_cost_basis") or "") for row in rows or []}
+    bases.discard("")
+    applied = bases - {"gross_only", "unavailable"}
+    if not bases or applied <= {"actual"}:
+        return "actual"
+    if "actual" in applied and applied - {"actual"}:
+        return "mixed"
+    if "estimated" in applied and "configured" in applied:
+        return "mixed"
+    if "estimated" in applied:
+        return "estimated"
+    if "configured" in applied:
+        return "configured"
+    return "actual"
+
+
+def _session_ids(row: dict) -> set[int]:
+    raw = row.get("source_shift_session_ids")
+    if isinstance(raw, str):
+        try:
+            import json
+
+            raw = json.loads(raw)
+        except Exception:
+            return set()
+    if not isinstance(raw, (list, tuple)):
+        return set()
+    found = set()
+    for item in raw:
+        try:
+            found.add(int(item))
+        except (TypeError, ValueError):
+            continue
+    return found
+
+
+def _record_day(record: dict) -> str:
+    return str(record.get("work_date") or record.get("clock_in_at") or "")[:10]
+
+
+def _projected_slice_row(template: dict, category: str, breakdown: dict, session_ids: list) -> dict:
+    from backend.payroll_operations import CATEGORY_LABELS
+
+    same_category = _category_key(template.get("worker_category")) == category
+    gross = _money(breakdown.get("gross_pay"))
+    return {
+        "line_id": None,
+        "batch_id": template.get("batch_id") if same_category else None,
+        "user_id": template.get("user_id"),
+        "employee_name": template.get("employee_name") or template.get("worker_name") or "",
+        "employee_category": CATEGORY_LABELS.get(category, category),
+        "worker_category": category,
+        "payroll_period": template.get("payroll_period") or "",
+        "pay_period_start": template.get("pay_period_start") or "",
+        "pay_period_end": template.get("pay_period_end") or "",
+        "pay_date": "",
+        "official_pay_date": "",
+        "pay_date_missing": True,
+        "pay_date_display": "Pay Date Missing",
+        "finalized_date": "",
+        "regular_hours": breakdown.get("regular_hours") or 0,
+        "ot_hours": breakdown.get("ot_hours") or 0,
+        "regular_rate": breakdown.get("regular_rate") or 0,
+        "ot_rate": breakdown.get("ot_rate") or 0,
+        "base_earnings": breakdown.get("base_earnings") or 0,
+        "ot_premium": breakdown.get("ot_premium") or 0,
+        "regular_earnings": breakdown.get("regular_earnings") or 0,
+        "ot_earnings": breakdown.get("ot_earnings") or 0,
+        "other_earnings": breakdown.get("other_earnings") or 0,
+        "gross_pay": gross,
+        "earned_gross": gross,
+        "employee_tax_deductions": 0.0,
+        "other_deductions": 0.0,
+        "net_pay": gross,
+        "amount_paid": 0.0,
+        "outstanding_balance": gross,
+        "employer_taxes": 0.0,
+        "employer_tax_components": {},
+        "employer_cost_recorded": False,
+        "total_payroll_cost": gross,
+        "details_finalized_at": "",
+        "payment_status": template.get("payment_status") or "",
+        "payment_status_key": template.get("payment_status_key") or "",
+        "payroll_status": template.get("payroll_status") or "",
+        "payroll_status_key": template.get("payroll_status_key") or "",
+        "batch_status": template.get("batch_status") or "hours_reviewed",
+        "batch_name": template.get("batch_name") or "",
+        "reporting_projection": True,
+        "source_shift_session_ids": list(session_ids),
+    }
+
+
+def project_open_classifications(
+    rows: list[dict],
+    records: list[dict],
+    *,
+    category_policies: Optional[dict] = None,
+    category_filter: Optional[str] = None,
+    ot_threshold: Any = DEFAULT_OT_THRESHOLD,
+    ot_multiplier: Any = DEFAULT_OT_MULTIPLIER,
+) -> list[dict]:
+    """Show the saved time-record classification on an open period.
+
+    Authoritative rows stay exactly as stored. Their sessions remain in the
+    weekly overtime walk and are not emitted again. Open rows for a user and
+    period are replaced by that walk, so a classification change moves hours
+    once and does not wait for batch synchronization. Nothing is written.
+
+    Overtime uses the same week allocator as batch sync. A ``disable_ot`` week
+    stays all regular. An enabled week keeps one running total across
+    classifications and rates.
+    """
+    from backend.payroll_overtime import (
+        allocate_session_overtime_by_week,
+        compute_earnings_breakdown,
+        week_ot_enabled_flags,
+        weekly_ot_policy_category,
+    )
+
+    wanted = _category_key(category_filter) if category_filter and category_filter != "all" else None
+    grouped: dict[tuple, list[dict]] = {}
+    order: list[tuple] = []
+    for row in rows or []:
+        try:
+            uid = int(row.get("user_id") or 0)
+        except (TypeError, ValueError):
+            uid = 0
+        key = (uid, str(row.get("pay_period_start") or "")[:10], str(row.get("pay_period_end") or "")[:10])
+        if key not in grouped:
+            order.append(key)
+            grouped[key] = []
+        grouped[key].append(row)
+
+    by_user_records: dict[int, list[dict]] = {}
+    for record in records or []:
+        if not isinstance(record, dict) or record.get("id") is None:
+            continue
+        try:
+            uid = int(record.get("user_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        by_user_records.setdefault(uid, []).append(record)
+
+    out: list[dict] = []
+    for key in order:
+        group = grouped[key]
+        uid, start, end = key
+        authoritative = [row for row in group if _row_keeps_stored_employer_cost(row)]
+        open_rows = [row for row in group if not _row_keeps_stored_employer_cost(row)]
+        if not open_rows or uid <= 0 or not start or not end:
+            out.extend(group)
+            continue
+        if authoritative and any(not _session_ids(row) for row in authoritative):
+            out.extend(group)
+            continue
+        locked_ids: set[int] = set()
+        for row in authoritative:
+            locked_ids |= _session_ids(row)
+        period_records = [
+            record
+            for record in by_user_records.get(uid, [])
+            if start <= _record_day(record) <= end
+        ]
+        if not period_records:
+            out.extend(group)
+            continue
+        policy_category = weekly_ot_policy_category(period_records)
+        rule = classification_overtime_rule(
+            policy_category,
+            category_policies,
+            ot_threshold=ot_threshold,
+            ot_multiplier=ot_multiplier,
+        )
+        flags = week_ot_enabled_flags(period_records, default_enabled=True)
+        allocated = allocate_session_overtime_by_week(
+            period_records,
+            threshold=rule["threshold_hours"],
+            week_ot_enabled=flags if flags else None,
+            default_enabled=True,
+        )
+        by_id = {record.get("id"): record for record in period_records}
+        buckets: dict[tuple, dict] = {}
+        bucket_order: list[tuple] = []
+        ordered_records = sorted(
+            period_records,
+            key=lambda row: (str(row.get("clock_in_at") or ""), str(row.get("id") or "")),
+        )
+        for record in ordered_records:
+            try:
+                session_id = int(record.get("id"))
+            except (TypeError, ValueError):
+                continue
+            if session_id in locked_ids:
+                continue
+            category = _category_key(record.get("worker_category"))
+            if wanted and category != wanted:
+                continue
+            regular_hours, overtime_hours = allocated.get(
+                session_id, (Decimal("0"), Decimal("0"))
+            )
+            rate_raw = record.get("resolved_hourly_rate")
+            if rate_raw in (None, ""):
+                rate_raw = record.get("hourly_rate")
+            rate = round(float(rate_raw or 0), 2)
+            bucket_key = (category, rate)
+            if bucket_key not in buckets:
+                bucket_order.append(bucket_key)
+                buckets[bucket_key] = {
+                    "regular": Decimal("0"),
+                    "overtime": Decimal("0"),
+                    "session_ids": [],
+                    "multiplier": rule["multiplier"],
+                }
+            bucket = buckets[bucket_key]
+            bucket["regular"] += regular_hours
+            bucket["overtime"] += overtime_hours
+            bucket["session_ids"].append(record.get("id"))
+        out.extend(authoritative)
+        for category, rate in bucket_order:
+            bucket = buckets[(category, rate)]
+            regular = float(_q2_dec(bucket["regular"]))
+            overtime = float(_q2_dec(bucket["overtime"]))
+            if regular <= 0 and overtime <= 0:
+                continue
+            names = [
+                (by_id.get(session_id) or {}).get("worker_name")
+                for session_id in bucket["session_ids"]
+            ]
+            template = next(
+                (row for row in open_rows if _category_key(row.get("worker_category")) == category),
+                open_rows[0],
+            )
+            if names and names[0] and not template.get("employee_name"):
+                template = dict(template)
+                template["employee_name"] = names[0]
+            breakdown = compute_earnings_breakdown(
+                regular_hours=regular,
+                ot_hours=overtime,
+                regular_rate=rate,
+                multiplier=bucket["multiplier"],
+            )
+            projected = _projected_slice_row(template, category, breakdown, bucket["session_ids"])
+            if names and names[0]:
+                projected["employee_name"] = template.get("employee_name") or names[0]
+            out.append(projected)
+    return out
+
+
+def _column_is_present(conn, table_name: str, column_name: str) -> bool:
+    """True only for a real schema row. A mock cursor does not count as present."""
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT 1 AS present FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s
+            LIMIT 1
+            """,
+            (table_name, column_name),
+        )
+        row = cursor.fetchone()
+    except Exception:
+        return False
+    return isinstance(row, (dict, tuple, list))
+
+
+def _load_projection_records(conn, organization_id: int, rows: list[dict]) -> list[dict]:
+    open_rows = [row for row in rows if not _row_keeps_stored_employer_cost(row)]
+    if not open_rows:
+        return []
+    if not (
+        _column_is_present(conn, "shift_sessions", "payroll_classification_override")
+        or _column_is_present(conn, "shift_sessions", "payroll_worker_category")
+    ):
+        return []
+    starts = [str(row.get("pay_period_start") or "")[:10] for row in open_rows]
+    ends = [str(row.get("pay_period_end") or "")[:10] for row in open_rows]
+    starts = [day for day in starts if day]
+    ends = [day for day in ends if day]
+    if not starts or not ends:
+        return []
+    from backend.payroll_operations import list_time_records
+
+    fetched = list_time_records(
+        conn,
+        int(organization_id),
+        from_date=min(starts),
+        to_date=max(ends),
+        status_filter="approved",
+        limit=5000,
+    )
+    if not isinstance(fetched, list):
+        return []
+    return [row for row in fetched if isinstance(row, dict) and row.get("id") is not None]
+
+
+def _with_source_sessions(conn, rows: list[dict]) -> list[dict]:
+    if not _column_is_present(conn, "payout_batch_lines", "source_shift_session_ids"):
+        return rows
+    line_ids = []
+    for row in rows:
+        if not _row_keeps_stored_employer_cost(row):
+            continue
+        try:
+            line_ids.append(int(row.get("line_id")))
+        except (TypeError, ValueError):
+            continue
+    if not line_ids:
+        return rows
+    try:
+        cursor = conn.cursor(dictionary=True)
+        placeholders = ", ".join(["%s"] * len(line_ids))
+        cursor.execute(
+            f"SELECT id, source_shift_session_ids FROM payout_batch_lines WHERE id IN ({placeholders})",
+            tuple(line_ids),
+        )
+        found = cursor.fetchall()
+    except Exception:
+        return rows
+    if not isinstance(found, list):
+        return rows
+    by_id = {}
+    for item in found:
+        if isinstance(item, dict) and item.get("id") is not None:
+            by_id[int(item["id"])] = item.get("source_shift_session_ids")
+    copied = []
+    for row in rows:
+        clone = dict(row)
+        try:
+            clone["source_shift_session_ids"] = by_id.get(int(row.get("line_id")))
+        except (TypeError, ValueError):
+            pass
+        copied.append(clone)
+    return copied
+
+
+def annotate_open_period_rows(
+    conn,
+    organization_id: int,
+    rows: list[dict],
+    *,
+    category_filter: Optional[str] = None,
+) -> list[dict]:
+    """Apply the live classification, then the open-period burden. Does not write payroll."""
+    if not rows:
+        return []
+    projected = rows
+    try:
+        if any(not _row_keeps_stored_employer_cost(row) for row in rows):
+            records = _load_projection_records(conn, organization_id, rows)
+            if records:
+                policies = {}
+                try:
+                    policies = load_category_cost_assumptions(conn, int(organization_id))
+                except Exception:
+                    policies = {}
+                projected = project_open_classifications(
+                    _with_source_sessions(conn, rows),
+                    records,
+                    category_policies=policies,
+                    category_filter=category_filter,
+                )
+    except Exception:
+        projected = rows
+    try:
+        policies = load_category_cost_assumptions(conn, int(organization_id))
+    except Exception:
+        policies = {}
+    configured = {}
+    for cat in ("w2", "contractor_1099", "temp"):
+        raw = (policies.get(cat) or {}).get("employer_burden_percent")
+        if raw in (None, ""):
+            configured[cat] = None
+            continue
+        try:
+            configured[cat] = round(float(raw), 2)
+        except (TypeError, ValueError):
+            configured[cat] = None
+    needs_history = []
+    for row in projected:
+        if _row_keeps_stored_employer_cost(row):
+            continue
+        if _category_key(row.get("worker_category")) != "w2":
+            continue
+        if configured.get("w2") is not None:
+            continue
+        uid = row.get("user_id")
+        if uid is not None:
+            needs_history.append(int(uid))
+    by_user: dict[int, Optional[float]] = {}
+    for uid in dict.fromkeys(needs_history):
+        try:
+            history = _load_employee_rows(conn, int(organization_id), uid)
+            periods = aggregate_finalized_w2_periods(history)
+            by_user[uid] = weighted_burden_from_periods(periods, limit=HISTORY_PERIODS).get(
+                "burden_percent"
+            )
+        except Exception:
+            by_user[uid] = None
+    return apply_open_period_burden_estimates(
+        projected,
+        historical_w2_percent_by_user=by_user,
+        category_burden_percent=configured,
+    )
+
+
+def combine_stored_and_open_categories(
+    priced: dict,
+    stored_by_category: dict,
+    *,
+    labor_cost_target: Optional[float] = None,
+) -> dict[str, Any]:
+    """Finalized classifications keep stored cost. Open classifications keep the live estimate."""
+    pieces = []
+    seen = set()
+    for analysis in priced.get("category_analyses") or []:
+        cat = _category_key(analysis.get("worker_category"))
+        seen.add(cat)
+        stored = stored_by_category.get(cat)
+        pieces.append(stored if stored is not None else analysis)
+    for cat, stored in stored_by_category.items():
+        if cat not in seen:
+            pieces.append(stored)
+    if not pieces:
+        return dict(priced)
+    if len(pieces) == 1:
+        combined = dict(pieces[0])
+        combined["category_analyses"] = pieces
+    else:
+        combined = combine_category_analyses(pieces, labor_cost_target=labor_cost_target)
+    stored_cats = set(stored_by_category)
+    combined["record_costs"] = [
+        row
+        for row in (priced.get("record_costs") or [])
+        if _category_key(row.get("worker_category")) not in stored_cats
+    ]
+    combined["finalized"] = False
+    notes = list(combined.get("notes") or [])
+    notes.append(
+        "Finalized classifications keep stored employer taxes. "
+        "Open classifications use the current burden assumption."
+    )
+    combined["notes"] = notes
+    return combined
+
+
+def _stamp_week_ot_modes(conn, organization_id: int, user_id: int, records: list[dict]) -> None:
+    """Attach the stored employee-week overtime setting. Does not change payroll rows."""
+    from datetime import date as date_cls
+
+    from backend.payroll_identity import payroll_week_bounds
+    from backend.payroll_week_ot import OT_MODE_DEFAULT, load_employee_week_ot_modes
+
+    week_by_work: dict[str, str] = {}
+    week_dates = []
+    for rec in records or []:
+        week = _payroll_week_key(rec)
+        work = str(rec.get("work_date") or "")[:10]
+        if not week and work:
+            if work not in week_by_work:
+                try:
+                    start, _end = payroll_week_bounds(
+                        conn, date_cls.fromisoformat(work), int(organization_id)
+                    )
+                    week_by_work[work] = start.isoformat()
+                except Exception:
+                    week_by_work[work] = ""
+            week = week_by_work[work]
+        if week:
+            rec["payroll_week_start"] = week
+            try:
+                week_dates.append(date_cls.fromisoformat(week))
+            except ValueError:
+                pass
+    modes = {}
+    try:
+        if week_dates:
+            modes = load_employee_week_ot_modes(
+                conn, int(organization_id), [int(user_id)], week_dates
+            )
+    except Exception:
+        modes = {}
+    for rec in records or []:
+        week = _payroll_week_key(rec)
+        stored = modes.get((int(user_id), week)) if week else None
+        if stored:
+            rec["ot_week_mode"] = stored
+        elif not rec.get("ot_week_mode"):
+            rec["ot_week_mode"] = OT_MODE_DEFAULT
 
 
 def build_hourly_cost_for_time_records(
@@ -931,7 +2096,27 @@ def build_hourly_cost_for_time_records(
         history_rows = []
 
     finalized = finalized_rows_for_period(history_rows, start, end)
-    if finalized:
+    finalized_cats = {_category_key(row.get("worker_category")) for row in finalized}
+
+    clean_records = []
+    for raw in records or []:
+        if not isinstance(raw, dict):
+            continue
+        clean_records.append(
+            {
+                "id": raw.get("id"),
+                "approved_hours": raw.get("approved_hours"),
+                "clock_in_at": raw.get("clock_in_at"),
+                "work_date": str(raw.get("work_date") or raw.get("clock_in_at") or "")[:10],
+                "payroll_week_start": str(raw.get("payroll_week_start") or "")[:10],
+                "ot_week_mode": raw.get("ot_week_mode"),
+                "hourly_rate": raw.get("hourly_rate"),
+                "worker_category": raw.get("worker_category"),
+            }
+        )
+
+    record_cats = {_category_key(rec.get("worker_category")) for rec in clean_records}
+    if finalized and (not record_cats or record_cats <= finalized_cats):
         analysis = hourly_cost_from_report_rows(
             finalized,
             tax_settings=settings,
@@ -946,22 +2131,8 @@ def build_hourly_cost_for_time_records(
         analysis["notes"] = list(analysis.get("notes") or []) + [
             "Uses finalized payroll amounts for this period."
         ]
+        analysis["record_costs"] = []
         return analysis
-
-    clean_records = []
-    for raw in records or []:
-        if not isinstance(raw, dict):
-            continue
-        clean_records.append(
-            {
-                "id": raw.get("id"),
-                "approved_hours": raw.get("approved_hours"),
-                "clock_in_at": raw.get("clock_in_at"),
-                "work_date": str(raw.get("work_date") or raw.get("clock_in_at") or "")[:10],
-                "hourly_rate": raw.get("hourly_rate"),
-                "worker_category": raw.get("worker_category"),
-            }
-        )
 
     rate_by_date: dict[str, Optional[float]] = {}
     for rec in clean_records:
@@ -972,46 +2143,78 @@ def build_hourly_cost_for_time_records(
             except Exception:
                 rate_by_date[work_date] = None
     rated, rates_changed = apply_historical_rates(clean_records, rate_by_date)
-    economics = economics_from_time_records(
-        rated,
-        ot_threshold=ot_threshold if ot_threshold not in (None, "") else DEFAULT_OT_THRESHOLD,
-        ot_multiplier=ot_multiplier if ot_multiplier not in (None, "") else DEFAULT_OT_MULTIPLIER,
-    )
-    category = economics.get("worker_category") or "w2"
-    if category not in ("w2", "temp", "contractor_1099"):
-        category = str((clean_records[0].get("worker_category") if clean_records else "") or "w2")
-        economics["worker_category"] = category
-
+    _stamp_week_ot_modes(conn, int(organization_id), int(user_id), rated)
     rate_note = None
     if rates_changed:
         rate_note = (
             "Regular rates use the rate in effect on each work date. "
             "That differs from the current profile rate shown on the period summary."
         )
-
-    if category != "w2":
-        return analyze_employee_hourly_cost(
-            **economics,
-            scenario="contractor",
-            tax_settings=settings,
-            labor_cost_target=target,
-            rate_note=rate_note,
-            total_payroll_cost=economics["gross_pay"],
-            employer_taxes=0.0,
-            employer_cost_recorded=False,
+    if rated and all(_record_ot_disabled(rec) for rec in rated):
+        disabled_note = (
+            "Overtime is disabled for this payroll week. Payable hours stay at straight time."
         )
-
-    periods = aggregate_finalized_w2_periods(
-        history_rows, exclude_period=(start, end)
-    )
+        rate_note = f"{rate_note} {disabled_note}".strip() if rate_note else disabled_note
+    policies = load_category_cost_assumptions(conn, organization_id)
+    periods = aggregate_finalized_w2_periods(history_rows, exclude_period=(start, end))
     weighted = weighted_burden_from_periods(periods, limit=HISTORY_PERIODS)
-    return analyze_employee_hourly_cost(
-        **economics,
-        scenario="estimated",
-        burden_percent=weighted.get("burden_percent"),
+    priced = price_time_records(
+        rated,
+        ot_threshold=ot_threshold if ot_threshold not in (None, "") else DEFAULT_OT_THRESHOLD,
+        ot_multiplier=ot_multiplier if ot_multiplier not in (None, "") else DEFAULT_OT_MULTIPLIER,
+        category_policies=policies,
+        historical_w2_percent=weighted.get("burden_percent"),
         burden_sources=weighted.get("sources") or [],
         tax_settings=settings,
         labor_cost_target=target,
         rate_note=rate_note,
-        employer_cost_recorded=False,
     )
+    open_cats = record_cats - finalized_cats
+    if not finalized or not open_cats:
+        return priced
+    stored_by_category = {}
+    for cat in finalized_cats:
+        cat_rows = [
+            row for row in finalized if _category_key(row.get("worker_category")) == cat
+        ]
+        if not cat_rows:
+            continue
+        stored = hourly_cost_from_report_rows(
+            cat_rows,
+            tax_settings=settings,
+            labor_cost_target=target,
+        )
+        stored["worker_category"] = cat
+        stored["finalized"] = True
+        stored["burden_status"] = "actual"
+        stored["burden_label"] = "Actual"
+        stored_by_category[cat] = stored
+    return combine_stored_and_open_categories(
+        priced,
+        stored_by_category,
+        labor_cost_target=target,
+    )
+
+
+def load_category_cost_assumptions(conn, organization_id: int) -> dict[str, dict]:
+    """Calendar overtime rules plus an optional burden percent for each classification."""
+    from backend.payroll_overtime import resolve_batch_overtime_policy
+
+    calendar: dict = {}
+    try:
+        from backend.payroll_funding_forecast import get_calendar_settings
+
+        calendar = (get_calendar_settings(conn, int(organization_id)) or {}).get("categories") or {}
+    except Exception:
+        calendar = {}
+    policies: dict[str, dict] = {}
+    for cat in ("w2", "contractor_1099", "temp"):
+        try:
+            policy = dict(resolve_batch_overtime_policy(conn, int(organization_id), cat) or {})
+        except Exception:
+            policy = {}
+        stored = calendar.get(cat) or {}
+        if "employer_burden_percent" in stored:
+            policy["employer_burden_percent"] = stored.get("employer_burden_percent")
+        policies[cat] = policy
+    return policies

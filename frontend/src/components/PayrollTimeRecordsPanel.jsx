@@ -62,6 +62,7 @@ import {
 import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
 import {
   buildWorkerRateMap,
+  combineHourlyAnalyses,
   enrichTimeRecords,
   formatPayrollMoney,
   formatPayrollRate,
@@ -81,6 +82,7 @@ import {
 } from "../payroll/payrollBreakActions";
 import { PayrollDateField, PayrollDateTimeField } from "./PayrollDateTimeField";
 import { HourlyCostPanel } from "./HourlyCostAnalysis";
+import { formatBurdenPercent, targetComparisonText } from "../payroll/hourlyCostDisplay";
 
 const STATUS_OPTIONS = [
   { value: "all", label: "All statuses" },
@@ -151,6 +153,7 @@ function toApiDateTimePreservingSeconds(local, originalApiValue) {
 
 const emptyForm = () => ({
   user_id: "",
+  worker_category: "",
   category_id: "",
   role_id: "",
   clock_in_at: "",
@@ -366,39 +369,68 @@ export default function PayrollTimeRecordsPanel({
     }
   }, [fromDate, toDate, category, status, userId]);
 
-  const selectedRate = userId ? rateMap[String(userId)] : null;
+  const recordCostById = useMemo(() => {
+    const map = {};
+    for (const row of hourlyCost?.record_costs || []) {
+      if (row?.id != null) map[String(row.id)] = row;
+    }
+    return map;
+  }, [hourlyCost]);
 
   useEffect(() => {
-    if (!userId || !fromDate || !toDate) {
+    if (!fromDate || !toDate || !displayRows.length) {
       setHourlyCost(null);
       setHourlyError("");
       setHourlyLoading(false);
       return undefined;
     }
+    const byUser = new Map();
+    for (const row of displayRows) {
+      const id = String(row.user_id || "");
+      if (!id) continue;
+      if (!byUser.has(id)) byUser.set(id, []);
+      byUser.get(id).push(row);
+    }
+    const subjects = [...byUser.keys()].slice(0, 40);
+    if (!subjects.length) {
+      setHourlyCost(null);
+      setHourlyLoading(false);
+      return undefined;
+    }
     let cancelled = false;
     setHourlyLoading(true);
-    const records = displayRows.map((row) => ({
-      id: row.id,
-      approved_hours: row.approved_hours,
-      clock_in_at: row.clock_in_at,
-      work_date: row.work_date,
-      hourly_rate: row.regular_rate ?? row.hourly_rate,
-      worker_category: row.worker_category,
-    }));
-    const regular = Number(selectedRate?.regular_rate || 0);
-    const overtime = Number(selectedRate?.ot_rate || 0);
-    postPayrollHourlyCostAnalysis({
-      user_id: userId,
-      from_date: fromDate,
-      to_date: toDate,
-      ot_threshold: selectedRate?.ot_threshold,
-      ot_multiplier: regular > 0 && overtime > 0 ? overtime / regular : undefined,
-      records,
-    })
-      .then((res) => {
+    Promise.all(
+      subjects.map((id) => {
+        const rate = rateMap[id] || {};
+        const regular = Number(rate.regular_rate || 0);
+        const overtime = Number(rate.ot_rate || 0);
+        return postPayrollHourlyCostAnalysis({
+          user_id: Number(id),
+          from_date: fromDate,
+          to_date: toDate,
+          ot_threshold: rate.ot_threshold,
+          ot_multiplier: regular > 0 && overtime > 0 ? overtime / regular : undefined,
+          records: byUser.get(id).map((row) => ({
+            id: row.id,
+            approved_hours: row.approved_hours,
+            clock_in_at: row.clock_in_at,
+            work_date: row.work_date,
+            payroll_week_start: row.payroll_week_start,
+            ot_week_mode: row.ot_week_mode,
+            hourly_rate: row.regular_rate ?? row.hourly_rate,
+            worker_category: row.worker_category,
+          })),
+        }).then((res) => res.data);
+      }),
+    )
+      .then((analyses) => {
         if (cancelled) return;
-        setHourlyCost(res.data || null);
-        setHourlyError("");
+        setHourlyCost(combineHourlyAnalyses(analyses));
+        setHourlyError(
+          byUser.size > subjects.length
+            ? "Hourly employer cost includes the first 40 employees in this view."
+            : "",
+        );
       })
       .catch((e) => {
         if (cancelled) return;
@@ -411,7 +443,7 @@ export default function PayrollTimeRecordsPanel({
     return () => {
       cancelled = true;
     };
-  }, [userId, fromDate, toDate, displayRows, selectedRate]);
+  }, [fromDate, toDate, displayRows, rateMap]);
 
   useEffect(() => {
     load();
@@ -439,6 +471,7 @@ export default function PayrollTimeRecordsPanel({
     setInitialRoleKey(`${categoryId}:${roleId}`);
     setForm({
       user_id: String(row.user_id || ""),
+      worker_category: classificationSelectValue(row),
       category_id: categoryId,
       role_id: roleId,
       clock_in_at: toDatetimeLocal(row.clock_in_at),
@@ -483,6 +516,7 @@ export default function PayrollTimeRecordsPanel({
         clock_in_at: toApiDateTime(form.clock_in_at),
         clock_out_at: clockOutApi,
         remarks: editorMode === "add" ? remarks : form.notes || "",
+        worker_category: form.worker_category || "",
       };
       if (roleChanged && hasCategory && hasRole) {
         payload.category_id = Number(form.category_id);
@@ -1031,18 +1065,25 @@ export default function PayrollTimeRecordsPanel({
           />
           <SummaryStat
             icon={<AttachMoneyIcon color="success" fontSize="small" />}
-            label="Total cost"
-            value={formatPayrollMoney(totalCost, { allowZero: true })}
+            label={hourlyCost?.total_employer_cost != null ? "Employer cost" : "Total cost"}
+            value={formatPayrollMoney(
+              hourlyCost?.total_employer_cost != null ? hourlyCost.total_employer_cost : totalCost,
+              { allowZero: true },
+            )}
             details={[
+              `Wages ${formatPayrollMoney(totalCost, { allowZero: true })}`,
               `Regular/Base ${formatPayrollMoney(totalRegularCost, { allowZero: true })}`,
               `OT Premium ${formatPayrollMoney(totalOtCost, { allowZero: true })}`,
-              "Same rules for W-2, 1099, and temp",
-            ]}
+              hourlyCost?.burden_percent != null
+                ? `Burden ${formatBurdenPercent(hourlyCost.burden_percent)} ${hourlyCost.burden_label || ""}`.trim()
+                : hourlyCost?.burden_label || null,
+              targetComparisonText(hourlyCost) || null,
+            ].filter(Boolean)}
             gradient={`linear-gradient(135deg, ${alpha(theme.palette.success.main, 0.1)} 0%, ${alpha(theme.palette.success.main, 0.02)} 100%)`}
           />
         </Box>
 
-        {userId && fromDate && toDate ? (
+        {fromDate && toDate ? (
           <HourlyCostPanel analysis={hourlyCost} loading={hourlyLoading} error={hourlyError} />
         ) : null}
 
@@ -1249,6 +1290,11 @@ export default function PayrollTimeRecordsPanel({
                   }}
                 >
                   {formatPayrollMoney(r.row_total)}
+                  {recordCostById[String(r.id)]?.total_employer_cost != null ? (
+                    <Typography variant="caption" display="block" color="text.secondary">
+                      Employer {formatPayrollMoney(recordCostById[String(r.id)].total_employer_cost, { allowZero: true })}
+                    </Typography>
+                  ) : null}
                 </TableCell>
                 <TableCell sx={{ whiteSpace: "nowrap" }}>
                   <Stack spacing={0.5} alignItems="flex-start">
@@ -1482,6 +1528,27 @@ export default function PayrollTimeRecordsPanel({
                 {editorError}
               </Alert>
             ) : null}
+            <FormControl fullWidth size="small">
+              <InputLabel>Worker classification</InputLabel>
+              <Select
+                label="Worker classification"
+                value={form.worker_category}
+                onChange={(e) => setForm((f) => ({ ...f, worker_category: e.target.value }))}
+              >
+                <MenuItem value="">
+                  <em>Use payroll profile</em>
+                </MenuItem>
+                {WORKER_CATEGORY_OPTIONS.filter((option) => option.value !== "all").map((option) => (
+                  <MenuItem key={option.value} value={option.value}>
+                    {option.label}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <Typography variant="caption" color="text.secondary">
+              Employer cost follows this classification. Overtime stays on the weekly hour total.
+              Approved payroll batches are not rewritten.
+            </Typography>
             <FormControl fullWidth size="small" disabled={editorMode === "edit"}>
               <InputLabel>Worker</InputLabel>
               <Select
@@ -1899,8 +1966,9 @@ export default function PayrollTimeRecordsPanel({
               ? CLASSIFICATION_OVERRIDE_OPTIONS.find((opt) => opt.value === classEdit.value)?.label
               : "Use employee default"}
             {" "}
-            applies to this time record only. Hours stay as entered. An approved record must be
-            approved again before it can enter payroll. Rate is not changed by classification.
+            applies to this time record only. Hours and approval stay as entered. Open payroll
+            reports use this classification immediately. Stored payout lines stay unchanged until
+            the batch is synchronized. Rate is not changed by classification.
           </Typography>
           <TextField
             label="Reason (optional)"

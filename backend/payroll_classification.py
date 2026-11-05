@@ -221,8 +221,8 @@ def set_session_payroll_classification_override(
 ) -> dict:
     """Set or clear the session override. Same value does not append another audit row.
 
-    An already payroll-approved session keeps its hours and the new override, but
-    payroll_hours_approved is cleared so it must be reapproved before batch sync.
+    The override changes the classification used for open-period employer cost.
+    It does not clear payroll_hours_approved and does not rewrite payout lines.
     """
     from backend.payroll_operations import (
         _session_in_org,
@@ -273,8 +273,6 @@ def set_session_payroll_classification_override(
     approved = bool(row.get("payroll_hours_approved"))
     sets = ["payroll_classification_override=%s"]
     params: list[Any] = [new_value]
-    if approved:
-        sets.append("payroll_hours_approved=0")
     params.append(sid)
     c.execute(
         f"UPDATE shift_sessions SET {', '.join(sets)} WHERE id=%s",
@@ -306,8 +304,8 @@ def set_session_payroll_classification_override(
         "worker_category": resolved,
         "classification_source": source,
         "profile_worker_category": profile,
-        "payroll_hours_approved": False if approved else bool(row.get("payroll_hours_approved")),
-        "approval_cleared": approved,
+        "payroll_hours_approved": approved,
+        "approval_cleared": False,
         "audit_appended": True,
         "warnings": warnings,
     }

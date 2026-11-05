@@ -1709,6 +1709,9 @@ def _estimate_open_slice(
     rate_note = None
     if changed:
         rate_note = "Hourly wage uses the user rate in effect on each work date."
+    ot_setting_note = economics.pop("ot_setting_note", None)
+    if ot_setting_note:
+        rate_note = f"{rate_note} {ot_setting_note}".strip() if rate_note else ot_setting_note
     if category == "w2":
         periods = aggregate_finalized_w2_periods(
             history_rows,
