@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Button, Dialog, DialogActions, DialogContent, DialogTitle, MenuItem, Stack, TextField, Typography } from "@mui/material";
 import { useI18n } from "../../i18n/I18nContext";
 
-export default function TaskExcuseDialog({ open, row, contribution, busy, onClose, onSubmit }) {
+export default function TaskExcuseDialog({ open, row, contribution, busy, onClose, onSubmit, onEndSession }) {
   const { t } = useI18n();
   const [reason, setReason] = useState("");
   const [action, setAction] = useState("excuse");
@@ -19,6 +19,10 @@ export default function TaskExcuseDialog({ open, row, contribution, busy, onClos
   }, [open, contribution?.employee_id]);
 
   const assigned = (row?.contributions || []).map((person) => Number(person.employee_id)).filter((id) => id > 0);
+  const timerActive =
+    contribution?.participation_status === "in_progress" ||
+    contribution?.status === "in_progress" ||
+    contribution?.activity?.status === "in_progress";
 
   return (
     <Dialog open={open} onClose={busy ? undefined : onClose} fullWidth maxWidth="xs">
@@ -27,7 +31,7 @@ export default function TaskExcuseDialog({ open, row, contribution, busy, onClos
         <Stack spacing={1.5} sx={{ mt: 0.5 }}>
           <Typography variant="body2">{contribution?.employee_name}</Typography>
           <Typography variant="body2" color="text.secondary">
-            {t("tasks.dashboard.excuseHelp")}
+            {timerActive ? t("tasks.dashboard.excuseActiveTimer") : t("tasks.dashboard.excuseHelp")}
           </Typography>
           <TextField
             select
@@ -61,6 +65,11 @@ export default function TaskExcuseDialog({ open, row, contribution, busy, onClos
         <Button onClick={onClose} disabled={busy}>
           {t("common.cancel")}
         </Button>
+        {timerActive ? (
+          <Button variant="contained" disabled={busy} onClick={() => onEndSession?.()}>
+            {t("tasks.dashboard.endSessionFirst")}
+          </Button>
+        ) : (
         <Button
           variant="contained"
           disabled={busy || reason.trim().length < 3 || (action === "reassign" && !replacement)}
@@ -80,6 +89,7 @@ export default function TaskExcuseDialog({ open, row, contribution, busy, onClos
         >
           {t("common.save")}
         </Button>
+        )}
       </DialogActions>
     </Dialog>
   );

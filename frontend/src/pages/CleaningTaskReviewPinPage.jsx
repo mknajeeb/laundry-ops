@@ -168,6 +168,7 @@ export default function CleaningTaskReviewPinPage() {
         (row) => String(row?.category_code || row?.activity?.category_code || "") === "end_of_day"
       );
   const sections = [
+    [t("tasks.pin.excused"), queue?.excused || []],
     [t("tasks.pin.inProgress"), queue?.in_progress || []],
     [t("tasks.pin.status.overdue"), queue?.overdue || []],
     [t("tasks.pin.notStarted"), queue?.not_started || []],
@@ -298,6 +299,7 @@ export default function CleaningTaskReviewPinPage() {
                           </Typography>
                         ) : null}
                         <Typography variant="body2" color="text.secondary">
+                          {row.status === "excused" ? `${t("tasks.pin.excused")} · ` : ""}
                           {row.timing_label ? t("tasks.pin.scheduled", { time: row.timing_label }) : t("tasks.pin.anytime")}
                           {act?.started_at
                             ? ` · ${t("tasks.pin.started", { time: reviewClock(act.started_at) || "—" })}`

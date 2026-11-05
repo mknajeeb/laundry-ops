@@ -77,6 +77,7 @@ function PartnerLines({ partners, executionMode, assignedNames }) {
   const working = (partners || []).filter((partner) => partner.state === "working").map((partner) => partner.name);
   const waiting = (partners || []).filter((partner) => partner.state === "assigned").map((partner) => partner.name);
   const finished = (partners || []).filter((partner) => partner.state === "finished").map((partner) => partner.name);
+  const excused = (partners || []).filter((partner) => partner.state === "excused").map((partner) => partner.name);
   const headline = names.length ? names.join(", ") : (partners || []).map((partner) => partner.name).join(", ");
   return (
     <Box sx={{ mt: 0.5 }}>
@@ -96,6 +97,11 @@ function PartnerLines({ partners, executionMode, assignedNames }) {
       {finished.length ? (
         <Typography variant="caption" display="block" color="text.secondary">
           {t("tasks.pin.finishedNames", { names: finished.join(", ") })}
+        </Typography>
+      ) : null}
+      {excused.length ? (
+        <Typography variant="caption" display="block" color="text.secondary">
+          {t("tasks.pin.excusedNames", { names: excused.join(", ") })}
         </Typography>
       ) : null}
     </Box>

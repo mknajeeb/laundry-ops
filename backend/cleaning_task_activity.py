@@ -858,6 +858,12 @@ def list_employee_day_tasks(
         )
     shifts = _day_shifts_for_user(cursor, organization_id, user_id, day)
     anchors = _shift_break_anchors(shifts)
+    try:
+        from backend.cleaning_task_shared_execution import excused_ids_by_group
+
+        excused_by_group = excused_ids_by_group(cursor, int(organization_id), day)
+    except Exception:
+        excused_by_group = {}
     now = business_now()
     if getattr(now, "tzinfo", None) is not None:
         now = now.replace(tzinfo=None)
@@ -931,13 +937,27 @@ def list_employee_day_tasks(
             "assigned_employees": member_names_sorted,
             "shared": len(member_ids) > 1,
             "execution_mode": str(item.get("execution_mode") or "individual"),
-            "partners": _shared_partner_rows(item, int(user_id), names, shared_by_resp),
+            "partners": _shared_partner_rows(
+                item,
+                int(user_id),
+                names,
+                shared_by_resp,
+                excused_by_group.get(str(item.get("assignment_group_id") or "").strip(), set()),
+            ),
             "is_activity_group": is_group,
             "activity_kind": "group" if is_group else "standalone",
             "group_items": (group_cfg or {}).get("items") if is_group else None,
             "group_item_count": int((group_cfg or {}).get("item_count") or 0) if is_group else None,
         }
-        if act and str(act.get("status")) == STATUS_IN_PROGRESS:
+        viewer_excused = int(user_id) in excused_by_group.get(str(item.get("assignment_group_id") or "").strip(), set())
+        if viewer_excused:
+            row = {
+                **base,
+                "status": "excused",
+                "activity": serialize_activity(act, catalog=catalog) if act else None,
+            }
+            completed.append(row)
+        elif act and str(act.get("status")) == STATUS_IN_PROGRESS:
             row = {**base, "status": DISPLAY_IN_PROGRESS, "activity": serialize_activity(act, catalog=catalog)}
             in_progress.append(row)
         elif act and str(act.get("status")) in COMPLETED_STATUSES:
@@ -965,6 +985,8 @@ def list_employee_day_tasks(
         by_category.setdefault(cat, []).append(row)
 
     open_ser = None
+    if open_row and int(user_id) in excused_by_group.get(str(open_row.get("assignment_group_id") or "").strip(), set()):
+        open_row = None
     if open_row:
         open_ser = serialize_activity(open_row, catalog=catalog)
         open_meta = _task_meta_for_role(cursor, organization_id, str(open_row.get("role") or ""))
@@ -1854,8 +1876,15 @@ def list_supervisor_queue(
         "not_started": [],
         "overdue": [],
         "in_progress": [],
+        "excused": [],
         "completed_without_verification": [],
     }
+    try:
+        from backend.cleaning_task_shared_execution import excused_ids_by_group
+
+        excused_by_group = excused_ids_by_group(cursor, int(organization_id), day)
+    except Exception:
+        excused_by_group = {}
 
     for item in assignments:
         if user_id is not None and int(item["user_id"]) != int(user_id):
@@ -1864,6 +1893,12 @@ def list_supervisor_queue(
             continue
         rid = int(item["id"])
         act = by_resp.get(rid)
+        excused_here = int(item["user_id"]) in excused_by_group.get(str(item.get("assignment_group_id") or "").strip(), set())
+        if excused_here and (not act or str(act.get("status") or "") == STATUS_IN_PROGRESS):
+            buckets["excused"].append(
+                _contribution_entry(item, act, catalog=catalog, names=names, status="excused")
+            )
+            continue
         if act and str(act.get("status")) == STATUS_IN_PROGRESS:
             buckets["in_progress"].append(
                 _contribution_entry(item, act, catalog=catalog, names=names, status=DISPLAY_IN_PROGRESS)
@@ -1996,6 +2031,7 @@ def list_supervisor_queue(
             by_resp=by_resp,
             names=names,
             catalog=catalog,
+            excused_by_group=excused_by_group,
             templates_by_role={
                 str(item.get("role") or ""): _activity_group_item_templates(
                     cursor, int(organization_id), str(item.get("role") or "")
@@ -2370,6 +2406,7 @@ def _shared_partner_rows(
     viewer_user_id: int,
     names: Mapping[int, str],
     by_resp: Mapping[int, Mapping[str, Any]],
+    excused_ids: set[int] | None = None,
 ) -> list[dict[str, Any]]:
     """Other employees on a Shared Execution assignment, including those who have not started."""
     if str(item.get("execution_mode") or "") != "shared":
@@ -2380,14 +2417,19 @@ def _shared_partner_rows(
         "working": "Working now",
         "assigned": "Not started",
         "finished": "Finished",
+        "excused": "Excused",
     }
+    excused = {int(uid) for uid in (excused_ids or set())}
     out: list[dict[str, Any]] = []
     for member in item.get("members") or []:
         mid = int(member.get("user_id") or 0)
         if not mid or mid == int(viewer_user_id):
             continue
         act = by_resp.get(int(member.get("id") or 0))
-        state = partner_participation_state(None if not act else act.get("status"))
+        if mid in excused:
+            state = "excused"
+        else:
+            state = partner_participation_state(None if not act else act.get("status"))
         out.append(
             {
                 "user_id": mid,
@@ -2424,7 +2466,17 @@ def partners_for_activity(cursor, organization_id: int, activity: Mapping[str, A
     sample["members"] = members
     sample["user_ids"] = [int(row["user_id"]) for row in members]
     sample["execution_mode"] = "shared"
-    return _shared_partner_rows(sample, int(activity.get("user_id") or 0), names, by_resp)
+    excused: set[int] = set()
+    try:
+        from backend.cleaning_task_shared_execution import excused_ids_by_group, excused_user_ids_for_session
+
+        if activity.get("shared_session_id"):
+            excused = set(excused_user_ids_for_session(cursor, int(organization_id), int(activity["shared_session_id"])))
+        else:
+            excused = excused_ids_by_group(cursor, int(organization_id), day).get(group, set())
+    except Exception:
+        excused = set()
+    return _shared_partner_rows(sample, int(activity.get("user_id") or 0), names, by_resp, excused)
 
 
 COMPLETION_NOT_STARTED = "not_started"
@@ -2859,6 +2911,7 @@ def build_verification_review_cards(
     names: Mapping[int, str],
     catalog: Mapping[str, Mapping[str, Any]],
     templates_by_role: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    excused_by_group: Mapping[str, set[int]] | None = None,
 ) -> list[dict[str, Any]]:
     """One review card per assignment. Underlying checklist rows are not merged."""
     grouped: dict[str, list[Mapping[str, Any]]] = {}
@@ -2888,12 +2941,17 @@ def build_verification_review_cards(
         if member_rows:
             for member in member_rows:
                 act = by_resp.get(int(member["id"])) if by_resp else None
-                part = participation_status_from_display(None if not act else act.get("status"))
-                if part != PARTICIPATION_FINISHED:
+                uid = int(member["user_id"])
+                group_id = str(member.get("assignment_group_id") or "").strip()
+                excused_ids = (excused_by_group or {}).get(group_id, set())
+                if uid in excused_ids:
+                    part = "excused"
+                else:
+                    part = participation_status_from_display(None if not act else act.get("status"))
+                if part not in {PARTICIPATION_FINISHED, "excused"}:
                     unfinished = True
                 if act and act.get("id") is not None and act.get("parent_activity_id") is None:
                     parent_ids.add(int(act["id"]))
-                uid = int(member["user_id"])
                 participation.append(
                     {
                         "employee_id": uid,
@@ -2903,10 +2961,11 @@ def build_verification_review_cards(
                             PARTICIPATION_NOT_STARTED: "Not Started",
                             PARTICIPATION_IN_PROGRESS: "In Progress",
                             PARTICIPATION_FINISHED: "Finished",
-                        }[part],
+                            "excused": "Excused",
+                        }.get(part, "Not Started"),
                         "started_at": _review_wall(None if not act else act.get("started_at")),
                         "finished_at": _review_wall(None if not act else act.get("ended_at"))
-                        if part == PARTICIPATION_FINISHED
+                        if part in {PARTICIPATION_FINISHED, "excused"}
                         else None,
                     }
                 )

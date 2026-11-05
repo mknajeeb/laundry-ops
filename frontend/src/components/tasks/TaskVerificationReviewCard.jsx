@@ -124,7 +124,7 @@ export default function TaskVerificationReviewCard({
               ) : (
                 <Typography variant="caption" color="text.secondary" display="block">
                   {t("tasks.pin.started", { time: clock(person.started_at) || "—" })}
-                  {person.participation_status === "finished"
+                  {person.finished_at
                     ? ` · ${t("tasks.pin.finished", { time: clock(person.finished_at) || "—" })}`
                     : ""}
                 </Typography>

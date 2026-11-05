@@ -88,6 +88,7 @@ function EmployeeReport({ report, hideLabor, loading, t, locale }) {
                     notStarted: person.not_started,
                     verified: person.verified,
                   })}
+                  {person.excused ? ` · ${person.excused} ${t("tasks.pin.excused")}` : ""}
                 </Typography>
               </Box>
               {open
@@ -1030,6 +1031,7 @@ export default function ManagementTasksPage() {
           row={participationContext?.row}
           contribution={participationContext?.contribution}
           busy={busy}
+          endOpenSession={Boolean(participationContext?.endOpenSession)}
           onClose={() => setParticipationOpen(false)}
           onSubmit={async (body) => {
             setBusy(true);
@@ -1052,6 +1054,11 @@ export default function ManagementTasksPage() {
           contribution={excuseContext?.contribution}
           busy={busy}
           onClose={() => setExcuseOpen(false)}
+          onEndSession={() => {
+            setExcuseOpen(false);
+            setParticipationContext({ ...(excuseContext || {}), endOpenSession: true });
+            setParticipationOpen(true);
+          }}
           onSubmit={async (body) => {
             setBusy(true);
             try {
@@ -1059,7 +1066,13 @@ export default function ManagementTasksPage() {
               setExcuseOpen(false);
               await load();
             } catch (err) {
-              setError(err?.response?.data?.error || err?.message || t("tasks.dashboard.loadFailed"));
+              const data = err?.response?.data || {};
+              setError(data.error || err?.message || t("tasks.dashboard.loadFailed"));
+              if (data.code === "active_timer") {
+                setExcuseOpen(false);
+                setParticipationContext({ ...(excuseContext || {}), endOpenSession: true });
+                setParticipationOpen(true);
+              }
             } finally {
               setBusy(false);
             }

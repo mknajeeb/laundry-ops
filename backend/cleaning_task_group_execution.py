@@ -235,6 +235,10 @@ def start_group_activity(
             else "That activity is not assigned on the selected date.",
             status=404,
         )
+    from backend.cleaning_task_shared_execution import user_is_excused
+
+    if user_is_excused(cursor, oid, target.get("assignment_group_id"), day, uid):
+        raise CleaningTaskError("This employee is excused from the activity.", status=409)
     role = str(target.get("role") or "")
     if not is_activity_group_code(role):
         raise CleaningTaskError("That assignment is not an activity group.", status=400)

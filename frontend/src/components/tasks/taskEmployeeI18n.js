@@ -12,6 +12,7 @@ const STATUS_KEYS = {
   completed: "tasks.pin.status.completed",
   rejected: "tasks.pin.status.rejected",
   not_started: "tasks.pin.status.not_started",
+  excused: "tasks.pin.excused",
   incomplete: "tasks.pin.status.incomplete",
   partial: "tasks.pin.status.partial",
   finished: "tasks.dashboard.finished",
@@ -33,6 +34,7 @@ const PHRASE_KEYS = {
   "Partially Verified": "tasks.dashboard.partiallyVerified",
   "Not verified": "tasks.dashboard.notVerified",
   Finished: "tasks.dashboard.finished",
+  Excused: "tasks.pin.excused",
 };
 
 export function taskStatusLabel(t, status) {

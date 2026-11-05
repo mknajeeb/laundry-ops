@@ -26,7 +26,7 @@ function stamp(day, time) {
  * Supervisor time correction for one assigned employee.
  * Checklist check-offs are not changed.
  */
-export default function TaskParticipationDialog({ open, row, contribution, onClose, onSubmit, busy = false }) {
+export default function TaskParticipationDialog({ open, row, contribution, onClose, onSubmit, busy = false, endOpenSession = false }) {
   const { t } = useI18n();
   const day = String(row?.business_date || "").slice(0, 10);
   const [status, setStatus] = useState("finished");
@@ -36,22 +36,37 @@ export default function TaskParticipationDialog({ open, row, contribution, onClo
   useEffect(() => {
     if (!open) return;
     const existing = contribution?.activity?.participation_sessions;
-    const part = contribution?.participation_status || "not_started";
+    const recordedStart = contribution?.activity?.started_at;
+    const recordedEnd = contribution?.activity?.ended_at;
+    const part = endOpenSession ? "finished" : contribution?.participation_status || "not_started";
     setStatus(part === "finished" || part === "in_progress" || part === "not_started" ? part : "not_started");
     if (Array.isArray(existing) && existing.length) {
       setSessions(
-        existing.map((session) => ({
+        existing.map((session, index) => ({
           startDate: String(session.started_at || "").slice(0, 10) || day,
           startTime: String(session.started_at || "").slice(11, 16) || "09:00",
           endDate: session.ended_at ? String(session.ended_at).slice(0, 10) : day,
-          endTime: session.ended_at ? String(session.ended_at).slice(11, 16) : "",
+          endTime: endOpenSession && index === existing.length - 1 && !session.ended_at
+            ? ""
+            : session.ended_at
+              ? String(session.ended_at).slice(11, 16)
+              : "",
         })),
       );
+    } else if (recordedStart) {
+      setSessions([
+        {
+          startDate: String(recordedStart).slice(0, 10) || day,
+          startTime: String(recordedStart).slice(11, 16),
+          endDate: recordedEnd ? String(recordedEnd).slice(0, 10) : day,
+          endTime: endOpenSession && !recordedEnd ? "" : recordedEnd ? String(recordedEnd).slice(11, 16) : "",
+        },
+      ]);
     } else {
       setSessions([blankSession(day)]);
     }
     setReason("");
-  }, [open, contribution, day]);
+  }, [open, contribution, day, endOpenSession]);
 
   const updateSession = (index, field, value) => {
     setSessions((current) => current.map((session, at) => (at === index ? { ...session, [field]: value } : session)));

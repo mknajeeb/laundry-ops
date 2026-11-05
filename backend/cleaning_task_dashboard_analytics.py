@@ -191,6 +191,7 @@ _REPORT_STATUS_LABELS = {
     "verified": "Verified",
     "overdue": "Overdue",
     "needs_correction": "Needs Correction",
+    "excused": "Excused",
 }
 
 
@@ -309,12 +310,15 @@ def build_employee_report(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
                     "completed": 0,
                     "in_progress": 0,
                     "not_started": 0,
+                    "excused": 0,
                     "verified": 0,
                     "activities": [],
                 },
             )
             person["assigned"] += 1
-            if part == "finished":
+            if part == "excused":
+                person["excused"] += 1
+            elif part == "finished":
                 person["completed"] += 1
             elif part == "in_progress":
                 person["in_progress"] += 1

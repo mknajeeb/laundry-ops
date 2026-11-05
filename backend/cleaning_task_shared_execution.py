@@ -13,6 +13,7 @@ from backend.business_time import business_today
 from backend.cleaning_task_activity import (
     STATUS_APPROVED,
     STATUS_COMPLETED,
+    STATUS_IN_PROGRESS,
     STATUS_PENDING_APPROVAL,
     TABLE,
     CleaningTaskError,
@@ -1103,6 +1104,84 @@ def _adjustment_rows(session: Mapping[str, Any] | None) -> list[dict[str, Any]]:
     return [row for row in parsed if isinstance(row, dict)] if isinstance(parsed, list) else []
 
 
+def participation_timer_is_active(activity: Mapping[str, Any] | None) -> bool:
+    """True only while this employee's own timer is still open."""
+    if not activity:
+        return False
+    if activity.get("voided_at"):
+        return False
+    status = str(activity.get("status") or "")
+    if status == STATUS_IN_PROGRESS:
+        return True
+    closed = {
+        STATUS_COMPLETED,
+        STATUS_APPROVED,
+        STATUS_PENDING_APPROVAL,
+        "rejected",
+        "cancelled",
+        "voided",
+    }
+    return bool(activity.get("started_at")) and not activity.get("ended_at") and status not in closed
+
+
+def open_participation_activity(cursor, organization_id: int, session_id: int, user_id: int):
+    """Latest parent timer for one employee on a shared session. Does not create a row."""
+    has_void = table_has_column(cursor, TABLE, "voided_at")
+    void_sql = " AND voided_at IS NULL" if has_void else ""
+    void_col = ", voided_at" if has_void else ""
+    cursor.execute(
+        f"""
+        SELECT id, status, started_at, ended_at, duration_seconds{void_col}
+        FROM {TABLE}
+        WHERE organization_id=%s AND shared_session_id=%s AND user_id=%s
+          AND parent_activity_id IS NULL
+          {void_sql}
+        ORDER BY id DESC LIMIT 1
+        """,
+        (int(organization_id), int(session_id), int(user_id)),
+    )
+    row = cursor.fetchone()
+    return row if isinstance(row, dict) else None
+
+
+def excused_ids_by_group(cursor, organization_id: int, business_date) -> dict[str, set[int]]:
+    """Excused employees keyed by assignment group. Missing sessions mean nobody is excused."""
+    if not table_exists(cursor, SESSIONS_TABLE):
+        return {}
+    cursor.execute(
+        f"""
+        SELECT assignment_group_id, participation_adjustments_json
+        FROM {SESSIONS_TABLE}
+        WHERE organization_id=%s AND business_date=%s
+        """,
+        (int(organization_id), business_date),
+    )
+    found: dict[str, set[int]] = {}
+    for row in cursor.fetchall() or []:
+        group_id = str(row.get("assignment_group_id") or "").strip()
+        if not group_id:
+            continue
+        ids: set[int] = set()
+        for adjustment in _adjustment_rows(row):
+            if str(adjustment.get("action") or "") not in {"excuse", "reassign"}:
+                continue
+            try:
+                uid = int(adjustment.get("user_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if uid > 0:
+                ids.add(uid)
+        found[group_id] = ids
+    return found
+
+
+def user_is_excused(cursor, organization_id: int, assignment_group_id: str | None, business_date, user_id: int) -> bool:
+    group_id = str(assignment_group_id or "").strip()
+    if not group_id:
+        return False
+    return int(user_id) in excused_ids_by_group(cursor, int(organization_id), business_date).get(group_id, set())
+
+
 def excused_user_ids_for_session(cursor, organization_id: int, session_id: int) -> list[int]:
     session = get_shared_session(cursor, int(organization_id), int(session_id))
     found: list[int] = []
@@ -1173,6 +1252,19 @@ def excuse_or_reassign_participant(
         session = get_shared_session(cursor, oid, session_id)
         if not session:
             raise CleaningTaskError("Shared session not found.", status=404)
+    open_row = open_participation_activity(cursor, oid, session_id, employee)
+    if participation_timer_is_active(open_row):
+        started = open_row.get("started_at") if open_row else None
+        started_text = started.strftime("%Y-%m-%d %H:%M:%S") if hasattr(started, "strftime") else (str(started)[:19] if started else None)
+        raise CleaningTaskError(
+            "End this employee's active participation session before excusing them.",
+            status=409,
+            payload={
+                "code": "active_timer",
+                "activity_id": int(open_row["id"]) if open_row and open_row.get("id") is not None else None,
+                "started_at": started_text,
+            },
+        )
     prior = [int(row.get("user_id") or 0) for row in _adjustment_rows(session)]
     at = eastern_now_naive()
     entry = {
