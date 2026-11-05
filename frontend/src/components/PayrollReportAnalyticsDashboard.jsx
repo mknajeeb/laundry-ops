@@ -487,6 +487,14 @@ export default function PayrollReportAnalyticsDashboard({
                       >
                         <TableCell>
                           {emp.employee_name}
+                          {emp.week ? (
+                            <Typography variant="caption" color="text.secondary" display="block">
+                              Week {hours(emp.week.total_hours)} · OT {hours(emp.week.ot_hours)} · premium {money(emp.week.ot_premium)} · employer cost {money(emp.week.total_payroll_cost)}
+                              {emp.week.avg_cost_per_hour != null ? ` · ${money(emp.week.avg_cost_per_hour)}/hr` : ""}
+                              {" · "}
+                              {emp.week.cost_basis_label}
+                            </Typography>
+                          ) : null}
                           {emp.includes_supplemental ? (
                             <Chip
                               size="small"

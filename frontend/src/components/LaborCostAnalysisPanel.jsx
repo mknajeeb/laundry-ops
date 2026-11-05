@@ -797,6 +797,42 @@ export default function LaborCostAnalysisPanel() {
                                 ) : (
                                   <Typography variant="body2">No period detail in this range.</Typography>
                                 )}
+                                {emp.classifications?.length > 1 ? (
+                                  <Box sx={{ mb: 1 }}>
+                                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+                                      Weekly overtime is calculated once for the whole week. These rows show which classification worked those hours.
+                                      Estimated employer burden is not a stored payroll tax.
+                                    </Typography>
+                                    <Table size="small">
+                                      <TableHead>
+                                        <TableRow>
+                                          <TableCell>Classification</TableCell>
+                                          <TableCell align="right">Hours</TableCell>
+                                          <TableCell align="right">OT hours</TableCell>
+                                          <TableCell align="right">OT %</TableCell>
+                                          <TableCell align="right">OT premium</TableCell>
+                                          <TableCell align="right">Employer cost</TableCell>
+                                          <TableCell align="right">Burden</TableCell>
+                                        </TableRow>
+                                      </TableHead>
+                                      <TableBody>
+                                        {emp.classifications.map((item) => (
+                                          <TableRow key={item.worker_category}>
+                                            <TableCell>{item.classification_label}</TableCell>
+                                            <TableCell align="right">{formatHours(item.payable_hours)}</TableCell>
+                                            <TableCell align="right">{formatHours(item.ot_hours)}</TableCell>
+                                            <TableCell align="right">{formatPercent(item.ot_percent)}</TableCell>
+                                            <TableCell align="right">{formatMoney(item.ot_premium)}</TableCell>
+                                            <TableCell align="right">{formatMoney(item.total_employer_cost)}</TableCell>
+                                            <TableCell align="right">
+                                              {formatPercent(item.employer_burden_percent)} {item.employer_burden_label || ""}
+                                            </TableCell>
+                                          </TableRow>
+                                        ))}
+                                      </TableBody>
+                                    </Table>
+                                  </Box>
+                                ) : null}
                                 {emp.periods?.length ? (
                                   <Table size="small">
                                     <TableHead>

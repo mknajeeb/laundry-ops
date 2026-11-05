@@ -236,6 +236,41 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
   ];
 
   const rows = useMemo(() => report?.rows || [], [report]);
+  const mixedWeekNotes = useMemo(() => {
+    const groups = new Map();
+    for (const row of rows) {
+      const key = `${row.user_id ?? row.employee_name}|${row.pay_period_start || ""}|${row.pay_period_end || ""}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(row);
+    }
+    const notes = new Map();
+    for (const [key, group] of groups) {
+      const categories = new Set(group.map((row) => row.worker_category || row.employee_category));
+      if (categories.size < 2) continue;
+      const sum = (field) => group.reduce((total, row) => total + (Number(row[field]) || 0), 0);
+      const bases = new Set(
+        group.map((row) => row.employer_cost_basis || (row.employer_cost_recorded ? "actual" : "")).filter(Boolean),
+      );
+      let basis = "Estimated employer burden";
+      if (bases.size === 1 && bases.has("actual")) basis = "Stored employer cost";
+      else if (bases.has("actual") && (bases.has("estimated") || bases.has("configured"))) {
+        basis = "Stored wages and estimated burden";
+      } else if (bases.size === 1 && bases.has("gross_only")) basis = "Gross only";
+      else if (bases.has("configured") && !bases.has("estimated")) basis = "Configured employer burden";
+      const hoursTotal = sum("regular_hours") + sum("ot_hours");
+      notes.set(key, {
+        hours: hoursTotal,
+        ot: sum("ot_hours"),
+        premium: sum("ot_premium"),
+        cost: sum("total_payroll_cost"),
+        rate: hoursTotal > 0 ? sum("total_payroll_cost") / hoursTotal : null,
+        basis,
+      });
+    }
+    return notes;
+  }, [rows]);
+  const mixedWeekNote = (row) =>
+    mixedWeekNotes.get(`${row.user_id ?? row.employee_name}|${row.pay_period_start || ""}|${row.pay_period_end || ""}`);
   const totals = report?.totals || {};
   const dateRule = report?.date_match_rule || meta.date_match_rule;
   const canViewEmployeeDetail = meta.can_view_employee_detail !== false;
@@ -295,7 +330,15 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
         <TableBody>
           {tableRows.map((row) => (
             <TableRow key={`${row.batch_id}-${row.line_id}`} hover>
-              <TableCell>{row.employee_name}</TableCell>
+              <TableCell>
+                {row.employee_name}
+                {mixedWeekNote(row) ? (
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    Week {hours(mixedWeekNote(row).hours)} · OT {hours(mixedWeekNote(row).ot)} · premium {money(mixedWeekNote(row).premium)} · employer cost {money(mixedWeekNote(row).cost)}
+                    {mixedWeekNote(row).rate != null ? ` · ${money(mixedWeekNote(row).rate)}/hr` : ""} · {mixedWeekNote(row).basis}
+                  </Typography>
+                ) : null}
+              </TableCell>
               <TableCell>{row.employee_category}</TableCell>
               <TableCell>{row.pay_date_display || row.pay_date || ""}</TableCell>
               <TableCell align="right">{hours(row.regular_hours)}</TableCell>
@@ -856,6 +899,12 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
                       {row.employee_name}
                       {row.is_supplemental ? (
                         <Chip size="small" label="Supplemental" sx={{ ml: 1 }} />
+                      ) : null}
+                      {mixedWeekNote(row) ? (
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Week {hours(mixedWeekNote(row).hours)} · OT {hours(mixedWeekNote(row).ot)} · premium {money(mixedWeekNote(row).premium)} · employer cost {money(mixedWeekNote(row).cost)}
+                          {mixedWeekNote(row).rate != null ? ` · ${money(mixedWeekNote(row).rate)}/hr` : ""} · {mixedWeekNote(row).basis}
+                        </Typography>
                       ) : null}
                     </TableCell>
                     <TableCell>{row.employee_category}</TableCell>

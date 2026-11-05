@@ -390,6 +390,172 @@ def test_open_estimate_uses_historical_burden_and_stored_ot_wages_from_hours():
     assert economics["gross_pay"] == 935.00
 
 
+def _clocks(user_id, name, pairs):
+    rows = []
+    for index, (day, hours, category) in enumerate(pairs, start=1):
+        rows.append(
+            {
+                "id": user_id * 100 + index,
+                "user_id": user_id,
+                "worker_name": name,
+                "approved_hours": hours,
+                "clock_in_at": f"{day} 08:00:00",
+                "work_date": day,
+                "hourly_rate": 17,
+                "worker_category": category,
+                "payroll_week_start": "2026-10-26",
+            }
+        )
+    return rows
+
+
+LILY_WEEK = [
+    ("2026-10-26", 9.80, "w2"),
+    ("2026-10-28", 9.23, "w2"),
+    ("2026-10-29", 8.90, "temp"),
+    ("2026-10-30", 9.68, "temp"),
+    ("2026-10-31", 6.71, "temp"),
+    ("2026-11-01", 6.68, "temp"),
+]
+AMNA_WEEK = [
+    ("2026-10-26", 8.16, "w2"),
+    ("2026-10-27", 7.74, "w2"),
+    ("2026-10-28", 8.72, "temp"),
+    ("2026-10-29", 5.97, "temp"),
+    ("2026-10-30", 8.24, "temp"),
+    ("2026-11-01", 7.29, "temp"),
+]
+
+
+def test_lily_and_amna_mixed_weeks_allocate_overtime_once():
+    """W-2 and Temp share one 40-hour week. Burden stays on W-2 wages."""
+    from backend.labor_cost_analysis import _employee_rows, estimate_open_week_slices
+
+    history = [
+        {
+            "worker_category": "w2",
+            "employer_cost_recorded": True,
+            "batch_status": "paid",
+            "pay_period_start": "2026-09-28",
+            "pay_period_end": "2026-10-04",
+            "gross_pay": 10000,
+            "total_payroll_cost": 11227,
+        }
+    ]
+    policy = {"enabled": True, "threshold_hours": 40, "multiplier": 1.5}
+    week = dict(
+        tax_settings={},
+        target=19,
+        week_start=date(2026, 10, 26),
+        week_end=date(2026, 11, 1),
+        policy=policy,
+    )
+    lily = _clocks(61, "Lily Chen", LILY_WEEK)
+    amna = _clocks(38, "Amna Yousaf", AMNA_WEEK)
+    for person in (lily, amna):
+        w2 = [row for row in person if row["worker_category"] == "w2"]
+        temp = [row for row in person if row["worker_category"] == "temp"]
+        assert economics_from_time_records(w2)["ot_hours"] == 0
+        assert economics_from_time_records(temp)["ot_hours"] == 0
+
+    lily_slices = estimate_open_week_slices(lily, history, **week)
+    amna_slices = estimate_open_week_slices(amna, history, **week)
+    by_cat = lambda slices, cat: next(row for row in slices if row["worker_category"] == cat)
+
+    lily_w2 = by_cat(lily_slices, "w2")
+    lily_temp = by_cat(lily_slices, "temp")
+    assert lily_w2["ot_hours"] == 0
+    assert lily_temp["ot_hours"] > 10
+    assert lily_temp["ot_premium"] == lily_w2["ot_premium"] + lily_temp["ot_premium"]
+    assert lily_temp["total_employer_cost"] == lily_temp["gross_pay"]
+    assert lily_w2["total_employer_cost"] > lily_w2["gross_pay"]
+    assert lily_w2["burden_status"] == "estimated"
+    assert lily_temp["burden_status"] == "not_applicable"
+    assert lily_w2["estimated"] is True
+
+    amna_w2 = by_cat(amna_slices, "w2")
+    amna_temp = by_cat(amna_slices, "temp")
+    assert amna_w2["payable_hours"] == 15.90
+    assert amna_temp["payable_hours"] == 30.22
+    assert amna_w2["ot_hours"] == 0
+    assert amna_temp["ot_hours"] == 6.12
+    assert amna_temp["ot_premium"] == 52.02
+    assert amna_temp["gross_pay"] == 565.76
+    assert amna_temp["total_employer_cost"] == 565.76
+    assert amna_w2["gross_pay"] == 270.30
+    assert amna_w2["total_employer_cost"] == round(270.30 * 1.1227, 2)
+
+    employees = _employee_rows(
+        lily_slices + amna_slices,
+        frequency="weekly",
+        week_starts_on=0,
+        range_start=date(2026, 10, 26),
+        range_end=date(2026, 11, 1),
+        target=19,
+    )
+    by_name = {row["employee_name"]: row for row in employees}
+    assert by_name["Amna Yousaf"]["ot_hours"] == 6.12
+    assert by_name["Amna Yousaf"]["ot_premium"] == 52.02
+    assert by_name["Amna Yousaf"]["payable_hours"] == 46.12
+    assert by_name["Amna Yousaf"]["worker_category"] == "all"
+    assert [item["ot_hours"] for item in by_name["Amna Yousaf"]["classifications"]] == [0, 6.12]
+    assert by_name["Lily Chen"]["ot_hours"] == lily_temp["ot_hours"]
+    assert by_name["Lily Chen"]["ot_hours"] > 0
+    assert by_name["Lily Chen"]["classifications"][0]["worker_category"] == "w2"
+    assert by_name["Lily Chen"]["classifications"][0]["ot_hours"] == 0
+    assert by_name["Lily Chen"]["classifications"][1]["ot_hours"] == lily_temp["ot_hours"]
+
+
+def test_stored_mixed_week_shows_one_overtime_total_and_estimated_burden():
+    """Report rows keep the stored split. The employee week shows the combined overtime."""
+    from backend.payroll_report_analytics import employee_summaries_by_category
+
+    def row(user_id, name, category, regular, ot, premium, gross, taxes, cost, basis):
+        return {
+            "user_id": user_id,
+            "employee_name": name,
+            "worker_category": category,
+            "pay_period_start": "2026-10-26",
+            "pay_period_end": "2026-11-01",
+            "regular_hours": regular,
+            "ot_hours": ot,
+            "ot_premium": premium,
+            "gross_pay": gross,
+            "employer_taxes": taxes,
+            "total_payroll_cost": cost,
+            "employer_cost_basis": basis,
+            "employer_cost_recorded": False,
+            "batch_status": "hours_reviewed",
+        }
+
+    rows = [
+        row(61, "Lily Chen", "w2", 19.02, 0, 0, 323.34, 39.67, 363.01, "estimated"),
+        row(61, "Lily Chen", "temp", 20.98, 10.99, 93.42, 636.91, 0, 636.91, "gross_only"),
+        row(38, "Amna Yousaf", "w2", 15.90, 0, 0, 270.30, 0, 270.30, "estimated"),
+        row(38, "Amna Yousaf", "temp", 24.10, 6.12, 52.02, 565.76, 0, 565.76, "gross_only"),
+    ]
+    summaries = employee_summaries_by_category(rows)
+    lily_w2 = summaries["w2"][0] if summaries["w2"][0]["employee_name"] == "Lily Chen" else summaries["w2"][1]
+    lily_temp = next(item for item in summaries["temp"] if item["employee_name"] == "Lily Chen")
+    amna_temp = next(item for item in summaries["temp"] if item["employee_name"] == "Amna Yousaf")
+    assert lily_w2["ot_hours"] == 0
+    assert lily_temp["ot_hours"] == 10.99
+    assert lily_temp["ot_premium"] == 93.42
+    assert lily_w2["week"]["ot_hours"] == 10.99
+    assert lily_w2["week"]["ot_premium"] == 93.42
+    assert lily_w2["week"]["total_hours"] == 50.99
+    assert lily_w2["week"]["total_payroll_cost"] == 999.92
+    assert lily_w2["week"]["avg_cost_per_hour"] == 19.61
+    assert lily_w2["week"]["cost_basis"] == "estimated"
+    assert lily_w2["week"]["ot_hours"] == lily_temp["week"]["ot_hours"]
+    assert [item["ot_hours"] for item in lily_w2["week"]["classifications"]] == [0, 10.99]
+    assert amna_temp["ot_hours"] == 6.12
+    assert amna_temp["ot_premium"] == 52.02
+    assert amna_temp["week"]["total_hours"] == 46.12
+    assert amna_temp["week"]["ot_hours"] == 6.12
+    assert amna_temp["week"]["gross_pay"] == 836.06
+
+
 def test_presets_follow_payroll_weeks_not_calendar_weeks_only():
     as_of = date(2026, 11, 1)
     current = resolve_preset("current_week", as_of=as_of, week_starts_on=0)
