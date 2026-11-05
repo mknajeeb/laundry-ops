@@ -289,9 +289,6 @@ export default function PayrollTimeRecordsPanel({
     getTaUsers()
       .then((r) => setUsers(r.data?.users || r.data || []))
       .catch(() => {});
-    getTaskTrackingSelectionTree()
-      .then((r) => setSelectionTree(Array.isArray(r.data) ? r.data : []))
-      .catch(() => {});
     getPayrollScheduleWorkers()
       .then((r) => setWorkers(r.data?.items || []))
       .catch(() => {});
@@ -399,15 +396,15 @@ export default function PayrollTimeRecordsPanel({
     }
     let cancelled = false;
     setHourlyLoading(true);
-    Promise.all(
-      subjects.map((id) => {
+    postPayrollHourlyCostAnalysis({
+      from_date: fromDate,
+      to_date: toDate,
+      subjects: subjects.map((id) => {
         const rate = rateMap[id] || {};
         const regular = Number(rate.regular_rate || 0);
         const overtime = Number(rate.ot_rate || 0);
-        return postPayrollHourlyCostAnalysis({
+        return {
           user_id: Number(id),
-          from_date: fromDate,
-          to_date: toDate,
           ot_threshold: rate.ot_threshold,
           ot_multiplier: regular > 0 && overtime > 0 ? overtime / regular : undefined,
           records: byUser.get(id).map((row) => ({
@@ -420,12 +417,12 @@ export default function PayrollTimeRecordsPanel({
             hourly_rate: row.regular_rate ?? row.hourly_rate,
             worker_category: row.worker_category,
           })),
-        }).then((res) => res.data);
+        };
       }),
-    )
-      .then((analyses) => {
+    })
+      .then((res) => {
         if (cancelled) return;
-        setHourlyCost(combineHourlyAnalyses(analyses));
+        setHourlyCost(combineHourlyAnalyses(res.data?.analyses || []));
         setHourlyError(
           byUser.size > subjects.length
             ? "Hourly employer cost includes the first 40 employees in this view."
@@ -449,7 +446,15 @@ export default function PayrollTimeRecordsPanel({
     load();
   }, [load]);
 
+  const ensureSelectionTree = () => {
+    if (selectionTree.length) return;
+    getTaskTrackingSelectionTree()
+      .then((r) => setSelectionTree(Array.isArray(r.data) ? r.data : []))
+      .catch(() => {});
+  };
+
   const openAdd = () => {
+    ensureSelectionTree();
     setEditorMode("add");
     setEditingId(null);
     setEditingSegmentCount(0);
@@ -460,6 +465,7 @@ export default function PayrollTimeRecordsPanel({
   };
 
   const openEdit = (row) => {
+    ensureSelectionTree();
     setEditorMode("edit");
     setEditingId(row.id);
     setEditorError("");

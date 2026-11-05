@@ -77,15 +77,30 @@ def list_eligible_approved_session_facts(
     )
     from backend.ta_helpers import table_has_column
 
-    chk = conn.cursor()
-    ensure_payroll_hours_approved_column(chk)
-    has_ss_org = table_has_column(chk, "shift_sessions", "organization_id")
-    has_hours_approved = table_has_column(chk, "shift_sessions", "payroll_hours_approved")
-    has_override = table_has_column(chk, "shift_sessions", "manual_override")
-    has_review = table_has_column(chk, "payroll_cycles", "review_state")
-    has_class_override = table_has_column(
-        chk, "shift_sessions", "payroll_classification_override"
-    )
+    flags = getattr(conn, "_payroll_coverage_column_flags", None)
+    if not isinstance(flags, dict):
+        chk = conn.cursor()
+        ensure_payroll_hours_approved_column(chk)
+        flags = {
+            "has_ss_org": table_has_column(chk, "shift_sessions", "organization_id"),
+            "has_hours_approved": table_has_column(
+                chk, "shift_sessions", "payroll_hours_approved"
+            ),
+            "has_override": table_has_column(chk, "shift_sessions", "manual_override"),
+            "has_review": table_has_column(chk, "payroll_cycles", "review_state"),
+            "has_class_override": table_has_column(
+                chk, "shift_sessions", "payroll_classification_override"
+            ),
+        }
+        try:
+            conn._payroll_coverage_column_flags = flags
+        except Exception:
+            pass
+    has_ss_org = flags["has_ss_org"]
+    has_hours_approved = flags["has_hours_approved"]
+    has_override = flags["has_override"]
+    has_review = flags["has_review"]
+    has_class_override = flags["has_class_override"]
     org_clause = (
         "s.organization_id = %s" if has_ss_org else "u.organization_id = %s"
     )

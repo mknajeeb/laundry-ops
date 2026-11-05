@@ -5805,9 +5805,46 @@ def payroll_hourly_cost_analysis():
         uid = body.get("user_id")
         start = str(body.get("from_date") or body.get("pay_period_start") or "")[:10]
         end = str(body.get("to_date") or body.get("pay_period_end") or "")[:10]
+        oid = _tenant_id()
+        subjects = body.get("subjects")
+        if isinstance(subjects, list):
+            if not start or not end:
+                return jsonify({"error": "from_date and to_date are required"}), 400
+            if len(subjects) > 40:
+                return jsonify({"error": "Too many employees"}), 400
+            user_ids = []
+            for subject in subjects:
+                if not isinstance(subject, dict):
+                    return jsonify({"error": "subjects must be objects"}), 400
+                try:
+                    user_ids.append(int(subject.get("user_id")))
+                except (TypeError, ValueError):
+                    return jsonify({"error": "user_id required"}), 400
+                records = subject.get("records") or []
+                if not isinstance(records, list) or len(records) > 500:
+                    return jsonify({"error": "Too many time records"}), 400
+            if user_ids:
+                placeholders = ", ".join(["%s"] * len(user_ids))
+                owned = conn.cursor(dictionary=True)
+                owned.execute(
+                    f"SELECT id FROM users WHERE organization_id=%s AND id IN ({placeholders})",
+                    (oid, *user_ids),
+                )
+                found = {int(row["id"]) for row in owned.fetchall() or []}
+                if found != set(user_ids):
+                    return jsonify({"error": "Invalid user"}), 400
+            from backend.payroll_hourly_cost import build_hourly_costs_for_time_records
+
+            analyses = build_hourly_costs_for_time_records(
+                conn,
+                oid,
+                subjects,
+                period_start=start,
+                period_end=end,
+            )
+            return jsonify({"analyses": analyses})
         if not uid or not start or not end:
             return jsonify({"error": "user_id, from_date, and to_date are required"}), 400
-        oid = _tenant_id()
         if not _user_belongs_to_tenant(conn, int(uid)):
             return jsonify({"error": "Invalid user"}), 400
         records = body.get("records") or []

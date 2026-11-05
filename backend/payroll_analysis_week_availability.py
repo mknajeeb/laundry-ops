@@ -14,7 +14,12 @@ from backend.ta_helpers import table_exists
 
 
 def ensure_payroll_analysis_week_availability_schema(cursor) -> None:
-    """Additive / idempotent. No historical payroll-row mutation."""
+    """Additive / idempotent. No historical payroll-row mutation.
+
+    A present table does not need CREATE TABLE on every report read.
+    """
+    if table_exists(cursor, "payroll_analysis_week_availability"):
+        return
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS payroll_analysis_week_availability (

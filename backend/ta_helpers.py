@@ -118,10 +118,35 @@ _table_columns: dict[tuple[str, str], set[str]] = {}
 
 
 def _schema_scope(cursor) -> str | None:
-    """Database name for a live connection. Missing names stay uncached."""
+    """Database name for a live connection. Missing names stay uncached.
+
+    ``connection.database`` runs ``SELECT DATABASE()``. Cache the name used at
+    connect time so a column check does not add a round trip.
+    """
     conn = getattr(cursor, "connection", None) or getattr(cursor, "_connection", None)
-    name = str(getattr(conn, "database", None) or "").strip() if conn is not None else ""
+    if conn is None:
+        _scope_local.scope = None
+        return None
+    cached = getattr(conn, "_payroll_schema_scope", None)
+    if isinstance(cached, str):
+        scope = cached or None
+        _scope_local.scope = scope
+        return scope
+    raw = getattr(conn, "_database", None)
+    name = raw.strip() if isinstance(raw, str) else ""
+    if not name:
+        database_attr = getattr(type(conn), "database", None)
+        if isinstance(database_attr, property):
+            try:
+                name = str(conn.database or "").strip()
+            except Exception:
+                name = ""
     scope = name or None
+    if scope:
+        try:
+            conn._payroll_schema_scope = scope
+        except Exception:
+            pass
     _scope_local.scope = scope
     return scope
 

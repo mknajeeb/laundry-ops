@@ -34,7 +34,17 @@ def normalize_ot_week_mode(value: Any) -> str:
 
 
 def ensure_payroll_week_ot_schema(cursor) -> None:
-    """Additive only — no backfill."""
+    """Additive only — no backfill.
+
+    Skip the CREATE when both tables are already present. Repeating that
+    statement on every time-record read takes a metadata lock.
+    """
+    from backend.ta_helpers import table_exists
+
+    if table_exists(cursor, "employee_payroll_week_ot_overrides") and table_exists(
+        cursor, "employee_payroll_week_ot_override_audit"
+    ):
+        return
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS employee_payroll_week_ot_overrides (

@@ -1378,3 +1378,217 @@ def test_jasanpreet_disabled_week_matches_across_summaries_and_an_enabled_week_k
     assert enabled_priced["ot_premium"] == 160.75
     assert round(sum(line["ot_hours"] for line in enabled_sync), 2) == 17.41
     assert {line["rate"] for line in enabled_sync} == {17.0, 21.0}
+
+
+class _WeekCursor:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def execute(self, _sql, _params):
+        self.conn.queries += 1
+
+    def fetchone(self):
+        return {"week_starts_on": 0}
+
+
+class _WeekConn:
+    def __init__(self):
+        self.queries = 0
+
+    def cursor(self, dictionary=True):
+        return _WeekCursor(self)
+
+
+def test_schema_scope_uses_the_connection_database_without_querying():
+    from backend.ta_helpers import _schema_scope
+
+    class Conn:
+        _database = "laundryapp"
+
+        @property
+        def database(self):
+            raise AssertionError("SELECT DATABASE() should not run")
+
+    class Cursor:
+        connection = None
+
+    cursor = Cursor()
+    cursor.connection = Conn()
+    assert _schema_scope(cursor) == "laundryapp"
+    assert _schema_scope(cursor) == "laundryapp"
+
+
+def test_payroll_week_bounds_reads_the_anchor_once_per_connection():
+    from datetime import date
+
+    from backend.payroll_identity import payroll_week_bounds
+
+    conn = _WeekConn()
+    first_start, first_end = payroll_week_bounds(conn, date(2026, 10, 28), 3)
+    second_start, second_end = payroll_week_bounds(conn, date(2026, 11, 1), 3)
+    assert conn.queries == 1
+    assert (first_start, first_end) == (date(2026, 10, 26), date(2026, 11, 1))
+    assert (second_start, second_end) == (first_start, first_end)
+
+
+def test_week_ot_schema_skips_create_when_both_tables_exist(monkeypatch):
+    from backend.payroll_week_ot import ensure_payroll_week_ot_schema
+
+    class Cursor:
+        def execute(self, *_args, **_kwargs):
+            raise AssertionError("CREATE should not run")
+
+    monkeypatch.setattr("backend.ta_helpers.table_exists", lambda _cursor, _name: True)
+    ensure_payroll_week_ot_schema(Cursor())
+
+
+def test_shared_hourly_cost_keeps_mixed_overtime_and_a_disabled_week():
+    from backend.payroll_hourly_cost import build_hourly_cost_for_time_records
+
+    policies = {
+        category: {
+            "enabled": True,
+            "threshold_hours": 40,
+            "multiplier": 1.5,
+            "employer_burden_percent": None,
+        }
+        for category in ("w2", "temp", "contractor_1099")
+    }
+    lily = [
+        {
+            "id": 1,
+            "approved_hours": 19.02,
+            "work_date": "2026-10-26",
+            "payroll_week_start": "2026-10-26",
+            "ot_week_mode": "default",
+            "hourly_rate": 17,
+            "worker_category": "w2",
+        },
+        {
+            "id": 2,
+            "approved_hours": 20.98,
+            "work_date": "2026-10-28",
+            "payroll_week_start": "2026-10-26",
+            "ot_week_mode": "default",
+            "hourly_rate": 17,
+            "worker_category": "temp",
+        },
+        {
+            "id": 3,
+            "approved_hours": 10.99,
+            "work_date": "2026-10-30",
+            "payroll_week_start": "2026-10-26",
+            "ot_week_mode": "default",
+            "hourly_rate": 25.5,
+            "worker_category": "temp",
+        },
+    ]
+    shared = {
+        "settings": {},
+        "policies": policies,
+        "history": {61: [], 28: []},
+        "rates": {61: [], 28: []},
+        "modes": {(28, "2026-10-26"): "disable_ot"},
+    }
+    mixed = build_hourly_cost_for_time_records(
+        object(),
+        3,
+        61,
+        period_start="2026-10-26",
+        period_end="2026-11-01",
+        records=lily,
+        shared=shared,
+    )
+    direct = price_time_records(
+        lily,
+        ot_threshold=40,
+        ot_multiplier=1.5,
+        category_policies=policies,
+    )
+    assert mixed["ot_hours"] == direct["ot_hours"] == 10.99
+    assert mixed["ot_premium"] == direct["ot_premium"]
+    assert mixed["gross_pay"] == direct["gross_pay"]
+    disabled_records = _jasanpreet_oct_26_records(ot_mode="default")
+    disabled = build_hourly_cost_for_time_records(
+        object(),
+        3,
+        28,
+        period_start="2026-10-26",
+        period_end="2026-11-01",
+        records=disabled_records,
+        shared=shared,
+    )
+    straight = price_time_records(
+        _jasanpreet_oct_26_records(ot_mode="disable_ot"),
+        ot_threshold=40,
+        ot_multiplier=1.5,
+        category_policies=policies,
+    )
+    assert disabled["ot_hours"] == straight["ot_hours"] == 0
+    assert disabled["ot_premium"] == straight["ot_premium"] == 0
+    assert disabled["payable_hours"] == 57.41
+    assert disabled["gross_pay"] == 1076.53
+
+
+def test_batched_hourly_cost_reads_payroll_history_once(monkeypatch):
+    from backend.payroll_hourly_cost import build_hourly_costs_for_time_records
+
+    calls = {"history": 0}
+
+    def fake_report(*_args, **_kwargs):
+        calls["history"] += 1
+        return {"rows": []}
+
+    monkeypatch.setattr("backend.payroll_report.query_payroll_report", fake_report)
+    monkeypatch.setattr(
+        "backend.payroll_tax_settings.fetch_payroll_tax_settings",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        "backend.payroll_hourly_cost.load_category_cost_assumptions",
+        lambda *_args, **_kwargs: {
+            "temp": {
+                "enabled": True,
+                "threshold_hours": 40,
+                "multiplier": 1.5,
+                "employer_burden_percent": None,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "backend.payroll_hourly_cost._rates_by_user",
+        lambda *_args, **_kwargs: {28: [], 61: []},
+    )
+    monkeypatch.setattr(
+        "backend.payroll_week_ot.load_employee_week_ot_modes",
+        lambda *_args, **_kwargs: {(28, "2026-10-26"): "disable_ot"},
+    )
+    analyses = build_hourly_costs_for_time_records(
+        object(),
+        3,
+        [
+            {
+                "user_id": 61,
+                "records": [
+                    {
+                        "approved_hours": 50.99,
+                        "work_date": "2026-10-26",
+                        "payroll_week_start": "2026-10-26",
+                        "clock_in_at": "2026-10-26 08:00:00",
+                        "hourly_rate": 17,
+                        "worker_category": "temp",
+                    }
+                ],
+            },
+            {
+                "user_id": 28,
+                "records": _jasanpreet_oct_26_records(ot_mode="default"),
+            },
+        ],
+        period_start="2026-10-26",
+        period_end="2026-11-01",
+    )
+    assert calls["history"] == 1
+    assert analyses[0]["ot_hours"] == 10.99
+    assert analyses[1]["ot_hours"] == 0
+    assert analyses[1]["gross_pay"] == 1076.53
