@@ -16,6 +16,18 @@ import json
 import re
 from typing import Any, Mapping, Optional, Sequence
 
+def _parse_item_verifier_config(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(str(raw))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 from backend.ta_helpers import (
     invalidate_table_schema,
     once_per_cursor,
@@ -274,6 +286,11 @@ def _serialize_group(
                     None
                     if it.get("verification_inherits", 1) not in (0, False, "0")
                     else it.get("verification_timing")
+                ),
+                "verifier_config": (
+                    {}
+                    if it.get("verification_inherits", 1) not in (0, False, "0")
+                    else _parse_item_verifier_config(it.get("verifier_config_json"))
                 ),
                 "instructions": (str(it.get("instructions") or "").strip() or None)
                 or meta.get("description")
@@ -648,6 +665,10 @@ def upsert_activity_group(
         verify_required = 1 if normalized["verification_required"] else 0
         verify_method = normalized["verification_method"]
         verify_timing = normalized["verification_timing"]
+        if verify_method == "schedule_role":
+            from backend.task_verification_policy import assert_verifying_schedule_role
+
+            assert_verifying_schedule_role(cursor, oid, normalized["verifier_config"])
         verifier_config_json = json.dumps(normalized["verifier_config"])
 
     raw_items = payload.get("items")
@@ -710,6 +731,27 @@ def upsert_activity_group(
                 else "any"
             )
             verification_inherits = item.get("verification_inherits", True) not in (0, False, "0")
+            if not verification_inherits:
+                from backend.task_verification_policy import (
+                    _normalize_policy_fields,
+                    assert_verifying_schedule_role,
+                )
+
+                item_policy = _normalize_policy_fields(
+                    verification_required=item.get("verification_required", True),
+                    verification_method=item.get("verification_method") or "supervisor",
+                    verification_timing=item.get("verification_timing"),
+                    verifier_config=item.get("verifier_config") or {},
+                )
+                item = {
+                    **item,
+                    "verification_required": item_policy["verification_required"],
+                    "verification_method": item_policy["verification_method"],
+                    "verification_timing": item_policy["verification_timing"],
+                    "verifier_config": item_policy["verifier_config"],
+                }
+                if item_policy["verification_method"] == "schedule_role":
+                    assert_verifying_schedule_role(cursor, oid, item_policy["verifier_config"])
         if isinstance(item, str):
             acknowledgment_mode = "any"
             verification_inherits = True

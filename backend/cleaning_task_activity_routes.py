@@ -869,6 +869,53 @@ def register_cleaning_task_activity_routes(
             except Exception:
                 pass
 
+    @app.route("/api/public/attendance/pin-cleaning-tasks/resolve-unassigned-verification", methods=["POST"])
+    def public_pin_resolve_unassigned_verification():
+        """Manager resolution when nobody eligible holds the verifying schedule role."""
+        ctx, conn, err = _pin_gate("cleaning_resolve_unassigned", require_clocked_in=False)
+        if err:
+            body, status = err
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return jsonify(body), status
+        try:
+            data = request.json or {}
+            cursor = conn.cursor(dictionary=True)
+            from backend.cleaning_task_activity import resolve_unassigned_schedule_verification
+
+            roles = {str(r).upper() for r in (ctx["matched"].get("_roles") or [])}
+            can_sup = _can_review(cursor, int(ctx["org_id"]), int(ctx["user_id"]), roles)
+            activity = resolve_unassigned_schedule_verification(
+                cursor,
+                organization_id=int(ctx["org_id"]),
+                activity_id=int(data.get("activity_id") or 0),
+                manager_user_id=int(ctx["user_id"]),
+                reason=str(data.get("reason") or ""),
+                as_of=_parse_date(data.get("business_date")) or business_today(),
+                has_supervisor_review=can_sup,
+            )
+            conn.commit()
+            return jsonify({"ok": True, "activity": activity})
+        except CleaningTaskError as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"ok": False, "error": exc.message, **exc.payload}), exc.status
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"ok": False, "error": "Could not resolve verification."}), 500
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     @app.route("/api/public/attendance/pin-cleaning-tasks/reject", methods=["POST"])
     def public_pin_cleaning_tasks_reject():
         ctx, conn, err = _pin_gate("cleaning_reject", require_clocked_in=False)
@@ -1414,6 +1461,39 @@ def register_cleaning_task_activity_routes(
                 ended_at=data.get("ended_at"),
                 business_date=data.get("business_date"),
             )
+            return jsonify({"ok": True, "activity": activity})
+        except CleaningTaskError as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"error": exc.message, **exc.payload}), exc.status
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @app.route("/api/management/task-dashboard/resolve-unassigned-verification", methods=["POST"])
+    def management_resolve_unassigned_verification():
+        """Authorized resolution when the verifying schedule role has no eligible employee."""
+        from backend.cleaning_task_activity import resolve_unassigned_schedule_verification
+
+        conn, cursor, org_id, me, err = _mgmt_write_gate(require_hub=False)
+        if err:
+            return err
+        try:
+            data = request.json or {}
+            activity = resolve_unassigned_schedule_verification(
+                cursor,
+                organization_id=int(org_id),
+                activity_id=int(data.get("activity_id") or 0),
+                manager_user_id=int(me.get("user_id") or me.get("id") or 0),
+                reason=str(data.get("reason") or ""),
+                as_of=_parse_date(data.get("business_date")) or business_today(),
+                has_supervisor_review=True,
+            )
+            conn.commit()
             return jsonify({"ok": True, "activity": activity})
         except CleaningTaskError as exc:
             try:

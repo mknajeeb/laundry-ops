@@ -35,6 +35,7 @@ from backend.task_catalog import (
     VERIFY_EMPLOYEE,
     VERIFY_NONE,
     VERIFY_ROLE,
+    VERIFY_SCHEDULE_ROLE,
     VERIFY_SUPERVISOR,
     VERIFY_TIMING_LATER_SHIFT,
     VERIFY_TIMING_NEXT_DAY,
@@ -1561,6 +1562,80 @@ def approve_activity(
         actor_user_id=int(supervisor_user_id),
     )
     return serialize_activity(get_activity(cursor, organization_id, int(activity_id)) or {}, catalog=catalog)
+
+
+def resolve_unassigned_schedule_verification(
+    cursor,
+    *,
+    organization_id: int,
+    activity_id: int,
+    manager_user_id: int,
+    reason: str,
+    as_of: date | None = None,
+    has_supervisor_review: bool = False,
+) -> dict[str, Any]:
+    """Management resolution when no non-participant holds the verifying schedule role.
+
+    Does not open the activity to every employee. The reason is stored on the
+    approval and on a separate audit event. The original activity and business
+    date stay in place.
+    """
+    reason_clean = (reason or "").strip()
+    if len(reason_clean) < 3:
+        raise CleaningTaskError("A resolution reason is required.", status=400)
+    if not has_supervisor_review:
+        raise CleaningTaskError("You are not authorized to resolve this verification.", status=403)
+    row = get_activity(cursor, organization_id, int(activity_id))
+    if not row:
+        raise CleaningTaskError("Task activity not found.", status=404)
+    if str(row.get("verification_method") or "") != VERIFY_SCHEDULE_ROLE:
+        raise CleaningTaskError("This activity does not use schedule-role verification.", status=400)
+    assert_independent_verifier(
+        cursor,
+        organization_id=int(organization_id),
+        activity=row,
+        verifier_user_id=int(manager_user_id),
+    )
+    day = as_of or business_today()
+    biz_day = _activity_business_date(row, day)
+    timing = str(row.get("verification_timing") or "same_shift")
+    decision = verification_queue_decision(timing=timing, business_date=biz_day, as_of=day)
+    if not decision["eligible"]:
+        raise CleaningTaskError("This activity is not ready for verification yet.", status=409)
+    config = _activity_verifier_config(
+        row, _task_meta_for_role(cursor, int(organization_id), str(row.get("role") or ""))
+    )
+    on_date = verification_schedule_date(timing, biz_day, day)
+    assigned = users_assigned_schedule_role(
+        cursor, int(organization_id), schedule_role_code(config), on_date
+    )
+    participants = activity_participant_ids(cursor, int(organization_id), row)
+    if assigned - participants:
+        raise CleaningTaskError(
+            "An employee assigned the verifying schedule role can verify this activity.",
+            status=409,
+        )
+    approved = approve_activity(
+        cursor,
+        organization_id=int(organization_id),
+        activity_id=int(activity_id),
+        supervisor_user_id=int(manager_user_id),
+        supervisor_remark=reason_clean,
+    )
+    _record_event(
+        cursor,
+        organization_id=int(organization_id),
+        activity_id=int(activity_id),
+        event_type="schedule_verifier_unassigned_resolved",
+        actor_user_id=int(manager_user_id),
+        payload={
+            "reason": reason_clean,
+            "schedule_role": schedule_role_code(config),
+            "verification_date": str(on_date),
+            "original_business_date": str(biz_day),
+        },
+    )
+    return approved
 
 
 def reject_activity(
@@ -3594,6 +3669,114 @@ def dashboard_summary(
     }
 
 
+def verification_schedule_date(timing: str, business_date: date, as_of: date) -> date:
+    """Eastern date used to see who holds the verifying schedule role.
+
+    Next-day verification uses the verification date. Same-day verification uses
+    the activity date until that date has passed.
+    """
+    if str(timing or "") == VERIFY_TIMING_NEXT_DAY or as_of > business_date:
+        return as_of
+    return business_date
+
+
+def schedule_role_code(config: Mapping[str, Any] | None) -> str:
+    return str((config or {}).get("schedule_role") or "").strip().lower()
+
+
+def users_assigned_schedule_role(
+    cursor,
+    organization_id: int,
+    role_code: str,
+    on_date: date,
+) -> set[int]:
+    """Employees assigned this weekly schedule role on an Eastern business date."""
+    from backend.planned_weekly_schedule import entry_role_assignments, normalize_week_start
+
+    role = str(role_code or "").strip().lower()
+    if not role:
+        return set()
+    week = normalize_week_start(on_date)
+    if not week:
+        return set()
+    dow = _dow_for_date(on_date)
+    found: set[int] = set()
+    if table_exists(cursor, "planned_weekly_schedule_entries"):
+        cursor.execute(
+            """
+            SELECT user_id, role, role_assignments, start_time, end_time
+            FROM planned_weekly_schedule_entries
+            WHERE organization_id=%s AND week_start=%s AND day_of_week=%s
+            """,
+            (int(organization_id), week, dow),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict) or row.get("user_id") is None:
+                continue
+            codes = {str(row.get("role") or "").strip().lower()}
+            try:
+                codes.update(
+                    str(item.get("role") or "").strip().lower()
+                    for item in entry_role_assignments(row)
+                    if item.get("role")
+                )
+            except Exception:
+                pass
+            if role in codes:
+                found.add(int(row["user_id"]))
+    if table_exists(cursor, "planned_weekly_schedule_responsibilities"):
+        cursor.execute(
+            """
+            SELECT user_id FROM planned_weekly_schedule_responsibilities
+            WHERE organization_id=%s AND week_start=%s AND day_of_week=%s AND role=%s
+            """,
+            (int(organization_id), week, dow, role),
+        )
+        for row in cursor.fetchall() or []:
+            if isinstance(row, dict) and row.get("user_id") is not None:
+                found.add(int(row["user_id"]))
+    return found
+
+
+def activity_participant_ids(cursor, organization_id: int, activity: Mapping[str, Any]) -> set[int]:
+    from backend.task_verification_policy import shared_assignment_participant_user_ids
+
+    participants = set(
+        shared_assignment_participant_user_ids(
+            cursor,
+            organization_id=int(organization_id),
+            assignment_group_id=activity.get("assignment_group_id"),
+            business_date=activity.get("business_date"),
+        )
+    )
+    if activity.get("user_id") is not None:
+        participants.add(int(activity["user_id"]))
+    return participants
+
+
+def _activity_verifier_config(activity: Mapping[str, Any], meta: Mapping[str, Any]) -> dict[str, Any]:
+    snap_config = activity.get("verifier_config")
+    if isinstance(snap_config, str):
+        try:
+            snap_config = json.loads(snap_config)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            snap_config = None
+    if isinstance(snap_config, dict):
+        return snap_config
+    config = meta.get("verifier_config") or {}
+    return config if isinstance(config, dict) else {}
+
+
+def _activity_business_date(activity: Mapping[str, Any], fallback: date) -> date:
+    biz = activity.get("business_date")
+    if isinstance(biz, date):
+        return biz
+    try:
+        return date.fromisoformat(str(biz)[:10])
+    except (TypeError, ValueError):
+        return fallback
+
+
 def user_can_verify_activity(
     cursor,
     *,
@@ -3602,6 +3785,7 @@ def user_can_verify_activity(
     verifier_user_id: int,
     verifier_roles: Sequence[str] | None = None,
     has_supervisor_review: bool = False,
+    as_of: date | None = None,
 ) -> bool:
     """Backend authorization for verifying a completed contribution.
 
@@ -3625,15 +3809,8 @@ def user_can_verify_activity(
     method = str(activity.get("verification_method") or VERIFY_SUPERVISOR)
     if activity.get("verification_required") in (0, False) or method == VERIFY_NONE:
         return False
-    # Prefer snapshotted verifier_config on the activity when present; else catalog.
-    snap_config = activity.get("verifier_config")
-    if isinstance(snap_config, str):
-        try:
-            snap_config = json.loads(snap_config)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            snap_config = None
     meta = _task_meta_for_role(cursor, int(organization_id), str(activity.get("role") or ""))
-    config = snap_config if isinstance(snap_config, dict) else (meta.get("verifier_config") or {})
+    config = _activity_verifier_config(activity, meta)
     if method == VERIFY_SUPERVISOR:
         return bool(has_supervisor_review)
     if method == VERIFY_EMPLOYEE:
@@ -3643,9 +3820,23 @@ def user_can_verify_activity(
         # No explicit list: any other employee with Tasks access may verify.
         return True
     if method == VERIFY_ROLE:
+        # Account roles only. Schedule-role verification is a separate method.
         needed = {str(x).upper() for x in (config.get("roles") or config.get("role_codes") or []) if x}
         have = {str(x).upper() for x in (verifier_roles or []) if x}
         return bool(needed & have) or bool(has_supervisor_review)
+    if method == VERIFY_SCHEDULE_ROLE:
+        role_code = schedule_role_code(config)
+        if not role_code:
+            return False
+        day = as_of or business_today()
+        on_date = verification_schedule_date(
+            str(activity.get("verification_timing") or "same_shift"),
+            _activity_business_date(activity, day),
+            day,
+        )
+        assigned = users_assigned_schedule_role(cursor, int(organization_id), role_code, on_date)
+        eligible = assigned - activity_participant_ids(cursor, int(organization_id), activity)
+        return int(verifier_user_id) in eligible
     return bool(has_supervisor_review)
 
 
@@ -3742,16 +3933,8 @@ def list_tasks_to_verify(
     name_ids = {int(r["user_id"]) for r in rows}
     names = _employee_names(cursor, organization_id, sorted(name_ids))
     pending = []
+    awaiting = []
     for row in rows:
-        if not user_can_verify_activity(
-            cursor,
-            organization_id=int(organization_id),
-            activity=row,
-            verifier_user_id=int(verifier_user_id),
-            verifier_roles=verifier_roles,
-            has_supervisor_review=has_supervisor_review,
-        ):
-            continue
         timing = str(row.get("verification_timing") or "same_shift")
         biz = row.get("business_date")
         if isinstance(biz, date):
@@ -3774,6 +3957,39 @@ def list_tasks_to_verify(
         )
         if not decision["eligible"]:
             continue
+        if str(row.get("verification_method") or "") == VERIFY_SCHEDULE_ROLE:
+            config = _activity_verifier_config(
+                row, _task_meta_for_role(cursor, int(organization_id), str(row.get("role") or ""))
+            )
+            on_date = verification_schedule_date(timing, biz_day, day)
+            assigned = users_assigned_schedule_role(
+                cursor, int(organization_id), schedule_role_code(config), on_date
+            )
+            participants = activity_participant_ids(cursor, int(organization_id), row)
+            if not (assigned - participants):
+                if has_supervisor_review and int(verifier_user_id) not in participants:
+                    ser = serialize_activity(row, catalog=catalog)
+                    ser["employee_name"] = names.get(int(row["user_id"]), f"User #{row['user_id']}")
+                    ser["original_business_date"] = ser["business_date"]
+                    ser["verification_queue_kind"] = decision["queue_kind"]
+                    ser["verification_overdue"] = bool(decision["verification_overdue"])
+                    ser["awaiting_schedule_verifier"] = True
+                    ser["verifying_schedule_role"] = schedule_role_code(config)
+                    ser["verification_date"] = str(on_date)
+                    if decision["queue_kind"] == "previous_shift":
+                        ser["verification_queue_label"] = "Previous Shift Verification"
+                    awaiting.append(ser)
+                continue
+        if not user_can_verify_activity(
+            cursor,
+            organization_id=int(organization_id),
+            activity=row,
+            verifier_user_id=int(verifier_user_id),
+            verifier_roles=verifier_roles,
+            has_supervisor_review=has_supervisor_review,
+            as_of=day,
+        ):
+            continue
         ser = serialize_activity(row, catalog=catalog)
         ser["employee_name"] = names.get(int(row["user_id"]), f"User #{row['user_id']}")
         ser["original_business_date"] = ser["business_date"]
@@ -3789,6 +4005,7 @@ def list_tasks_to_verify(
         "as_of": str(day),
         "verifier_user_id": int(verifier_user_id),
         "pending_verification": pending,
+        "awaiting_schedule_verifier": awaiting,
         "count": len(pending),
     }
 

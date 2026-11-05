@@ -9,6 +9,7 @@ import {
   Typography,
 } from "@mui/material";
 import { useI18n } from "../../i18n/I18nContext";
+import VerifyingScheduleRoleField from "./VerifyingScheduleRoleField";
 
 function blankField() {
   return {
@@ -128,6 +129,7 @@ export function itemsFromGroup(items) {
     verification_inherits: item.verification_inherits !== false,
     verification_method: item.verification_method || "supervisor",
     verification_timing: item.verification_timing || "same_shift",
+    verifier_config: item.verifier_config || {},
     input_schema: item.input_schema || [],
     fields: schemaToFields(item.input_schema),
   }));
@@ -154,11 +156,12 @@ export function itemsToPayload(rows) {
       verification_inherits: row.verification_inherits !== false,
       verification_method: row.verification_inherits === false ? row.verification_method || "supervisor" : null,
       verification_timing: row.verification_inherits === false ? row.verification_timing || "same_shift" : null,
+      verifier_config: row.verification_inherits === false ? row.verifier_config || {} : {},
       input_schema: (row.fields || []).filter((field) => field.label).map(fieldToSchema),
     }));
 }
 
-export default function ActivityChecklistEditor({ items, assignees = [], onChange }) {
+export default function ActivityChecklistEditor({ items, assignees = [], scheduleRoles = [], onChange }) {
   const { t } = useI18n();
   const fieldTypes = [
     { value: "choice", label: t("tasks.config.choice") },
@@ -405,6 +408,7 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                           <MenuItem value="supervisor">{t("tasks.config.supervisor")}</MenuItem>
                           <MenuItem value="employee">{t("tasks.config.employeePeer")}</MenuItem>
                           <MenuItem value="role">{t("tasks.config.roleBased")}</MenuItem>
+                          <MenuItem value="schedule_role">{t("tasks.config.scheduleRoleVerification")}</MenuItem>
                           <MenuItem value="none">{t("tasks.config.none")}</MenuItem>
                         </TextField>
                         <TextField
@@ -420,6 +424,16 @@ export default function ActivityChecklistEditor({ items, assignees = [], onChang
                         </TextField>
                       </Stack>
                     ) : null}
+                    <VerifyingScheduleRoleField
+                      method={row.verification_inherits === false ? row.verification_method : ""}
+                      value={row.verifier_config?.schedule_role}
+                      roles={scheduleRoles}
+                      onChange={(code) =>
+                        update(index, {
+                          verifier_config: { ...(row.verifier_config || {}), schedule_role: code },
+                        })
+                      }
+                    />
                     <Typography variant="caption" sx={{ fontWeight: 800 }}>
                       Input fields
                     </Typography>

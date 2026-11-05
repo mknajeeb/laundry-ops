@@ -43,7 +43,10 @@ VERIFY_NONE = "none"
 VERIFY_EMPLOYEE = "employee"
 VERIFY_SUPERVISOR = "supervisor"
 VERIFY_ROLE = "role"
-VERIFY_METHODS = frozenset({VERIFY_NONE, VERIFY_EMPLOYEE, VERIFY_SUPERVISOR, VERIFY_ROLE})
+VERIFY_SCHEDULE_ROLE = "schedule_role"
+VERIFY_METHODS = frozenset(
+    {VERIFY_NONE, VERIFY_EMPLOYEE, VERIFY_SUPERVISOR, VERIFY_ROLE, VERIFY_SCHEDULE_ROLE}
+)
 
 VERIFY_TIMING_SAME_SHIFT = "same_shift"
 VERIFY_TIMING_LATER_SHIFT = "later_shift"
@@ -689,6 +692,26 @@ def upsert_task_definition(cursor, organization_id: int, code: str, data: Mappin
     timer_enabled = 1 if data.get("timer_enabled", True) else 0
     active = 1 if data.get("active", True) else 0
     verifier_config = data.get("verifier_config") if "verifier_config" in data else data.get("verifier_config_json")
+    if not inherits and method == VERIFY_SCHEDULE_ROLE:
+        from backend.task_verification_policy import (
+            VerificationPolicyError,
+            _normalize_policy_fields,
+            assert_verifying_schedule_role,
+        )
+
+        try:
+            normalized_policy = _normalize_policy_fields(
+                verification_required=verify_required,
+                verification_method=method,
+                verification_timing=timing,
+                verifier_config=verifier_config,
+            )
+        except VerificationPolicyError as exc:
+            raise TaskCatalogError(exc.message) from exc
+        assert_verifying_schedule_role(cursor, oid, normalized_policy["verifier_config"])
+        verifier_config = normalized_policy["verifier_config"]
+        method = normalized_policy["verification_method"]
+        timing = normalized_policy["verification_timing"]
     input_schema = data.get("input_schema") if "input_schema" in data else data.get("input_schema_json")
     if isinstance(verifier_config, (dict, list)):
         verifier_config = json.dumps(verifier_config)

@@ -23,6 +23,7 @@ import {
   attendancePinCleaningTasksReject,
   attendancePinCleaningTasksStart,
   attendancePinCleaningTasksVerifyQueue,
+  attendancePinResolveUnassignedVerification,
   attendancePinSwitchRole,
 } from "../api";
 import { OpsLocaleToggle, OpsMobileShell, OpsTopBar, OPS_MOBILE } from "../opsMobile";
@@ -183,6 +184,9 @@ export default function CleaningTasksPinPage() {
   const [error, setError] = useState("");
   const [data, setData] = useState(null);
   const [verifyQueue, setVerifyQueue] = useState([]);
+  const [awaitingVerifier, setAwaitingVerifier] = useState([]);
+  const [resolveId, setResolveId] = useState(null);
+  const [resolveReason, setResolveReason] = useState("");
   const [checklists, setChecklists] = useState([]);
   const [active, setActive] = useState(null);
   const [inputDraftTask, setInputDraftTask] = useState(null);
@@ -275,6 +279,7 @@ export default function CleaningTasksPinPage() {
       }
       const vbody = verifyRes?.data || {};
       setVerifyQueue(vbody.ok ? vbody.pending_verification || [] : []);
+      setAwaitingVerifier(vbody.ok ? vbody.awaiting_schedule_verifier || [] : []);
       setChecklists(vbody.ok ? vbody.checklists || [] : []);
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || t("tasks.pin.loadTasks"));
@@ -422,6 +427,28 @@ export default function CleaningTasksPinPage() {
       });
       const body = res?.data || {};
       if (!body.ok) throw new Error(body.error || t("tasks.pin.verifyFailed"));
+      await load();
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || t("tasks.pin.verifyFailed"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resolveUnassigned = async () => {
+    if (!resolveId) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await attendancePinResolveUnassignedVerification(slug, hub.pin, {
+        hubToken: hub.token,
+        activity_id: resolveId,
+        reason: resolveReason,
+      });
+      const body = res?.data || {};
+      if (!body.ok) throw new Error(body.error || t("tasks.pin.verifyFailed"));
+      setResolveId(null);
+      setResolveReason("");
       await load();
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || t("tasks.pin.verifyFailed"));
@@ -1016,6 +1043,68 @@ export default function CleaningTasksPinPage() {
               )}
             </Stack>
           </Box>
+
+          {awaitingVerifier.length ? (
+            <Box>
+              <Typography sx={{ fontWeight: 900, mb: 1, color: OPS_MOBILE.navy, fontSize: "1.1rem" }}>
+                {t("tasks.pin.awaitingVerifier")}
+              </Typography>
+              <Stack spacing={1}>
+                {awaitingVerifier.map((item) => (
+                  <Box
+                    key={`awaiting-${item.id}`}
+                    sx={{
+                      p: 1.5,
+                      borderRadius: 2,
+                      border: `1px solid ${OPS_MOBILE.border}`,
+                      bgcolor: "#fff",
+                    }}
+                  >
+                    <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
+                      {item.verification_queue_kind === "previous_shift"
+                        ? `${t("tasks.dashboard.previousShift")} · `
+                        : ""}
+                      {item.role_label || item.role}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {t("tasks.pin.completedBy", { name: item.employee_name || `User #${item.user_id}` })} ·{" "}
+                      {item.original_business_date || item.business_date}
+                    </Typography>
+                    {resolveId === item.id ? (
+                      <Stack spacing={1} sx={{ mt: 1 }}>
+                        <input
+                          value={resolveReason}
+                          onChange={(e) => setResolveReason(e.target.value)}
+                          placeholder={t("tasks.pin.resolveReason")}
+                          style={{ padding: 8, borderRadius: 8, border: "1px solid #cbd5e1" }}
+                        />
+                        <Stack direction="row" spacing={1}>
+                          <Button size="small" variant="contained" disabled={busy} onClick={resolveUnassigned}>
+                            {t("tasks.pin.resolveVerification")}
+                          </Button>
+                          <Button size="small" onClick={() => setResolveId(null)}>
+                            {t("tasks.pin.cancel")}
+                          </Button>
+                        </Stack>
+                      </Stack>
+                    ) : (
+                      <Button
+                        size="small"
+                        sx={{ mt: 1, textTransform: "none", fontWeight: 800 }}
+                        disabled={busy}
+                        onClick={() => {
+                          setResolveId(item.id);
+                          setResolveReason("");
+                        }}
+                      >
+                        {t("tasks.pin.resolveVerification")}
+                      </Button>
+                    )}
+                  </Box>
+                ))}
+              </Stack>
+            </Box>
+          ) : null}
 
           <Box>
             <Typography sx={{ fontWeight: 900, mb: 1, color: OPS_MOBILE.navy, fontSize: "1.1rem" }}>
