@@ -26,12 +26,19 @@ export function visibleSectionLabel(label, sectionCount = 1) {
   return raw;
 }
 
-const CHECK_DONE = new Set(["completed", "approved", "verified"]);
+const CHECK_DONE = new Set([
+  "completed",
+  "approved",
+  "verified",
+  "pending_approval",
+  "pending_verification",
+]);
 
 export function employeeCheckSummary(checks) {
   return (Array.isArray(checks) ? checks : []).map((check) => ({
     userId: Number(check?.user_id),
     name: check?.employee_name || "",
+    status: String(check?.status || "").toLowerCase(),
     done: CHECK_DONE.has(String(check?.status || "").toLowerCase()),
     completedAt: check?.completed_at || null,
   }));

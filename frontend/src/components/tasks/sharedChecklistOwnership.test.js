@@ -36,6 +36,16 @@ describe("checklistSummary", () => {
     ).toEqual({ required: 2, done: 0 });
   });
 
+  it("counts an item waiting for verification as checked", () => {
+    expect(
+      checklistSummary({
+        shared_checklist_items: [
+          { task_code: "floor", required: true, status: "pending_approval", employee_checks: [] },
+        ],
+      }),
+    ).toEqual({ required: 1, done: 1 });
+  });
+
   it("lets an excused employee leave the remaining acknowledgment in place", () => {
     expect(
       checklistSummary({
@@ -80,8 +90,8 @@ describe("employeeCheckSummary", () => {
       { user_id: 36, employee_name: "Amna", status: "pending" },
     ]);
     expect(lines).toEqual([
-      { userId: 23, name: "Tarannum", done: true, completedAt: "2026-11-04 09:15:00" },
-      { userId: 36, name: "Amna", done: false, completedAt: null },
+      { userId: 23, name: "Tarannum", status: "completed", done: true, completedAt: "2026-11-04 09:15:00" },
+      { userId: 36, name: "Amna", status: "pending", done: false, completedAt: null },
     ]);
   });
 });

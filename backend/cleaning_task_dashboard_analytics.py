@@ -251,7 +251,7 @@ def _row_matches_filters(
 
 def _personal_checklist_counts(row: Mapping[str, Any], employee_id: int) -> tuple[int, int]:
     """This employee's required check-offs. A partner's check does not count."""
-    done_states = {"completed", "approved", "verified"}
+    done_states = {"completed", "approved", "verified", "pending_approval", "pending_verification"}
     items = [
         item
         for item in (row.get("shared_checklist_items") or [])
@@ -293,7 +293,12 @@ def build_employee_report(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
             if not eid:
                 continue
             part = str(contrib.get("participation_status") or "not_started")
-            own_verification = str(contrib.get("verification_status") or row.get("verification_status") or "")
+            if row.get("verification_eligible") is False:
+                own_verification = str(row.get("verification_status") or "not_required")
+                verification_label = str(row.get("verification_label") or "")
+            else:
+                own_verification = str(contrib.get("verification_status") or row.get("verification_status") or "")
+                verification_label = str(contrib.get("verification_label") or row.get("verification_label") or "")
             checklist_done, checklist_required = _personal_checklist_counts(row, eid)
             person = people.setdefault(
                 eid,
@@ -326,7 +331,7 @@ def build_employee_report(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
                     "status": part,
                     "status_label": _REPORT_STATUS_LABELS.get(part, part.replace("_", " ").title()),
                     "verification_status": own_verification,
-                    "verification_label": str(contrib.get("verification_label") or row.get("verification_label") or ""),
+                    "verification_label": verification_label,
                     "participation_status": part,
                     "started_at": act.get("started_at"),
                     "ended_at": act.get("ended_at"),

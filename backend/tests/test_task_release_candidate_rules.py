@@ -43,6 +43,16 @@ def test_excused_acknowledgment_does_not_count_as_completed_work():
     assert item_acknowledgments_satisfied(["pending", "excused"]) is False
 
 
+def test_mysql_time_values_keep_hours_before_ten():
+    from datetime import timedelta
+
+    from backend.cleaning_task_activity import _minutes, _serialize_time
+
+    assert _serialize_time(timedelta(hours=6)) == "06:00"
+    assert _minutes(_serialize_time(timedelta(hours=6))) == 360
+    assert _minutes(_serialize_time(timedelta(hours=23, minutes=59))) == 23 * 60 + 59
+
+
 def test_later_shift_waits_for_the_scheduled_end_and_next_day_is_previous_shift():
     assert shift_boundary_reached(14 * 60, 5 * 60, 13 * 60) is True
     assert shift_boundary_reached(12 * 60, 5 * 60, 13 * 60) is False

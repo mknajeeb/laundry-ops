@@ -8,6 +8,7 @@ import pytest
 from backend.cleaning_task_activity import _activities_for_day, _prime_activities_for_range
 from backend.cleaning_task_dashboard_analytics import (
     TaskDashboardRangeError,
+    _personal_checklist_counts,
     build_activity_frequency,
     build_employee_report,
     history_verification_label,
@@ -106,6 +107,7 @@ def test_employee_report_counts_a_shared_activity_once():
                 "overall_status": "in_progress",
                 "verification_status": "not_required",
                 "verification_label": "Not Required",
+                "verification_eligible": False,
                 "checklist_done": 0,
                 "checklist_required": 2,
                 "assigned_employees": ["Evelin", "Florentina"],
@@ -118,6 +120,8 @@ def test_employee_report_counts_a_shared_activity_once():
                         "employee_name": "Evelin",
                         "status": "in_progress",
                         "participation_status": "in_progress",
+                        "verification_status": "waiting",
+                        "verification_label": "Waiting for Verification",
                         "activity": {"started_at": "2026-11-04 10:00:00", "duration_seconds": 600},
                     },
                     {
@@ -141,6 +145,7 @@ def test_employee_report_counts_a_shared_activity_once():
     assert florentina["completed"] == 0
     assert florentina["verified"] == 0
     assert evelin["activities"][0]["checklist_completed_by_employee"] == 1
+    assert evelin["activities"][0]["verification_label"] == "Not Required"
     assert florentina["activities"][0]["checklist_completed_by_employee"] == 0
     frequency = build_activity_frequency(
         [
@@ -385,3 +390,13 @@ def test_pages_cover_every_record_once_past_the_screen_limits():
     assert {row["verification_label"] for row in first["history"]} >= {"Verified", "Pending verification"}
     assert len(printed["assignments"]) == 30
     assert printed["totals"]["assigned"] == 30
+
+
+def test_any_one_credit_follows_the_employee_who_submitted_it():
+    row = {
+        "shared_checklist_items": [
+            {"required": True, "status": "pending_approval", "completed_by_user_id": 2, "employee_checks": []}
+        ]
+    }
+    assert _personal_checklist_counts(row, 2) == (1, 1)
+    assert _personal_checklist_counts(row, 3) == (0, 1)

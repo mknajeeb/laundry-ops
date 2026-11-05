@@ -213,13 +213,24 @@ def _serialize_dt(value: Any) -> str | None:
 def _serialize_time(value: Any) -> str | None:
     if value is None:
         return None
+    if isinstance(value, timedelta):
+        total = int(value.total_seconds()) % (24 * 3600)
+        hour, rem = divmod(total, 3600)
+        minute = rem // 60
+        return f"{hour:02d}:{minute:02d}"
     text = str(value)
     if hasattr(value, "strftime"):
         try:
             return value.strftime("%H:%M")
         except Exception:
             pass
-    return text[:5] if text else None
+    if len(text) >= 4 and ":" in text:
+        hour, minute, *_rest = text.split(":")
+        try:
+            return f"{int(hour):02d}:{int(minute):02d}"
+        except ValueError:
+            return None
+    return None
 
 
 def _record_event(
@@ -2426,7 +2437,16 @@ VERIFICATION_VERIFIED = "verified"
 VERIFICATION_NEEDS_CORRECTION = "needs_correction"
 
 _SHARED_CHECKLIST_DONE = frozenset(
-    {STATUS_COMPLETED, STATUS_APPROVED, "completed", "approved", "verified"}
+    {
+        STATUS_COMPLETED,
+        STATUS_APPROVED,
+        STATUS_PENDING_APPROVAL,
+        "completed",
+        "approved",
+        "verified",
+        "pending_approval",
+        "pending_verification",
+    }
 )
 
 

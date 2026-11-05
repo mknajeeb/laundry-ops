@@ -94,7 +94,11 @@ function ItemRow({ item, userId, busy, editing, inputValues, inputRemarks, onCha
               <Typography key={check.userId} variant="caption" color="text.secondary" display="block">
                 {check.name}
                 {" · "}
-                {check.done ? t("tasks.pin.checkedOff") : t("tasks.pin.notCheckedOff")}
+                {check.status === "excused"
+                  ? t("tasks.pin.excused")
+                  : check.done
+                    ? t("tasks.pin.checkedOff")
+                    : t("tasks.pin.notCheckedOff")}
                 {check.done && check.completedAt ? ` · ${String(check.completedAt).slice(11, 16)}` : ""}
               </Typography>
             ))}

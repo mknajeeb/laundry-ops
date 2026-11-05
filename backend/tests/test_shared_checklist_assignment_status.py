@@ -59,6 +59,15 @@ def test_finished_timers_stay_in_progress_until_checklist_done():
     assert rollup == DISPLAY_IN_PROGRESS
 
 
+def test_submitted_item_waiting_for_verification_counts_as_checked():
+    complete, status, done, req = shared_required_checklist_progress(
+        [{"required": True, "status": "pending_approval", "employee_checks": []}]
+    )
+    assert complete is True
+    assert status == COMPLETION_COMPLETED
+    assert done == 1 and req == 1
+
+
 def test_checklist_complete_keeps_completed():
     complete, checklist_status, completion, rollup = apply_shared_checklist_to_assignment_status(
         [

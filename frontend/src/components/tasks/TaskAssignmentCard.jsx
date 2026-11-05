@@ -252,7 +252,11 @@ export default function TaskAssignmentCard({
                           <Typography key={check.userId} variant="caption" color="text.secondary">
                             {check.name}
                             {" · "}
-                            {check.done ? t("tasks.pin.checkedOff") : t("tasks.pin.notCheckedOff")}
+                            {check.status === "excused"
+                              ? t("tasks.pin.excused")
+                              : check.done
+                                ? t("tasks.pin.checkedOff")
+                                : t("tasks.pin.notCheckedOff")}
                             {check.done && !hideLabor && check.completedAt
                               ? ` · ${formatDashboardTime(check.completedAt)}`
                               : ""}
