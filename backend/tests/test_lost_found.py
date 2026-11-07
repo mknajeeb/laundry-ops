@@ -541,6 +541,7 @@ def test_pin_report_requires_a_photo(monkeypatch):
             return None
 
     monkeypatch.setattr("backend.db.get_db", lambda: Conn())
+    monkeypatch.setattr("backend.lost_found.table_exists", lambda *_a, **_k: True)
     monkeypatch.setattr(
         "backend.lost_found_routes._gate_common",
         lambda *_a, **_k: (
@@ -548,10 +549,11 @@ def test_pin_report_requires_a_photo(monkeypatch):
             None,
         ),
     )
-    monkeypatch.setattr(
-        "backend.lost_found_routes.report_found_item",
-        lambda *_a, **_k: ({"id": 1}, True),
-    )
+
+    def _must_not_create(*_a, **_k):
+        raise AssertionError("a missing photo must not create a report")
+
+    monkeypatch.setattr("backend.lost_found_routes.report_found_item", _must_not_create)
     client = app.test_client()
     res = client.post(
         "/api/public/attendance/pin-lost-found/report",

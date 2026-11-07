@@ -7,7 +7,6 @@ organization only.
 
 from __future__ import annotations
 
-import logging
 from datetime import date
 from typing import Any, Callable
 
@@ -21,7 +20,7 @@ from backend.lost_found import (
     add_box_photo,
     add_item_photo,
     change_status,
-    ensure_lost_found_activity,
+    find_client_item,
     get_item,
     get_photo_row,
     list_found_items,
@@ -30,11 +29,13 @@ from backend.lost_found import (
     reconciliation_view,
     report_found_item,
 )
-from backend.lost_found_photos import read_found_item_image, save_found_item_image
+from backend.lost_found_photos import (
+    discard_found_item_image,
+    read_found_item_image,
+    save_found_item_image,
+)
 from backend.lost_found_rules import ACTIVITY_CODE, LostFoundError
 from backend.management_pin_access import HUB_ROLES, role_set
-
-logger = logging.getLogger(__name__)
 
 
 def _day(raw: Any) -> date | None:
@@ -136,9 +137,26 @@ def register_lost_found_routes(
             _close(conn)
             return jsonify(body), status
         cursor = conn.cursor(dictionary=True)
+        stored_photos: list[dict[str, str]] = []
         try:
+            try:
+                conn.autocommit = False
+            except Exception:
+                pass
             data = _form_or_json()
             photos = _photo_files()
+            client_request_id = str(data.get("client_request_id") or "").strip()
+            if not client_request_id:
+                raise LostFoundError("A client request id is required.", code="client_request_required")
+            existing = find_client_item(cursor, int(ctx["org_id"]), client_request_id)
+            if existing is None:
+                if not photos:
+                    raise LostFoundError("At least one photo is required.", code="photo_required")
+                for handle in photos:
+                    raw = handle.read()
+                    stored_photos.append(
+                        save_found_item_image(int(ctx["org_id"]), raw, handle.filename or "photo.jpg")
+                    )
             facility_name = None
             try:
                 cursor.execute(
@@ -153,7 +171,7 @@ def register_lost_found_routes(
             item, created = report_found_item(
                 cursor,
                 organization_id=int(ctx["org_id"]),
-                client_request_id=str(data.get("client_request_id") or ""),
+                client_request_id=client_request_id,
                 user_id=int(ctx["user_id"]),
                 reporter_name=_employee_display_name(ctx["matched"]),
                 facility_name=facility_name,
@@ -165,11 +183,7 @@ def register_lost_found_routes(
                 notes=data.get("notes"),
             )
             if created:
-                if not photos:
-                    raise LostFoundError("At least one photo is required.", code="photo_required")
-                for handle in photos:
-                    raw = handle.read()
-                    stored = save_found_item_image(int(ctx["org_id"]), raw, handle.filename or "photo.jpg")
+                for stored in stored_photos:
                     add_item_photo(
                         cursor,
                         organization_id=int(ctx["org_id"]),
@@ -182,17 +196,27 @@ def register_lost_found_routes(
 
                 item = _hydrate(cursor, int(ctx["org_id"]), [fresh])[0]
                 notify_found_item(cursor, int(ctx["org_id"]), item)
+            else:
+                for stored in stored_photos:
+                    discard_found_item_image(stored)
+                stored_photos = []
             conn.commit()
             return jsonify({"ok": True, "created": created, "item": item})
         except LostFoundError as exc:
+            for stored in stored_photos:
+                discard_found_item_image(stored)
             return _fail(conn, exc)
         except ValueError as exc:
+            for stored in stored_photos:
+                discard_found_item_image(stored)
             try:
                 conn.rollback()
             except Exception:
                 pass
             return jsonify({"ok": False, "error": str(exc), "code": "photo_invalid"}), 400
         except Exception:
+            for stored in stored_photos:
+                discard_found_item_image(stored)
             try:
                 conn.rollback()
             except Exception:
@@ -210,10 +234,6 @@ def register_lost_found_routes(
             return jsonify(body), status
         cursor = conn.cursor(dictionary=True)
         try:
-            try:
-                ensure_lost_found_activity(cursor, int(ctx["org_id"]))
-            except Exception:
-                logger.exception("Lost & Found activity seed skipped")
             payload = reconciliation_view(cursor, int(ctx["org_id"]), business_today())
             conn.commit()
             return jsonify({"ok": True, "activity_code": ACTIVITY_CODE, **payload})

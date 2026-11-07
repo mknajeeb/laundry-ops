@@ -86,6 +86,32 @@ def save_found_item_image(organization_id: int, raw: bytes, filename: str) -> di
     }
 
 
+def discard_found_item_image(stored: dict[str, str]) -> None:
+    """Remove a photo that was stored before its report transaction committed."""
+    filename = str((stored or {}).get("stored_filename") or "")
+    blob_name = str((stored or {}).get("blob_name") or "")
+    match = _BLOB_RE.match(blob_name)
+    if not match or not _SAFE_NAME_RE.match(filename):
+        return
+    organization_id = int(match.group(1))
+    path = os.path.join(local_root(), str(organization_id), filename)
+    if os.path.isfile(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    if stored.get("storage") != "blob":
+        return
+    try:
+        from backend.app import _ensure_blob_container
+
+        container = _ensure_blob_container()
+        if container is not None:
+            container.get_blob_client(blob_name).delete_blob()
+    except Exception:
+        pass
+
+
 def read_found_item_image(blob_name: str, organization_id: int) -> tuple[bytes, str]:
     if not is_safe_blob_name(blob_name, organization_id):
         raise ValueError("Photo not found")

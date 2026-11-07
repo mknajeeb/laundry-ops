@@ -42,15 +42,16 @@ SNAPSHOTS = "found_item_reconciliation_snapshots"
 _SUPERVISOR_ROLES = ("ADMIN", "OPS", "MANAGER", "SUPER_ADMIN", "PLATFORM_ADMIN")
 
 
-def _ensure_table(cursor, name: str, ddl: str) -> None:
+def _ensure_table(cursor, name: str, ddl: str) -> bool:
+    """Create one Lost & Found table when it is absent. Returns True when created."""
     if table_exists(cursor, name):
-        return
+        return False
     cursor.execute(ddl)
+    return True
 
 
-def ensure_lost_found_tables(cursor) -> None:
-    _ensure_table(
-        cursor,
+_LOST_FOUND_DDL: tuple[tuple[str, str], ...] = (
+    (
         ITEMS,
         f"""
         CREATE TABLE IF NOT EXISTS {ITEMS} (
@@ -81,10 +82,9 @@ def ensure_lost_found_tables(cursor) -> None:
           KEY idx_found_item_org_day (organization_id, business_date),
           KEY idx_found_item_org_status (organization_id, status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    _ensure_table(
-        cursor,
+        """,
+    ),
+    (
         PHOTOS,
         f"""
         CREATE TABLE IF NOT EXISTS {PHOTOS} (
@@ -104,9 +104,8 @@ def ensure_lost_found_tables(cursor) -> None:
           KEY idx_found_photo_day (organization_id, business_date, photo_role)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """,
-    )
-    _ensure_table(
-        cursor,
+    ),
+    (
         EVENTS,
         f"""
         CREATE TABLE IF NOT EXISTS {EVENTS} (
@@ -122,9 +121,8 @@ def ensure_lost_found_tables(cursor) -> None:
           KEY idx_found_event_org (organization_id, created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """,
-    )
-    _ensure_table(
-        cursor,
+    ),
+    (
         ACCOUNTS,
         f"""
         CREATE TABLE IF NOT EXISTS {ACCOUNTS} (
@@ -142,9 +140,8 @@ def ensure_lost_found_tables(cursor) -> None:
           UNIQUE KEY uq_found_account (organization_id, business_date, found_item_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """,
-    )
-    _ensure_table(
-        cursor,
+    ),
+    (
         RECONCILIATIONS,
         f"""
         CREATE TABLE IF NOT EXISTS {RECONCILIATIONS} (
@@ -160,9 +157,8 @@ def ensure_lost_found_tables(cursor) -> None:
           UNIQUE KEY uq_found_recon (organization_id, business_date)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """,
-    )
-    _ensure_table(
-        cursor,
+    ),
+    (
         SNAPSHOTS,
         f"""
         CREATE TABLE IF NOT EXISTS {SNAPSHOTS} (
@@ -178,7 +174,71 @@ def ensure_lost_found_tables(cursor) -> None:
           KEY idx_found_snap_day (organization_id, business_date, id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """,
+    ),
+)
+
+
+def require_lost_found_tables(cursor) -> None:
+    """Request paths never create tables. Preparation must already have run."""
+    missing = [name for name, _ddl in _LOST_FOUND_DDL if not table_exists(cursor, name)]
+    if missing:
+        raise LostFoundError(
+            "Lost & Found is not prepared on this database. Run the schema preparation procedure first.",
+            status=503,
+            code="schema_not_prepared",
+        )
+
+
+def prepare_lost_found_schema(
+    cursor,
+    organization_ids: Sequence[int] | None = None,
+) -> dict[str, Any]:
+    """Additive, idempotent preparation. Does not rewrite existing task rows."""
+    from backend.ta_helpers import invalidate_schema_cache
+
+    tables = []
+    for name, ddl in _LOST_FOUND_DDL:
+        created = _ensure_table(cursor, name, ddl)
+        tables.append({"table": name, "created": created})
+    invalidate_schema_cache()
+    if organization_ids is None:
+        organization_ids = []
+        if table_exists(cursor, "organizations"):
+            cursor.execute("SELECT id FROM organizations ORDER BY id")
+            organization_ids = [
+                int(row["id"] if isinstance(row, dict) else row[0])
+                for row in (cursor.fetchall() or [])
+            ]
+    activities = []
+    for organization_id in organization_ids:
+        before = _activity_definition_count(cursor, int(organization_id))
+        ensure_lost_found_activity(cursor, int(organization_id))
+        after = _activity_definition_count(cursor, int(organization_id))
+        activities.append(
+            {
+                "organization_id": int(organization_id),
+                "definitions_before": before,
+                "definitions_after": after,
+            }
+        )
+    return {"tables": tables, "activities": activities}
+
+
+def _activity_definition_count(cursor, organization_id: int) -> int:
+    if not table_exists(cursor, "weekly_schedule_roles"):
+        return 0
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS n
+        FROM weekly_schedule_roles
+        WHERE organization_id=%s AND code=%s
+        """,
+        (int(organization_id), ACTIVITY_CODE),
     )
+    row = cursor.fetchone() or {}
+    if isinstance(row, dict):
+        return int(row.get("n") or 0)
+    return int(row[0] or 0)
 
 
 def _json(value: Any) -> str:
@@ -352,8 +412,19 @@ def _fetch_all(cursor, sql: str, params: Sequence[Any]) -> list[dict[str, Any]]:
     return [dict(r) for r in (cursor.fetchall() or [])]
 
 
+def find_client_item(cursor, organization_id: int, client_request_id: str) -> dict[str, Any] | None:
+    require_lost_found_tables(cursor)
+    key = str(client_request_id or "").strip()
+    if not key:
+        return None
+    row = _by_client(cursor, int(organization_id), key)
+    if not row or row.get("id") is None:
+        return None
+    return row
+
+
 def get_item(cursor, organization_id: int, item_id: int) -> dict[str, Any] | None:
-    ensure_lost_found_tables(cursor)
+    require_lost_found_tables(cursor)
     return _fetch_one(
         cursor,
         f"SELECT * FROM {ITEMS} WHERE organization_id=%s AND id=%s LIMIT 1",
@@ -442,7 +513,7 @@ def report_found_item(
     notes: str | None,
 ) -> tuple[dict[str, Any], bool]:
     """Create one item, or return the original when the same client request is retried."""
-    ensure_lost_found_tables(cursor)
+    require_lost_found_tables(cursor)
     request_id = str(client_request_id or "").strip()
     if len(request_id) < 8 or len(request_id) > 64 or any(ch.isspace() for ch in request_id):
         raise LostFoundError("A client request id is required.", code="client_request_required")
@@ -526,7 +597,7 @@ def add_item_photo(
     user_id: int,
     stored: Mapping[str, str],
 ) -> dict[str, Any]:
-    ensure_lost_found_tables(cursor)
+    require_lost_found_tables(cursor)
     item = get_item(cursor, organization_id, found_item_id)
     if not item:
         raise LostFoundError("Found item not found.", status=404, code="not_found")
@@ -566,7 +637,7 @@ def change_status(
     comment: str | None = None,
     reason: str | None = None,
 ) -> dict[str, Any]:
-    ensure_lost_found_tables(cursor)
+    require_lost_found_tables(cursor)
     current = get_item(cursor, organization_id, item_id)
     if not current:
         raise LostFoundError("Found item not found.", status=404, code="not_found")
@@ -636,7 +707,7 @@ def list_found_items(
     business_date: date | None = None,
     before_date: date | None = None,
 ) -> list[dict[str, Any]]:
-    ensure_lost_found_tables(cursor)
+    require_lost_found_tables(cursor)
     if business_date is not None:
         rows = _fetch_all(
             cursor,
@@ -731,7 +802,7 @@ def _reconciliation_row(cursor, organization_id: int, business_date: date) -> di
 
 
 def ensure_reconciliation_open(cursor, organization_id: int, business_date: date) -> dict[str, Any]:
-    ensure_lost_found_tables(cursor)
+    require_lost_found_tables(cursor)
     row = _reconciliation_row(cursor, organization_id, business_date)
     if row:
         return row
@@ -1070,7 +1141,7 @@ def assert_reconciliation_current_for_approval(
     business_date: Any,
 ) -> None:
     business_date = _coerce_day(business_date)
-    ensure_lost_found_tables(cursor)
+    require_lost_found_tables(cursor)
     if not table_exists(cursor, ITEMS):
         return
     raw = [
@@ -1094,7 +1165,7 @@ def assert_reconciliation_current_for_approval(
 
 def reopen_reconciliation(cursor, organization_id: int, business_date: Any) -> None:
     business_date = _coerce_day(business_date)
-    ensure_lost_found_tables(cursor)
+    require_lost_found_tables(cursor)
     cursor.execute(
         f"""
         UPDATE {RECONCILIATIONS}
@@ -1158,7 +1229,7 @@ def gate_lost_found_activity_completion(
 
 
 def get_photo_row(cursor, organization_id: int, photo_id: int) -> dict[str, Any] | None:
-    ensure_lost_found_tables(cursor)
+    require_lost_found_tables(cursor)
     return _fetch_one(
         cursor,
         f"SELECT * FROM {PHOTOS} WHERE organization_id=%s AND id=%s LIMIT 1",
