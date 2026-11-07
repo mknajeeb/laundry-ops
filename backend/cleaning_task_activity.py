@@ -1217,6 +1217,37 @@ def _resolve_post_complete_status(row: Mapping[str, Any], meta: Mapping[str, Any
     return STATUS_PENDING_APPROVAL
 
 
+def _gate_lost_found_completion(
+    cursor,
+    *,
+    organization_id: int,
+    user_id: int,
+    business_date: Any,
+    activity_id: int | None,
+    role_codes: Sequence[Any],
+) -> None:
+    """Finish Lost & Found reconciliation through the normal activity completion path."""
+    from backend.lost_found import gate_lost_found_activity_completion
+    from backend.lost_found_rules import LostFoundError
+
+    try:
+        gate_lost_found_activity_completion(
+            cursor,
+            organization_id=int(organization_id),
+            user_id=int(user_id),
+            user_name=None,
+            business_date=business_date,
+            activity_id=int(activity_id) if activity_id else None,
+            role_codes=role_codes,
+        )
+    except LostFoundError as exc:
+        raise CleaningTaskError(
+            exc.message,
+            status=exc.status,
+            payload={"code": exc.code, "blockers": exc.blockers},
+        ) from exc
+
+
 def _finalize_completion(
     cursor,
     *,
@@ -1231,6 +1262,14 @@ def _finalize_completion(
     force_status: str | None = None,
     force_verify: bool | None = None,
 ) -> dict[str, Any]:
+    _gate_lost_found_completion(
+        cursor,
+        organization_id=oid,
+        user_id=uid,
+        business_date=row.get("business_date"),
+        activity_id=int(activity_id),
+        role_codes=[row.get("role")],
+    )
     catalog = _role_catalog(cursor, oid)
     meta = _task_meta_for_role(cursor, oid, str(row.get("role") or ""))
     final_status = force_status or _resolve_post_complete_status(row, meta)
@@ -1521,6 +1560,24 @@ def approve_activity(
         activity=row,
         verifier_user_id=int(supervisor_user_id),
     )
+    from backend.lost_found_rules import ACTIVITY_CODE
+
+    if str(row.get("role") or "") == ACTIVITY_CODE:
+        from backend.lost_found import assert_reconciliation_current_for_approval
+        from backend.lost_found_rules import LostFoundError
+
+        try:
+            assert_reconciliation_current_for_approval(
+                cursor,
+                organization_id=int(organization_id),
+                business_date=row.get("business_date"),
+            )
+        except LostFoundError as exc:
+            raise CleaningTaskError(
+                exc.message,
+                status=exc.status,
+                payload={"code": exc.code, "blockers": exc.blockers},
+            ) from exc
     at = eastern_now_naive()
     if str(supervisor_remark or "").strip():
         from backend.task_activity_remarks import append_remark
@@ -1612,6 +1669,12 @@ def reject_activity(
         actor_user_id=int(supervisor_user_id),
         payload={"reason": reason_clean},
     )
+    from backend.lost_found_rules import ACTIVITY_CODE
+
+    if str(row.get("role") or "") == ACTIVITY_CODE:
+        from backend.lost_found import reopen_reconciliation
+
+        reopen_reconciliation(cursor, int(organization_id), row.get("business_date"))
     return serialize_activity(get_activity(cursor, organization_id, int(activity_id)) or {}, catalog=catalog)
 
 

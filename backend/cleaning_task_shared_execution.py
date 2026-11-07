@@ -19,6 +19,7 @@ from backend.cleaning_task_activity import (
     CleaningTaskError,
     _employee_names,
     _finalize_completion,
+    _gate_lost_found_completion,
     _record_event,
     _role_catalog,
     _role_label,
@@ -820,6 +821,14 @@ def maybe_complete_shared_checklist(
     required = [it for it in items if bool(it.get("required", True))]
     if not required or any(str(it.get("status")) != ITEM_COMPLETED for it in required):
         return False
+    _gate_lost_found_completion(
+        cursor,
+        organization_id=int(organization_id),
+        user_id=int(parent_activity.get("user_id") or 0),
+        business_date=parent_activity.get("business_date"),
+        activity_id=int(parent_activity.get("id") or 0) or None,
+        role_codes=[it.get("task_code") for it in items],
+    )
     session = get_shared_session(cursor, int(organization_id), int(session_id))
     already = str((session or {}).get("status") or "") == SESSION_CHECKLIST_COMPLETE
     at = eastern_now_naive()

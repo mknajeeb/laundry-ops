@@ -66,6 +66,9 @@ import ChangeRolePreviewPage from "./pages/ChangeRolePreviewPage";
 import MaintenanceTaskListPinPage from "./pages/MaintenanceTaskListPinPage";
 import CleaningTasksPinPage from "./pages/CleaningTasksPinPage";
 import CleaningTaskReviewPinPage from "./pages/CleaningTaskReviewPinPage";
+import LostFoundReportPinPage from "./pages/LostFoundReportPinPage";
+import LostFoundReconcilePinPage from "./pages/LostFoundReconcilePinPage";
+import LostFoundDesktopPage from "./pages/LostFoundDesktopPage";
 import EmployeePinHubPage from "./pages/EmployeePinHubPage";
 import ManagementTasksPage from "./pages/ManagementTasksPage";
 import TaskDashboardPhase3PreviewPage from "./pages/TaskDashboardPhase3PreviewPage";
@@ -774,6 +777,8 @@ function AppShell() {
         <Route path="/attendance/role" element={<AttendanceRoleSwitchPage />} />
         <Route path="/attendance/maintenance/:orgSlug" element={<MaintenanceTaskListPinPage />} />
         <Route path="/attendance/maintenance" element={<MaintenanceTaskListPinPage />} />
+        <Route path="/attendance/lost-found/reconcile/:orgSlug" element={<LostFoundReconcilePinPage />} />
+        <Route path="/attendance/lost-found/:orgSlug" element={<LostFoundReportPinPage />} />
         <Route path="/attendance/cleaning-tasks/review/:orgSlug" element={<CleaningTaskReviewPinPage />} />
         <Route path="/attendance/cleaning-tasks/review" element={<CleaningTaskReviewPinPage />} />
         <Route path="/attendance/cleaning-tasks/:orgSlug" element={<CleaningTasksPinPage />} />
@@ -1340,6 +1345,16 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER", "RINSE"]}>
                     <ManagementTasksPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/management/lost-found"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
+                    <LostFoundDesktopPage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }

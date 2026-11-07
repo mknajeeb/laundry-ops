@@ -77,6 +77,7 @@ from backend.team_status_routes import register_team_status_routes
 from backend.inventory_routes import register_inventory_routes
 from backend.maintenance_task_list_routes import register_maintenance_task_list_routes
 from backend.cleaning_task_activity_routes import register_cleaning_task_activity_routes
+from backend.lost_found_routes import register_lost_found_routes
 from backend.machine_configuration_routes import register_machine_configuration_routes
 from backend.ta_routes import (
     _build_permission_hierarchy,
@@ -10971,6 +10972,13 @@ register_cleaning_task_activity_routes(
     fetch_user_roles=fetch_user_roles,
     get_request_ip=get_request_ip,
     parse_date_value=parse_date_value,
+)
+register_lost_found_routes(
+    app,
+    require_user=require_user,
+    user_org_id=user_org_id,
+    fetch_user_roles=fetch_user_roles,
+    get_request_ip=get_request_ip,
 )
 register_rinse_presence_routes(
     app,

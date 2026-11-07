@@ -27,6 +27,7 @@ from backend.cleaning_task_activity import (
     CleaningTaskError,
     _day_responsibilities,
     _finalize_completion,
+    _gate_lost_found_completion,
     _record_event,
     _role_catalog,
     _role_label,
@@ -538,6 +539,14 @@ def complete_group_activity(
             status=400,
             payload={"missing_task_codes": missing},
         )
+    _gate_lost_found_completion(
+        cursor,
+        organization_id=oid,
+        user_id=uid,
+        business_date=row.get("business_date"),
+        activity_id=int(activity_id),
+        role_codes=[it.get("task_code") for it in items],
+    )
 
     at = eastern_now_naive()
     started = row.get("started_at")

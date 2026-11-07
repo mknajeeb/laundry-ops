@@ -620,6 +620,16 @@ export default function ManagementTasksPage() {
               <Button
                 size="small"
                 component={RouterLink}
+                to="/management/lost-found"
+                sx={{ bgcolor: "#fff" }}
+              >
+                {t("nav.lostFound")}
+              </Button>
+            ) : null}
+            {canManage ? (
+              <Button
+                size="small"
+                component={RouterLink}
                 to="/management/task-management"
                 sx={{ bgcolor: "#fff" }}
               >

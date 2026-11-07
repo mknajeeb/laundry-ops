@@ -79,6 +79,7 @@ axios.interceptors.request.use((config) => {
     url.includes("/api/public/attendance/pin-switch-role") ||
     url.includes("/api/public/attendance/pin-break/") ||
     url.includes("/api/public/attendance/pin-cleaning-tasks") ||
+    url.includes("/api/public/attendance/pin-lost-found") ||
     url.includes("/api/public/attendance/pin-maintenance-tasks") ||
     url.includes("/api/public/attendance/pin-hub")
   ) {
@@ -402,6 +403,90 @@ export const attendancePinCleaningTasksAddRemark = (organization_slug, pin, opti
     }),
     _pinCleaningOpts,
   );
+
+function _lostFoundForm(organization_slug, pin, options, extra = {}) {
+  const body = new FormData();
+  const hubToken = options.hubToken ? String(options.hubToken) : "";
+  body.append("organization_slug", String(organization_slug || "").trim().toLowerCase());
+  if (hubToken) body.append("hub_token", hubToken);
+  else body.append("pin", String(pin || "").trim());
+  Object.entries(extra).forEach(([key, value]) => {
+    if (value != null && value !== "") body.append(key, value);
+  });
+  for (const file of options.files || []) body.append("photos", file);
+  if (options.file) body.append("photos", options.file);
+  return body;
+}
+
+export const pinLostFoundLocations = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-lost-found/locations`,
+    _pinCleaningBody(organization_slug, pin, options),
+    _pinCleaningOpts,
+  );
+
+export const pinLostFoundReport = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-lost-found/report`,
+    _lostFoundForm(organization_slug, pin, options, {
+      client_request_id: options.client_request_id,
+      location_kind: options.location_kind,
+      location_number: options.location_number,
+      location_detail: options.location_detail,
+      notes: options.notes,
+    }),
+    { ..._pinCleaningOpts, headers: { "Content-Type": "multipart/form-data" } },
+  );
+
+export const pinLostFoundReconciliation = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-lost-found/reconciliation`,
+    _pinCleaningBody(organization_slug, pin, options),
+    _pinCleaningOpts,
+  );
+
+export const pinLostFoundAccount = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-lost-found/account`,
+    _pinCleaningBody(organization_slug, pin, options, {
+      item_id: options.item_id,
+      action: options.action,
+      status: options.status,
+      order_reference: options.order_reference,
+      comment: options.comment,
+      reason: options.reason,
+    }),
+    _pinCleaningOpts,
+  );
+
+export const pinLostFoundBoxPhoto = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-lost-found/box-photo`,
+    _lostFoundForm(organization_slug, pin, options),
+    { ..._pinCleaningOpts, headers: { "Content-Type": "multipart/form-data" } },
+  );
+
+export const getPinLostFoundPhoto = (organization_slug, hubToken, photoId) =>
+  axios.get(`${API_BASE}/api/public/attendance/pin-lost-found/photos/${photoId}`, {
+    params: { organization_slug, hub_token: hubToken },
+    responseType: "blob",
+    validateStatus: (status) => status >= 200 && status < 600,
+  });
+
+export const getLostFoundList = ({ scope = "today", date } = {}) =>
+  axios.get(`${API_BASE}/api/lost-found`, { params: { scope, date } });
+
+export const getLostFoundReconciliation = (date) =>
+  axios.get(`${API_BASE}/api/lost-found/reconciliation`, { params: { date } });
+
+export const updateLostFoundStatus = (itemId, body) =>
+  axios.post(`${API_BASE}/api/lost-found/${itemId}/status`, body);
+
+export const getLostFoundPhoto = (photoId) =>
+  axios.get(`${API_BASE}/api/lost-found/photos/${photoId}`, {
+    responseType: "blob",
+    validateStatus: (status) => status >= 200 && status < 600,
+  });
 
 export const attendancePinCleaningTasksCompleteUntimed = (organization_slug, pin, options = {}) =>
   axios.post(

@@ -71,6 +71,12 @@ export const TENANT_NAV_ITEMS = [
     moduleKey: "scoreboard",
   },
   {
+    to: "/management/lost-found",
+    labelKey: "nav.lostFound",
+    roles: ["ADMIN", "OPS", "MANAGER"],
+    moduleKey: "scoreboard",
+  },
+  {
     to: "/performance/daily-roster",
     labelKey: "nav.dailyShiftRoster",
     roles: ["ADMIN", "OPS"],

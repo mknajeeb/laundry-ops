@@ -41,6 +41,7 @@ import {
   loadPinHubSession,
   pinHubMenuPath,
 } from "../utils/pinHubSession";
+import { LOST_FOUND_ACTIVITY_CODE } from "../utils/lostFoundLocation";
 
 function sanitizeSlug(raw) {
   if (!raw) return "";
@@ -108,7 +109,7 @@ function PartnerLines({ partners, executionMode, assignedNames }) {
   );
 }
 
-function TaskCard({ task, onStart, onCompleteUntimed, busy }) {
+function TaskCard({ task, onStart, onCompleteUntimed, onReconcile, busy }) {
   const { t, locale } = useI18n();
   const taskName = localizedConfigured(
     { name: task.role_label || task.role, name_es: task.name_es },
@@ -152,16 +153,24 @@ function TaskCard({ task, onStart, onCompleteUntimed, busy }) {
           fullWidth
           variant="contained"
           disabled={busy}
-          onClick={() => (untimed ? onCompleteUntimed(task) : onStart(task))}
+          onClick={() =>
+            task.role === LOST_FOUND_ACTIVITY_CODE
+              ? onReconcile(task)
+              : untimed
+                ? onCompleteUntimed(task)
+                : onStart(task)
+          }
           sx={{ mt: 1.25, fontWeight: 800, textTransform: "none" }}
         >
-          {untimed
-            ? needsInput
-              ? t("tasks.pin.completeWithInput")
-              : t("tasks.pin.markComplete")
-            : task.status === "rejected"
-              ? t("tasks.pin.resumeActivity")
-              : t("tasks.pin.startActivity")}
+          {task.role === LOST_FOUND_ACTIVITY_CODE
+            ? t("lostFound.reconcileTitle")
+            : untimed
+              ? needsInput
+                ? t("tasks.pin.completeWithInput")
+                : t("tasks.pin.markComplete")
+              : task.status === "rejected"
+                ? t("tasks.pin.resumeActivity")
+                : t("tasks.pin.startActivity")}
         </Button>
       ) : null}
     </Box>
@@ -343,6 +352,11 @@ export default function CleaningTasksPinPage() {
     const err = validateInputClient(schema, inputValues, inputRemarks);
     if (err) throw new Error(err);
     return { values: inputValues, remarks: inputRemarks || undefined };
+  };
+
+  const openReconcile = (task) => {
+    const query = task?.responsibility_id ? `?responsibility_id=${encodeURIComponent(task.responsibility_id)}` : "";
+    navigate(`/attendance/lost-found/reconcile/${encodeURIComponent(slug)}${query}`);
   };
 
   const startTask = async (task) => {
@@ -673,6 +687,14 @@ export default function CleaningTasksPinPage() {
         identity={hub.employee_first_name || hub.employee_name || ""}
         right={<OpsLocaleToggle />}
       />
+      <Button
+        fullWidth
+        variant="contained"
+        onClick={() => navigate(`/attendance/lost-found/${encodeURIComponent(slug)}`)}
+        sx={{ mb: 1.5, fontWeight: 900, textTransform: "none" }}
+      >
+        {t("lostFound.report")}
+      </Button>
       {error ? (
         <Alert severity="error" sx={{ mb: 1.5 }}>
           {error}
@@ -923,6 +945,7 @@ export default function CleaningTasksPinPage() {
                           task={task}
                           onStart={startTask}
                           onCompleteUntimed={beginUntimed}
+                          onReconcile={openReconcile}
                           busy={busy}
                         />
                       ))}

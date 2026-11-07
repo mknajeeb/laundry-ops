@@ -784,6 +784,16 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
             </Stack>
           )}
 
+          {phase === "menu" && hub?.attendance?.clocked_in ? (
+            <Button
+              fullWidth
+              variant="contained"
+              onClick={() => navigate(`/attendance/lost-found/${encodeURIComponent(slug)}`)}
+              sx={{ fontWeight: 900, textTransform: "none", py: 1.4 }}
+            >
+              {t("lostFound.report")}
+            </Button>
+          ) : null}
           {phase === "menu" &&
             (launcherTiles.length > 0 ? (
               <OpsLauncherGrid
