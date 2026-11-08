@@ -22,10 +22,13 @@ from backend.lost_found_rules import (
     as_dt,
     format_et_report,
     item_in_completion_scope,
+    item_in_equipment_scope,
     item_in_reconciliation_scope,
     item_in_redry_scope,
     reconciliation_blockers,
     report_category_of,
+    require_configured_identifier,
+    validate_equipment,
     validate_redry,
     snapshot_is_current,
     validate_location,
@@ -439,6 +442,7 @@ def serialize_item(
             "mesh_bag": bool(row.get("redry_mesh_bag")),
             "wrong_pocket": bool(row.get("redry_wrong_pocket")),
         },
+        "redry_bag_number": row.get("location_detail") if report_category_of(row) == "redry" else None,
         "status": row.get("status"),
         "order_reference": row.get("order_reference"),
         "status_comment": row.get("status_comment"),
@@ -590,15 +594,43 @@ def report_found_item(
         hydrated = _hydrate(cursor, organization_id, [existing])
         return hydrated[0], False
     category = str(report_category or "orphan").strip().lower()
+    catalog = location_choices(cursor, organization_id)
     if category == "redry":
-        redry = validate_redry(redry_flags, location_number)
+        redry = validate_redry(
+            redry_flags,
+            location_number,
+            bag_number=location_detail,
+            allowed_pockets=catalog.get("redry_pockets") or [],
+            allowed_dryers=catalog.get("dryers") or [],
+        )
         location = redry
         flags = redry
+    elif category == "equipment":
+        kind = str(location_kind or "").strip().lower()
+        allowed = {
+            "washer": catalog.get("washers") or [],
+            "dryer": catalog.get("dryers") or [],
+            "dehumidifier": catalog.get("dehumidifiers") or [],
+        }.get(kind) or []
+        location = validate_equipment(kind, location_number, location_detail, allowed=allowed)
+        flags = location
     else:
         if category != "orphan":
-            raise LostFoundError("Choose Orphan Item or Re-Dry Issue.", code="invalid_category")
+            raise LostFoundError("Choose a report category.", code="invalid_category")
         category = "orphan"
         location = validate_location(location_kind, location_number, location_detail)
+        kind = location["location_kind"]
+        allowed = {
+            "washer": catalog.get("washers") or [],
+            "dryer": catalog.get("dryers") or [],
+            "folding_table": catalog.get("folding_tables") or [],
+        }.get(kind) or []
+        if location.get("location_number"):
+            require_configured_identifier(
+                location["location_number"],
+                allowed,
+                code="identifier_not_configured",
+            )
         flags = {"missing_ticket": False, "mesh_bag": False, "wrong_pocket": False}
     note = " ".join(str(notes or "").split())[:1000] or None
     at = eastern_now_naive().replace(microsecond=0)
@@ -883,22 +915,83 @@ def save_designated_redry_pockets(cursor, organization_id: int, pockets: Sequenc
     return cleaned
 
 
-def location_choices(cursor, organization_id: int) -> dict[str, list[str]]:
-    washers: list[str] = []
-    dryers: list[str] = []
-    try:
-        from backend.machine_configuration_settings import get_machine_rack_config
+ISSUE_CATALOG_KEY = "issue_report_catalog"
 
-        config = get_machine_rack_config(cursor, int(organization_id))
-        washers = sorted((config.get("washers") or {}).keys())
-        dryers = sorted((config.get("dryers") or {}).keys())
-    except Exception:
-        logger.debug("machine identifiers unavailable", exc_info=True)
+
+def veewash_issue_catalog() -> dict[str, list[str]]:
+    """Employee numbers used at VeeWash. Other organizations do not inherit these."""
     return {
-        "washers": washers,
-        "dryers": dryers,
-        "folding_tables": [],
-        "redry_pockets": designated_redry_pockets(cursor, organization_id),
+        "washers": [f"W{number}" for number in range(1, 45)],
+        "dryers": [f"D{number}" for number in range(1, 41)],
+        "folding_tables": [f"F{number}" for number in range(1, 21)],
+        "dehumidifiers": [],
+    }
+
+
+def _org_slug(cursor, organization_id: int) -> str:
+    if not table_exists(cursor, "organizations"):
+        return ""
+    try:
+        cursor.execute(
+            "SELECT slug FROM organizations WHERE id=%s LIMIT 1",
+            (int(organization_id),),
+        )
+        row = cursor.fetchone() or {}
+        raw = row.get("slug") if isinstance(row, dict) else None
+        return str(raw or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _saved_issue_catalog(cursor, organization_id: int) -> dict[str, list[str]] | None:
+    if not table_exists(cursor, "system_settings"):
+        return None
+    cursor.execute(
+        "SELECT svalue FROM system_settings WHERE organization_id=%s AND skey=%s LIMIT 1",
+        (int(organization_id), ISSUE_CATALOG_KEY),
+    )
+    row = cursor.fetchone() or {}
+    raw = row.get("svalue") if isinstance(row, dict) else None
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    catalog: dict[str, list[str]] = {}
+    for key in ("washers", "dryers", "folding_tables", "dehumidifiers"):
+        values = parsed.get(key) or []
+        cleaned = []
+        if isinstance(values, list):
+            for value in values:
+                token = " ".join(str(value or "").split())[:40]
+                if token and token not in cleaned:
+                    cleaned.append(token)
+        catalog[key] = cleaned
+    return catalog
+
+
+def location_choices(cursor, organization_id: int) -> dict[str, list[str]]:
+    """Configured numbers for this organization. Empty lists stay free-text."""
+    catalog = {"washers": [], "dryers": [], "folding_tables": [], "dehumidifiers": []}
+    pockets: list[str] = []
+    try:
+        saved = _saved_issue_catalog(cursor, organization_id)
+        if saved is not None:
+            catalog = saved
+        elif _org_slug(cursor, organization_id) == "veewash":
+            catalog = veewash_issue_catalog()
+        pockets = designated_redry_pockets(cursor, organization_id)
+    except Exception:
+        logger.debug("issue catalog unavailable", exc_info=True)
+    return {
+        "washers": catalog.get("washers") or [],
+        "dryers": catalog.get("dryers") or [],
+        "folding_tables": catalog.get("folding_tables") or [],
+        "dehumidifiers": catalog.get("dehumidifiers") or [],
+        "redry_pockets": pockets,
     }
 
 
@@ -972,8 +1065,9 @@ def reconciliation_view(cursor, organization_id: int, business_date: date) -> di
     raw_items = [row for row in scoped if item_in_completion_scope(row, business_date)]
     orphan_rows = [row for row in raw_items if item_in_reconciliation_scope(row, business_date)]
     redry_rows = [row for row in scoped if item_in_redry_scope(row, business_date)]
+    equipment_rows = [row for row in scoped if item_in_equipment_scope(row, business_date)]
     accounts = _accounts_for_day(cursor, organization_id, business_date)
-    photo_ids = [int(r["id"]) for r in orphan_rows + redry_rows]
+    photo_ids = [int(r["id"]) for r in orphan_rows + redry_rows + equipment_rows]
     photos = _photos_for(cursor, organization_id, photo_ids)
     events = _events_for(cursor, organization_id, photo_ids)
 
@@ -991,6 +1085,7 @@ def reconciliation_view(cursor, organization_id: int, business_date: date) -> di
 
     items = _pack(orphan_rows)
     redry_items = _pack(redry_rows)
+    equipment_items = _pack(equipment_rows)
     box = _latest_box_photo(cursor, organization_id, business_date)
     blockers = []
     if str(recon.get("status") or "") != "completed":
@@ -1010,7 +1105,8 @@ def reconciliation_view(cursor, organization_id: int, business_date: date) -> di
         "activity_code": ACTIVITY_CODE,
         "items": items,
         "redry_items": redry_items,
-        "counts": {"orphan": len(items), "redry": len(redry_items)},
+        "equipment_items": equipment_items,
+        "counts": {"orphan": len(items), "redry": len(redry_items), "equipment": len(equipment_items)},
         "blockers": blockers,
         "box_photo": _photo_out(box) if box else None,
         "snapshot": _snapshot_summary(latest) if latest else None,
@@ -1036,7 +1132,11 @@ def account_item(
     if kind not in {"confirm", "escalate", "update"}:
         raise LostFoundError("Choose confirm, escalate, or update.", code="invalid_action")
     current = get_item(cursor, organization_id, item_id)
-    in_review = item_in_completion_scope(current, business_date) or item_in_redry_scope(current, business_date)
+    in_review = (
+        item_in_completion_scope(current, business_date)
+        or item_in_redry_scope(current, business_date)
+        or item_in_equipment_scope(current, business_date)
+    )
     if not current or not in_review:
         raise LostFoundError("That found item is not part of this reconciliation.", status=404, code="not_found")
     if kind == "update":
@@ -1473,7 +1573,10 @@ def notify_found_item(cursor, organization_id: int, item: Mapping[str, Any]) -> 
         where = _bilingual_location(item)
         who = item.get("employee_name") or "An employee"
         category = report_category_of(item)
-        if category == "redry":
+        if category == "equipment":
+            title = "Equipment not working / Equipo no funciona"
+            body = f"{who} · {where}. {item.get('notes') or ''} {when}".strip()
+        elif category == "redry":
             flags = item.get("redry_flags") or {}
             selected = [
                 label

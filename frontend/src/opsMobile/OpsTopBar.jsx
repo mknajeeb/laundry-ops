@@ -1,4 +1,4 @@
-import { Box, Button, Typography } from "@mui/material";
+import { Box, Button, Typography, useTheme } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
 import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
@@ -21,15 +21,13 @@ export default function OpsTopBar({
   sticky = true,
 }) {
   const { t } = useI18n();
+  const theme = useTheme();
+  const accent = theme.palette.primary.main || OPS_MOBILE.navy;
   const resolvedLock = !lockLabel || lockLabel === "Lock" ? t("mobileOps.lock") : lockLabel;
   const resolvedBack = !backLabel || backLabel === "PIN" ? t("tasks.pin.backToPin") : backLabel;
   return (
     <Box
       sx={{
-        display: "flex",
-        alignItems: "center",
-        gap: 1,
-        minHeight: OPS_MOBILE.touchMin,
         width: "100%",
         ...(sticky
           ? {
@@ -45,6 +43,15 @@ export default function OpsTopBar({
           : null),
       }}
     >
+    <Box
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        gap: 1,
+        minHeight: 40,
+        width: "100%",
+      }}
+    >
       {onBack ? (
         <Button
           onClick={onBack}
@@ -52,14 +59,15 @@ export default function OpsTopBar({
           aria-label={resolvedBack}
           sx={{
             flexShrink: 0,
-            minHeight: OPS_MOBILE.touchMin,
-            minWidth: OPS_MOBILE.touchMin,
-            px: 1.25,
+            minHeight: 40,
+            minWidth: 40,
+            px: 1,
             borderRadius: `${OPS_MOBILE.radius.button}px`,
             textTransform: "none",
-            fontWeight: 800,
-            color: OPS_MOBILE.navy,
-            bgcolor: alpha(OPS_MOBILE.navy, 0.05),
+            fontWeight: 700,
+            fontSize: "0.85rem",
+            color: accent,
+            bgcolor: alpha(accent, 0.08),
           }}
         >
           {resolvedBack}
@@ -75,27 +83,13 @@ export default function OpsTopBar({
         />
       ) : null}
 
-      {title ? (
-        <Typography
-          sx={{
-            fontWeight: 900,
-            fontSize: "1.2rem",
-            color: OPS_MOBILE.navy,
-            flexShrink: 0,
-            letterSpacing: "-0.02em",
-          }}
-        >
-          {title}
-        </Typography>
-      ) : null}
-
       <Box sx={{ flex: 1, minWidth: 0 }}>
         {identity ? (
           <Typography
             sx={{
-              fontWeight: 800,
-              fontSize: OPS_MOBILE.type.identity,
-              color: OPS_MOBILE.navy,
+              fontWeight: 700,
+              fontSize: "0.8rem",
+              color: theme.palette.text.primary,
               lineHeight: 1.2,
               overflow: "hidden",
               textOverflow: "ellipsis",
@@ -117,21 +111,36 @@ export default function OpsTopBar({
           aria-label={resolvedLock}
           sx={{
             flexShrink: 0,
-            minHeight: OPS_MOBILE.touchMin,
-            minWidth: OPS_MOBILE.touchMin,
-            px: 1.75,
+            minHeight: 40,
+            minWidth: 40,
+            px: 1,
             borderRadius: `${OPS_MOBILE.radius.button}px`,
             textTransform: "none",
-            fontWeight: 800,
-            fontSize: "1rem",
-            color: OPS_MOBILE.navy,
-            bgcolor: alpha(OPS_MOBILE.navy, 0.06),
-            "&:hover": { bgcolor: alpha(OPS_MOBILE.navy, 0.1) },
+            fontWeight: 700,
+            fontSize: "0.85rem",
+            color: accent,
+            bgcolor: alpha(accent, 0.08),
+            "&:hover": { bgcolor: alpha(accent, 0.14) },
           }}
         >
           {resolvedLock}
         </Button>
       ) : null}
+    </Box>
+    {title ? (
+      <Typography
+        component="h1"
+        sx={{
+          fontWeight: 800,
+          fontSize: "1.05rem",
+          lineHeight: 1.25,
+          color: accent,
+          mt: 0.25,
+        }}
+      >
+        {title}
+      </Typography>
+    ) : null}
     </Box>
   );
 }

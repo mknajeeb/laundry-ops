@@ -1,5 +1,16 @@
 export const LOST_FOUND_ACTIVITY_CODE = "custom_lost_found_reconciliation";
 
+export function veewashIssueCatalog() {
+  const range = (prefix, count) => Array.from({ length: count }, (_, index) => `${prefix}${index + 1}`);
+  return {
+    washers: range("W", 44),
+    dryers: range("D", 40),
+    folding_tables: range("F", 20),
+    dehumidifiers: [],
+    redry_pockets: [],
+  };
+}
+
 export const FOUND_LOCATION_KINDS = [
   "washer",
   "dryer",
@@ -22,7 +33,39 @@ export function identifierChoices(kind, choices) {
   if (kind === "washer") return choices?.washers || [];
   if (kind === "dryer") return choices?.dryers || [];
   if (kind === "folding_table") return choices?.folding_tables || [];
+  if (kind === "dehumidifier") return choices?.dehumidifiers || [];
   return [];
+}
+
+export function filterIdentifiers(options, query) {
+  const needle = String(query || "").trim().toLowerCase();
+  const list = options || [];
+  if (!needle) return list;
+  return list.filter((id) => String(id).toLowerCase().includes(needle));
+}
+
+let photoSeq = 0;
+
+export function addReportPhotos(current, incoming, limit = 6) {
+  const next = Array.isArray(current) ? [...current] : [];
+  for (const file of Array.from(incoming || [])) {
+    if (!file || file.size <= 0) continue;
+    if (file.type && !String(file.type).startsWith("image/")) continue;
+    photoSeq += 1;
+    next.push({ id: `photo-${photoSeq}`, file });
+    if (next.length >= limit) break;
+  }
+  return next.slice(0, limit);
+}
+
+export function removeReportPhoto(current, id) {
+  return (current || []).filter((photo) => photo.id !== id);
+}
+
+export function replaceReportPhoto(current, id, file) {
+  if (!file || file.size <= 0) return current || [];
+  if (file.type && !String(file.type).startsWith("image/")) return current || [];
+  return (current || []).map((photo) => (photo.id === id ? { ...photo, file } : photo));
 }
 
 export function validateFoundLocation({ kind, number, detail }) {

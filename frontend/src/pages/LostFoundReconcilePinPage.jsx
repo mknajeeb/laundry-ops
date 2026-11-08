@@ -43,7 +43,7 @@ function flagLine(item, t) {
 
 function ItemCard({ item, hub, busy, onSave }) {
   const { t } = useI18n();
-  const statuses = item.report_category === "redry" ? ["new", "under_review", "resolved"] : STATUSES;
+  const statuses = item.report_category === "orphan" || !item.report_category ? STATUSES : ["new", "under_review", "resolved"];
   const [status, setStatus] = useState(item.status || "new");
   const [orderReference, setOrderReference] = useState(item.order_reference || "");
   const [comment, setComment] = useState("");
@@ -82,7 +82,7 @@ function ItemCard({ item, hub, busy, onSave }) {
         <TextField size="small" label={t("lostFound.orderReference")} value={orderReference} onChange={(e) => setOrderReference(e.target.value)} />
       ) : null}
       {status === "resolved" ? (
-        <TextField size="small" label={t("lostFound.reason")} value={reason} onChange={(e) => setReason(e.target.value)} />
+        <TextField size="small" label={item.report_category === "equipment" ? t("lostFound.repairNote") : t("lostFound.reason")} value={reason} onChange={(e) => setReason(e.target.value)} />
       ) : null}
       <TextField size="small" label={t("lostFound.comment")} value={comment} onChange={(e) => setComment(e.target.value)} />
       <Stack direction="row" spacing={1}>
@@ -234,6 +234,8 @@ export default function LostFoundReconcilePinPage() {
           {t("lostFound.orphan")} {data?.counts?.orphan ?? (data?.items || []).length}
           {" · "}
           {t("lostFound.redryIssue")} {data?.counts?.redry ?? (data?.redry_items || []).length}
+          {" · "}
+          {t("lostFound.equipmentTitle")} {data?.counts?.equipment ?? (data?.equipment_items || []).length}
         </Typography>
         {(data?.items || []).map((item) => (
           <ItemCard key={item.id} item={item} hub={hub} busy={busy} onSave={save} />
@@ -243,6 +245,12 @@ export default function LostFoundReconcilePinPage() {
         ) : null}
         {(data?.redry_items || []).map((item) => (
           <ItemCard key={`redry-${item.id}`} item={item} hub={hub} busy={busy} onSave={save} />
+        ))}
+        {(data?.equipment_items || []).length ? (
+          <Typography sx={{ fontWeight: 800, pt: 1 }}>{t("lostFound.equipmentSection")}</Typography>
+        ) : null}
+        {(data?.equipment_items || []).map((item) => (
+          <ItemCard key={`equipment-${item.id}`} item={item} hub={hub} busy={busy} onSave={save} />
         ))}
         {!data?.items?.length ? <Typography color="text.secondary">{t("lostFound.noItems")}</Typography> : null}
         {stored ? (

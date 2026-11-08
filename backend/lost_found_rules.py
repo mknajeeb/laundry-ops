@@ -45,8 +45,17 @@ STATUSES = frozenset(
 )
 CATEGORY_ORPHAN = "orphan"
 CATEGORY_REDRY = "redry"
-REPORT_CATEGORIES = frozenset({CATEGORY_ORPHAN, CATEGORY_REDRY})
+CATEGORY_EQUIPMENT = "equipment"
+REPORT_CATEGORIES = frozenset({CATEGORY_ORPHAN, CATEGORY_REDRY, CATEGORY_EQUIPMENT})
 REDRY_STATUSES = frozenset({STATUS_NEW, STATUS_UNDER_REVIEW, STATUS_RESOLVED})
+EQUIPMENT_STATUSES = REDRY_STATUSES
+EQUIPMENT_WASHER = "washer"
+EQUIPMENT_DRYER = "dryer"
+EQUIPMENT_DEHUMIDIFIER = "dehumidifier"
+EQUIPMENT_OTHER = "other"
+EQUIPMENT_TYPES = frozenset(
+    {EQUIPMENT_WASHER, EQUIPMENT_DRYER, EQUIPMENT_DEHUMIDIFIER, EQUIPMENT_OTHER}
+)
 REDRY_FLAG_MISSING_TICKET = "missing_ticket"
 REDRY_FLAG_MESH_BAG = "mesh_bag"
 REDRY_FLAG_WRONG_POCKET = "wrong_pocket"
@@ -164,8 +173,32 @@ def report_category_of(item: Mapping[str, Any] | None) -> str:
     return code if code in REPORT_CATEGORIES else CATEGORY_ORPHAN
 
 
-def validate_redry(flags: Mapping[str, Any] | None, pocket: Any) -> dict[str, Any]:
-    """One Re-Dry report can carry one, two, or all three violations."""
+def require_configured_identifier(token: str, allowed: Sequence[Any] | None, *, code: str) -> None:
+    """Restrict a number only when this organization published a list."""
+    choices = []
+    for value in allowed or []:
+        cleaned = _clean_token(value, limit=40)
+        if cleaned and cleaned not in choices:
+            choices.append(cleaned)
+    if choices and token not in choices:
+        raise LostFoundError("Choose one of the configured numbers.", code=code)
+
+
+def validate_redry(
+    flags: Mapping[str, Any] | None,
+    pocket: Any,
+    *,
+    bag_number: Any = None,
+    allowed_pockets: Sequence[Any] | None = None,
+    allowed_dryers: Sequence[Any] | None = None,
+) -> dict[str, Any]:
+    """One Re-Dry report can carry one, two, or all three violations.
+
+    A mesh bag number is never required. It is omitted when the ticket
+    number itself is what is missing, and it stays optional otherwise.
+    Wrong-pocket reports must use a manager-designated pocket when that
+    list exists.
+    """
     selected = {name: _as_flag((flags or {}).get(name)) for name in REDRY_FLAGS}
     if not any(selected.values()):
         raise LostFoundError(
@@ -173,7 +206,59 @@ def validate_redry(flags: Mapping[str, Any] | None, pocket: Any) -> dict[str, An
             code="redry_flag_required",
         )
     location = validate_location(LOCATION_DRYER, pocket, None)
+    token = location["location_number"] or ""
+    if selected[REDRY_FLAG_WRONG_POCKET] and allowed_pockets:
+        require_configured_identifier(token, allowed_pockets, code="pocket_not_designated")
+    elif allowed_dryers:
+        require_configured_identifier(token, allowed_dryers, code="identifier_not_configured")
+    bag = _clean_token(bag_number, limit=40)
+    location["location_detail"] = bag or None
+    location["redry_bag_number"] = bag or None
     return {**selected, **location}
+
+
+def validate_equipment(
+    kind: Any,
+    identifier: Any = None,
+    detail: Any = None,
+    *,
+    allowed: Sequence[Any] | None = None,
+) -> dict[str, Any]:
+    """A malfunction report. Not a physical Lost & Found item."""
+    code = str(kind or "").strip().lower()
+    if code not in EQUIPMENT_TYPES:
+        raise LostFoundError("Choose the equipment type.", code="invalid_equipment")
+    token = _clean_token(identifier, limit=40)
+    note = _clean_token(detail, limit=160)
+    if code == EQUIPMENT_OTHER:
+        if len(note) < 2:
+            raise LostFoundError("Name the equipment in a few words.", code="equipment_name_required")
+    elif not token:
+        raise LostFoundError("An equipment number is required.", code="identifier_required")
+    if token and allowed:
+        require_configured_identifier(token, allowed, code="identifier_not_configured")
+    titles = {
+        EQUIPMENT_WASHER: "Washer",
+        EQUIPMENT_DRYER: "Dryer",
+        EQUIPMENT_DEHUMIDIFIER: "Dehumidifier",
+        EQUIPMENT_OTHER: note or "Other",
+    }
+    title = titles[code]
+    if code == EQUIPMENT_OTHER:
+        label = f"{note} {token}".strip() if token else note
+    elif token:
+        label = f"{title} {token}"
+    else:
+        label = title
+    return {
+        "location_kind": code,
+        "location_number": token or None,
+        "location_detail": note or None,
+        "location_label": label[:200],
+        "missing_ticket": False,
+        "mesh_bag": False,
+        "wrong_pocket": False,
+    }
 
 
 def validate_status_change(
@@ -186,7 +271,12 @@ def validate_status_change(
 ) -> dict[str, Any]:
     code = str(status or "").strip().lower()
     category = report_category if report_category in REPORT_CATEGORIES else CATEGORY_ORPHAN
-    allowed = REDRY_STATUSES if category == CATEGORY_REDRY else STATUSES
+    if category == CATEGORY_REDRY:
+        allowed = REDRY_STATUSES
+    elif category == CATEGORY_EQUIPMENT:
+        allowed = EQUIPMENT_STATUSES
+    else:
+        allowed = STATUSES
     if code not in allowed:
         raise LostFoundError("That status is not used for this report.", code="invalid_status")
     order_ref = _clean_token(order_reference, limit=80)
@@ -225,7 +315,7 @@ def item_in_reconciliation_scope(item: Mapping[str, Any], business_date: Any) ->
 
     Re-Dry reports are operational violations, not physical Lost & Found items.
     """
-    if report_category_of(item) == CATEGORY_REDRY:
+    if report_category_of(item) in {CATEGORY_REDRY, CATEGORY_EQUIPMENT}:
         return False
     day = as_day(business_date)
     reported = as_day(item.get("business_date"))
@@ -238,6 +328,18 @@ def item_in_reconciliation_scope(item: Mapping[str, Any], business_date: Any) ->
 def item_in_redry_scope(item: Mapping[str, Any], business_date: Any) -> bool:
     """Today's Re-Dry reports, plus older ones that are not yet resolved."""
     if report_category_of(item) != CATEGORY_REDRY:
+        return False
+    day = as_day(business_date)
+    reported = as_day(item.get("business_date"))
+    status = str(item.get("status") or "")
+    if reported == day:
+        return True
+    return status != STATUS_RESOLVED and reported < day
+
+
+def item_in_equipment_scope(item: Mapping[str, Any], business_date: Any) -> bool:
+    """Today's equipment reports, plus older ones still open. Not a Lost & Found blocker."""
+    if report_category_of(item) != CATEGORY_EQUIPMENT:
         return False
     day = as_day(business_date)
     reported = as_day(item.get("business_date"))

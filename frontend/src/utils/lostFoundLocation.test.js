@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  addReportPhotos,
   displayFoundEvent,
   displayFoundLocation,
+  filterIdentifiers,
   foundLocationLabel,
   identifierChoices,
   locationNumberMode,
+  removeReportPhoto,
+  replaceReportPhoto,
   validateFoundLocation,
 } from "./lostFoundLocation";
 
@@ -47,5 +51,20 @@ describe("found item location", () => {
     expect(identifierChoices("dryer", { dryers: ["D1-50-VW"] })).toEqual(["D1-50-VW"]);
     expect(identifierChoices("folding_table", {})).toEqual([]);
     expect(foundLocationLabel({ kind: "washer", number: "W23-30-VW" })).toBe("Washer W23-30-VW");
+  });
+
+  it("filters configured numbers and edits the photo list before upload", () => {
+    const dryers = ["D1", "D2", "D10", "D40"];
+    expect(filterIdentifiers(dryers, "d1")).toEqual(["D1", "D10"]);
+    const first = addReportPhotos([], [{ size: 10, type: "image/jpeg", name: "a.jpg" }]);
+    const both = addReportPhotos(first, [
+      { size: 12, type: "image/png", name: "b.png" },
+      { size: 0, type: "image/png", name: "empty.png" },
+    ]);
+    expect(both).toHaveLength(2);
+    const replaced = replaceReportPhoto(both, both[0].id, { size: 20, type: "image/jpeg", name: "c.jpg" });
+    expect(replaced[0].file.name).toBe("c.jpg");
+    expect(removeReportPhoto(replaced, both[1].id)).toHaveLength(1);
+    expect(identifierChoices("dehumidifier", { dehumidifiers: ["DH-1"] })).toEqual(["DH-1"]);
   });
 });

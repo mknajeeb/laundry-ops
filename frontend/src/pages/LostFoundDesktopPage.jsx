@@ -90,8 +90,11 @@ export default function LostFoundDesktopPage() {
       <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} justifyContent="space-between">
         <Box>
           <Typography sx={{ fontWeight: 800 }}>
-            {item.report_category === "redry" ? t("lostFound.redryIssue") : t("lostFound.orphan")} · {displayFoundLocation(item, t)}
+            {(item.report_category === "redry" ? t("lostFound.redryIssue") : item.report_category === "equipment" ? t("lostFound.equipmentTitle") : t("lostFound.foundTitle"))} · {displayFoundLocation(item, t)}
           </Typography>
+          {item.report_category === "redry" && item.redry_bag_number ? (
+            <Typography variant="body2">{t("lostFound.bagNumber")}: {item.redry_bag_number}</Typography>
+          ) : null}
           {item.report_category === "redry" ? (
             <Typography variant="body2">
               {["missing_ticket", "mesh_bag", "wrong_pocket"].filter((key) => item.redry_flags?.[key]).map((key) => t(`lostFound.redry.${key === "missing_ticket" ? "missingTicket" : key === "mesh_bag" ? "meshBag" : "wrongPocket"}`)).join(" · ")}
@@ -150,8 +153,9 @@ export default function LostFoundDesktopPage() {
       <Stack direction={{ xs: "column", md: "row" }} spacing={1} sx={{ mb: 2 }}>
         <TextField select size="small" label={t("lostFound.category")} value={category} onChange={(e) => setCategory(e.target.value)} sx={{ minWidth: 160 }}>
           <MenuItem value="all">{t("lostFound.category")}</MenuItem>
-          <MenuItem value="orphan">{t("lostFound.orphan")}</MenuItem>
+          <MenuItem value="orphan">{t("lostFound.foundTitle")}</MenuItem>
           <MenuItem value="redry">{t("lostFound.redryIssue")}</MenuItem>
+          <MenuItem value="equipment">{t("lostFound.equipmentTitle")}</MenuItem>
         </TextField>
         <TextField select size="small" label={t("lostFound.status")} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} sx={{ minWidth: 150 }}>
           <MenuItem value="all">{t("lostFound.status")}</MenuItem>
@@ -196,7 +200,7 @@ export default function LostFoundDesktopPage() {
         <DialogContent>
           <Stack spacing={1.25} sx={{ pt: 1 }}>
             <TextField select label={t("lostFound.status")} value={edit?.status || "new"} onChange={(e) => setEdit((row) => ({ ...row, status: e.target.value }))}>
-              {(edit?.report_category === "redry" ? ["new", "under_review", "resolved"] : STATUSES).map((code) => (
+              {(edit?.report_category === "orphan" || !edit?.report_category ? STATUSES : ["new", "under_review", "resolved"]).map((code) => (
                 <MenuItem key={code} value={code}>{t(`lostFound.status.${code}`)}</MenuItem>
               ))}
             </TextField>
@@ -204,7 +208,7 @@ export default function LostFoundDesktopPage() {
               <TextField label={t("lostFound.orderReference")} value={edit.order_reference} onChange={(e) => setEdit((row) => ({ ...row, order_reference: e.target.value }))} />
             ) : null}
             {edit?.status === "resolved" ? (
-              <TextField label={t("lostFound.reason")} value={edit.reason} onChange={(e) => setEdit((row) => ({ ...row, reason: e.target.value }))} />
+              <TextField label={edit?.report_category === "equipment" ? t("lostFound.repairNote") : t("lostFound.reason")} value={edit.reason} onChange={(e) => setEdit((row) => ({ ...row, reason: e.target.value }))} />
             ) : null}
             <TextField label={t("lostFound.comment")} value={edit?.comment || ""} onChange={(e) => setEdit((row) => ({ ...row, comment: e.target.value }))} />
           </Stack>

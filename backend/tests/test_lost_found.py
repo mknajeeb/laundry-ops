@@ -20,14 +20,17 @@ from backend.lost_found import (
     reconciliation_view,
     report_found_item,
     snapshot_reconciliation_on_complete,
+    veewash_issue_catalog,
 )
 from backend.lost_found_photos import read_found_item_image, save_found_item_image
 from backend.lost_found_rules import (
     ACTIVITY_CODE,
     LostFoundError,
     reconciliation_blockers,
+    require_configured_identifier,
     select_reconciliation_items,
     snapshot_is_current,
+    validate_equipment,
     validate_location,
     validate_redry,
     validate_status_change,
@@ -240,7 +243,8 @@ def test_redry_stays_out_of_the_lost_and_found_box(db):
     view = reconciliation_view(db, organization_id=1, business_date=date(2026, 11, 7))
     assert view["items"] == []
     assert len(view["redry_items"]) == 1
-    assert view["counts"] == {"orphan": 0, "redry": 1}
+    assert view["counts"] == {"orphan": 0, "redry": 1, "equipment": 0}
+    assert view["equipment_items"] == []
     assert all(blocker["code"] != "box_photo_required" for blocker in view["blockers"])
     account_item(
         db,
@@ -271,6 +275,68 @@ def test_location_rules():
     with pytest.raises(LostFoundError) as other:
         validate_location("other", detail="x")
     assert other.value.code == "location_detail_required"
+
+
+def test_veewash_numbers_and_equipment_are_separate_from_lost_and_found():
+    catalog = veewash_issue_catalog()
+    assert catalog["washers"] == [f"W{number}" for number in range(1, 45)]
+    assert catalog["dryers"] == [f"D{number}" for number in range(1, 41)]
+    assert catalog["folding_tables"] == [f"F{number}" for number in range(1, 21)]
+    assert catalog["washers"][0] == "W1" and catalog["washers"][-1] == "W44"
+    assert catalog["dryers"][-1] == "D40"
+    assert catalog["folding_tables"][-1] == "F20"
+    require_configured_identifier("W44", catalog["washers"], code="identifier_not_configured")
+    with pytest.raises(LostFoundError) as outside:
+        require_configured_identifier("W45", catalog["washers"], code="identifier_not_configured")
+    assert outside.value.code == "identifier_not_configured"
+    with pytest.raises(LostFoundError) as pocket:
+        validate_redry({"wrong_pocket": True}, "D9", allowed_pockets=["D1", "D2"])
+    assert pocket.value.code == "pocket_not_designated"
+    cleaned = validate_redry(
+        {"missing_ticket": True, "mesh_bag": True, "wrong_pocket": True},
+        "D1",
+        bag_number="",
+        allowed_pockets=["D1"],
+    )
+    assert cleaned["redry_bag_number"] is None
+    optional = validate_redry({"mesh_bag": True}, "D2", bag_number="MB-4", allowed_pockets=["D2"])
+    assert optional["redry_bag_number"] == "MB-4"
+    washer = validate_equipment("washer", "W12", allowed=catalog["washers"])
+    assert washer["location_label"] == "Washer W12"
+    with pytest.raises(LostFoundError) as named:
+        validate_equipment("other", "", detail="x")
+    assert named.value.code == "equipment_name_required"
+    other = validate_equipment("dehumidifier", "DH-1", allowed=[])
+    assert other["location_kind"] == "dehumidifier"
+    with pytest.raises(LostFoundError) as stored:
+        validate_status_change("stored", report_category="equipment")
+    assert stored.value.code == "invalid_status"
+    repaired = validate_status_change(
+        "resolved",
+        reason="Back in service",
+        report_category="equipment",
+    )
+    assert repaired["resolved_reason"] == "Back in service"
+
+
+def test_equipment_report_does_not_block_reconciliation(db):
+    item, created = _report(
+        db,
+        request_id="equipment-washer-down",
+        report_category="equipment",
+        kind="washer",
+        number="W3",
+        detail="will not start",
+    )
+    assert created is True
+    assert item["report_category"] == "equipment"
+    assert item["location_label"] == "Washer W3"
+    view = reconciliation_view(db, organization_id=1, business_date=date(2026, 11, 7))
+    assert view["items"] == []
+    assert view["redry_items"] == []
+    assert len(view["equipment_items"]) == 1
+    assert view["blockers"] == []
+    assert view["counts"]["equipment"] == 1
 
 
 def test_status_rules_do_not_touch_orders():
