@@ -28,6 +28,7 @@ import {
   updateWeeklyScheduleRoleGroup,
 } from "../../api";
 import { roleStyle } from "./weeklyScheduleRoles";
+import { useI18n } from "../../i18n/I18nContext";
 
 const EDITABLE_FIELDS = ["name", "kind", "role_group", "display_order", "active", "remarks_enabled"];
 
@@ -361,6 +362,7 @@ export default function WeeklyScheduleManageRolesDialog({
   onCatalogChange,
   onGroupsChange,
 }) {
+  const { t } = useI18n();
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
   const [groupsOpen, setGroupsOpen] = useState(false);
@@ -441,7 +443,7 @@ export default function WeeklyScheduleManageRolesDialog({
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth fullScreen={fullScreen}>
-      <DialogTitle>Roles &amp; tasks</DialogTitle>
+      <DialogTitle>{t("weeklySchedule.rolesTasks")}</DialogTitle>
       <DialogContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           <strong>Roles</strong> are timed production work inside a shift (weighing, sorting, washing, drying, folding,

@@ -14,6 +14,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
+import { useI18n } from "../../i18n/I18nContext";
 import { DAY_LABELS } from "./weeklyScheduleDates";
 import { roleStyle, scheduleRoleLabel, UNALLOCATED_BREAK_NOTE } from "./weeklyScheduleRoles";
 import { ASSIGNMENT_KIND, dayDateLabel, formatCoverageHours } from "./weeklyScheduleTimeBlocks";
@@ -56,14 +57,15 @@ function activate(handler) {
 
 /** "By employee | By time" and, for By time, "30 min | 15 min". */
 export function BreaksViewToggle({ view, onViewChange, interval, onIntervalChange }) {
+  const { t } = useI18n();
   return (
     <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap" className="no-print">
       <ToggleButtonGroup size="small" exclusive value={view} onChange={(_, next) => next && onViewChange?.(next)}>
         <ToggleButton value={BREAKS_VIEW.EMPLOYEE} sx={toggleSx} data-breaks-view={BREAKS_VIEW.EMPLOYEE}>
-          By employee
+          {t("weeklySchedule.byEmployee")}
         </ToggleButton>
         <ToggleButton value={BREAKS_VIEW.TIME} sx={toggleSx} data-breaks-view={BREAKS_VIEW.TIME}>
-          By time
+          {t("weeklySchedule.byTime")}
         </ToggleButton>
       </ToggleButtonGroup>
       {view === BREAKS_VIEW.TIME ? (

@@ -19,7 +19,7 @@ function waitForImages(doc) {
   );
 }
 
-export function openWeeklySchedulePrintWindow(rootEl, { pageSize = "landscape" } = {}) {
+export function openWeeklySchedulePrintWindow(rootEl, { pageSize = "landscape", title = "Weekly Schedule" } = {}) {
   if (!rootEl) {
     window.print();
     return;
@@ -37,7 +37,7 @@ export function openWeeklySchedulePrintWindow(rootEl, { pageSize = "landscape" }
 <html>
 <head>
 <meta charset="utf-8" />
-<title>Weekly Schedule</title>
+<title>${String(title).replace(/[<>&]/g, "")}</title>
 <style>${weeklySchedulePrintDocumentCss}</style>
 <style>
   @page { size: ${pageSize}; margin: 10mm 8mm; }

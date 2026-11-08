@@ -12,6 +12,7 @@ import {
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import PrintIcon from "@mui/icons-material/Print";
 import { getWeeklySchedule } from "../api";
+import { useI18n } from "../i18n/I18nContext";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import WeeklyScheduleShiftCard from "../components/weeklySchedule/WeeklyScheduleShiftCard";
 import WeeklyScheduleResponsibilityChip from "../components/weeklySchedule/WeeklyScheduleResponsibilityChip";
@@ -33,6 +34,7 @@ import {
 import "../components/weeklySchedule/weeklySchedulePrint.css";
 
 export default function WeeklyScheduleEmployeeViewPage() {
+  const { t } = useI18n();
   const { userId } = useParams();
   const [searchParams] = useSearchParams();
   const weekStartParam = searchParams.get("week_start");
@@ -144,10 +146,10 @@ export default function WeeklyScheduleEmployeeViewPage() {
           variant="text"
           sx={{ fontWeight: 700 }}
         >
-          Back to Weekly Schedule
+          {t("weeklySchedule.back")}
         </Button>
         <Button variant="outlined" startIcon={<PrintIcon />} onClick={handlePrint} sx={{ fontWeight: 700 }}>
-          Print
+          {t("weeklySchedule.print")}
         </Button>
       </Stack>
 
@@ -158,7 +160,7 @@ export default function WeeklyScheduleEmployeeViewPage() {
       ) : null}
 
       {!employee && !loading ? (
-        <Alert severity="warning">Employee not found in this week&apos;s schedule.</Alert>
+        <Alert severity="warning">{t("weeklySchedule.employeeMissing")}</Alert>
       ) : null}
 
       {employee ? (
@@ -267,7 +269,7 @@ export default function WeeklyScheduleEmployeeViewPage() {
                           variant="caption"
                           sx={{ display: "block", fontWeight: 800, letterSpacing: "0.06em", color: "text.secondary", mb: 0.25 }}
                         >
-                          TASKS
+                          {t("weeklySchedule.tasks")}
                         </Typography>
                         {cellResponsibilities.map((item) => (
                           <WeeklyScheduleResponsibilityChip
@@ -281,7 +283,7 @@ export default function WeeklyScheduleEmployeeViewPage() {
                     ) : null}
                     {!hasWork ? (
                       <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>
-                        Off
+                        {t("weeklySchedule.off")}
                       </Typography>
                     ) : null}
                   </Box>

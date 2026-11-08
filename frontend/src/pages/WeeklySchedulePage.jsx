@@ -1122,7 +1122,7 @@ export default function WeeklySchedulePage() {
 
   const handlePrint = () => {
     if (printContentRef.current) {
-      openWeeklySchedulePrintWindow(printContentRef.current);
+      openWeeklySchedulePrintWindow(printContentRef.current, { title: t("nav.weeklySchedule") });
     }
   };
 
@@ -1408,9 +1408,9 @@ export default function WeeklySchedulePage() {
                   },
                 }}
               >
-                <ToggleButton value={VIEW_MODE.EMPLOYEE}>By employee</ToggleButton>
-                <ToggleButton value={VIEW_MODE.TIME_ROLE}>By time &amp; role</ToggleButton>
-                <ToggleButton value={VIEW_MODE.BREAKS_TASKS}>Breaks &amp; tasks</ToggleButton>
+                <ToggleButton value={VIEW_MODE.EMPLOYEE}>{t("weeklySchedule.byEmployee")}</ToggleButton>
+                <ToggleButton value={VIEW_MODE.TIME_ROLE}>{t("weeklySchedule.byTimeRole")}</ToggleButton>
+                <ToggleButton value={VIEW_MODE.BREAKS_TASKS}>{t("weeklySchedule.breaksTasks")}</ToggleButton>
               </ToggleButtonGroup>
               {canEdit && addableEmployees.length ? (
                 <Select
@@ -1430,7 +1430,7 @@ export default function WeeklySchedulePage() {
                     height: 30,
                     "& .MuiSelect-select": { py: 0.35 },
                   }}
-                  renderValue={() => "Add employee"}
+                  renderValue={() => t("weeklySchedule.addEmployee")}
                 >
                   {addableEmployees.map((emp) => (
                     <MenuItem key={emp.user_id} value={emp.user_id}>
@@ -1447,7 +1447,7 @@ export default function WeeklySchedulePage() {
                   to="/performance/user-mapping"
                   sx={{ fontWeight: 700, py: 0.35 }}
                 >
-                  User mapping
+                  {t("weeklySchedule.userMapping")}
                 </Button>
               ) : null}
               {canEdit ? (
@@ -1460,7 +1460,7 @@ export default function WeeklySchedulePage() {
                   }}
                   sx={{ fontWeight: 800, py: 0.35 }}
                 >
-                  Assign Tasks
+                  {t("weeklySchedule.assignTasks")}
                 </Button>
               ) : null}
               {canEdit ? (
@@ -1470,7 +1470,7 @@ export default function WeeklySchedulePage() {
                   onClick={() => setRolesOpen(true)}
                   sx={{ fontWeight: 700, py: 0.35 }}
                 >
-                  Roles &amp; tasks
+                  {t("weeklySchedule.rolesTasks")}
                 </Button>
               ) : null}
               {canEdit ? (
@@ -1492,7 +1492,7 @@ export default function WeeklySchedulePage() {
                   onClick={() => setCascadeOpen(true)}
                   sx={{ fontWeight: 700, py: 0.35 }}
                 >
-                  Copy to future weeks
+                  {t("weeklySchedule.copyFuture")}
                 </Button>
               ) : null}
               <Button
@@ -1503,7 +1503,7 @@ export default function WeeklySchedulePage() {
                 disabled={!visibleEmployees.length}
                 sx={{ fontWeight: 700, py: 0.35 }}
               >
-                Export Excel
+                {t("weeklySchedule.exportExcel")}
               </Button>
               <Button
                 size="small"
@@ -1518,7 +1518,7 @@ export default function WeeklySchedulePage() {
                   "&:hover": { bgcolor: VEEWASH_DASHBOARD.primaryBlueDark },
                 }}
               >
-                Print
+                {t("weeklySchedule.print")}
               </Button>
             </Stack>
           </Box>
@@ -2028,11 +2028,11 @@ export default function WeeklySchedulePage() {
           <div className="weekly-schedule-print-doc-header">
             <div className="weekly-schedule-print-doc-title">
               {t("nav.weeklySchedule")} — {ENTITY_TAB_LABELS[employerTab]}
-              {viewMode === VIEW_MODE.TIME_ROLE ? " — Hourly coverage by role" : ""}
+              {viewMode === VIEW_MODE.TIME_ROLE ? ` — ${t("weeklySchedule.hourlyByRole")}` : ""}
               {viewMode === VIEW_MODE.BREAKS_TASKS
                 ? breaksView === BREAKS_VIEW.TIME
-                  ? ` — Breaks by time (${breaksByTime.interval} min) & tasks`
-                  : " — Breaks & tasks by employee"
+                  ? ` — ${t("weeklySchedule.breaksByTime", { minutes: breaksByTime.interval })}`
+                  : ` — ${t("weeklySchedule.breaksByEmployee")}`
                 : ""}
               {scheduleViewLabel ? ` — ${scheduleViewLabel}` : ""}
             </div>

@@ -317,7 +317,7 @@ export default function PayrollManagementPage() {
         {active?.key === "batches" ? (
           dashboardOnly ? (
             <Alert severity="warning">
-              You do not have permission to view employee payroll details.
+              {t("payroll.employeeDetailsDenied")}
             </Alert>
           ) : (
             <PayoutBatchesPanel
@@ -338,7 +338,7 @@ export default function PayrollManagementPage() {
         {active?.key === "reports_detail" ? (
           dashboardOnly ? (
             <Alert severity="warning">
-              You do not have permission to view employee payroll details.
+              {t("payroll.employeeDetailsDenied")}
             </Alert>
           ) : (
             <PayrollReportPanel viewMode="report" />
@@ -354,7 +354,7 @@ export default function PayrollManagementPage() {
         {active?.key === "accountant_employee" ? (
           dashboardOnly ? (
             <Alert severity="warning">
-              You do not have permission to view employee payroll details.
+              {t("payroll.employeeDetailsDenied")}
             </Alert>
           ) : (
             <AccountantEmployeePaystubsPanel w2Only={readOnlyAccountant} />

@@ -36,6 +36,7 @@ import {
   stockCheckProgress,
 } from "../utils/inventoryFloorHelpers";
 import { groupItemsByCategory } from "../utils/inventoryHelpers";
+import { useI18n } from "../i18n/I18nContext";
 
 const MODES = [
   { key: "count", label: "Count" },
@@ -57,6 +58,7 @@ export default function OpsFloorStockFlow({
   onLock,
   onDone,
 }) {
+  const { t } = useI18n();
   const displayName = user?.display_name || user?.username || "Unknown";
   const [phase, setPhase] = useState("counting"); // counting | completed
   const [loading, setLoading] = useState(true);
@@ -280,7 +282,7 @@ export default function OpsFloorStockFlow({
             boxShadow: `0 8px 28px -16px ${alpha(OPS_MOBILE.navy, 0.35)}`,
           }}
         >
-          <OpsTopBar title="Stock" onBack={onBack} backLabel="PIN" onLock={onLock} sticky />
+          <OpsTopBar title={t("inventory.stock")} onBack={onBack} backLabel="PIN" onLock={onLock} sticky />
           <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 2 }}>
             <CheckCircleOutlineIcon sx={{ color: OPS_MOBILE.success, fontSize: 28 }} />
             <Box>
@@ -338,7 +340,7 @@ export default function OpsFloorStockFlow({
           gap: 1.25,
         }}
       >
-        <OpsTopBar title="Stock" onBack={onBack} backLabel="PIN" onLock={onLock} sticky />
+        <OpsTopBar title={t("inventory.stock")} onBack={onBack} backLabel="PIN" onLock={onLock} sticky />
 
         <Stack direction="row" alignItems="center" spacing={1}>
           {mode === "count" ? (

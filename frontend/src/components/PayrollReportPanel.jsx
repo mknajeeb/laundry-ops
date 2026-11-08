@@ -33,6 +33,7 @@ import {
   getPayrollReportPdfHtml,
 } from "../api";
 import { downloadHtmlDocumentPdf } from "../contractorForms/contractorPrint";
+import { useI18n } from "../i18n/I18nContext";
 import {
   OT_PREMIUM_TOOLTIP,
 } from "../payroll/payrollOtDisplay";
@@ -160,6 +161,7 @@ function defaultsForReportMode(rangeMode) {
 }
 
 export default function PayrollReportPanel({ viewMode = "dashboard" }) {
+  const { t } = useI18n();
   const dashboardPrimary = viewMode !== "report";
   const [meta, setMeta] = useState({
     employees: [],
@@ -770,7 +772,7 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
       ) : null}
 
       {report?.employee_detail_restricted ? (
-        <Alert severity="info">{report.employee_detail_message || "You do not have permission to view employee payroll details."}</Alert>
+        <Alert severity="info">{report.employee_detail_message || t("payroll.employeeDetailsDenied")}</Alert>
       ) : null}
 
       {!dashboardPrimary || !showDashboard ? (
