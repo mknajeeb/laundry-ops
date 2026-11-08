@@ -10,6 +10,7 @@ Does not alter productivity, completion, PRE/POST, or import/merge.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
@@ -36,6 +37,7 @@ from backend.rinse_scan_purpose import (
     is_weight_entry_purpose,
     normalize_scan_purpose,
 )
+from backend.scan_chronology_service_filter import restrict_bag_ids
 from backend.ta_helpers import table_exists
 
 STATUS_COMPLETE = "complete"
@@ -408,6 +410,7 @@ def build_folder_chronology_payload(
     bag_id_filter: str | None = None,
     confidence_filter: str | None = None,
     machine_filter: str | None = None,
+    service_types: Collection[str] | None = None,
 ) -> dict[str, Any]:
     del machine_filter  # Folder sessions are bag/employee scoped, not machine util.
 
@@ -420,6 +423,7 @@ def build_folder_chronology_payload(
     if bag_id_filter:
         bid = str(bag_id_filter).strip()
         bag_ids = [bid] if bid in bag_ids else ([bid] if bid else [])
+    bag_ids = restrict_bag_ids(cursor, organization_id, bag_ids, service_types)
 
     events_by_bag = _load_scan_events_for_folder_bags(
         cursor, int(organization_id), bag_ids

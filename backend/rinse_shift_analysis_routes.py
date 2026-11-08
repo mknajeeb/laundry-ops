@@ -1117,6 +1117,7 @@ def register_rinse_shift_analysis_routes(
     def rinse_shift_analysis_scan_chronology():
         """Read-only scan session timeline for a single ET calendar day."""
         from backend.rinse_scan_chronology import build_scan_chronology_payload
+        from backend.scan_chronology_service_filter import parse_service_types
 
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
@@ -1154,6 +1155,7 @@ def register_rinse_shift_analysis_routes(
                     drying_duration_minutes = int(drying_duration_raw)
                 except ValueError:
                     return jsonify({"error": "drying_duration_minutes must be an integer"}), 400
+            service_types = parse_service_types(request.args.get("service_types"))
             payload = build_scan_chronology_payload(
                 cursor,
                 tenant_oid,
@@ -1168,6 +1170,7 @@ def register_rinse_shift_analysis_routes(
                 order_type_filter=order_type,
                 status_filter=status,
                 view_mode=view_mode,
+                service_types=service_types,
             )
             return jsonify(json_safe_rinse(payload))
         except ValueError as exc:

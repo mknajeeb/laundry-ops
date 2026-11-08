@@ -4,6 +4,7 @@ Unified scan chronology API — weighing, sorting, washing, drying, folder, and 
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import date, datetime
 from typing import Any
 
@@ -28,6 +29,7 @@ from backend.scan_chronology_local_sessions import (
     apply_local_sessions,
     list_local_sessions,
 )
+from backend.scan_chronology_service_filter import SERVICE_TYPES
 
 VALID_STAGES = frozenset(
     {
@@ -387,6 +389,7 @@ def build_user_activity_chronology_payload(
     confidence_filter: str | None = None,
     machine_filter: str | None = None,
     activity_type_filter: str | None = None,
+    service_types: Collection[str] | None = None,
 ) -> dict[str, Any]:
     type_filter = str(activity_type_filter or "all").strip().lower()
     if type_filter not in VALID_ACTIVITY_TYPE_FILTERS:
@@ -414,6 +417,7 @@ def build_user_activity_chronology_payload(
         from backend.rinse_operational_day import (
             chronology_payload_from_views,
             load_operational_day,
+            views_allowed_bag_ids,
         )
 
         ops_views = load_operational_day(cursor, organization_id, selected_date_et)
@@ -422,6 +426,9 @@ def build_user_activity_chronology_payload(
             "bag_id_filter": bag_id_filter,
             "confidence_filter": confidence_filter,
             "machine_filter": machine_filter,
+            "allowed_bag_ids": views_allowed_bag_ids(
+                cursor, organization_id, ops_views, service_types
+            ),
         }
         if type_filter in ("all", "weighing"):
             weighing_sessions = chronology_payload_from_views(
@@ -446,6 +453,7 @@ def build_user_activity_chronology_payload(
             organization_id,
             selected_date_et=selected_date_et,
             stage="folder",
+            service_types=service_types,
             **{k: v for k, v in common_kwargs.items() if k != "machine_filter"},
         )
         folder_sessions = folder_payload.get("sessions") or []
@@ -458,6 +466,7 @@ def build_user_activity_chronology_payload(
             employee_filter=employee_filter,
             bag_id_filter=bag_id_filter,
             confidence_filter=confidence_filter,
+            service_types=service_types,
         )
         post_processing_weight_sessions = ppw_payload.get("sessions") or []
 
@@ -508,11 +517,50 @@ def build_scan_chronology_payload(
     order_type_filter: str | None = None,
     status_filter: str | None = None,
     view_mode: str | None = None,
+    service_types: Collection[str] | None = None,
 ) -> dict[str, Any]:
     stage_key = str(stage or "sorting").strip().lower()
     if stage_key not in VALID_STAGES:
         raise ValueError(f"stage must be one of: {', '.join(sorted(VALID_STAGES))}")
+    payload = _build_stage_payload(
+        cursor,
+        organization_id,
+        stage_key=stage_key,
+        selected_date_et=selected_date_et,
+        employee_filter=employee_filter,
+        bag_id_filter=bag_id_filter,
+        confidence_filter=confidence_filter,
+        machine_filter=machine_filter,
+        activity_type_filter=activity_type_filter,
+        drying_duration_minutes=drying_duration_minutes,
+        order_type_filter=order_type_filter,
+        status_filter=status_filter,
+        view_mode=view_mode,
+        service_types=service_types,
+    )
+    payload["service_types"] = [
+        s for s in SERVICE_TYPES if service_types is None or s in service_types
+    ]
+    return payload
 
+
+def _build_stage_payload(
+    cursor,
+    organization_id: int,
+    *,
+    stage_key: str,
+    selected_date_et: date,
+    employee_filter: str | None,
+    bag_id_filter: str | None,
+    confidence_filter: str | None,
+    machine_filter: str | None,
+    activity_type_filter: str | None,
+    drying_duration_minutes: int | None,
+    order_type_filter: str | None,
+    status_filter: str | None,
+    view_mode: str | None,
+    service_types: Collection[str] | None,
+) -> dict[str, Any]:
     if stage_key == "user_activity":
         return build_user_activity_chronology_payload(
             cursor,
@@ -523,6 +571,7 @@ def build_scan_chronology_payload(
             confidence_filter=confidence_filter,
             machine_filter=machine_filter,
             activity_type_filter=activity_type_filter,
+            service_types=service_types,
         )
 
     if stage_key == "ready_to_fold":
@@ -538,6 +587,7 @@ def build_scan_chronology_payload(
             view_mode=view_mode,
             employee_filter=employee_filter,
             confidence_filter=confidence_filter,
+            service_types=service_types,
         )
 
     if stage_key == "process_flow":
@@ -554,6 +604,7 @@ def build_scan_chronology_payload(
             order_type_filter=order_type_filter,
             status_filter=status_filter,
             view_mode=view_mode,
+            service_types=service_types,
         )
 
     if stage_key == "coverage_audit":
@@ -565,6 +616,7 @@ def build_scan_chronology_payload(
             selected_date_et=selected_date_et,
             employee_filter=employee_filter,
             bag_id_filter=bag_id_filter,
+            service_types=service_types,
         )
 
     operational_stages = {
@@ -588,6 +640,7 @@ def build_scan_chronology_payload(
             bag_id_filter=bag_id_filter,
             confidence_filter=confidence_filter,
             machine_filter=machine_filter,
+            service_types=service_types,
         )
         sessions = raw.get("sessions") or []
         summary = raw.get("summary") or {}
@@ -604,6 +657,7 @@ def build_scan_chronology_payload(
             employee_filter=employee_filter,
             bag_id_filter=bag_id_filter,
             confidence_filter=confidence_filter,
+            service_types=service_types,
         )
         sessions = [_normalize_folder_session(r) for r in raw.get("sessions") or []]
         summary = _normalize_folder_summary(raw.get("summary") or {})

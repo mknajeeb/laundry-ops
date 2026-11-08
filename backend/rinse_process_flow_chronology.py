@@ -14,6 +14,7 @@ Process Flow queue calculator (see rinse_process_flow_queue):
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
@@ -36,6 +37,7 @@ from backend.rinse_washing_chronology import (
     select_current_cycle_washing_rows,
     select_current_lifecycle_washing_row,
 )
+from backend.scan_chronology_service_filter import restrict_bag_ids
 from backend.ta_helpers import table_exists
 
 # Re-export selector names so callers/tests can assert composition reuse.
@@ -844,6 +846,7 @@ def build_process_flow_chronology_payload(
     order_type_filter: str | None = None,
     status_filter: str | None = None,
     view_mode: str | None = None,
+    service_types: Collection[str] | None = None,
 ) -> dict[str, Any]:
     del (
         employee_filter,
@@ -905,6 +908,9 @@ def build_process_flow_chronology_payload(
     if bag_id_filter:
         needle = _bag_key(bag_id_filter)
         candidate_ids = {bid for bid in candidate_ids if bid == needle}
+    candidate_ids = set(
+        restrict_bag_ids(cursor, organization_id, sorted(candidate_ids), service_types)
+    )
 
     events_by_bag: dict[str, list[dict[str, Any]]] = {}
     for ev in window_events:

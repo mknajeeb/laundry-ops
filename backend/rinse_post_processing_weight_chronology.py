@@ -7,6 +7,7 @@ Does not alter productivity, completion, or payroll logic.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
@@ -15,6 +16,7 @@ from backend.rinse_employee_completed_bags import _wf_completion_weight_event
 from backend.rinse_folding_et import naive_et_day_end_inclusive, naive_et_day_start
 from backend.rinse_scan_purpose import is_weight_entry_purpose
 from backend.rinse_wf_weight_events import WF_POST_PROCESSING_WEIGHT_SIGNAL
+from backend.scan_chronology_service_filter import restrict_bag_ids
 from backend.ta_helpers import table_exists
 
 
@@ -143,6 +145,7 @@ def build_post_processing_weight_chronology_payload(
     employee_filter: str | None = None,
     bag_id_filter: str | None = None,
     confidence_filter: str | None = None,
+    service_types: Collection[str] | None = None,
 ) -> dict[str, Any]:
     day_start = naive_et_day_start(selected_date_et)
     day_end = naive_et_day_end_inclusive(selected_date_et)
@@ -154,6 +157,7 @@ def build_post_processing_weight_chronology_payload(
             if is_weight_entry_purpose(ev.get("purpose")) and str(ev.get("bag_id") or "").strip()
         }
     )
+    weight_bags = restrict_bag_ids(cursor, organization_id, weight_bags, service_types)
     full_events = _load_scan_events_for_bags(cursor, organization_id, weight_bags)
     rows = extract_post_processing_weight_rows_from_events(
         full_events, day_start=day_start, day_end=day_end

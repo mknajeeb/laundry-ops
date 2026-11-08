@@ -14,6 +14,7 @@ no synthetic events or new duration logic.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
@@ -25,6 +26,7 @@ from backend.rinse_scan_purpose import (
     is_weight_entry_purpose,
 )
 from backend.rinse_simple_shift_performance import _load_bag_metadata
+from backend.scan_chronology_service_filter import restrict_bag_ids
 from backend.ta_helpers import table_exists, table_has_column
 
 STAGE_WEIGHING = "weighing"
@@ -504,6 +506,7 @@ def build_scan_coverage_audit_payload(
     selected_date_et: date,
     employee_filter: str | None = None,
     bag_id_filter: str | None = None,
+    service_types: Collection[str] | None = None,
 ) -> dict[str, Any]:
     from backend.rinse_operational_day import load_operational_day
 
@@ -516,6 +519,7 @@ def build_scan_coverage_audit_payload(
         if bid:
             bag_ids = [bid]
             inclusion_by_bag.setdefault(bid, ["bag_filter"])
+    bag_ids = restrict_bag_ids(cursor, organization_id, bag_ids, service_types)
 
     day_start = naive_et_day_start(selected_date_et)
     day_end = naive_et_day_end_inclusive(selected_date_et)
