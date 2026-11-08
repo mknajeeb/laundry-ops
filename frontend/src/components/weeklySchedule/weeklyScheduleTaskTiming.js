@@ -1,5 +1,6 @@
 import { formatTime12 } from "../datetime/scheduleTimeUi";
 import { parseTimeToMinutes } from "../../payroll/schedulePlanner";
+import { translate } from "../../i18n/I18nContext";
 
 /** Stored on the task assignment. Relative modes follow the current shift and break. */
 export const TASK_TIMING = {
@@ -66,7 +67,9 @@ export function taskTimingLabel(item) {
   const mode = item?.timing_mode || TASK_TIMING.ANYTIME;
   if (mode === TASK_TIMING.ANYTIME) return "";
   if (mode === TASK_TIMING.SPECIFIC) return formatTime12(item?.start_time);
-  return TASK_TIMING_OPTIONS.find((option) => option.value === mode)?.label || "";
+  const key = `weeklySchedule.timing.${mode}`;
+  const translated = translate(key);
+  return translated !== key ? translated : TASK_TIMING_OPTIONS.find((option) => option.value === mode)?.label || "";
 }
 
 function minutes(value) {
@@ -167,7 +170,11 @@ function clock(value) {
 export function evaluateTaskTiming({ timingMode, startTime, members }) {
   const mode = timingMode || TASK_TIMING.ANYTIME;
   if (mode === TASK_TIMING.ANYTIME || !members?.length) return { errors: [], warnings: [] };
-  const label = TASK_TIMING_OPTIONS.find((option) => option.value === mode)?.label || mode;
+  const timingKey = `weeklySchedule.timing.${mode}`;
+  const translatedTiming = translate(timingKey);
+  const label = translatedTiming !== timingKey
+    ? translatedTiming
+    : TASK_TIMING_OPTIONS.find((option) => option.value === mode)?.label || mode;
   if (mode === TASK_TIMING.SPECIFIC) {
     const point = minutes(startTime);
     const when = clock(startTime);

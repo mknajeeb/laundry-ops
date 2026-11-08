@@ -1235,7 +1235,7 @@ export default function ManagementTaskConfigPage() {
                   })
                 }
               >
-                Add checklist
+                {t("tasks.config.addChecklist")}
               </Button>
             </Stack>
             <Stack spacing={1}>

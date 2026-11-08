@@ -81,8 +81,7 @@ export default function AssignTasksDialog({
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           <Typography variant="body2" color="text.secondary">
-            Choose the dates, the task or activity group, and the employees. Pairings are saved on those dates only.
-            The activity group definition stays the same.
+            {t("weeklySchedule.assignHelp")}
           </Typography>
           <Stack direction="row" flexWrap="wrap" gap={0.5}>
             {DISPLAY_DAY_ORDER.map((dow) => {
@@ -110,7 +109,7 @@ export default function AssignTasksDialog({
             onChange={(_, value) => setTask(value)}
             getOptionLabel={(option) => option.label || ""}
             isOptionEqualToValue={(option, value) => option.value === value.value}
-            renderInput={(params) => <TextField {...params} label="Task or activity group" size="small" />}
+            renderInput={(params) => <TextField {...params} label={t("weeklySchedule.taskOrGroup")} size="small" />}
           />
           <Autocomplete
             multiple
@@ -125,33 +124,33 @@ export default function AssignTasksDialog({
                 {option.display_name || `User #${option.user_id}`}
               </li>
             )}
-            renderInput={(params) => <TextField {...params} label="Employees" size="small" />}
+            renderInput={(params) => <TextField {...params} label={t("weeklySchedule.employees")} size="small" />}
           />
           {names.length ? (
             <Typography variant="body2" sx={{ fontWeight: 700 }}>
-              {`Assigned: ${names.join(", ")}`}
+              {t("weeklySchedule.assigned", { names: names.join(", ") })}
             </Typography>
           ) : null}
           <FormControl size="small" fullWidth>
-            <InputLabel>Timing</InputLabel>
-            <Select label="Timing" value={timingMode} onChange={(e) => setTimingMode(e.target.value)}>
+            <InputLabel>{t("weeklySchedule.timing")}</InputLabel>
+            <Select label={t("weeklySchedule.timing")} value={timingMode} onChange={(e) => setTimingMode(e.target.value)}>
               {TASK_TIMING_OPTIONS.map((option) => (
                 <MenuItem key={option.value} value={option.value}>
-                  {option.label}
+                  {t(`weeklySchedule.timing.${option.value}`)}
                 </MenuItem>
               ))}
             </Select>
           </FormControl>
           {timingMode === TASK_TIMING.SPECIFIC ? (
-            <PlanningTimePicker label="Start time" value={taskStart} onChange={setTaskStart} />
+            <PlanningTimePicker label={t("weeklySchedule.startTime")} value={taskStart} onChange={setTaskStart} />
           ) : null}
           {isGroup && people.length >= 2 ? (
             <Typography variant="caption" color="text.secondary">
-              Shared activity: one checklist for this assignment. Each employee keeps a separate timer.
+              {t("weeklySchedule.sharedActivity")}
             </Typography>
           ) : isGroup ? (
             <Typography variant="caption" color="text.secondary">
-              Select two or more employees to share one checklist. Each person still has a separate timer.
+              {t("weeklySchedule.selectTwo")}
             </Typography>
           ) : null}
           <TextField
@@ -159,25 +158,25 @@ export default function AssignTasksDialog({
             fullWidth
             multiline
             minRows={2}
-            label="Instructions"
+            label={t("weeklySchedule.instructions")}
             value={remarks}
             onChange={(e) => setRemarks(e.target.value)}
             inputProps={{ maxLength: 255 }}
           />
           <Typography variant="caption" color="text.secondary">
             {days.length
-              ? `This creates ${days.length} assignment${days.length === 1 ? "" : "s"}, one per selected date. `
-              : "Select at least one date. "}
+              ? `${days.length === 1 ? t("weeklySchedule.assignmentCountOne") : t("weeklySchedule.assignmentCountMany", { count: days.length })} `
+              : `${t("weeklySchedule.selectDate")} `}
             {isGroup && people.length >= 2
-              ? "Shared execution is one assignment for the group that day, not a copy for each person. "
-              : "Each selected employee receives the task. "}
-            Task assignments do not add scheduled hours.
+              ? `${t("weeklySchedule.sharedExecution")} `
+              : `${t("weeklySchedule.eachEmployee")} `}
+            {t("weeklySchedule.noHours")}
           </Typography>
           {error ? <Alert severity="error">{error}</Alert> : null}
         </Stack>
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose}>Cancel</Button>
+        <Button onClick={onClose}>{t("weeklySchedule.cancel")}</Button>
         <Button
           variant="contained"
           disabled={!canSave || saving}
@@ -193,7 +192,7 @@ export default function AssignTasksDialog({
             })
           }
         >
-          {saving ? "Assigning…" : "Assign"}
+          {saving ? t("weeklySchedule.assigning") : t("weeklySchedule.assign")}
         </Button>
       </DialogActions>
     </Dialog>

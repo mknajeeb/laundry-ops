@@ -1,5 +1,7 @@
 /** Business entity model — mirrors backend/business_entity.py */
 
+import { translate } from "../i18n/I18nContext";
+
 export const BUSINESS_ENTITY = {
   WASHPRO: "washpro",
   WASHMATE: "washmate",
@@ -66,7 +68,12 @@ export function normalizeShiftEntity(raw, organizationSlug = null) {
 }
 
 export function entityLabel(entity) {
-  return ENTITY_LABELS[String(entity || "").toLowerCase()] || entity || "—";
+  const key = String(entity || "").toLowerCase();
+  if (key === "combined" || key === "shared" || key === "none") {
+    const translated = translate(`entity.${key}`);
+    if (translated !== `entity.${key}`) return translated;
+  }
+  return ENTITY_LABELS[key] || entity || "—";
 }
 
 /** Worker entity options allowed for this tenant login. */

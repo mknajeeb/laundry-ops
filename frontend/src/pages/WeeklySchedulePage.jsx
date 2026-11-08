@@ -81,7 +81,6 @@ import WeeklyScheduleShiftCard from "../components/weeklySchedule/WeeklySchedule
 import WeeklyScheduleSummaryBar from "../components/weeklySchedule/WeeklyScheduleSummaryBar";
 import {
   ENTITY_TAB,
-  ENTITY_TAB_LABELS,
   addableEmployeesForEmployerTab,
   countEmployeesForEmployerTab,
   defaultNewShiftEntity,
@@ -216,6 +215,7 @@ function ScheduleDayCell({
   onTaskDrop,
   onMoveTask,
 }) {
+  const { t } = useI18n();
   const cellKey = `${employee.user_id}:${dow}`;
   const isDropTarget = dropTarget === cellKey;
   const isEmpty = cellEntries.length === 0 && cellResponsibilities.length === 0;
@@ -350,7 +350,7 @@ function ScheduleDayCell({
         >
           <AddCircleOutlineIcon sx={{ fontSize: 15 }} />
           <Typography variant="caption" sx={{ fontWeight: 600, whiteSpace: "nowrap" }}>
-            Add shift
+            {t("weeklySchedule.addShift")}
           </Typography>
         </Box>
       ) : null}
@@ -1134,7 +1134,7 @@ export default function WeeklySchedulePage() {
         grid: breaksTasksGrid,
         tasksByDay: breaksTasksByDay,
         weekStart,
-        tabLabel: `${ENTITY_TAB_LABELS[employerTab]}${viewSuffix}`,
+        tabLabel: `${entityLabel(employerTab)}${viewSuffix}`,
         summaryLines: noRolesSelected
           ? [noRolesText]
           : summaryTextLines(weekSummary, { showBreaks: showBreakMinutes, hideLaborHours }),
@@ -1146,7 +1146,7 @@ export default function WeeklySchedulePage() {
       exportWeeklyScheduleBreaksTasksCsv({
         grid: breaksTasksGrid,
         weekStart,
-        tabLabel: `${ENTITY_TAB_LABELS[employerTab]}${viewSuffix}`,
+        tabLabel: `${entityLabel(employerTab)}${viewSuffix}`,
         summaryLines: noRolesSelected
           ? [noRolesText]
           : summaryTextLines(weekSummary, { showBreaks: showBreakMinutes, hideLaborHours }),
@@ -1159,7 +1159,7 @@ export default function WeeklySchedulePage() {
         days: coverageDays,
         weekStart,
         columns: coverageMatrixColumns,
-        tabLabel: `${ENTITY_TAB_LABELS[employerTab]}${viewSuffix}`,
+        tabLabel: `${entityLabel(employerTab)}${viewSuffix}`,
         hoursSummary,
       });
       return;
@@ -1168,7 +1168,7 @@ export default function WeeklySchedulePage() {
       employees: visibleEmployees,
       entries: viewEntries,
       weekStart,
-      tabLabel: `${ENTITY_TAB_LABELS[employerTab]}${viewSuffix}`,
+      tabLabel: `${entityLabel(employerTab)}${viewSuffix}`,
       showRoleLabels,
       scheduleEndTimeEnabled,
       showBreaks: showBreakMinutes,
@@ -1184,7 +1184,7 @@ export default function WeeklySchedulePage() {
   const handleBulkMoveToRinseExclusive = async () => {
     if (
       !window.confirm(
-        "Move every shift this week to Rinse Exclusive? Worker profiles are updated too so they stay on the Rinse Exclusive tab.",
+        t("weeklySchedule.moveAllConfirm"),
       )
     ) {
       return;
@@ -1341,7 +1341,7 @@ export default function WeeklySchedulePage() {
               </Typography>
               {hideEmployerTabs ? (
                 <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 600, lineHeight: 1.2 }}>
-                  {ENTITY_TAB_LABELS[employerTab]}
+                  {entityLabel(employerTab)}
                 </Typography>
               ) : null}
             </Stack>
@@ -1481,7 +1481,7 @@ export default function WeeklySchedulePage() {
                   onClick={handleBulkMoveToRinseExclusive}
                   sx={{ fontWeight: 700, py: 0.35 }}
                 >
-                  {bulkEmployerSaving ? "Moving…" : "All → Rinse Exclusive"}
+                  {bulkEmployerSaving ? t("weeklySchedule.moving") : t("weeklySchedule.moveAll")}
                 </Button>
               ) : null}
               {canEdit ? (
@@ -1543,7 +1543,7 @@ export default function WeeklySchedulePage() {
                   <Tab
                     key={tabKey}
                     value={tabKey}
-                    label={`${ENTITY_TAB_LABELS[tabKey]} (${countEmployeesForEmployerTab(
+                    label={`${entityLabel(tabKey)} (${countEmployeesForEmployerTab(
                       data?.employees || [],
                       tabKey,
                       data?.entries || [],
@@ -2027,7 +2027,7 @@ export default function WeeklySchedulePage() {
         >
           <div className="weekly-schedule-print-doc-header">
             <div className="weekly-schedule-print-doc-title">
-              {t("nav.weeklySchedule")} — {ENTITY_TAB_LABELS[employerTab]}
+              {t("nav.weeklySchedule")} — {entityLabel(employerTab)}
               {viewMode === VIEW_MODE.TIME_ROLE ? ` — ${t("weeklySchedule.hourlyByRole")}` : ""}
               {viewMode === VIEW_MODE.BREAKS_TASKS
                 ? breaksView === BREAKS_VIEW.TIME

@@ -1,7 +1,9 @@
 /** Role / day view filters for weekly schedule visibility. */
 
 import { DAY_LABELS, DISPLAY_DAY_ORDER } from "./weeklyScheduleDates";
+import { translate } from "../../i18n/I18nContext";
 import {
+  displayScheduleRoleName,
   entryRoleAssignments,
   parseEntryRoles,
   scheduleRoleCatalog,
@@ -165,13 +167,17 @@ export function countDayShifts(entries, dayOfWeek) {
 export function buildRoleViewTabs(entries, { hiddenRoles = [] } = {}) {
   const hidden = new Set(hiddenRoles || []);
   const list = entries || [];
-  const tabs = [{ value: SCHEDULE_VIEW_ALL, label: "All", count: distinctUsers(list) }];
+  const tabs = [{ value: SCHEDULE_VIEW_ALL, label: translate("weeklySchedule.filters.all"), count: distinctUsers(list) }];
   for (const role of scheduleRoleCatalog()) {
     if (hidden.has(role.code)) continue;
     const count = distinctUsers(filterEntriesByRoles(list, [role.code]));
     const pickable = role.active !== false && role.uses_time_slots !== false;
     if (!pickable && !count) continue;
-    tabs.push({ value: role.code, label: role.name || scheduleRoleLabel(role.code), count });
+    tabs.push({
+      value: role.code,
+      label: displayScheduleRoleName(role.code, role.name) || scheduleRoleLabel(role.code),
+      count,
+    });
   }
   return tabs;
 }
@@ -195,11 +201,16 @@ export function filterResponsibilitiesByRoleView(responsibilities, selectedRoles
 /** Day chips count distinct employees with a shift or daily responsibility on each day. */
 export function buildDayViewTabs(entries, { compact = false, responsibilities = [] } = {}) {
   const items = [...(entries || []), ...(responsibilities || [])];
-  const tabs = [{ value: SCHEDULE_VIEW_ALL, label: compact ? "All" : "All Days", count: distinctUsers(items) }];
+  const tabs = [{
+    value: SCHEDULE_VIEW_ALL,
+    label: compact ? translate("weeklySchedule.filters.all") : translate("weeklySchedule.filters.allDays"),
+    count: distinctUsers(items),
+  }];
   DISPLAY_DAY_ORDER.forEach((dow) => {
+    const compactLabel = translate(`schedule.day.${dow}`);
     tabs.push({
       value: String(dow),
-      label: compact ? COMPACT_DAY_LABELS[dow] : DAY_LABELS[dow],
+      label: compact ? (compactLabel.startsWith("schedule.day.") ? COMPACT_DAY_LABELS[dow] : compactLabel) : DAY_LABELS[dow],
       count: distinctUsers(items.filter((item) => Number(item.day_of_week) === dow)),
     });
   });

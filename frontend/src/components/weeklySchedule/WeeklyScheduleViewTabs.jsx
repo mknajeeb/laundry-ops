@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { Box, Chip, Stack, Typography } from "@mui/material";
+import { useI18n } from "../../i18n/I18nContext";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import { groupRoleCodes } from "./weeklyScheduleRoles";
 import {
@@ -11,12 +12,12 @@ import {
   toggleSelectionCode,
 } from "./weeklyScheduleViewFilters";
 
-function FilterChip({ label, count, selected, onClick }) {
+function FilterChip({ label, count, selected, onClick, title }) {
   return (
     <Chip
       size="small"
       label={`${label} (${count})`}
-      title={`${count} ${count === 1 ? "employee" : "employees"}`}
+      title={title}
       onClick={onClick}
       variant={selected ? "filled" : "outlined"}
       color={selected ? "primary" : "default"}
@@ -89,6 +90,9 @@ export default function WeeklyScheduleViewTabs({
   const roleGroups = groupRoleCodes(singleRoleTabs.map((tab) => tab.value));
   const showAllRoles = !Array.isArray(selectedRoles);
   const universe = roleUniverse || singleRoleTabs.map((tab) => tab.value);
+  const { t } = useI18n();
+  const countTitle = (count) =>
+    t(count === 1 ? "weeklySchedule.filters.employee" : "weeklySchedule.filters.employees", { count });
 
   return (
     <Box
@@ -104,18 +108,19 @@ export default function WeeklyScheduleViewTabs({
       className="no-print"
     >
       {hideRoles ? null : (
-        <ChipRow title="Roles">
+        <ChipRow title={t("weeklySchedule.filters.roles")}>
           {allRoleTab ? (
             <FilterChip
               label={allRoleTab.label}
               count={allRoleTab.count}
+              title={countTitle(allRoleTab.count)}
               selected={showAllRoles}
               onClick={() => onSelectedRolesChange(null)}
             />
           ) : null}
           <Chip
             size="small"
-            label="Clear"
+            label={t("weeklySchedule.filters.clear")}
             variant="outlined"
             onClick={() => onSelectedRolesChange([])}
             sx={{ height: 22, fontWeight: 700, fontSize: "0.72rem", borderStyle: "dashed" }}
@@ -134,6 +139,7 @@ export default function WeeklyScheduleViewTabs({
                     key={role}
                     label={tab.label}
                     count={tab.count}
+                    title={countTitle(tab.count)}
                     selected={isCodeSelected(selectedRoles, role)}
                     onClick={() => onSelectedRolesChange(toggleSelectionCode(selectedRoles, role, universe))}
                   />
@@ -144,12 +150,13 @@ export default function WeeklyScheduleViewTabs({
         </ChipRow>
       )}
 
-      <ChipRow title="Days">
+      <ChipRow title={t("weeklySchedule.filters.days")}>
         {dayTabs.map((tab) => (
           <FilterChip
             key={tab.value}
             label={tab.label}
             count={tab.count}
+            title={countTitle(tab.count)}
             selected={dayTab === tab.value}
             onClick={() => onDayTabChange(tab.value)}
           />

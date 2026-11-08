@@ -113,3 +113,33 @@ export function useI18n() {
   if (!ctx) throw new Error("useI18n outside I18nProvider");
   return ctx;
 }
+
+/** Locale for labels rendered outside a hook. English unless the operator chose Spanish. */
+export function currentLocale() {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored === "es" || stored === "en") return stored;
+  } catch {
+    /* ignore */
+  }
+  try {
+    const session = sessionStorage.getItem(STORAGE_KEY);
+    if (session === "es" || session === "en") return session;
+  } catch {
+    /* ignore */
+  }
+  if (typeof document !== "undefined" && document.documentElement.lang === "es") return "es";
+  return "en";
+}
+
+export function translate(key, vars) {
+  const locale = currentLocale();
+  const table = TRANSLATIONS[locale] || TRANSLATIONS.en;
+  let out = table[key] ?? TRANSLATIONS.en[key] ?? key;
+  if (vars && typeof vars === "object" && typeof out === "string") {
+    out = out.replace(/\{(\w+)\}/g, (_, name) =>
+      vars[name] != null ? String(vars[name]) : `{${name}}`,
+    );
+  }
+  return out;
+}

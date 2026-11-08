@@ -1,6 +1,7 @@
 import { parseTimeToMinutes } from "../../payroll/schedulePlanner";
 import { normalizeTimeHm } from "../datetime/scheduleTimeUi";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
+import { translate } from "../../i18n/I18nContext";
 
 export const ROLE_ORDER = [
   "wash",
@@ -99,8 +100,44 @@ export function scheduleRoleInfo(code) {
   return DEFAULT_ROLE_CATALOG.find((role) => role.code === code) || null;
 }
 
+const DEFAULT_GROUP_LABELS = {
+  RINSE_WF: "Rinse WF",
+  RINSE_HD: "Rinse HD",
+  DROP_OFF: "Drop Off",
+  DHS: "DHS",
+  SELF_SERVICE: "Self Service",
+  CLEANING: "Cleaning",
+};
+
+/** Built-in labels translate. A name the organization changed is left as entered. */
+export function displayScheduleRoleName(code, storedName) {
+  const builtin = DEFAULT_ROLE_NAMES[code];
+  const stored = String(storedName || "").trim();
+  if (stored && (!builtin || stored !== builtin)) return stored;
+  const key = `schedule.role.${code}`;
+  const translated = translate(key);
+  if (translated !== key) return translated;
+  return stored || builtin || code;
+}
+
+export function displayScheduleGroupLabel(code, storedLabel) {
+  const stored = String(storedLabel || "").trim();
+  const builtin = DEFAULT_GROUP_LABELS[code];
+  if (!code) {
+    if (stored && stored !== UNGROUPED_LABEL) return stored;
+    return translate("schedule.group.other");
+  }
+  if (stored && builtin && stored !== builtin) return stored;
+  if (stored && !builtin) return stored;
+  const key = `schedule.group.${code}`;
+  const translated = translate(key);
+  if (translated !== key) return translated;
+  return stored || builtin || code;
+}
+
 export function scheduleRoleLabel(code) {
-  return scheduleRoleInfo(code)?.name || ROLE_STYLES[code]?.label || code;
+  const stored = scheduleRoleInfo(code)?.name;
+  return displayScheduleRoleName(code, stored) || ROLE_STYLES[code]?.label || code;
 }
 
 let activeRoleGroups = [];
@@ -135,7 +172,12 @@ export function groupRoleCodes(codes) {
     .sort(([a], [b]) => (order.has(a) ? order.get(a) : 9999) - (order.has(b) ? order.get(b) : 9999))
     .map(([code, roles]) => {
       const group = activeRoleGroups.find((g) => g.code === code);
-      return { code, label: group?.label || UNGROUPED_LABEL, active: group?.active !== false, roles };
+      return {
+        code,
+        label: displayScheduleGroupLabel(code, group?.label || (code ? "" : UNGROUPED_LABEL)),
+        active: group?.active !== false,
+        roles,
+      };
     });
 }
 
@@ -174,6 +216,9 @@ export const ROLE_COMPACT_LABELS = {
 export function roleCompactLabel(roleKey) {
   const name = scheduleRoleInfo(roleKey)?.name;
   if (name && name !== DEFAULT_ROLE_NAMES[roleKey]) return name;
+  const key = `schedule.roleCompact.${roleKey}`;
+  const translated = translate(key);
+  if (translated !== key) return translated;
   return ROLE_COMPACT_LABELS[roleKey] || name || ROLE_STYLES[roleKey]?.label || roleKey;
 }
 

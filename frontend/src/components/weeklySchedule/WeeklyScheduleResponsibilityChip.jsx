@@ -1,4 +1,5 @@
 import { Box, Button, Typography } from "@mui/material";
+import { useI18n } from "../../i18n/I18nContext";
 import { roleStyle, scheduleRoleLabel } from "./weeklyScheduleRoles";
 import { taskExecutionLabel, taskGroupLabel, taskTimingIssues, taskTimingLabel } from "./weeklyScheduleTaskTiming";
 import { TASK_DRAG_TYPE, taskDragPayload } from "./weeklyScheduleTaskMove";
@@ -24,6 +25,7 @@ export default function WeeklyScheduleResponsibilityChip({
   onDragEnd,
   onDropOnCard,
 }) {
+  const { t } = useI18n();
   const style = roleStyle(item.role);
   const people = taskGroupLabel(item, employeesById);
   const timing = taskTimingLabel(item);
@@ -112,7 +114,7 @@ export default function WeeklyScheduleResponsibilityChip({
           }}
           sx={{ mt: 0.25, p: 0, minWidth: 0, fontSize: "0.62rem", fontWeight: 800, textTransform: "none" }}
         >
-          Edit / Move
+          {t("weeklySchedule.editMove")}
         </Button>
       ) : null}
     </Box>

@@ -1,4 +1,5 @@
 import { Box, Button, Chip, IconButton, Stack, Tooltip, Typography, useMediaQuery, useTheme } from "@mui/material";
+import { useI18n } from "../../i18n/I18nContext";
 import PersonOffOutlinedIcon from "@mui/icons-material/PersonOffOutlined";
 import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
 import VisibilityOffOutlinedIcon from "@mui/icons-material/VisibilityOffOutlined";
@@ -25,6 +26,7 @@ export default function WeeklyScheduleEmployeeCell({
   showBreaks = true,
   onViewSchedule,
 }) {
+  const { t } = useI18n();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
 
@@ -156,7 +158,7 @@ export default function WeeklyScheduleEmployeeCell({
           {excluded ? (
             <Chip
               size="small"
-              label="Excluded this week"
+              label={t("weeklySchedule.excludedWeek")}
               color="default"
               sx={{ mt: 0.5, height: 22, fontSize: "0.68rem", fontWeight: 700 }}
             />
@@ -164,10 +166,10 @@ export default function WeeklyScheduleEmployeeCell({
         </Box>
 
         {onViewSchedule ? (
-          <Tooltip title="Open employee schedule view">
+          <Tooltip title={t("weeklySchedule.openEmployee")}>
             <IconButton
               size="small"
-              aria-label="Open employee schedule view"
+              aria-label={t("weeklySchedule.openEmployee")}
               className="weekly-schedule-employee-cell-actions"
               onClick={() => onViewSchedule(employee)}
               sx={{ mt: -0.25, flexShrink: 0 }}
@@ -178,10 +180,10 @@ export default function WeeklyScheduleEmployeeCell({
         ) : null}
 
         {canManageExclusions ? (
-          <Tooltip title={excluded ? "Include in schedule" : "Exclude from this week's schedule"}>
+          <Tooltip title={excluded ? t("weeklySchedule.include") : t("weeklySchedule.excludeTip")}>
             <IconButton
               size="small"
-              aria-label={excluded ? "Include in schedule" : "Exclude from schedule"}
+              aria-label={excluded ? t("weeklySchedule.include") : t("weeklySchedule.exclude")}
               disabled={excludeSaving}
               onClick={() => onExcludeToggle(employee, !excluded)}
               sx={{ mt: -0.25, flexShrink: 0 }}
