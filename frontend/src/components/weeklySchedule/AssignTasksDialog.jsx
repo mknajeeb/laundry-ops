@@ -21,6 +21,7 @@ import { scheduleRoleCatalog, scheduleRoleLabel } from "./weeklyScheduleRoles";
 import { routineAssignmentOptions } from "../tasks/routineAssignmentOptions";
 import { TASK_TIMING, TASK_TIMING_OPTIONS } from "./weeklyScheduleTaskTiming";
 import PlanningTimePicker from "../datetime/PlanningTimePicker";
+import { useI18n } from "../../i18n/I18nContext";
 
 const NO_DAYS = [];
 
@@ -45,6 +46,7 @@ export default function AssignTasksDialog({
   employees = [],
   defaultDays = NO_DAYS,
 }) {
+  const { t } = useI18n();
   const options = useMemo(() => taskOptions(), [open]);
   const [days, setDays] = useState([]);
   const [task, setTask] = useState(null);
@@ -75,7 +77,7 @@ export default function AssignTasksDialog({
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Assign Tasks</DialogTitle>
+      <DialogTitle>{t("weeklySchedule.assignTasks")}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           <Typography variant="body2" color="text.secondary">

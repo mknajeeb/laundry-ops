@@ -26,6 +26,7 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import TrendingDownIcon from "@mui/icons-material/TrendingDown";
 import TrendingFlatIcon from "@mui/icons-material/TrendingFlat";
 import TrendingUpIcon from "@mui/icons-material/TrendingUp";
+import { useI18n } from "../i18n/I18nContext";
 import {
   Area,
   AreaChart,
@@ -230,6 +231,7 @@ export default function PayrollReportAnalyticsDashboard({
   onTrendRangeChange,
   onSelectEmployee,
 }) {
+  const { t } = useI18n();
   const [drillCategory, setDrillCategory] = useState(null);
   const [permissionNotice, setPermissionNotice] = useState(false);
 
@@ -460,7 +462,7 @@ export default function PayrollReportAnalyticsDashboard({
             <SectionTitle>Employee Summary — {drillCategoryLabel}</SectionTitle>
           </Stack>
           {!canViewDetail ? (
-            <Alert severity="warning">You do not have permission to view employee payroll details.</Alert>
+            <Alert severity="warning">{t("payroll.employeeDetailsDenied")}</Alert>
           ) : (
             <Paper variant="outlined" sx={{ borderColor: VEEWASH_BRAND.borderSoft }}>
               <TableContainer sx={{ overflowX: "auto" }}>
@@ -565,7 +567,7 @@ export default function PayrollReportAnalyticsDashboard({
         <>
           {permissionNotice ? (
             <Alert severity="warning" onClose={() => setPermissionNotice(false)}>
-              You do not have permission to view employee payroll details.
+              {t("payroll.employeeDetailsDenied")}
             </Alert>
           ) : null}
 

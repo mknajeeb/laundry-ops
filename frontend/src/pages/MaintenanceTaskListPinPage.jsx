@@ -126,7 +126,7 @@ export default function MaintenanceTaskListPinPage() {
   const [branding, setBranding] = useState(null);
   const [pendingTick, setPendingTick] = useState(0);
   const [unavailableMessage, setUnavailableMessage] = useState(
-    "End-of-Day Checklist isn’t available right now.",
+    t("maintenance.checklistUnavailable"),
   );
 
   const punchInFlightRef = useRef(false);
@@ -248,7 +248,7 @@ export default function MaintenanceTaskListPinPage() {
     if (res.status === 401) {
       clearMtlPinSession();
       setSession(null);
-      setUnavailableMessage("End-of-Day Checklist isn’t available right now.");
+      setUnavailableMessage(t("maintenance.checklistUnavailable"));
       setPhase("unavailable");
       return null;
     }
@@ -261,7 +261,7 @@ export default function MaintenanceTaskListPinPage() {
       isCompletedStatus(res.data.list?.status) || !!res.data.list?.read_only;
     setPhase(done ? "submitted" : "list");
     return res.data.list;
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     toggleRef.current = createTaskToggleController({
@@ -290,7 +290,7 @@ export default function MaintenanceTaskListPinPage() {
     const existing = loadMtlPinSession();
     if (!existing || !slug) {
       if (fromHub && slug && !existing) {
-        setUnavailableMessage("End-of-Day Checklist isn’t available right now.");
+        setUnavailableMessage(t("maintenance.checklistUnavailable"));
         setPhase("unavailable");
       }
       return;
@@ -306,7 +306,7 @@ export default function MaintenanceTaskListPinPage() {
         if (!cancelled) {
           clearMtlPinSession();
           setSession(null);
-          setUnavailableMessage("End-of-Day Checklist isn’t available right now.");
+          setUnavailableMessage(t("maintenance.checklistUnavailable"));
           setPhase("unavailable");
         }
       } finally {
@@ -316,7 +316,7 @@ export default function MaintenanceTaskListPinPage() {
     return () => {
       cancelled = true;
     };
-  }, [slug, loadTodayList, fromHub]);
+  }, [slug, loadTodayList, fromHub, t]);
 
   const openFromPin = useCallback(
     async (digits) => {
@@ -356,7 +356,7 @@ export default function MaintenanceTaskListPinPage() {
         prevPinLenRef.current = 0;
         await loadTodayList(sess);
       } catch (e) {
-        setUnavailableMessage("End-of-Day Checklist isn’t available right now.");
+        setUnavailableMessage(t("maintenance.checklistUnavailable"));
         setPhase("unavailable");
         setPin("");
         prevPinLenRef.current = 0;
@@ -413,7 +413,7 @@ export default function MaintenanceTaskListPinPage() {
           <OpsTopBar title={t("mobileOps.tile.checklist")} onBack={onBack} backLabel="PIN" onLock={onLock} sticky />
           <Stack spacing={0.5} alignItems="center" sx={{ py: 1.5, textAlign: "center" }}>
             <Typography sx={{ fontWeight: 900, fontSize: "1.15rem", color: OPS_MOBILE.navy }}>
-              Maintenance Checklist Submitted
+              {t("maintenance.checklistSubmitted")}
             </Typography>
             <Typography sx={{ fontWeight: 700, color: OPS_MOBILE.muted, fontSize: "0.95rem" }}>
               {dateLine}
@@ -514,7 +514,7 @@ export default function MaintenanceTaskListPinPage() {
 
           {emptyAssigned ? (
             <Typography sx={{ fontWeight: 800, fontSize: "1.15rem", textAlign: "center", py: 3, color: OPS_MOBILE.navy }}>
-              No tasks assigned
+              {t("maintenance.noTasks")}
             </Typography>
           ) : null}
 
