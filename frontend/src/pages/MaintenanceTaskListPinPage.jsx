@@ -410,7 +410,7 @@ export default function MaintenanceTaskListPinPage() {
             gap: 1.5,
           }}
         >
-          <OpsTopBar title="End-of-Day Checklist" onBack={onBack} backLabel="PIN" onLock={onLock} sticky />
+          <OpsTopBar title={t("mobileOps.tile.checklist")} onBack={onBack} backLabel="PIN" onLock={onLock} sticky />
           <Stack spacing={0.5} alignItems="center" sx={{ py: 1.5, textAlign: "center" }}>
             <Typography sx={{ fontWeight: 900, fontSize: "1.15rem", color: OPS_MOBILE.navy }}>
               Maintenance Checklist Submitted
@@ -445,7 +445,7 @@ export default function MaintenanceTaskListPinPage() {
               bgcolor: alpha(OPS_MOBILE.navy, 0.08),
             }}
           >
-            Lock
+            {t("mobileOps.lock")}
           </Button>
         </Box>
       </OpsMobileShell>
@@ -478,7 +478,7 @@ export default function MaintenanceTaskListPinPage() {
           }}
         >
           <OpsTopBar
-            title="End-of-Day Checklist"
+            title={t("mobileOps.tile.checklist")}
             onBack={onBack}
             backLabel="PIN"
             onLock={onLock}
@@ -507,7 +507,7 @@ export default function MaintenanceTaskListPinPage() {
                   bgcolor: alpha(OPS_MOBILE.navy, 0.08),
                 }}
               >
-                Lock
+                {t("mobileOps.lock")}
               </Button>
             </Stack>
           ) : null}
@@ -642,7 +642,7 @@ export default function MaintenanceTaskListPinPage() {
             <TenantLogo size={40} />
           )}
           <Typography sx={{ fontWeight: 900, fontSize: "1.35rem", color: OPS_MOBILE.navy }}>
-            End-of-Day Checklist
+            {t("mobileOps.tile.checklist")}
           </Typography>
 
           {!routeSlug ? (

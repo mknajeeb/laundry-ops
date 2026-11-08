@@ -21,6 +21,7 @@ import LostFoundReportForm from "../components/lostFound/LostFoundReportForm";
 import { useI18n } from "../i18n/I18nContext";
 import { OpsMobileShell, OpsTopBar } from "../opsMobile";
 import { clearPinHubSession, loadPinHubSession, pinHubMenuPath } from "../utils/pinHubSession";
+import { displayFoundEvent, displayFoundLocation } from "../utils/lostFoundLocation";
 
 const STATUSES = ["new", "under_review", "returned", "stored", "resolved"];
 
@@ -50,7 +51,7 @@ function ItemCard({ item, hub, busy, onSave }) {
   const changed = status !== item.status;
   return (
     <Stack spacing={1} sx={{ p: 1.25, border: "1px solid #dbe3ef", borderRadius: 2, bgcolor: "#fff" }}>
-      <Typography sx={{ fontWeight: 900 }}>{item.location_label}</Typography>
+      <Typography sx={{ fontWeight: 900 }}>{displayFoundLocation(item, t)}</Typography>
       <Typography variant="body2" color="text.secondary">
         {item.employee_name} · {item.reported_at_display}
         {item.carried_forward ? ` · ${t("lostFound.carried")}` : ""}
@@ -66,7 +67,7 @@ function ItemCard({ item, hub, busy, onSave }) {
         <Stack spacing={0.25}>
           {(item.events || []).map((event) => (
             <Typography key={event.id} variant="caption" color="text.secondary">
-              {event.created_at_display} · {event.actor_name || t("lostFound.employee")} · {event.event_type}
+              {event.created_at_display} · {event.actor_name || t("lostFound.employee")} · {displayFoundEvent(event.event_type, t)}
               {event.payload?.comment ? ` — ${event.payload.comment}` : ""}
             </Typography>
           ))}

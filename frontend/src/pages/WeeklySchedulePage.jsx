@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
+import { useI18n } from "../i18n/I18nContext";
 import {
   Alert,
   Box,
@@ -358,6 +359,7 @@ function ScheduleDayCell({
 }
 
 export default function WeeklySchedulePage() {
+  const { t } = useI18n();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const isTablet = useMediaQuery(theme.breakpoints.between("md", "lg"));
@@ -1335,7 +1337,7 @@ export default function WeeklySchedulePage() {
                 fontWeight={800}
                 sx={{ letterSpacing: "-0.02em", color: VEEWASH_DASHBOARD.primaryBlueDark, lineHeight: 1.2 }}
               >
-                Weekly Schedule
+                {t("nav.weeklySchedule")}
               </Typography>
               {hideEmployerTabs ? (
                 <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 600, lineHeight: 1.2 }}>
@@ -2025,7 +2027,7 @@ export default function WeeklySchedulePage() {
         >
           <div className="weekly-schedule-print-doc-header">
             <div className="weekly-schedule-print-doc-title">
-              Weekly Schedule — {ENTITY_TAB_LABELS[employerTab]}
+              {t("nav.weeklySchedule")} — {ENTITY_TAB_LABELS[employerTab]}
               {viewMode === VIEW_MODE.TIME_ROLE ? " — Hourly coverage by role" : ""}
               {viewMode === VIEW_MODE.BREAKS_TASKS
                 ? breaksView === BREAKS_VIEW.TIME

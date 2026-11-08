@@ -1317,6 +1317,27 @@ def assert_reconciliation_current_for_approval(
         )
 
 
+def _bilingual_location(item: Mapping[str, Any]) -> str:
+    """Notification text names the place in English and Spanish. The stored label stays unchanged."""
+    labels = {
+        "washer": "Washer / Lavadora",
+        "dryer": "Dryer / Secadora",
+        "folding_table": "Folding Table / Mesa de doblado",
+        "floor": "Floor / Piso",
+        "cart": "Cart / Carrito",
+    }
+    kind = str(item.get("location_kind") or "")
+    number = str(item.get("location_number") or "").strip()
+    if kind == "other":
+        return str(item.get("location_label") or item.get("location_detail") or "the facility")
+    label = labels.get(kind)
+    if label and number:
+        return f"{label} {number}"
+    if label:
+        return label
+    return str(item.get("location_label") or "the facility")
+
+
 def reopen_reconciliation(cursor, organization_id: int, business_date: Any) -> None:
     business_date = _coerce_day(business_date)
     require_lost_found_tables(cursor)
@@ -1449,7 +1470,7 @@ def notify_found_item(cursor, organization_id: int, item: Mapping[str, Any]) -> 
         from backend.notification_service import dispatch_notification_event
 
         when = item.get("reported_at_display") or ""
-        where = item.get("location_label") or "the facility"
+        where = _bilingual_location(item)
         who = item.get("employee_name") or "An employee"
         category = report_category_of(item)
         if category == "redry":
