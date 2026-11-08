@@ -430,10 +430,14 @@ export const pinLostFoundReport = (organization_slug, pin, options = {}) =>
     `${API_BASE}/api/public/attendance/pin-lost-found/report`,
     _lostFoundForm(organization_slug, pin, options, {
       client_request_id: options.client_request_id,
+      report_category: options.report_category,
       location_kind: options.location_kind,
       location_number: options.location_number,
       location_detail: options.location_detail,
       notes: options.notes,
+      redry_missing_ticket: options.redry_missing_ticket ? "1" : "0",
+      redry_mesh_bag: options.redry_mesh_bag ? "1" : "0",
+      redry_wrong_pocket: options.redry_wrong_pocket ? "1" : "0",
     }),
     { ..._pinCleaningOpts, headers: { "Content-Type": "multipart/form-data" } },
   );
@@ -475,6 +479,15 @@ export const getPinLostFoundPhoto = (organization_slug, hubToken, photoId) =>
 
 export const getLostFoundList = ({ scope = "today", date } = {}) =>
   axios.get(`${API_BASE}/api/lost-found`, { params: { scope, date } });
+
+export const getRedryPockets = () => axios.get(`${API_BASE}/api/lost-found/redry-pockets`);
+
+export const saveRedryPockets = (pockets) =>
+  axios.post(`${API_BASE}/api/lost-found/redry-pockets`, { pockets });
+
+export const getUiLocale = () => axios.get(`${API_BASE}/api/me/ui-locale`);
+
+export const saveUiLocale = (locale) => axios.post(`${API_BASE}/api/me/ui-locale`, { locale });
 
 export const getLostFoundReconciliation = (date) =>
   axios.get(`${API_BASE}/api/lost-found/reconciliation`, { params: { date } });

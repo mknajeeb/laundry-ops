@@ -63,6 +63,20 @@ def main() -> int:
     )
     from backend.task_catalog import ensure_task_catalog_tables, list_task_definitions
 
+    import mysql.connector
+
+    admin = mysql.connector.connect(
+        host="127.0.0.1",
+        port=3307,
+        user="lf",
+        password="lfpass",
+    )
+    admin_cur = admin.cursor()
+    admin_cur.execute("DROP DATABASE IF EXISTS lost_found_isolated")
+    admin_cur.execute("CREATE DATABASE lost_found_isolated")
+    admin.commit()
+    admin.close()
+
     conn = get_db()
     cur = conn.cursor(dictionary=True)
     day = business_today()
@@ -282,8 +296,9 @@ def main() -> int:
     second = prepare_lost_found_schema(cur)
     conn.commit()
     RESULTS["schema"] = {"first": first, "second": second}
-    created_second = [row["table"] for row in second["tables"] if row["created"]]
-    check("schema second run creates nothing", created_second == [], str(created_second))
+    created_second = [row["table"] for row in second["tables"] if row.get("created")]
+    added_second = [row for row in second["tables"] if row.get("columns_added")]
+    check("schema second run creates nothing", created_second == [] and added_second == [], str(second["tables"]))
     for org_row in second["activities"]:
         check(
             f"activity definitions stable org {org_row['organization_id']}",
@@ -449,6 +464,61 @@ def main() -> int:
     check("dryer number accepted", dryer.status_code == 200 and "4" in ((dryer.get_json() or {}).get("item") or {}).get("location_label", ""), "")
     check("folding table number accepted", table.status_code == 200 and "3" in ((table.get_json() or {}).get("item") or {}).get("location_label", ""), "")
 
+    from itertools import combinations
+
+    flag_names = ("redry_missing_ticket", "redry_mesh_bag", "redry_wrong_pocket")
+    no_flag = report(
+        "dryer",
+        number="D1",
+        client_id="redry-no-flag",
+        extra={"report_category": "redry"},
+    )
+    check("re-dry without a checkbox rejected", no_flag.status_code == 400 and (no_flag.get_json() or {}).get("code") == "redry_flag_required", no_flag.get_data(as_text=True)[:220])
+    no_pocket = report(
+        "dryer",
+        client_id="redry-no-pocket",
+        extra={"report_category": "redry", "redry_missing_ticket": "1"},
+    )
+    check("re-dry without a pocket rejected", no_pocket.status_code == 400, no_pocket.get_data(as_text=True)[:220])
+    redry_ids = []
+    for size in (1, 2, 3):
+        for picked in combinations(flag_names, size):
+            extra = {"report_category": "redry"}
+            extra.update({name: "1" if name in picked else "0" for name in flag_names})
+            body = report("dryer", number="D4", client_id=f"redry-{size}-{'-'.join(picked)}", extra=extra)
+            item = (body.get_json() or {}).get("item") or {}
+            flags = item.get("redry_flags") or {}
+            expected = {
+                "missing_ticket": "redry_missing_ticket" in picked,
+                "mesh_bag": "redry_mesh_bag" in picked,
+                "wrong_pocket": "redry_wrong_pocket" in picked,
+            }
+            ok = body.status_code == 200 and item.get("report_category") == "redry" and flags == expected
+            check(f"re-dry flags {','.join(picked)}", ok, body.get_data(as_text=True)[:240])
+            if item.get("id"):
+                redry_ids.append(item["id"])
+    check("re-dry reports created", bool(redry_ids), str(redry_ids))
+    stored_redry = client.post(
+        f"/api/lost-found/{(redry_ids or [0])[0]}/status",
+        json={"status": "stored"},
+        headers=supervisor,
+    )
+    check("re-dry cannot be stored", stored_redry.status_code == 400, stored_redry.get_data(as_text=True)[:200])
+    resolved_redry = client.post(
+        f"/api/lost-found/{(redry_ids or [0])[-1]}/status",
+        json={"status": "resolved", "reason": "Corrected the dryer pocket"},
+        headers=supervisor,
+    )
+    check("re-dry resolved with a note", resolved_redry.status_code == 200, resolved_redry.get_data(as_text=True)[:200])
+    pockets = client.post(
+        "/api/lost-found/redry-pockets",
+        json={"pockets": ["D4", "D4", "D9"]},
+        headers=supervisor,
+    )
+    check("designated pockets saved once", pockets.status_code == 200 and (pockets.get_json() or {}).get("pockets") == ["D4", "D9"], pockets.get_data(as_text=True)[:200])
+    locale = client.post("/api/me/ui-locale", json={"locale": "es"}, headers=supervisor)
+    check("supervisor language persisted", locale.status_code == 200 and (locale.get_json() or {}).get("locale") == "es", locale.get_data(as_text=True)[:200])
+
     photo_id = ((first_body.get("item") or {}).get("photos") or [{}])[0].get("id")
     photo = client.get(
         f"/api/public/attendance/pin-lost-found/photos/{photo_id}?organization_slug=veewash&hub_token={token}"
@@ -547,8 +617,15 @@ def main() -> int:
     again_ids = [int(item["id"]) for item in (again_view.get_json() or {}).get("items") or []]
     check("late report is in the open reconciliation", int(late_body.get("item", {}).get("id") or 0) in again_ids, str(again_ids))
 
+    review = again_view.get_json() or {}
+    redry_review = review.get("redry_items") or []
+    check(
+        "re-dry compliance is separate from the box",
+        len(redry_review) >= 1 and all(item.get("report_category") == "redry" for item in redry_review),
+        str(review.get("counts")),
+    )
     account_errors = []
-    for item in (again_view.get_json() or {}).get("items") or []:
+    for item in (review.get("items") or []) + redry_review:
         res = client.post(
             "/api/public/attendance/pin-lost-found/account",
             json={

@@ -20,6 +20,7 @@ from backend.lost_found import (
     add_box_photo,
     add_item_photo,
     change_status,
+    designated_redry_pockets,
     find_client_item,
     get_item,
     get_photo_row,
@@ -28,6 +29,7 @@ from backend.lost_found import (
     notify_found_item,
     reconciliation_view,
     report_found_item,
+    save_designated_redry_pockets,
 )
 from backend.lost_found_photos import (
     discard_found_item_image,
@@ -181,6 +183,12 @@ def register_lost_found_routes(
                 location_number=data.get("location_number"),
                 location_detail=data.get("location_detail"),
                 notes=data.get("notes"),
+                report_category=str(data.get("report_category") or "orphan"),
+                redry_flags={
+                    "missing_ticket": data.get("redry_missing_ticket"),
+                    "mesh_bag": data.get("redry_mesh_bag"),
+                    "wrong_pocket": data.get("redry_wrong_pocket"),
+                },
             )
             if created:
                 for stored in stored_photos:
@@ -338,6 +346,57 @@ def register_lost_found_routes(
             return Response(data, mimetype=content_type)
         except ValueError:
             return jsonify({"error": "Photo not found"}), 404
+        finally:
+            _close(conn)
+
+    @app.route("/api/lost-found/redry-pockets", methods=["GET", "POST"])
+    def lost_found_redry_pockets():
+        from backend.db import get_db
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            _me, oid, denied = _supervisor(cursor)
+            if denied:
+                resp, code = denied
+                return resp, code
+            if request.method == "POST":
+                data = request.json or {}
+                saved = save_designated_redry_pockets(cursor, oid, data.get("pockets") or [])
+                conn.commit()
+                return jsonify({"ok": True, "pockets": saved})
+            return jsonify({"ok": True, "pockets": designated_redry_pockets(cursor, oid)})
+        except LostFoundError as exc:
+            return _fail(conn, exc)
+        finally:
+            _close(conn)
+
+    @app.route("/api/me/ui-locale", methods=["GET", "POST"])
+    def ui_locale_preference():
+        """Persist the signed-in user's English/Spanish choice. Local storage remains the fallback."""
+        from backend.db import get_db
+        from backend.ta_helpers import table_has_column
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            user_id = int(me.get("user_id") or me.get("id") or 0)
+            if not table_has_column(cursor, "users", "ui_locale"):
+                return jsonify({"ok": True, "locale": None, "persisted": False})
+            if request.method == "POST":
+                locale = str((request.json or {}).get("locale") or "").strip().lower()
+                if locale not in {"en", "es"}:
+                    return jsonify({"ok": False, "error": "Choose English or Spanish."}), 400
+                cursor.execute("UPDATE users SET ui_locale=%s WHERE id=%s", (locale, user_id))
+                conn.commit()
+                return jsonify({"ok": True, "locale": locale, "persisted": True})
+            cursor.execute("SELECT ui_locale FROM users WHERE id=%s LIMIT 1", (user_id,))
+            row = cursor.fetchone() or {}
+            locale = str(row.get("ui_locale") or "").strip().lower()
+            return jsonify({"ok": True, "locale": locale if locale in {"en", "es"} else None, "persisted": True})
         finally:
             _close(conn)
 

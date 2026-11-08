@@ -14,7 +14,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { getLostFoundList, getLostFoundReconciliation, updateLostFoundStatus } from "../api";
+import { getLostFoundList, getLostFoundReconciliation, getRedryPockets, saveRedryPockets, updateLostFoundStatus } from "../api";
 import LostFoundPhoto from "../components/lostFound/LostFoundPhoto";
 import { useI18n } from "../i18n/I18nContext";
 import { businessTodayYmd } from "../utils/businessTime";
@@ -30,6 +30,12 @@ export default function LostFoundDesktopPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [edit, setEdit] = useState(null);
+  const [category, setCategory] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [employee, setEmployee] = useState("");
+  const [location, setLocation] = useState("");
+  const [violation, setViolation] = useState("all");
+  const [pockets, setPockets] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -55,6 +61,9 @@ export default function LostFoundDesktopPage() {
 
   useEffect(() => {
     load();
+    getRedryPockets().then((res) => {
+      if (res?.data?.ok) setPockets((res.data.pockets || []).join(", "));
+    }).catch(() => {});
   }, [load]);
 
   const save = async () => {
@@ -79,7 +88,14 @@ export default function LostFoundDesktopPage() {
     <Box key={`${item.id}-${item.business_date}`} sx={{ p: 1.5, border: "1px solid #e5e7eb", borderRadius: 2 }}>
       <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} justifyContent="space-between">
         <Box>
-          <Typography sx={{ fontWeight: 800 }}>{item.location_label}</Typography>
+          <Typography sx={{ fontWeight: 800 }}>
+            {item.report_category === "redry" ? t("lostFound.redryIssue") : t("lostFound.orphan")} · {item.location_label}
+          </Typography>
+          {item.report_category === "redry" ? (
+            <Typography variant="body2">
+              {["missing_ticket", "mesh_bag", "wrong_pocket"].filter((key) => item.redry_flags?.[key]).map((key) => t(`lostFound.redry.${key === "missing_ticket" ? "missingTicket" : key === "mesh_bag" ? "meshBag" : "wrongPocket"}`)).join(" · ")}
+            </Typography>
+          ) : null}
           <Typography variant="body2">{item.employee_name} · {item.facility_name || ""}</Typography>
           <Typography variant="body2" color="text.secondary">{item.reported_at_display}</Typography>
           <Typography variant="body2">{t(`lostFound.status.${item.status}`)}</Typography>
@@ -103,6 +119,7 @@ export default function LostFoundDesktopPage() {
       </Stack>
       <Button size="small" sx={{ mt: 1, textTransform: "none" }} onClick={() => setEdit({
         id: item.id,
+        report_category: item.report_category || "orphan",
         status: item.status,
         order_reference: item.order_reference || "",
         comment: "",
@@ -116,7 +133,8 @@ export default function LostFoundDesktopPage() {
 
   return (
     <Box sx={{ p: { xs: 1.5, sm: 2 }, maxWidth: 1100 }}>
-      <Typography variant="h5" sx={{ fontWeight: 800 }}>{t("lostFound.desktopTitle")}</Typography>
+      <Typography variant="h5" sx={{ fontWeight: 800 }}>{t("lostFound.issueReports")}</Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>{t("lostFound.desktopTitle")}</Typography>
       <Tabs value={scope} onChange={(_, value) => setScope(value)} sx={{ mb: 1 }}>
         <Tab value="today" label={t("lostFound.today")} />
         <Tab value="history" label={t("lostFound.history")} />
@@ -128,10 +146,42 @@ export default function LostFoundDesktopPage() {
         onChange={(e) => setDate(e.target.value)}
         sx={{ mb: 2 }}
       />
+      <Stack direction={{ xs: "column", md: "row" }} spacing={1} sx={{ mb: 2 }}>
+        <TextField select size="small" label={t("lostFound.category")} value={category} onChange={(e) => setCategory(e.target.value)} sx={{ minWidth: 160 }}>
+          <MenuItem value="all">{t("lostFound.category")}</MenuItem>
+          <MenuItem value="orphan">{t("lostFound.orphan")}</MenuItem>
+          <MenuItem value="redry">{t("lostFound.redryIssue")}</MenuItem>
+        </TextField>
+        <TextField select size="small" label={t("lostFound.status")} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} sx={{ minWidth: 150 }}>
+          <MenuItem value="all">{t("lostFound.status")}</MenuItem>
+          {STATUSES.map((code) => <MenuItem key={code} value={code}>{t(`lostFound.status.${code}`)}</MenuItem>)}
+        </TextField>
+        <TextField size="small" label={t("lostFound.employee")} value={employee} onChange={(e) => setEmployee(e.target.value)} />
+        <TextField size="small" label={t("lostFound.location")} value={location} onChange={(e) => setLocation(e.target.value)} />
+        <TextField select size="small" label={t("lostFound.redryIssue")} value={violation} onChange={(e) => setViolation(e.target.value)} sx={{ minWidth: 180 }}>
+          <MenuItem value="all">{t("lostFound.redryIssue")}</MenuItem>
+          <MenuItem value="missing_ticket">{t("lostFound.redry.missingTicket")}</MenuItem>
+          <MenuItem value="mesh_bag">{t("lostFound.redry.meshBag")}</MenuItem>
+          <MenuItem value="wrong_pocket">{t("lostFound.redry.wrongPocket")}</MenuItem>
+        </TextField>
+      </Stack>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 2 }}>
+        <TextField size="small" fullWidth label={t("lostFound.pockets")} value={pockets} onChange={(e) => setPockets(e.target.value)} helperText="D1, D2" />
+        <Button variant="outlined" onClick={() => saveRedryPockets(pockets.split(",").map((part) => part.trim()).filter(Boolean)).then((res) => setPockets((res?.data?.pockets || []).join(", "))).catch((err) => setError(err?.response?.data?.error || err.message))} sx={{ textTransform: "none", whiteSpace: "nowrap" }}>
+          {t("lostFound.savePockets")}
+        </Button>
+      </Stack>
       {error ? <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert> : null}
       {loading ? <Typography>{t("lostFound.loading")}</Typography> : null}
       <Stack spacing={1.25}>
-        {items.map(renderItem)}
+        {items.filter((item) => {
+          if (category !== "all" && (item.report_category || "orphan") !== category) return false;
+          if (statusFilter !== "all" && item.status !== statusFilter) return false;
+          if (employee && !String(item.employee_name || "").toLowerCase().includes(employee.toLowerCase())) return false;
+          if (location && !`${item.location_label || ""} ${item.location_number || ""}`.toLowerCase().includes(location.toLowerCase())) return false;
+          if (violation !== "all" && !item.redry_flags?.[violation]) return false;
+          return true;
+        }).map(renderItem)}
         {!loading && !items.length ? <Typography color="text.secondary">{t("lostFound.noItems")}</Typography> : null}
         {carried.length ? (
           <>
@@ -145,7 +195,7 @@ export default function LostFoundDesktopPage() {
         <DialogContent>
           <Stack spacing={1.25} sx={{ pt: 1 }}>
             <TextField select label={t("lostFound.status")} value={edit?.status || "new"} onChange={(e) => setEdit((row) => ({ ...row, status: e.target.value }))}>
-              {STATUSES.map((code) => (
+              {(edit?.report_category === "redry" ? ["new", "under_review", "resolved"] : STATUSES).map((code) => (
                 <MenuItem key={code} value={code}>{t(`lostFound.status.${code}`)}</MenuItem>
               ))}
             </TextField>

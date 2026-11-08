@@ -43,6 +43,18 @@ STATUS_RESOLVED = "resolved"
 STATUSES = frozenset(
     {STATUS_NEW, STATUS_UNDER_REVIEW, STATUS_RETURNED, STATUS_STORED, STATUS_RESOLVED}
 )
+CATEGORY_ORPHAN = "orphan"
+CATEGORY_REDRY = "redry"
+REPORT_CATEGORIES = frozenset({CATEGORY_ORPHAN, CATEGORY_REDRY})
+REDRY_STATUSES = frozenset({STATUS_NEW, STATUS_UNDER_REVIEW, STATUS_RESOLVED})
+REDRY_FLAG_MISSING_TICKET = "missing_ticket"
+REDRY_FLAG_MESH_BAG = "mesh_bag"
+REDRY_FLAG_WRONG_POCKET = "wrong_pocket"
+REDRY_FLAGS = (
+    REDRY_FLAG_MISSING_TICKET,
+    REDRY_FLAG_MESH_BAG,
+    REDRY_FLAG_WRONG_POCKET,
+)
 CARRY_FORWARD_STATUSES = frozenset({STATUS_NEW, STATUS_UNDER_REVIEW, STATUS_STORED})
 
 LOCATION_LABELS = {
@@ -141,16 +153,42 @@ def validate_location(kind: Any, number: Any = None, detail: Any = None) -> dict
     }
 
 
+def _as_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def report_category_of(item: Mapping[str, Any] | None) -> str:
+    code = str((item or {}).get("report_category") or CATEGORY_ORPHAN).strip().lower()
+    return code if code in REPORT_CATEGORIES else CATEGORY_ORPHAN
+
+
+def validate_redry(flags: Mapping[str, Any] | None, pocket: Any) -> dict[str, Any]:
+    """One Re-Dry report can carry one, two, or all three violations."""
+    selected = {name: _as_flag((flags or {}).get(name)) for name in REDRY_FLAGS}
+    if not any(selected.values()):
+        raise LostFoundError(
+            "Select at least one Re-Dry issue.",
+            code="redry_flag_required",
+        )
+    location = validate_location(LOCATION_DRYER, pocket, None)
+    return {**selected, **location}
+
+
 def validate_status_change(
     status: Any,
     *,
     order_reference: Any = None,
     comment: Any = None,
     reason: Any = None,
+    report_category: str = CATEGORY_ORPHAN,
 ) -> dict[str, Any]:
     code = str(status or "").strip().lower()
-    if code not in STATUSES:
-        raise LostFoundError("Unknown Lost & Found status.", code="invalid_status")
+    category = report_category if report_category in REPORT_CATEGORIES else CATEGORY_ORPHAN
+    allowed = REDRY_STATUSES if category == CATEGORY_REDRY else STATUSES
+    if code not in allowed:
+        raise LostFoundError("That status is not used for this report.", code="invalid_status")
     order_ref = _clean_token(order_reference, limit=80)
     note = _clean_token(comment, limit=1000)
     why = _clean_token(reason, limit=500)
@@ -183,13 +221,39 @@ def validate_status_change(
 
 
 def item_in_reconciliation_scope(item: Mapping[str, Any], business_date: Any) -> bool:
-    """Today's reports (any status) plus earlier unresolved items."""
+    """Today's orphan reports plus earlier unresolved orphan items.
+
+    Re-Dry reports are operational violations, not physical Lost & Found items.
+    """
+    if report_category_of(item) == CATEGORY_REDRY:
+        return False
     day = as_day(business_date)
     reported = as_day(item.get("business_date"))
     status = str(item.get("status") or "")
     if reported == day:
         return True
     return status in CARRY_FORWARD_STATUSES and reported < day
+
+
+def item_in_redry_scope(item: Mapping[str, Any], business_date: Any) -> bool:
+    """Today's Re-Dry reports, plus older ones that are not yet resolved."""
+    if report_category_of(item) != CATEGORY_REDRY:
+        return False
+    day = as_day(business_date)
+    reported = as_day(item.get("business_date"))
+    status = str(item.get("status") or "")
+    if reported == day:
+        return True
+    return status != STATUS_RESOLVED and reported < day
+
+
+def item_in_completion_scope(item: Mapping[str, Any], business_date: Any) -> bool:
+    """Orphan reconciliation plus today's Re-Dry reports. Older Re-Dry stays visible only."""
+    if item_in_reconciliation_scope(item, business_date):
+        return True
+    return report_category_of(item) == CATEGORY_REDRY and as_day(item.get("business_date")) == as_day(
+        business_date
+    )
 
 
 def select_reconciliation_items(

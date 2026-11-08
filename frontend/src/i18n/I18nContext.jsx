@@ -1,5 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { getUiLocale, saveUiLocale } from "../api";
 import { TRANSLATIONS } from "./translations";
 
 const STORAGE_KEY = "washpro_locale";
@@ -54,6 +55,35 @@ export function I18nProvider({ children }) {
     const l = next === "es" ? "es" : "en";
     persistLocale(l);
     setLocaleState(l);
+    try {
+      const token = localStorage.getItem("washpro_token") || localStorage.getItem("ta_token");
+      if (token) saveUiLocale(l).catch(() => {});
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    let token = "";
+    try {
+      token = localStorage.getItem("washpro_token") || localStorage.getItem("ta_token") || "";
+    } catch {
+      token = "";
+    }
+    if (!token) return undefined;
+    let cancelled = false;
+    getUiLocale()
+      .then((res) => {
+        const saved = res?.data?.locale;
+        if (!cancelled && (saved === "en" || saved === "es")) {
+          persistLocale(saved);
+          setLocaleState(saved);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const t = useCallback(

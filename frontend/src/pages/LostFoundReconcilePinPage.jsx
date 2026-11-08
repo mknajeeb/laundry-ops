@@ -32,8 +32,17 @@ function slugOf(raw) {
   }
 }
 
+function flagLine(item, t) {
+  const flags = item.redry_flags || {};
+  return ["missing_ticket", "mesh_bag", "wrong_pocket"]
+    .filter((key) => flags[key])
+    .map((key) => t(`lostFound.redry.${key === "missing_ticket" ? "missingTicket" : key === "mesh_bag" ? "meshBag" : "wrongPocket"}`))
+    .join(" · ");
+}
+
 function ItemCard({ item, hub, busy, onSave }) {
   const { t } = useI18n();
+  const statuses = item.report_category === "redry" ? ["new", "under_review", "resolved"] : STATUSES;
   const [status, setStatus] = useState(item.status || "new");
   const [orderReference, setOrderReference] = useState(item.order_reference || "");
   const [comment, setComment] = useState("");
@@ -46,6 +55,7 @@ function ItemCard({ item, hub, busy, onSave }) {
         {item.employee_name} · {item.reported_at_display}
         {item.carried_forward ? ` · ${t("lostFound.carried")}` : ""}
       </Typography>
+      {flagLine(item, t) ? <Typography variant="body2">{flagLine(item, t)}</Typography> : null}
       {item.notes ? <Typography variant="body2">{item.notes}</Typography> : null}
       <Stack direction="row" spacing={1} sx={{ overflowX: "auto" }}>
         {(item.photos || []).filter((p) => p.photo_role !== "box").map((photo) => (
@@ -63,7 +73,7 @@ function ItemCard({ item, hub, busy, onSave }) {
         </Stack>
       ) : null}
       <TextField select size="small" label={t("lostFound.status")} value={status} onChange={(e) => setStatus(e.target.value)}>
-        {STATUSES.map((code) => (
+        {statuses.map((code) => (
           <MenuItem key={code} value={code}>{t(`lostFound.status.${code}`)}</MenuItem>
         ))}
       </TextField>
@@ -219,8 +229,19 @@ export default function LostFoundReconcilePinPage() {
         </Alert>
       ))}
       <Stack spacing={1.25}>
+        <Typography sx={{ fontWeight: 800 }}>
+          {t("lostFound.orphan")} {data?.counts?.orphan ?? (data?.items || []).length}
+          {" · "}
+          {t("lostFound.redryIssue")} {data?.counts?.redry ?? (data?.redry_items || []).length}
+        </Typography>
         {(data?.items || []).map((item) => (
           <ItemCard key={item.id} item={item} hub={hub} busy={busy} onSave={save} />
+        ))}
+        {(data?.redry_items || []).length ? (
+          <Typography sx={{ fontWeight: 800, pt: 1 }}>{t("lostFound.redry.section")}</Typography>
+        ) : null}
+        {(data?.redry_items || []).map((item) => (
+          <ItemCard key={`redry-${item.id}`} item={item} hub={hub} busy={busy} onSave={save} />
         ))}
         {!data?.items?.length ? <Typography color="text.secondary">{t("lostFound.noItems")}</Typography> : null}
         {stored ? (

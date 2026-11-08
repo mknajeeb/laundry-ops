@@ -21,8 +21,12 @@ from backend.lost_found_rules import (
     as_day,
     as_dt,
     format_et_report,
+    item_in_completion_scope,
     item_in_reconciliation_scope,
+    item_in_redry_scope,
     reconciliation_blockers,
+    report_category_of,
+    validate_redry,
     snapshot_is_current,
     validate_location,
     validate_status_change,
@@ -69,6 +73,10 @@ _LOST_FOUND_DDL: tuple[tuple[str, str], ...] = (
           location_detail VARCHAR(160) NULL,
           location_label VARCHAR(200) NOT NULL,
           notes VARCHAR(1000) NULL,
+          report_category VARCHAR(16) NOT NULL DEFAULT 'orphan',
+          redry_missing_ticket TINYINT(1) NOT NULL DEFAULT 0,
+          redry_mesh_bag TINYINT(1) NOT NULL DEFAULT 0,
+          redry_wrong_pocket TINYINT(1) NOT NULL DEFAULT 0,
           status VARCHAR(32) NOT NULL DEFAULT 'new',
           order_reference VARCHAR(80) NULL,
           status_comment VARCHAR(1000) NULL,
@@ -181,12 +189,60 @@ _LOST_FOUND_DDL: tuple[tuple[str, str], ...] = (
 def require_lost_found_tables(cursor) -> None:
     """Request paths never create tables. Preparation must already have run."""
     missing = [name for name, _ddl in _LOST_FOUND_DDL if not table_exists(cursor, name)]
-    if missing:
+    if missing or not _report_columns_ready(cursor):
         raise LostFoundError(
             "Lost & Found is not prepared on this database. Run the schema preparation procedure first.",
             status=503,
             code="schema_not_prepared",
         )
+
+
+def _report_columns_ready(cursor) -> bool:
+    if not table_exists(cursor, ITEMS):
+        return False
+    try:
+        cursor.execute(
+            f"""
+            SELECT report_category, redry_missing_ticket, redry_mesh_bag, redry_wrong_pocket
+            FROM {ITEMS} WHERE 1=0
+            """
+        )
+        fetch_all = getattr(cursor, "fetchall", None)
+        if callable(fetch_all):
+            fetch_all()
+        return True
+    except Exception:
+        return False
+
+
+def _ensure_ui_locale_column(cursor) -> bool:
+    from backend.ta_helpers import table_has_column
+
+    if not table_exists(cursor, "users") or table_has_column(cursor, "users", "ui_locale"):
+        return False
+    cursor.execute("ALTER TABLE users ADD COLUMN ui_locale VARCHAR(8) NULL")
+    return True
+
+
+def _ensure_report_columns(cursor) -> list[str]:
+    """Additive columns for Re-Dry. Existing orphan rows stay orphan with no flags."""
+    from backend.ta_helpers import table_has_column
+
+    added = []
+    specs = (
+        ("report_category", "VARCHAR(16) NOT NULL DEFAULT 'orphan'"),
+        ("redry_missing_ticket", "TINYINT(1) NOT NULL DEFAULT 0"),
+        ("redry_mesh_bag", "TINYINT(1) NOT NULL DEFAULT 0"),
+        ("redry_wrong_pocket", "TINYINT(1) NOT NULL DEFAULT 0"),
+    )
+    if not table_exists(cursor, ITEMS):
+        return added
+    for column, definition in specs:
+        if table_has_column(cursor, ITEMS, column):
+            continue
+        cursor.execute(f"ALTER TABLE {ITEMS} ADD COLUMN {column} {definition}")
+        added.append(column)
+    return added
 
 
 def prepare_lost_found_schema(
@@ -200,6 +256,10 @@ def prepare_lost_found_schema(
     for name, ddl in _LOST_FOUND_DDL:
         created = _ensure_table(cursor, name, ddl)
         tables.append({"table": name, "created": created})
+    added_columns = _ensure_report_columns(cursor)
+    tables.append({"table": ITEMS, "columns_added": added_columns})
+    locale_added = _ensure_ui_locale_column(cursor)
+    tables.append({"table": "users", "columns_added": ["ui_locale"] if locale_added else []})
     invalidate_schema_cache()
     if organization_ids is None:
         organization_ids = []
@@ -373,6 +433,12 @@ def serialize_item(
         "location_detail": row.get("location_detail"),
         "location_label": row.get("location_label"),
         "notes": row.get("notes"),
+        "report_category": report_category_of(row),
+        "redry_flags": {
+            "missing_ticket": bool(row.get("redry_missing_ticket")),
+            "mesh_bag": bool(row.get("redry_mesh_bag")),
+            "wrong_pocket": bool(row.get("redry_wrong_pocket")),
+        },
         "status": row.get("status"),
         "order_reference": row.get("order_reference"),
         "status_comment": row.get("status_comment"),
@@ -511,6 +577,8 @@ def report_found_item(
     location_number: str | None,
     location_detail: str | None,
     notes: str | None,
+    report_category: str = "orphan",
+    redry_flags: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Create one item, or return the original when the same client request is retried."""
     require_lost_found_tables(cursor)
@@ -521,7 +589,17 @@ def report_found_item(
     if existing:
         hydrated = _hydrate(cursor, organization_id, [existing])
         return hydrated[0], False
-    location = validate_location(location_kind, location_number, location_detail)
+    category = str(report_category or "orphan").strip().lower()
+    if category == "redry":
+        redry = validate_redry(redry_flags, location_number)
+        location = redry
+        flags = redry
+    else:
+        if category != "orphan":
+            raise LostFoundError("Choose Orphan Item or Re-Dry Issue.", code="invalid_category")
+        category = "orphan"
+        location = validate_location(location_kind, location_number, location_detail)
+        flags = {"missing_ticket": False, "mesh_bag": False, "wrong_pocket": False}
     note = " ".join(str(notes or "").split())[:1000] or None
     at = eastern_now_naive().replace(microsecond=0)
     cursor.execute(
@@ -530,8 +608,9 @@ def report_found_item(
           organization_id, client_request_id, reported_by_user_id, reporter_name,
           facility_name, shift_session_id, business_date, reported_at,
           location_kind, location_number, location_detail, location_label, notes,
+          report_category, redry_missing_ticket, redry_mesh_bag, redry_wrong_pocket,
           status, revision, status_changed_at, status_changed_by_user_id, updated_at
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             int(organization_id),
@@ -547,6 +626,10 @@ def report_found_item(
             location["location_detail"],
             location["location_label"],
             note,
+            category,
+            1 if flags.get("missing_ticket") else 0,
+            1 if flags.get("mesh_bag") else 0,
+            1 if flags.get("wrong_pocket") else 0,
             "new",
             1,
             at,
@@ -571,6 +654,12 @@ def report_found_item(
         payload={
             "location_label": location["location_label"],
             "status": "new",
+            "report_category": category,
+            "redry_flags": {
+                "missing_ticket": bool(flags.get("missing_ticket")),
+                "mesh_bag": bool(flags.get("mesh_bag")),
+                "wrong_pocket": bool(flags.get("wrong_pocket")),
+            },
             "shift_session_id": int(shift_session_id) if shift_session_id else None,
         },
         at=at,
@@ -582,7 +671,11 @@ def report_found_item(
         item_id=item_id,
         action="found_item_reported",
         old=None,
-        new={"status": "new", "location_label": location["location_label"]},
+        new={
+            "status": "new",
+            "report_category": category,
+            "location_label": location["location_label"],
+        },
         remarks=location["location_label"],
     )
     _mark_open_reconciliation_stale(cursor, organization_id, business_date)
@@ -646,6 +739,7 @@ def change_status(
         order_reference=order_reference,
         comment=comment,
         reason=reason,
+        report_category=report_category_of(current),
     )
     at = eastern_now_naive().replace(microsecond=0)
     revision = int(current.get("revision") or 1) + 1
@@ -743,6 +837,52 @@ def list_found_items(
     return _hydrate(cursor, organization_id, rows)
 
 
+REDRY_POCKETS_KEY = "redry_designated_pockets"
+
+
+def designated_redry_pockets(cursor, organization_id: int) -> list[str]:
+    if not table_exists(cursor, "system_settings"):
+        return []
+    cursor.execute(
+        "SELECT svalue FROM system_settings WHERE organization_id=%s AND skey=%s LIMIT 1",
+        (int(organization_id), REDRY_POCKETS_KEY),
+    )
+    row = cursor.fetchone() or {}
+    raw = row.get("svalue") if isinstance(row, dict) else None
+    try:
+        parsed = json.loads(raw) if raw else []
+    except (TypeError, json.JSONDecodeError):
+        parsed = []
+    if not isinstance(parsed, list):
+        return []
+    out = []
+    for value in parsed:
+        token = " ".join(str(value or "").split())[:40]
+        if token and token not in out:
+            out.append(token)
+    return out
+
+
+def save_designated_redry_pockets(cursor, organization_id: int, pockets: Sequence[Any]) -> list[str]:
+    cleaned = []
+    for value in pockets or []:
+        token = " ".join(str(value or "").split())[:40]
+        if token and token not in cleaned:
+            cleaned.append(token)
+    if not table_exists(cursor, "system_settings"):
+        raise LostFoundError("Facility settings are not available.", status=503, code="settings_unavailable")
+    payload = json.dumps(cleaned)
+    cursor.execute(
+        """
+        INSERT INTO system_settings (organization_id, skey, svalue)
+        VALUES (%s, %s, %s)
+        ON DUPLICATE KEY UPDATE svalue=VALUES(svalue)
+        """,
+        (int(organization_id), REDRY_POCKETS_KEY, payload),
+    )
+    return cleaned
+
+
 def location_choices(cursor, organization_id: int) -> dict[str, list[str]]:
     washers: list[str] = []
     dryers: list[str] = []
@@ -754,7 +894,12 @@ def location_choices(cursor, organization_id: int) -> dict[str, list[str]]:
         dryers = sorted((config.get("dryers") or {}).keys())
     except Exception:
         logger.debug("machine identifiers unavailable", exc_info=True)
-    return {"washers": washers, "dryers": dryers, "folding_tables": []}
+    return {
+        "washers": washers,
+        "dryers": dryers,
+        "folding_tables": [],
+        "redry_pockets": designated_redry_pockets(cursor, organization_id),
+    }
 
 
 def _scope_rows(cursor, organization_id: int, business_date: date) -> list[dict[str, Any]]:
@@ -823,23 +968,29 @@ def ensure_reconciliation_open(cursor, organization_id: int, business_date: date
 
 def reconciliation_view(cursor, organization_id: int, business_date: date) -> dict[str, Any]:
     recon = ensure_reconciliation_open(cursor, organization_id, business_date)
-    raw_items = [
-        row for row in _scope_rows(cursor, organization_id, business_date)
-        if item_in_reconciliation_scope(row, business_date)
-    ]
+    scoped = _scope_rows(cursor, organization_id, business_date)
+    raw_items = [row for row in scoped if item_in_completion_scope(row, business_date)]
+    orphan_rows = [row for row in raw_items if item_in_reconciliation_scope(row, business_date)]
+    redry_rows = [row for row in scoped if item_in_redry_scope(row, business_date)]
     accounts = _accounts_for_day(cursor, organization_id, business_date)
-    photos = _photos_for(cursor, organization_id, [int(r["id"]) for r in raw_items])
-    events = _events_for(cursor, organization_id, [int(r["id"]) for r in raw_items])
-    items = [
-        serialize_item(
-            row,
-            photos=photos.get(int(row["id"]), []),
-            events=events.get(int(row["id"]), []),
-            account=accounts.get(int(row["id"])),
-            reconciliation_date=business_date,
-        )
-        for row in raw_items
-    ]
+    photo_ids = [int(r["id"]) for r in orphan_rows + redry_rows]
+    photos = _photos_for(cursor, organization_id, photo_ids)
+    events = _events_for(cursor, organization_id, photo_ids)
+
+    def _pack(rows):
+        return [
+            serialize_item(
+                row,
+                photos=photos.get(int(row["id"]), []),
+                events=events.get(int(row["id"]), []),
+                account=accounts.get(int(row["id"])),
+                reconciliation_date=business_date,
+            )
+            for row in rows
+        ]
+
+    items = _pack(orphan_rows)
+    redry_items = _pack(redry_rows)
     box = _latest_box_photo(cursor, organization_id, business_date)
     blockers = []
     if str(recon.get("status") or "") != "completed":
@@ -858,6 +1009,8 @@ def reconciliation_view(cursor, organization_id: int, business_date: date) -> di
         "activity_id": recon.get("activity_id"),
         "activity_code": ACTIVITY_CODE,
         "items": items,
+        "redry_items": redry_items,
+        "counts": {"orphan": len(items), "redry": len(redry_items)},
         "blockers": blockers,
         "box_photo": _photo_out(box) if box else None,
         "snapshot": _snapshot_summary(latest) if latest else None,
@@ -883,7 +1036,8 @@ def account_item(
     if kind not in {"confirm", "escalate", "update"}:
         raise LostFoundError("Choose confirm, escalate, or update.", code="invalid_action")
     current = get_item(cursor, organization_id, item_id)
-    if not current or not item_in_reconciliation_scope(current, business_date):
+    in_review = item_in_completion_scope(current, business_date) or item_in_redry_scope(current, business_date)
+    if not current or not in_review:
         raise LostFoundError("That found item is not part of this reconciliation.", status=404, code="not_found")
     if kind == "update":
         current = change_status(
@@ -1027,7 +1181,7 @@ def _live_scope(cursor, organization_id: int, business_date: date) -> tuple[list
     recon = ensure_reconciliation_open(cursor, organization_id, business_date)
     raw = [
         row for row in _scope_rows(cursor, organization_id, business_date)
-        if item_in_reconciliation_scope(row, business_date)
+        if item_in_completion_scope(row, business_date)
     ]
     accounts = _accounts_for_day(cursor, organization_id, business_date)
     box = _latest_box_photo(cursor, organization_id, business_date)
@@ -1146,7 +1300,7 @@ def assert_reconciliation_current_for_approval(
         return
     raw = [
         row for row in _scope_rows(cursor, organization_id, business_date)
-        if item_in_reconciliation_scope(row, business_date)
+        if item_in_completion_scope(row, business_date)
     ]
     box = _latest_box_photo(cursor, organization_id, business_date)
     latest = _latest_snapshot(cursor, organization_id, business_date)
@@ -1297,17 +1451,37 @@ def notify_found_item(cursor, organization_id: int, item: Mapping[str, Any]) -> 
         when = item.get("reported_at_display") or ""
         where = item.get("location_label") or "the facility"
         who = item.get("employee_name") or "An employee"
+        category = report_category_of(item)
+        if category == "redry":
+            flags = item.get("redry_flags") or {}
+            selected = [
+                label
+                for key, label in (
+                    ("missing_ticket", "Missing identification on ticket / Falta identificación en la etiqueta"),
+                    ("mesh_bag", "Mesh bag not used / No se utilizó bolsa de malla"),
+                    ("wrong_pocket", "Wrong pocket / Compartimento incorrecto"),
+                )
+                if flags.get(key)
+            ]
+            title = "Re-Dry issue / Problema de resecado"
+            detail = "; ".join(selected)
+            body = f"{who} · {where}. {detail}. {when}".strip()
+        else:
+            title = "Orphan item / Prenda sin identificar"
+            body = f"{who} reported an orphan item at {where}. {when}".strip()
         dispatch_notification_event(
             cursor,
             organization_id=int(organization_id),
             event_key=NOTIFY_EVENT_KEY,
-            title="Found item reported",
-            body=f"{who} reported a found item at {where}. {when}".strip(),
+            title=title,
+            body=body,
             data={
                 "found_item_id": item.get("id"),
                 "open_path": "/management/lost-found",
                 "location_label": where,
                 "business_date": item.get("business_date"),
+                "report_category": category,
+                "redry_flags": item.get("redry_flags") or {},
             },
             channels=["push"],
         )

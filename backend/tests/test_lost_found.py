@@ -17,6 +17,7 @@ from backend.lost_found import (
     get_item,
     list_found_items,
     notify_found_item,
+    reconciliation_view,
     report_found_item,
     snapshot_reconciliation_on_complete,
 )
@@ -28,6 +29,7 @@ from backend.lost_found_rules import (
     select_reconciliation_items,
     snapshot_is_current,
     validate_location,
+    validate_redry,
     validate_status_change,
 )
 from backend.lost_found_routes import register_lost_found_routes
@@ -77,6 +79,10 @@ def _schema(conn):
           location_detail TEXT,
           location_label TEXT NOT NULL,
           notes TEXT,
+          report_category TEXT NOT NULL DEFAULT 'orphan',
+          redry_missing_ticket INT NOT NULL DEFAULT 0,
+          redry_mesh_bag INT NOT NULL DEFAULT 0,
+          redry_wrong_pocket INT NOT NULL DEFAULT 0,
           status TEXT NOT NULL,
           order_reference TEXT,
           status_comment TEXT,
@@ -191,7 +197,63 @@ def _report(db, request_id="client-req-001", org=1, kind="washer", number="W23-3
         location_number=number,
         location_detail=kwargs.get("detail"),
         notes=kwargs.get("notes"),
+        report_category=kwargs.get("report_category", "orphan"),
+        redry_flags=kwargs.get("redry_flags"),
     )
+
+
+def test_redry_is_one_record_for_every_flag_combination():
+    from itertools import combinations
+
+    with pytest.raises(LostFoundError) as missing:
+        validate_redry({}, "D1")
+    assert missing.value.code == "redry_flag_required"
+    with pytest.raises(LostFoundError) as pocket:
+        validate_redry({"missing_ticket": True}, "")
+    assert pocket.value.code == "location_number_required"
+    names = ("missing_ticket", "mesh_bag", "wrong_pocket")
+    for size in (1, 2, 3):
+        for picked in combinations(names, size):
+            flags = {name: name in picked for name in names}
+            cleaned = validate_redry(flags, "D4")
+            assert cleaned["location_kind"] == "dryer"
+            assert cleaned["location_number"] == "D4"
+            assert [name for name in names if cleaned[name]] == list(picked)
+    with pytest.raises(LostFoundError) as stored:
+        validate_status_change("stored", report_category="redry")
+    assert stored.value.code == "invalid_status"
+    resolved = validate_status_change("resolved", reason="Spoke with the dryer operator", report_category="redry")
+    assert resolved["status"] == "resolved"
+
+
+def test_redry_stays_out_of_the_lost_and_found_box(db):
+    item, created = _report(
+        db,
+        request_id="redry-all-three",
+        report_category="redry",
+        number="D4",
+        redry_flags={"missing_ticket": True, "mesh_bag": True, "wrong_pocket": True},
+    )
+    assert created is True
+    assert item["report_category"] == "redry"
+    assert item["redry_flags"] == {"missing_ticket": True, "mesh_bag": True, "wrong_pocket": True}
+    view = reconciliation_view(db, organization_id=1, business_date=date(2026, 11, 7))
+    assert view["items"] == []
+    assert len(view["redry_items"]) == 1
+    assert view["counts"] == {"orphan": 0, "redry": 1}
+    assert all(blocker["code"] != "box_photo_required" for blocker in view["blockers"])
+    account_item(
+        db,
+        organization_id=1,
+        business_date=date(2026, 11, 7),
+        item_id=item["id"],
+        actor_user_id=3,
+        actor_name="Sam",
+        action="confirm",
+        comment="Reviewed the dryer photo",
+    )
+    closed = reconciliation_view(db, organization_id=1, business_date=date(2026, 11, 7))
+    assert closed["blockers"] == []
 
 
 def test_location_rules():
