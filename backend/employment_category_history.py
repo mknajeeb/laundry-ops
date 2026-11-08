@@ -119,12 +119,25 @@ def load_user_employment_assignments(conn, user_id: int) -> list[dict]:
 def load_employment_assignments_for_users(
     conn, user_ids: list[int]
 ) -> dict[int, list[dict]]:
-    """Bulk-load employment history for many users (one query)."""
+    """Bulk-load employment history for many users (one query).
+
+    A connection reuses rows it already loaded. The next request sees changes.
+    """
     uids = sorted({int(u) for u in user_ids or [] if u is not None})
     out: dict[int, list[dict]] = {uid: [] for uid in uids}
     if not uids:
         return out
-    placeholders = ",".join(["%s"] * len(uids))
+    cache = getattr(conn, "_employment_assignment_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        try:
+            conn._employment_assignment_cache = cache
+        except Exception:
+            cache = None
+    missing = [uid for uid in uids if not isinstance(cache, dict) or uid not in cache]
+    if not missing:
+        return {uid: list(cache.get(uid) or []) for uid in uids}
+    placeholders = ",".join(["%s"] * len(missing))
     c = conn.cursor(dictionary=True)
     c.execute(
         f"""
@@ -135,11 +148,17 @@ def load_employment_assignments_for_users(
         WHERE uec.user_id IN ({placeholders})
         ORDER BY uec.user_id ASC, uec.effective_from DESC, uec.id DESC
         """,
-        tuple(uids),
+        tuple(missing),
     )
+    loaded: dict[int, list[dict]] = {uid: [] for uid in missing}
     for r in c.fetchall() or []:
         uid = int(r["user_id"])
-        out.setdefault(uid, []).append(_assignment_item_from_mapping(r))
+        loaded.setdefault(uid, []).append(_assignment_item_from_mapping(r))
+    if isinstance(cache, dict):
+        for uid, rows in loaded.items():
+            cache[uid] = rows
+        return {uid: list(cache.get(uid) or []) for uid in uids}
+    out.update(loaded)
     return out
 
 

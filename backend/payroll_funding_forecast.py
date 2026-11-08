@@ -91,6 +91,9 @@ def _default_calendar_row(organization_id: int, worker_category: str, org_settin
 
 def get_calendar_settings(conn, organization_id: int) -> dict[str, Any]:
     oid = int(organization_id)
+    cache = getattr(conn, "_payroll_calendar_settings_cache", None)
+    if isinstance(cache, dict) and oid in cache:
+        return cache[oid]
     seed_schedule_defaults(conn.cursor(), oid)
     ensure_payroll_calendar_settings(conn.cursor())
     ensure_employer_burden_column(conn.cursor())
@@ -117,16 +120,28 @@ def get_calendar_settings(conn, organization_id: int) -> dict[str, Any]:
             )
         else:
             categories[cat] = _default_calendar_row(oid, cat, org_settings)
-    return json_safe(
+    result = json_safe(
         {
             "organization_id": oid,
             "org_schedule_settings": org_settings,
             "categories": categories,
         }
     )
+    if not isinstance(cache, dict):
+        cache = {}
+        try:
+            conn._payroll_calendar_settings_cache = cache
+        except Exception:
+            cache = None
+    if isinstance(cache, dict):
+        cache[oid] = result
+    return result
 
 
 def save_calendar_settings(conn, organization_id: int, body: dict) -> dict[str, Any]:
+    cache = getattr(conn, "_payroll_calendar_settings_cache", None)
+    if isinstance(cache, dict):
+        cache.pop(int(organization_id), None)
     ensure_payroll_calendar_settings(conn.cursor())
     ensure_employer_burden_column(conn.cursor())
     oid = int(organization_id)

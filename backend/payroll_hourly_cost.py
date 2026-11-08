@@ -1413,19 +1413,63 @@ def _lookup_user_rate(conn, user_id: int, work_date: str) -> Optional[float]:
 
 
 def _load_employee_rows(conn, organization_id: int, user_id: int) -> list[dict]:
+    grouped = _load_report_rows_by_user(conn, organization_id, user_ids=[int(user_id)])
+    return list(grouped.get(int(user_id)) or [])
+
+
+def _load_report_rows_by_user(
+    conn,
+    organization_id: int,
+    *,
+    user_ids: Optional[list[int]] = None,
+) -> dict[int, list[dict]]:
+    """One payroll-report read for the employees that need stored history."""
     from backend.payroll_report import query_payroll_report
 
-    report = query_payroll_report(
-        conn,
-        int(organization_id),
-        all_history=True,
-        user_id=int(user_id),
-        include_analytics=False,
-        include_employee_detail=True,
-        estimate_open_burden=False,
-        limit=500,
-    )
-    return list(report.get("rows") or [])
+    wanted = None
+    if user_ids is not None:
+        wanted = {int(uid) for uid in user_ids}
+        if len(wanted) == 1:
+            report = query_payroll_report(
+                conn,
+                int(organization_id),
+                all_history=True,
+                user_id=next(iter(wanted)),
+                include_analytics=False,
+                include_employee_detail=True,
+                estimate_open_burden=False,
+                limit=500,
+            )
+        else:
+            report = query_payroll_report(
+                conn,
+                int(organization_id),
+                all_history=True,
+                include_analytics=False,
+                include_employee_detail=True,
+                estimate_open_burden=False,
+                limit=20000,
+            )
+    else:
+        report = query_payroll_report(
+            conn,
+            int(organization_id),
+            all_history=True,
+            include_analytics=False,
+            include_employee_detail=True,
+            estimate_open_burden=False,
+            limit=20000,
+        )
+    grouped: dict[int, list[dict]] = {}
+    for row in report.get("rows") or []:
+        try:
+            uid = int(row.get("user_id"))
+        except (TypeError, ValueError):
+            continue
+        if wanted is not None and uid not in wanted:
+            continue
+        grouped.setdefault(uid, []).append(row)
+    return grouped
 
 
 def group_batch_sync_lines(
@@ -1933,6 +1977,13 @@ def annotate_open_period_rows(
                 )
     except Exception:
         projected = rows
+    if projected and all(_row_keeps_stored_employer_cost(row) for row in projected):
+        stored_rows = []
+        for row in projected:
+            copy = dict(row)
+            copy["employer_cost_basis"] = "actual"
+            stored_rows.append(copy)
+        return stored_rows
     try:
         policies = load_category_cost_assumptions(conn, int(organization_id))
     except Exception:
@@ -1959,10 +2010,18 @@ def annotate_open_period_rows(
         if uid is not None:
             needs_history.append(int(uid))
     by_user: dict[int, Optional[float]] = {}
-    for uid in dict.fromkeys(needs_history):
+    unique_users = list(dict.fromkeys(needs_history))
+    history_by_user: dict[int, list[dict]] = {}
+    if unique_users:
         try:
-            history = _load_employee_rows(conn, int(organization_id), uid)
-            periods = aggregate_finalized_w2_periods(history)
+            history_by_user = _load_report_rows_by_user(
+                conn, int(organization_id), user_ids=unique_users
+            )
+        except Exception:
+            history_by_user = {}
+    for uid in unique_users:
+        try:
+            periods = aggregate_finalized_w2_periods(history_by_user.get(uid) or [])
             by_user[uid] = weighted_burden_from_periods(periods, limit=HISTORY_PERIODS).get(
                 "burden_percent"
             )
@@ -2015,7 +2074,14 @@ def combine_stored_and_open_categories(
     return combined
 
 
-def _stamp_week_ot_modes(conn, organization_id: int, user_id: int, records: list[dict]) -> None:
+def _stamp_week_ot_modes(
+    conn,
+    organization_id: int,
+    user_id: int,
+    records: list[dict],
+    *,
+    modes: Optional[dict] = None,
+) -> None:
     """Attach the stored employee-week overtime setting. Does not change payroll rows."""
     from datetime import date as date_cls
 
@@ -2043,14 +2109,15 @@ def _stamp_week_ot_modes(conn, organization_id: int, user_id: int, records: list
                 week_dates.append(date_cls.fromisoformat(week))
             except ValueError:
                 pass
-    modes = {}
-    try:
-        if week_dates:
-            modes = load_employee_week_ot_modes(
-                conn, int(organization_id), [int(user_id)], week_dates
-            )
-    except Exception:
+    if modes is None:
         modes = {}
+        try:
+            if week_dates:
+                modes = load_employee_week_ot_modes(
+                    conn, int(organization_id), [int(user_id)], week_dates
+                )
+        except Exception:
+            modes = {}
     for rec in records or []:
         week = _payroll_week_key(rec)
         stored = modes.get((int(user_id), week)) if week else None
@@ -2058,6 +2125,55 @@ def _stamp_week_ot_modes(conn, organization_id: int, user_id: int, records: list
             rec["ot_week_mode"] = stored
         elif not rec.get("ot_week_mode"):
             rec["ot_week_mode"] = OT_MODE_DEFAULT
+
+
+def _rates_by_user(conn, user_ids: list[int]) -> dict[int, list[dict]]:
+    """All dated rates for these employees, newest effective date last in each list."""
+    from backend.ta_helpers import table_exists
+
+    wanted = sorted({int(uid) for uid in user_ids if uid is not None})
+    if not wanted:
+        return {}
+    cur = conn.cursor()
+    if not table_exists(cur, "user_rates"):
+        return {}
+    placeholders = ", ".join(["%s"] * len(wanted))
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        f"""
+        SELECT user_id, hourly_rate, effective_date, end_date, id
+        FROM user_rates
+        WHERE user_id IN ({placeholders})
+        """,
+        tuple(wanted),
+    )
+    grouped: dict[int, list[dict]] = {}
+    for row in c.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            uid = int(row.get("user_id"))
+        except (TypeError, ValueError):
+            continue
+        grouped.setdefault(uid, []).append(row)
+    return grouped
+
+
+def _rate_covering_date(rows: list[dict], work_date: str) -> Optional[float]:
+    """Same row as the per-date user_rates lookup: latest effective date, then highest id."""
+    best = None
+    for row in rows or []:
+        effective = str(row.get("effective_date") or "")[:10]
+        end = row.get("end_date")
+        end_text = str(end)[:10] if end else ""
+        if not effective or effective > work_date:
+            continue
+        if end_text and end_text < work_date:
+            continue
+        rank = (effective, int(row.get("id") or 0))
+        if best is None or rank > best[0]:
+            best = (rank, _rate_num(row.get("hourly_rate")))
+    return None if best is None else best[1]
 
 
 def build_hourly_cost_for_time_records(
@@ -2070,6 +2186,7 @@ def build_hourly_cost_for_time_records(
     records: Optional[list[dict]] = None,
     ot_threshold: Any = None,
     ot_multiplier: Any = None,
+    shared: Optional[dict] = None,
 ) -> dict[str, Any]:
     """Time Records analysis for one employee and one payroll period.
 
@@ -2083,17 +2200,23 @@ def build_hourly_cost_for_time_records(
     start = str(period_start or "")[:10]
     end = str(period_end or "")[:10]
     settings = None
-    try:
-        settings = fetch_payroll_tax_settings(conn, int(organization_id))
-    except Exception:
-        settings = None
+    if shared is None:
+        try:
+            settings = fetch_payroll_tax_settings(conn, int(organization_id))
+        except Exception:
+            settings = None
+    else:
+        settings = shared.get("settings")
     target = labor_cost_target_from_settings(settings)
 
     history_rows: list[dict] = []
-    try:
-        history_rows = _load_employee_rows(conn, organization_id, user_id)
-    except Exception:
-        history_rows = []
+    if shared is None:
+        try:
+            history_rows = _load_employee_rows(conn, organization_id, user_id)
+        except Exception:
+            history_rows = []
+    else:
+        history_rows = list((shared.get("history") or {}).get(int(user_id)) or [])
 
     finalized = finalized_rows_for_period(history_rows, start, end)
     finalized_cats = {_category_key(row.get("worker_category")) for row in finalized}
@@ -2135,15 +2258,27 @@ def build_hourly_cost_for_time_records(
         return analysis
 
     rate_by_date: dict[str, Optional[float]] = {}
+    shared_rates = None
+    if shared is not None:
+        shared_rates = (shared.get("rates") or {}).get(int(user_id)) or []
     for rec in clean_records:
         work_date = rec["work_date"]
         if work_date and work_date not in rate_by_date:
             try:
-                rate_by_date[work_date] = _lookup_user_rate(conn, user_id, work_date)
+                if shared_rates is not None:
+                    rate_by_date[work_date] = _rate_covering_date(shared_rates, work_date)
+                else:
+                    rate_by_date[work_date] = _lookup_user_rate(conn, user_id, work_date)
             except Exception:
                 rate_by_date[work_date] = None
     rated, rates_changed = apply_historical_rates(clean_records, rate_by_date)
-    _stamp_week_ot_modes(conn, int(organization_id), int(user_id), rated)
+    _stamp_week_ot_modes(
+        conn,
+        int(organization_id),
+        int(user_id),
+        rated,
+        modes=None if shared is None else shared.get("modes"),
+    )
     rate_note = None
     if rates_changed:
         rate_note = (
@@ -2155,7 +2290,10 @@ def build_hourly_cost_for_time_records(
             "Overtime is disabled for this payroll week. Payable hours stay at straight time."
         )
         rate_note = f"{rate_note} {disabled_note}".strip() if rate_note else disabled_note
-    policies = load_category_cost_assumptions(conn, organization_id)
+    if shared is None:
+        policies = load_category_cost_assumptions(conn, organization_id)
+    else:
+        policies = shared.get("policies") or {}
     periods = aggregate_finalized_w2_periods(history_rows, exclude_period=(start, end))
     weighted = weighted_burden_from_periods(periods, limit=HISTORY_PERIODS)
     priced = price_time_records(
@@ -2194,6 +2332,90 @@ def build_hourly_cost_for_time_records(
         stored_by_category,
         labor_cost_target=target,
     )
+
+
+def build_hourly_costs_for_time_records(
+    conn,
+    organization_id: int,
+    subjects: list[dict],
+    *,
+    period_start: str,
+    period_end: str,
+) -> list[dict]:
+    """Price every employee in one payroll view with one history read and one rate read."""
+    from datetime import date as date_cls
+
+    from backend.payroll_tax_settings import fetch_payroll_tax_settings
+    from backend.payroll_week_ot import load_employee_week_ot_modes
+
+    clean_subjects = []
+    for subject in subjects or []:
+        if not isinstance(subject, dict):
+            continue
+        try:
+            uid = int(subject.get("user_id"))
+        except (TypeError, ValueError):
+            continue
+        records = subject.get("records") if isinstance(subject.get("records"), list) else []
+        clean_subjects.append((uid, subject, records))
+    if not clean_subjects:
+        return []
+    user_ids = [uid for uid, _subject, _records in clean_subjects]
+    try:
+        settings = fetch_payroll_tax_settings(conn, int(organization_id))
+    except Exception:
+        settings = None
+    try:
+        policies = load_category_cost_assumptions(conn, int(organization_id))
+    except Exception:
+        policies = {}
+    try:
+        history = _load_report_rows_by_user(conn, int(organization_id), user_ids=user_ids)
+    except Exception:
+        history = {}
+    try:
+        rates = _rates_by_user(conn, user_ids)
+    except Exception:
+        rates = {uid: [] for uid in user_ids}
+    week_dates = []
+    for _uid, _subject, records in clean_subjects:
+        for raw in records:
+            if not isinstance(raw, dict):
+                continue
+            week = str(raw.get("payroll_week_start") or "")[:10]
+            if not week:
+                continue
+            try:
+                week_dates.append(date_cls.fromisoformat(week))
+            except ValueError:
+                continue
+    try:
+        modes = load_employee_week_ot_modes(conn, int(organization_id), user_ids, week_dates)
+    except Exception:
+        modes = {}
+    shared = {
+        "settings": settings,
+        "policies": policies,
+        "history": history,
+        "rates": rates,
+        "modes": modes,
+    }
+    analyses = []
+    for uid, subject, records in clean_subjects:
+        analyses.append(
+            build_hourly_cost_for_time_records(
+                conn,
+                int(organization_id),
+                uid,
+                period_start=period_start,
+                period_end=period_end,
+                records=records,
+                ot_threshold=subject.get("ot_threshold"),
+                ot_multiplier=subject.get("ot_multiplier"),
+                shared=shared,
+            )
+        )
+    return analyses
 
 
 def load_category_cost_assumptions(conn, organization_id: int) -> dict[str, dict]:

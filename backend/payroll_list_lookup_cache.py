@@ -160,13 +160,13 @@ class PayrollListLookupCache:
         return out
 
 
-def _bulk_portal_system_user_ids(conn, user_ids: list[int]) -> set[int]:
+def _bulk_portal_system_user_ids(cursor, user_ids: list[int]) -> set[int]:
     uids = sorted({int(u) for u in user_ids})
     if not uids:
         return set()
     ph = ",".join(["%s"] * len(uids))
     roles_by_user: dict[int, list[str]] = {uid: [] for uid in uids}
-    c = conn.cursor(dictionary=True)
+    c = cursor
     try:
         c.execute(
             f"""
@@ -217,16 +217,15 @@ def _bulk_portal_system_user_ids(conn, user_ids: list[int]) -> set[int]:
 
 
 def _bulk_schedule_rates(
-    conn, organization_id: int, user_ids: list[int]
+    cursor, organization_id: int, user_ids: list[int]
 ) -> dict[int, Optional[float]]:
     out: dict[int, Optional[float]] = {uid: None for uid in user_ids}
     if not user_ids:
         return out
-    chk = conn.cursor()
-    if not table_exists(chk, "payroll_worker_profiles"):
+    if not table_exists(cursor, "payroll_worker_profiles"):
         return out
     ph = ",".join(["%s"] * len(user_ids))
-    c = conn.cursor(dictionary=True)
+    c = cursor
     c.execute(
         f"""
         SELECT user_id, default_hourly_rate
@@ -245,17 +244,16 @@ def _bulk_schedule_rates(
     return out
 
 
-def _bulk_contractor_json(conn, user_ids: list[int]) -> dict[int, dict]:
+def _bulk_contractor_json(cursor, user_ids: list[int]) -> dict[int, dict]:
     out: dict[int, dict] = {uid: {} for uid in user_ids}
     if not user_ids:
         return out
     from backend.contractor_management import _json_load
     from backend.hr_compliance import ensure_hr_extended_profiles_table
 
-    chk = conn.cursor()
-    ensure_hr_extended_profiles_table(chk)
+    ensure_hr_extended_profiles_table(cursor)
     ph = ",".join(["%s"] * len(user_ids))
-    c = conn.cursor(dictionary=True)
+    c = cursor
     c.execute(
         f"""
         SELECT user_id, contractor_json
@@ -270,15 +268,14 @@ def _bulk_contractor_json(conn, user_ids: list[int]) -> dict[int, dict]:
     return out
 
 
-def _bulk_user_rates(conn, user_ids: list[int]) -> dict[int, Optional[float]]:
+def _bulk_user_rates(cursor, user_ids: list[int]) -> dict[int, Optional[float]]:
     out: dict[int, Optional[float]] = {uid: None for uid in user_ids}
     if not user_ids:
         return out
-    chk = conn.cursor()
-    if not table_exists(chk, "user_rates"):
+    if not table_exists(cursor, "user_rates"):
         return out
     ph = ",".join(["%s"] * len(user_ids))
-    c = conn.cursor(dictionary=True)
+    c = cursor
     c.execute(
         f"""
         SELECT ur.user_id, ur.hourly_rate, ur.effective_date, ur.id
@@ -303,17 +300,16 @@ def _bulk_user_rates(conn, user_ids: list[int]) -> dict[int, Optional[float]]:
     return out
 
 
-def _bulk_employee_pay_rates(conn, user_ids: list[int]) -> dict[int, Optional[float]]:
+def _bulk_employee_pay_rates(cursor, user_ids: list[int]) -> dict[int, Optional[float]]:
     out: dict[int, Optional[float]] = {uid: None for uid in user_ids}
     if not user_ids:
         return out
-    chk = conn.cursor()
-    if not table_exists(chk, "employee_profiles") or not table_has_column(
-        chk, "users", "employee_id"
+    if not table_exists(cursor, "employee_profiles") or not table_has_column(
+        cursor, "users", "employee_id"
     ):
         return out
     ph = ",".join(["%s"] * len(user_ids))
-    c = conn.cursor(dictionary=True)
+    c = cursor
     c.execute(
         f"""
         SELECT u.id AS user_id, ep.pay_rate
@@ -347,13 +343,14 @@ def build_payroll_list_lookup_cache(
         return PayrollListLookupCache(organization_id=int(organization_id), today=today)
 
     assignments = load_employment_assignments_for_users(conn, uids)
+    cursor = conn.cursor(dictionary=True)
     return PayrollListLookupCache(
         organization_id=int(organization_id),
         today=today,
         assignments_by_user=assignments,
-        portal_system_ids=_bulk_portal_system_user_ids(conn, uids),
-        schedule_rate=_bulk_schedule_rates(conn, int(organization_id), uids),
-        contractor_json=_bulk_contractor_json(conn, uids),
-        user_rate=_bulk_user_rates(conn, uids),
-        employee_pay_rate=_bulk_employee_pay_rates(conn, uids),
+        portal_system_ids=_bulk_portal_system_user_ids(cursor, uids),
+        schedule_rate=_bulk_schedule_rates(cursor, int(organization_id), uids),
+        contractor_json=_bulk_contractor_json(cursor, uids),
+        user_rate=_bulk_user_rates(cursor, uids),
+        employee_pay_rate=_bulk_employee_pay_rates(cursor, uids),
     )

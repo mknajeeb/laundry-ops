@@ -380,20 +380,38 @@ def ensure_payroll_profile_for_user_id(conn, washpro_user_id: int):
     )
 
 
-def payroll_week_bounds(conn, d: date, organization_id: int = 1):
-    """Week interval for payroll using `payroll_period_settings.week_starts_on` (0=Mon..6=Sun)."""
+def _organization_week_starts_on(conn, organization_id: int) -> int:
+    """Read the org week anchor once per connection. The setting is not a per-session value."""
+    oid = int(organization_id)
+    cache = getattr(conn, "_payroll_week_starts_on_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        try:
+            conn._payroll_week_starts_on_cache = cache
+        except Exception:
+            cache = None
+    if isinstance(cache, dict) and oid in cache:
+        return cache[oid]
     c = conn.cursor(dictionary=True)
     c.execute(
         "SELECT week_starts_on FROM payroll_period_settings WHERE organization_id=%s LIMIT 1",
-        (int(organization_id),),
+        (oid,),
     )
     row = c.fetchone()
     anchor = 0
-    if row and row.get("week_starts_on") is not None:
+    if isinstance(row, dict) and row.get("week_starts_on") is not None:
         try:
             anchor = int(row["week_starts_on"])
         except (TypeError, ValueError):
             anchor = 0
+    if isinstance(cache, dict):
+        cache[oid] = anchor
+    return anchor
+
+
+def payroll_week_bounds(conn, d: date, organization_id: int = 1):
+    """Week interval for payroll using `payroll_period_settings.week_starts_on` (0=Mon..6=Sun)."""
+    anchor = _organization_week_starts_on(conn, organization_id)
     delta = (d.weekday() - anchor) % 7
     week_start = d - timedelta(days=delta)
     week_end = week_start + timedelta(days=6)
