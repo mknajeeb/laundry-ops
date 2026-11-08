@@ -21,14 +21,18 @@ import ActivityChecklistEditor, {
   itemsToPayload,
 } from "../components/tasks/ActivityChecklistEditor";
 import {
+  activeChecklistTasks,
+  archivedChecklistTasks,
   checklistSections,
   groupActivitiesByCategory,
   isOperationalActivity,
 } from "../components/tasks/taskManagementLists";
+import VerifyingScheduleRoleField from "../components/tasks/VerifyingScheduleRoleField";
 import {
   getEndOfDayClosingTemplate,
   getManagementTaskAssignees,
   getManagementTaskCatalog,
+  getWeeklyScheduleRoles,
   upsertManagementTaskChecklist,
   upsertManagementTaskDefinition,
   retireManagementActivityGroup,
@@ -86,6 +90,7 @@ export default function ManagementTaskConfigPage() {
   const [globalDraft, setGlobalDraft] = useState(null);
   const [busy, setBusy] = useState(false);
   const [assignees, setAssignees] = useState([]);
+  const [scheduleRoles, setScheduleRoles] = useState([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -102,6 +107,12 @@ export default function ManagementTaskConfigPage() {
       setTasks(res.data?.tasks || []);
       setChecklists(res.data?.checklists || []);
       setActivityGroups(res.data?.activity_groups || []);
+      try {
+        const roles = await getWeeklyScheduleRoles();
+        setScheduleRoles(roles.data?.roles || []);
+      } catch {
+        setScheduleRoles([]);
+      }
       const policy = res.data?.verification_policy || {
         verification_required: true,
         verification_method: "supervisor",
@@ -396,7 +407,8 @@ export default function ManagementTaskConfigPage() {
     });
   };
 
-  const visibleTasks = tasks;
+  const activeTasks = useMemo(() => activeChecklistTasks(tasks), [tasks]);
+  const archivedTasks = useMemo(() => archivedChecklistTasks(tasks), [tasks]);
   const operationalGroups = useMemo(
     () => activityGroups.filter(isOperationalActivity),
     [activityGroups]
@@ -497,6 +509,7 @@ export default function ManagementTaskConfigPage() {
                     <MenuItem value="employee">{t("tasks.config.employeePeer")}</MenuItem>
                     <MenuItem value="supervisor">{t("tasks.config.supervisor")}</MenuItem>
                     <MenuItem value="role">{t("tasks.config.roleBased")}</MenuItem>
+                    <MenuItem value="schedule_role">{t("tasks.config.scheduleRoleVerification")}</MenuItem>
                   </TextField>
                   <TextField
                     select
@@ -511,6 +524,17 @@ export default function ManagementTaskConfigPage() {
                     <MenuItem value="later_shift">{t("tasks.config.laterShift")}</MenuItem>
                     <MenuItem value="next_day">{t("tasks.config.nextDay")}</MenuItem>
                   </TextField>
+                  <VerifyingScheduleRoleField
+                    method={globalDraft.verification_method}
+                    value={globalDraft.verifier_config?.schedule_role}
+                    roles={scheduleRoles}
+                    onChange={(code) =>
+                      setGlobalDraft({
+                        ...globalDraft,
+                        verifier_config: { ...(globalDraft.verifier_config || {}), schedule_role: code },
+                      })
+                    }
+                  />
                   <Stack direction="row" spacing={1}>
                     <Button variant="contained" disabled={busy} onClick={saveGlobalPolicy}>
                       {t("tasks.config.savePolicy")}
@@ -731,6 +755,7 @@ export default function ManagementTaskConfigPage() {
                 <ActivityChecklistEditor
                   items={groupDraft.itemRows || []}
                   assignees={assignees}
+                  scheduleRoles={scheduleRoles}
                   onChange={(itemRows) => setGroupDraft({ ...groupDraft, itemRows })}
                 />
                 <FormControlLabel
@@ -814,6 +839,7 @@ export default function ManagementTaskConfigPage() {
                       <MenuItem value="employee">{t("tasks.config.employeePeer")}</MenuItem>
                       <MenuItem value="supervisor">{t("tasks.config.supervisor")}</MenuItem>
                       <MenuItem value="role">{t("tasks.config.roleBased")}</MenuItem>
+                      <MenuItem value="schedule_role">{t("tasks.config.scheduleRoleVerification")}</MenuItem>
                     </TextField>
                     <TextField
                       select
@@ -828,6 +854,17 @@ export default function ManagementTaskConfigPage() {
                       <MenuItem value="later_shift">{t("tasks.config.laterShift")}</MenuItem>
                       <MenuItem value="next_day">{t("tasks.config.nextDay")}</MenuItem>
                     </TextField>
+                    <VerifyingScheduleRoleField
+                      method={groupDraft.verification_method}
+                      value={groupDraft.verifier_config?.schedule_role}
+                      roles={scheduleRoles}
+                      onChange={(code) =>
+                        setGroupDraft({
+                          ...groupDraft,
+                          verifier_config: { ...(groupDraft.verifier_config || {}), schedule_role: code },
+                        })
+                      }
+                    />
                   </>
                 ) : null}
                 <Stack direction="row" spacing={1}>
@@ -844,13 +881,13 @@ export default function ManagementTaskConfigPage() {
 
           <Box component="details" sx={{ border: "1px solid", borderColor: "divider", borderRadius: 1, px: 1.5, py: 1 }}>
             <Box component="summary" sx={{ cursor: "pointer", fontWeight: 800 }}>
-              {t("tasks.config.legacy")}
+              {t("tasks.config.archivedActivities")}
             </Box>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1, mb: 1 }}>
-              {t("tasks.config.legacyHelp")}
+              {t("tasks.config.archivedHelp")}
             </Typography>
             <Stack spacing={1} sx={{ mb: 1.5 }}>
-              {legacyGroups.length === 0 ? (
+              {legacyGroups.length === 0 && archivedTasks.length === 0 ? (
                 <Typography variant="body2" color="text.secondary">
                   {t("tasks.config.noneArchived")}
                 </Typography>
@@ -883,7 +920,25 @@ export default function ManagementTaskConfigPage() {
                   </Paper>
                 ))
               )}
+              {archivedTasks.length ? (
+                <Typography variant="body2" sx={{ fontWeight: 800, mt: 1 }}>
+                  {t("tasks.config.inactiveTasks")}
+                </Typography>
+              ) : null}
+              {archivedTasks.map((task) => (
+                <Paper key={task.code} variant="outlined" sx={{ p: 1.25 }}>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center">
+                    <Typography sx={{ fontWeight: 800 }}>
+                      {localizedConfigured(task, locale, "name", "name_es") || task.name}
+                    </Typography>
+                    <Button size="small" onClick={() => openTask(task)}>
+                      {t("tasks.config.edit")}
+                    </Button>
+                  </Stack>
+                </Paper>
+              ))}
             </Stack>
+          </Box>
           <Paper variant="outlined" sx={{ p: 1.5 }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
               <Typography sx={{ fontWeight: 800 }}>{t("tasks.config.standalone")}</Typography>
@@ -916,12 +971,12 @@ export default function ManagementTaskConfigPage() {
               {t("tasks.config.codesStay")}
             </Typography>
             <Stack spacing={1}>
-              {visibleTasks.length === 0 ? (
+              {activeTasks.length === 0 ? (
                 <Typography variant="body2" color="text.secondary">
                   {t("tasks.config.noStandalone")}
                 </Typography>
               ) : null}
-              {visibleTasks.map((task) => (
+              {activeTasks.map((task) => (
                 <Paper key={task.code} variant="outlined" sx={{ p: 1.25 }}>
                   <Stack direction="row" justifyContent="space-between" alignItems="center">
                     <Box>
@@ -954,7 +1009,6 @@ export default function ManagementTaskConfigPage() {
               ))}
             </Stack>
           </Paper>
-          </Box>
 
           {draft ? (
             <Paper variant="outlined" sx={{ p: 1.5 }}>
@@ -1080,6 +1134,7 @@ export default function ManagementTaskConfigPage() {
                       <MenuItem value="employee">{t("tasks.config.employeePeer")}</MenuItem>
                       <MenuItem value="supervisor">{t("tasks.config.supervisor")}</MenuItem>
                       <MenuItem value="role">{t("tasks.config.roleBased")}</MenuItem>
+                      <MenuItem value="schedule_role">{t("tasks.config.scheduleRoleVerification")}</MenuItem>
                     </TextField>
                     <TextField
                       select
@@ -1092,6 +1147,17 @@ export default function ManagementTaskConfigPage() {
                       <MenuItem value="later_shift">{t("tasks.config.laterShift")}</MenuItem>
                       <MenuItem value="next_day">{t("tasks.config.nextDay")}</MenuItem>
                     </TextField>
+                    <VerifyingScheduleRoleField
+                      method={draft.verification_method}
+                      value={draft.verifier_config?.schedule_role}
+                      roles={scheduleRoles}
+                      onChange={(code) =>
+                        setDraft({
+                          ...draft,
+                          verifier_config: { ...(draft.verifier_config || {}), schedule_role: code },
+                        })
+                      }
+                    />
                   </>
                 ) : null}
                 <TextField

@@ -477,6 +477,25 @@ def _timing_for_members(
     )
 
 
+def _inactive_activity_group_assignment_error(
+    cursor,
+    organization_id: int,
+    role: str,
+    *,
+    already_assigned: bool,
+) -> str | None:
+    """Inactive activity groups stay on saved rows and cannot be chosen again."""
+    if already_assigned or not str(role or "").startswith("agroup_"):
+        return None
+    from backend.task_activity_groups import get_activity_group
+
+    group = get_activity_group(cursor, int(organization_id), role_code=str(role))
+    if group and group.get("active"):
+        return None
+    name = str((group or {}).get("name") or role)
+    return f"{name} is inactive and cannot be selected for a new assignment."
+
+
 def _validate_assignment(
     conn,
     cursor,
@@ -507,6 +526,11 @@ def _validate_assignment(
     role_err = role_assignment_error(role, catalog, timed=False, already_assigned=unchanged_role)
     if role_err:
         return None, role_err
+    inactive_group = _inactive_activity_group_assignment_error(
+        cursor, organization_id, role, already_assigned=unchanged_role
+    )
+    if inactive_group:
+        return None, inactive_group
     if not unchanged_role:
         from backend.intra_day_activity_groups import competing_new_assignment_error
 

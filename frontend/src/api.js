@@ -563,6 +563,17 @@ export const attendancePinCleaningTasksReview = (organization_slug, pin, options
     _pinCleaningOpts,
   );
 
+export const attendancePinResolveUnassignedVerification = (organization_slug, pin, options = {}) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-cleaning-tasks/resolve-unassigned-verification`,
+    _pinCleaningBody(organization_slug, pin, options, {
+      activity_id: options.activity_id,
+      reason: options.reason,
+      ...(options.business_date ? { business_date: options.business_date } : {}),
+    }),
+    _pinCleaningOpts,
+  );
+
 export const attendancePinCleaningTasksApprove = (organization_slug, pin, options = {}) =>
   axios.post(
     `${API_BASE}/api/public/attendance/pin-cleaning-tasks/approve`,

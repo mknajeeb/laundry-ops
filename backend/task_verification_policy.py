@@ -19,6 +19,7 @@ from backend.task_catalog import (
     VERIFY_METHODS,
     VERIFY_NONE,
     VERIFY_ROLE,
+    VERIFY_SCHEDULE_ROLE,
     VERIFY_SUPERVISOR,
     VERIFY_TIMING_SAME_SHIFT,
     VERIFY_TIMINGS,
@@ -119,12 +120,28 @@ def _normalize_policy_fields(
     config = verifier_config if isinstance(verifier_config, dict) else _parse_json(verifier_config, {})
     if not isinstance(config, dict):
         config = {}
+    if method == VERIFY_SCHEDULE_ROLE:
+        schedule_role = str(config.get("schedule_role") or "").strip().lower()
+        if not schedule_role:
+            raise VerificationPolicyError("Choose the verifying schedule role.")
+        config = {**config, "schedule_role": schedule_role}
     return {
         "verification_required": required,
         "verification_method": method if required else VERIFY_NONE,
         "verification_timing": timing,
         "verifier_config": config,
     }
+
+
+def assert_verifying_schedule_role(cursor, organization_id: int, verifier_config: Mapping[str, Any] | None) -> None:
+    """The schedule-role method must name one active weekly schedule role."""
+    from backend.weekly_schedule_roles import list_role_catalog
+
+    code = str((verifier_config or {}).get("schedule_role") or "").strip().lower()
+    catalog = {str(row.get("code") or ""): row for row in list_role_catalog(cursor, int(organization_id))}
+    info = catalog.get(code)
+    if not info or not info.get("active", True):
+        raise VerificationPolicyError("Choose an active weekly schedule role.")
 
 
 def get_global_verification_policy(cursor, organization_id: int) -> dict[str, Any]:
@@ -204,6 +221,8 @@ def upsert_global_verification_policy(
         if "verifier_config" in data
         else data.get("verifier_config_json"),
     )
+    if normalized["verification_method"] == VERIFY_SCHEDULE_ROLE:
+        assert_verifying_schedule_role(cursor, oid, normalized["verifier_config"])
     config_json = json.dumps(normalized["verifier_config"])
     cursor.execute(
         f"""

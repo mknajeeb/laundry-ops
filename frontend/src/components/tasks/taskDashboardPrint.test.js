@@ -176,10 +176,11 @@ describe("task dashboard print document", () => {
     expect(page).toContain("tasks.dashboard.verification");
     expect(copy).toContain("Completion: {status}");
     expect(copy).toContain("Verification: {status}");
-    expect(config.indexOf("tasks.config.groups")).toBeLessThan(config.indexOf("tasks.config.legacy"));
-    expect(config).toContain("tasks.config.legacy");
-    expect(copy).toContain("Legacy / Archived");
-    expect(copy).toContain("Nothing is deleted.");
+    expect(config.indexOf("tasks.config.groups")).toBeLessThan(config.indexOf("tasks.config.archivedActivities"));
+    expect(config).toContain("tasks.config.archivedActivities");
+    expect(config).not.toContain("tasks.config.legacy");
+    expect(copy).toContain("Archived Activities");
+    expect(copy).toContain("They are not offered for new assignments.");
   });
 
   it("omits labor duration when the dashboard hides labor", () => {

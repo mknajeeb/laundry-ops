@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  activeChecklistTasks,
+  archivedChecklistTasks,
   checklistSections,
   groupActivitiesByCategory,
   isLegacyActivity,
@@ -54,5 +56,10 @@ describe("task management lists", () => {
     expect(isLegacyActivity(named)).toBe(false);
     expect(isLegacyActivity(inactive)).toBe(true);
     expect(isLegacyActivity(archived)).toBe(true);
+  });
+
+  it("keeps active checklist tasks out of the archived list", () => {
+    expect(activeChecklistTasks(tasks).map((row) => row.code)).toEqual(["lint_cleaning"]);
+    expect(archivedChecklistTasks(tasks).map((row) => row.code)).toEqual(["custom_smoke"]);
   });
 });

@@ -49,6 +49,14 @@ export function isOperationalActivity(group) {
   return Boolean(group) && !isLegacyActivity(group);
 }
 
+export function activeChecklistTasks(tasks) {
+  return (tasks || []).filter(isActiveCatalogRow);
+}
+
+export function archivedChecklistTasks(tasks) {
+  return (tasks || []).filter((task) => !isActiveCatalogRow(task));
+}
+
 export function checklistSections(items) {
   const sections = new Map();
   for (const item of items || []) {

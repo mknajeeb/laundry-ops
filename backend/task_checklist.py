@@ -641,6 +641,22 @@ def list_checklists_to_verify(
                 allowed = {int(x) for x in (config.get("user_ids") or config.get("employee_ids") or []) if x}
                 if allowed and int(verifier_user_id) not in allowed and not has_supervisor_review:
                     continue
+            if method == "schedule_role":
+                from backend.cleaning_task_activity import (
+                    schedule_role_code,
+                    users_assigned_schedule_role,
+                    verification_schedule_date,
+                )
+
+                on_date = verification_schedule_date(timing, biz, day)
+                assigned = users_assigned_schedule_role(
+                    cursor,
+                    int(organization_id),
+                    schedule_role_code(config),
+                    on_date,
+                )
+                if int(verifier_user_id) not in assigned:
+                    continue
             status = build_checklist_day_status(cursor, int(organization_id), cl, biz)
             if status["status"] in (CHECKLIST_PENDING, CHECKLIST_PARTIAL, CHECKLIST_INCOMPLETE):
                 # Only surface if there is something to review (any activity or pending)
