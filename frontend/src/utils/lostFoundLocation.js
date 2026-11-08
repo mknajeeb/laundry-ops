@@ -34,6 +34,27 @@ export function validateFoundLocation({ kind, number, detail }) {
   return "";
 }
 
+export function displayFoundLocation(item, t) {
+  const kind = String(item?.location_kind || "");
+  const number = String(item?.location_number || "").trim();
+  const detail = String(item?.location_detail || "").trim();
+  const stored = String(item?.location_label || "");
+  if (typeof t !== "function" || !kind) return stored;
+  const name = t(`lostFound.location.${kind}`);
+  if (!name || name === `lostFound.location.${kind}`) return stored;
+  if (kind === "other") return detail || stored;
+  if (kind === "floor" || !number) return name;
+  return `${name} ${number}`;
+}
+
+export function displayFoundEvent(eventType, t) {
+  const code = String(eventType || "");
+  const key = `lostFound.event.${code}`;
+  if (typeof t !== "function" || !code) return code;
+  const label = t(key);
+  return label && label !== key ? label : code;
+}
+
 export function foundLocationLabel({ kind, number, detail }) {
   const token = String(number || "").trim();
   const note = String(detail || "").trim();

@@ -107,6 +107,7 @@ def ensure_responsibilities_table(cursor) -> None:
           timing_mode VARCHAR(20) NOT NULL DEFAULT 'anytime',
           start_time TIME NULL DEFAULT NULL,
           execution_mode VARCHAR(20) NOT NULL DEFAULT 'individual',
+          display_order INT NOT NULL DEFAULT 0,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP NULL ON UPDATE CURRENT_TIMESTAMP,
           UNIQUE KEY uq_pwsr_assignment (organization_id, week_start, user_id, day_of_week, role),

@@ -16,7 +16,7 @@ export default function OpsLauncherEmpty({ onLock, message = "No actions availab
       >
         {message}
       </Typography>
-      {onLock ? <OpsLockButton onClick={onLock} fullWidth label="Lock" /> : null}
+      {onLock ? <OpsLockButton onClick={onLock} fullWidth /> : null}
     </Stack>
   );
 }

@@ -17,6 +17,7 @@ import {
 import { getLostFoundList, getLostFoundReconciliation, getRedryPockets, saveRedryPockets, updateLostFoundStatus } from "../api";
 import LostFoundPhoto from "../components/lostFound/LostFoundPhoto";
 import { useI18n } from "../i18n/I18nContext";
+import { displayFoundEvent, displayFoundLocation } from "../utils/lostFoundLocation";
 import { businessTodayYmd } from "../utils/businessTime";
 
 const STATUSES = ["new", "under_review", "returned", "stored", "resolved"];
@@ -89,7 +90,7 @@ export default function LostFoundDesktopPage() {
       <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} justifyContent="space-between">
         <Box>
           <Typography sx={{ fontWeight: 800 }}>
-            {item.report_category === "redry" ? t("lostFound.redryIssue") : t("lostFound.orphan")} · {item.location_label}
+            {item.report_category === "redry" ? t("lostFound.redryIssue") : t("lostFound.orphan")} · {displayFoundLocation(item, t)}
           </Typography>
           {item.report_category === "redry" ? (
             <Typography variant="body2">
@@ -106,7 +107,7 @@ export default function LostFoundDesktopPage() {
           <Stack spacing={0.25} sx={{ mt: 0.5 }}>
             {(item.events || []).map((event) => (
               <Typography key={event.id} variant="caption" color="text.secondary">
-                {event.created_at_display} · {event.actor_name || "—"} · {event.event_type}
+                {event.created_at_display} · {event.actor_name || "—"} · {displayFoundEvent(event.event_type, t)}
               </Typography>
             ))}
           </Stack>

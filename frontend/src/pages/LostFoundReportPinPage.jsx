@@ -6,6 +6,7 @@ import LostFoundReportForm from "../components/lostFound/LostFoundReportForm";
 import { useI18n } from "../i18n/I18nContext";
 import { OpsMobileShell, OpsTopBar } from "../opsMobile";
 import { clearPinHubSession, loadPinHubSession, pinHubMenuPath } from "../utils/pinHubSession";
+import { displayFoundLocation } from "../utils/lostFoundLocation";
 
 function slugOf(raw) {
   try {
@@ -85,7 +86,7 @@ export default function LostFoundReportPinPage() {
       {done ? (
         <Stack spacing={1.5} sx={{ pt: 1 }}>
           <Alert severity="success">{t("lostFound.success")}</Alert>
-          <Typography sx={{ fontWeight: 800 }}>{done.location_label}</Typography>
+          <Typography sx={{ fontWeight: 800 }}>{displayFoundLocation(done, t)}</Typography>
           <Typography variant="body2" color="text.secondary">{done.reported_at_display}</Typography>
           <Button
             variant="contained"

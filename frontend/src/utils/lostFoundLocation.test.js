@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  displayFoundEvent,
+  displayFoundLocation,
   foundLocationLabel,
   identifierChoices,
   locationNumberMode,
@@ -32,6 +34,12 @@ describe("found item location", () => {
     expect(validateFoundLocation({ kind: "other", detail: "a" })).toBe("location_detail_required");
     expect(validateFoundLocation({ kind: "other", detail: "by the office" })).toBe("");
     expect(foundLocationLabel({ kind: "other", detail: "by the office" })).toBe("by the office");
+  });
+
+  it("translates a stored dryer label without changing the machine number", () => {
+    const t = (key) => ({ "lostFound.location.dryer": "Secadora" }[key] || key);
+    expect(displayFoundLocation({ location_kind: "dryer", location_number: "D4", location_label: "Dryer D4" }, t)).toBe("Secadora D4");
+    expect(displayFoundEvent("reported", (key) => (key === "lostFound.event.reported" ? "Reportado" : key))).toBe("Reportado");
   });
 
   it("uses machine identifiers when the facility has them", () => {

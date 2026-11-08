@@ -1,19 +1,22 @@
 import { Button } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
+import { useI18n } from "../i18n/I18nContext";
 import { OPS_MOBILE } from "./tokens";
 
 /**
  * Clears the unlocked PIN employee session and returns to PIN entry.
  * Must not clock out or mutate attendance / role / checklist / inventory data.
  */
-export default function OpsLockButton({ onClick, label = "Lock", fullWidth = false, sx = {} }) {
+export default function OpsLockButton({ onClick, label, fullWidth = false, sx = {} }) {
+  const { t } = useI18n();
+  const resolved = !label || label === "Lock" ? t("mobileOps.lock") : label;
   return (
     <Button
       fullWidth={fullWidth}
       onClick={onClick}
       startIcon={<LockOutlinedIcon />}
-      aria-label={label}
+      aria-label={resolved}
       sx={{
         minHeight: fullWidth ? 64 : OPS_MOBILE.touchMin,
         minWidth: OPS_MOBILE.touchMin,
@@ -28,7 +31,7 @@ export default function OpsLockButton({ onClick, label = "Lock", fullWidth = fal
         ...sx,
       }}
     >
-      {label}
+      {resolved}
     </Button>
   );
 }

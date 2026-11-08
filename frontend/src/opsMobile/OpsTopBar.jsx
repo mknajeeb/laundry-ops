@@ -2,6 +2,7 @@ import { Box, Button, Typography } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
 import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
+import { useI18n } from "../i18n/I18nContext";
 import { OPS_MOBILE } from "./tokens";
 
 /**
@@ -19,6 +20,9 @@ export default function OpsTopBar({
   right = null,
   sticky = true,
 }) {
+  const { t } = useI18n();
+  const resolvedLock = !lockLabel || lockLabel === "Lock" ? t("mobileOps.lock") : lockLabel;
+  const resolvedBack = !backLabel || backLabel === "PIN" ? t("tasks.pin.backToPin") : backLabel;
   return (
     <Box
       sx={{
@@ -45,7 +49,7 @@ export default function OpsTopBar({
         <Button
           onClick={onBack}
           startIcon={<ArrowBackIosNewIcon sx={{ fontSize: 16 }} />}
-          aria-label={`Back to ${backLabel}`}
+          aria-label={resolvedBack}
           sx={{
             flexShrink: 0,
             minHeight: OPS_MOBILE.touchMin,
@@ -58,7 +62,7 @@ export default function OpsTopBar({
             bgcolor: alpha(OPS_MOBILE.navy, 0.05),
           }}
         >
-          {backLabel}
+          {resolvedBack}
         </Button>
       ) : null}
 
@@ -110,7 +114,7 @@ export default function OpsTopBar({
         <Button
           onClick={onLock}
           startIcon={<LockOutlinedIcon />}
-          aria-label={lockLabel}
+          aria-label={resolvedLock}
           sx={{
             flexShrink: 0,
             minHeight: OPS_MOBILE.touchMin,
@@ -125,7 +129,7 @@ export default function OpsTopBar({
             "&:hover": { bgcolor: alpha(OPS_MOBILE.navy, 0.1) },
           }}
         >
-          {lockLabel}
+          {resolvedLock}
         </Button>
       ) : null}
     </Box>
