@@ -384,6 +384,44 @@ def test_issue_register_filters_use_eastern_days_and_employee(db):
     assert "UTC" not in (page["items"][0]["reported_at_display"] or "")
 
 
+def test_employee_filter_matches_the_name_shown_on_the_report(db, monkeypatch):
+    db.conn.execute(
+        """
+        CREATE TABLE users (
+          id INTEGER PRIMARY KEY,
+          organization_id INT,
+          display_name TEXT,
+          username TEXT,
+          active INT
+        )
+        """
+    )
+    db.conn.execute(
+        "INSERT INTO users (id, organization_id, display_name, username, active) VALUES (33, 1, 'Sarah Kamran', 'sarah', 1)"
+    )
+    db.conn.commit()
+    monkeypatch.setattr(
+        "backend.lost_found.table_exists",
+        lambda _cursor, name: str(name).startswith("found_") or name == "users",
+    )
+    _report(
+        db,
+        request_id="pin-display-name",
+        user_id=23,
+        reporter_name="Sarah Kamran",
+        business_date=date(2026, 11, 8),
+    )
+    matched = search_issue_reports(
+        db, 1, date_from=date(2026, 11, 8), date_to=date(2026, 11, 8), employee_id=33
+    )
+    assert matched["total"] == 1
+    assert matched["items"][0]["employee_name"] == "Sarah Kamran"
+    other = search_issue_reports(
+        db, 1, date_from=date(2026, 11, 8), date_to=date(2026, 11, 8), employee_id=99
+    )
+    assert other["total"] == 0
+
+
 def test_status_rules_do_not_touch_orders():
     returned = validate_status_change("returned", order_reference="R-100", comment="Given to guest")
     assert returned["order_reference"] == "R-100"

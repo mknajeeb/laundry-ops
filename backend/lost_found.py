@@ -876,6 +876,27 @@ def list_found_items(
     return _hydrate(cursor, organization_id, rows)
 
 
+def _selected_employee_name(cursor, organization_id: int, employee_id: int) -> str:
+    """Display name for the desktop employee filter, scoped to this organization."""
+    try:
+        if not table_exists(cursor, "users"):
+            return ""
+        row = _fetch_one(
+            cursor,
+            """
+            SELECT COALESCE(NULLIF(display_name, ''), NULLIF(username, ''), '') AS name
+            FROM users
+            WHERE id=%s AND organization_id=%s
+            LIMIT 1
+            """,
+            (int(employee_id), int(organization_id)),
+        ) or {}
+    except Exception:
+        logger.debug("employee name lookup skipped", exc_info=True)
+        return ""
+    return " ".join(str(row.get("name") or "").split())[:120]
+
+
 def search_issue_reports(
     cursor,
     organization_id: int,
@@ -900,8 +921,14 @@ def search_issue_reports(
         where.append("business_date<=%s")
         params.append(date_to)
     if employee_id:
-        where.append("reported_by_user_id=%s")
-        params.append(int(employee_id))
+        shown_name = _selected_employee_name(cursor, int(organization_id), int(employee_id))
+        if shown_name:
+            # PIN reports keep the matched employee name even when the session user differs.
+            where.append("(reported_by_user_id=%s OR reporter_name=%s)")
+            params.extend([int(employee_id), shown_name])
+        else:
+            where.append("reported_by_user_id=%s")
+            params.append(int(employee_id))
     code = str(category or "").strip().lower()
     if code in {"orphan", "redry", "equipment"}:
         where.append("COALESCE(report_category, 'orphan')=%s")
