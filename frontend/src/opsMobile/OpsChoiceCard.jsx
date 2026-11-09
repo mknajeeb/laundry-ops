@@ -16,11 +16,13 @@ export default function OpsChoiceCard({
   busy = false,
   disabled = false,
   onClick,
+  compact = false,
   "aria-label": ariaLabel,
   sx = {},
 }) {
   return (
     <Button
+      type="button"
       fullWidth
       disabled={disabled}
       onClick={onClick}
@@ -63,7 +65,7 @@ export default function OpsChoiceCard({
           <Typography
             sx={{
               fontWeight: 900,
-              fontSize: { xs: "1.45rem", sm: "1.6rem" },
+              fontSize: compact ? { xs: "1rem", sm: "1.05rem" } : { xs: "1.45rem", sm: "1.6rem" },
               lineHeight: 1.2,
               letterSpacing: "-0.02em",
               whiteSpace: "normal",

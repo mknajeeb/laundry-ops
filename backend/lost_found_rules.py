@@ -234,18 +234,23 @@ def validate_redry(
     allowed_pockets: Sequence[Any] | None = None,
     allowed_dryers: Sequence[Any] | None = None,
 ) -> dict[str, Any]:
-    """One Re-Dry report can carry one, two, or all three violations.
+    """A Re-Dry report carries exactly one reason.
 
-    A mesh bag number is never required. It is omitted when the ticket
-    number itself is what is missing, and it stays optional otherwise.
-    Wrong-pocket reports must use a manager-designated pocket when that
-    list exists.
+    Older rows may still store more than one flag. This check applies to
+    new submissions only. A mesh bag number is never required. Wrong-pocket
+    reports must use a manager-designated pocket when that list exists.
     """
     selected = {name: _as_flag((flags or {}).get(name)) for name in REDRY_FLAGS}
-    if not any(selected.values()):
+    chosen = [name for name, on in selected.items() if on]
+    if not chosen:
         raise LostFoundError(
-            "Select at least one Re-Dry issue.",
+            "Select one Re-Dry reason.",
             code="redry_flag_required",
+        )
+    if len(chosen) != 1:
+        raise LostFoundError(
+            "Select only one Re-Dry reason.",
+            code="redry_one_reason",
         )
     bag = _clean_token(bag_number, limit=40)
     if selected[REDRY_FLAG_WRONG_POCKET]:

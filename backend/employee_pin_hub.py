@@ -96,9 +96,9 @@ def _serializer() -> URLSafeTimedSerializer:
 
 def _hub_user_is_system(conn, employee_id: int) -> bool:
     try:
-        from backend.portal_system_users import user_has_system_role_flag
+        from backend.portal_system_users import user_is_reporting_service_account
 
-        return bool(user_has_system_role_flag(conn, int(employee_id)))
+        return bool(user_is_reporting_service_account(conn, int(employee_id)))
     except Exception:
         return False
 

@@ -49,11 +49,17 @@ def _resolve_matched(
     ip_address: str,
     *,
     action_prefix: str,
+    allow_admin: bool = False,
 ):
     matched = None
     if hub_clean:
         matched = _resolve_user_by_hub_token(
-            conn, org_id, org_slug, hub_clean, fetch_roles_fn
+            conn,
+            org_id,
+            org_slug,
+            hub_clean,
+            fetch_roles_fn,
+            allow_admin=allow_admin,
         )
         if not matched:
             record_pin_attempt(
@@ -82,6 +88,7 @@ def _gate_common(
     *,
     action_prefix: str,
     require_shift: bool = True,
+    allow_admin: bool = False,
 ):
     org_slug = (organization_slug or "").strip().lower()
     pin_clean = str(pin or "").strip()
@@ -117,6 +124,7 @@ def _gate_common(
         fetch_roles_fn,
         ip_address,
         action_prefix=action_prefix,
+        allow_admin=allow_admin,
     )
     if err:
         return None, err

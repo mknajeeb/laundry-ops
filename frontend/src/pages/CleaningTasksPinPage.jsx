@@ -26,7 +26,7 @@ import {
   attendancePinResolveUnassignedVerification,
   attendancePinSwitchRole,
 } from "../api";
-import { OpsLocaleToggle, OpsMobileShell, OpsTopBar, OPS_MOBILE } from "../opsMobile";
+import { OpsLocaleToggle, OpsMobileShell, OpsStatusChip, OpsTopBar, OPS_MOBILE } from "../opsMobile";
 import { useI18n } from "../i18n/I18nContext";
 import { categoryLabel, localizedConfigured, localizedInstruction, taskStatusLabel } from "../components/tasks/taskEmployeeI18n";
 import ActivityRemarks from "../components/tasks/ActivityRemarks";
@@ -70,6 +70,13 @@ function formatElapsed(startedAt, nowMs) {
 
 function statusLabel(status, t) {
   return taskStatusLabel(t, status);
+}
+
+function statusTone(status) {
+  if (status === "approved" || status === "completed" || status === "done") return "success";
+  if (status === "in_progress" || status === "working" || status === "pending_verification" || status === "awaiting_verification") return "warning";
+  if (status === "overdue" || status === "rejected") return "danger";
+  return "info";
 }
 
 function PartnerLines({ partners, executionMode, assignedNames }) {
@@ -129,30 +136,36 @@ function TaskCard({ task, onStart, onCompleteUntimed, onReconcile, busy }) {
   return (
     <Box
       sx={{
-        p: 1.5,
-        borderRadius: 2,
-        border: `1px solid ${OPS_MOBILE.border}`,
+        p: 1.75,
+        borderRadius: `${OPS_MOBILE.radius.card}px`,
+        border: `2px solid ${OPS_MOBILE.border}`,
         bgcolor: "#fff",
+        boxShadow: "0 10px 24px -18px rgba(22, 25, 43, 0.55)",
       }}
     >
-      <Stack direction="row" alignItems="center" spacing={0.5}>
-        <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-          {taskName || task.role}
-        </Typography>
-        <InstructionHint text={taskInstructions} label={t("tasks.pin.instructions")} />
+      <Stack direction="row" alignItems="flex-start" spacing={1}>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Stack direction="row" alignItems="center" spacing={0.5}>
+            <Typography sx={{ fontWeight: 900, color: OPS_MOBILE.navy, fontSize: "1.05rem", lineHeight: 1.25 }}>
+              {taskName || task.role}
+            </Typography>
+            <InstructionHint text={taskInstructions} label={t("tasks.pin.instructions")} />
+          </Stack>
+          <Typography variant="body2" sx={{ color: OPS_MOBILE.muted, fontWeight: 650, mt: 0.35 }}>
+            {task.timing_label || t("tasks.pin.anytime")}
+            {names ? ` · ${names}` : ""}
+          </Typography>
+        </Box>
+        <OpsStatusChip label={statusLabel(task.status, t)} tone={statusTone(task.status)} />
       </Stack>
-      <Typography variant="body2" color="text.secondary">
-        {task.timing_label || t("tasks.pin.anytime")}
-        {names ? ` · ${names}` : ""}
-      </Typography>
-      <Typography variant="body2" sx={{ mt: 0.35, fontWeight: 700 }}>
-        {isGroup && itemCount ? `${t("tasks.pin.tasksCount", { count: itemCount })} · ` : ""}
-        {statusLabel(task.status, t)}
-      </Typography>
+      {isGroup && itemCount ? (
+        <Typography variant="body2" sx={{ mt: 0.75, fontWeight: 700, color: OPS_MOBILE.navy }}>
+          {t("tasks.pin.tasksCount", { count: itemCount })}
+        </Typography>
+      ) : null}
       {canAct ? (
         <Button
           fullWidth
-          variant="contained"
           disabled={busy}
           onClick={() =>
             task.role === LOST_FOUND_ACTIVITY_CODE
@@ -161,7 +174,16 @@ function TaskCard({ task, onStart, onCompleteUntimed, onReconcile, busy }) {
                 ? onCompleteUntimed(task)
                 : onStart(task)
           }
-          sx={{ mt: 1.25, fontWeight: 800, textTransform: "none" }}
+          sx={{
+            mt: 1.25,
+            minHeight: 52,
+            fontWeight: 800,
+            textTransform: "none",
+            color: "#fff",
+            bgcolor: OPS_MOBILE.navy,
+            borderRadius: `${OPS_MOBILE.radius.button}px`,
+            "&:hover": { bgcolor: OPS_MOBILE.blue },
+          }}
         >
           {task.role === LOST_FOUND_ACTIVITY_CODE
             ? t("lostFound.reconcileTitle")
@@ -697,7 +719,7 @@ export default function CleaningTasksPinPage() {
 
   if (!hub?.token) {
     return (
-      <OpsMobileShell>
+      <OpsMobileShell maxWidth={880}>
         <Alert severity="warning">{t("tasks.pin.enterPin")}</Alert>
         <Button onClick={lock}>{t("tasks.pin.backToPin")}</Button>
       </OpsMobileShell>
@@ -705,7 +727,7 @@ export default function CleaningTasksPinPage() {
   }
 
   return (
-    <OpsMobileShell>
+    <OpsMobileShell maxWidth={880}>
       <OpsTopBar
         title={t("tasks.pin.title")}
         onBack={goHub}
@@ -716,9 +738,17 @@ export default function CleaningTasksPinPage() {
       />
       <Button
         fullWidth
-        variant="contained"
         onClick={() => navigate(`/attendance/lost-found/${encodeURIComponent(slug)}`)}
-        sx={{ mb: 1.5, fontWeight: 900, textTransform: "none" }}
+        sx={{
+          mb: 1.5,
+          minHeight: 52,
+          fontWeight: 900,
+          textTransform: "none",
+          color: "#fff",
+          bgcolor: OPS_MOBILE.navy,
+          borderRadius: `${OPS_MOBILE.radius.button}px`,
+          "&:hover": { bgcolor: OPS_MOBILE.blue },
+        }}
       >
         {t("lostFound.report")}
       </Button>

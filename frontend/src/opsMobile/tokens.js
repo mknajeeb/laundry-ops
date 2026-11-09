@@ -10,6 +10,7 @@ export const OPS_MOBILE = {
   muted: "#64748b",
   success: "#0f766e",
   danger: "#b91c1c",
+  border: "rgba(22, 25, 43, 0.12)",
   /** Minimum primary touch target (px). */
   touchMin: 56,
   /** Launcher tile height target (px) — keep in 120–140 range. */

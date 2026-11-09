@@ -221,21 +221,75 @@ def test_redry_is_one_record_for_every_flag_combination():
         validate_redry({"wrong_pocket": True}, "")
     assert pocket.value.code == "location_number_required"
     names = ("missing_ticket", "mesh_bag", "wrong_pocket")
-    for size in (1, 2, 3):
-        for picked in combinations(names, size):
-            flags = {name: name in picked for name in names}
-            cleaned = validate_redry(flags, "4" if "wrong_pocket" in picked else "")
-            assert cleaned["location_kind"] == "dryer"
-            if "wrong_pocket" in picked:
-                assert cleaned["location_number"] == "4"
-            else:
-                assert cleaned["location_number"] is None
-            assert [name for name in names if cleaned[name]] == list(picked)
+    for picked in names:
+        flags = {name: name == picked for name in names}
+        cleaned = validate_redry(flags, "4" if picked == "wrong_pocket" else "")
+        assert cleaned["location_kind"] == "dryer"
+        assert cleaned[picked] is True
+        assert sum(1 for name in names if cleaned[name]) == 1
+        if picked == "wrong_pocket":
+            assert cleaned["location_number"] == "4"
+        else:
+            assert cleaned["location_number"] is None
+    for picked in combinations(names, 2):
+        flags = {name: name in picked for name in names}
+        with pytest.raises(LostFoundError) as several:
+            validate_redry(flags, "4")
+        assert several.value.code == "redry_one_reason"
+    with pytest.raises(LostFoundError) as all_three:
+        validate_redry({name: True for name in names}, "4")
+    assert all_three.value.code == "redry_one_reason"
     with pytest.raises(LostFoundError) as stored:
         validate_status_change("stored", report_category="redry")
     assert stored.value.code == "invalid_status"
     resolved = validate_status_change("resolved", reason="Spoke with the dryer operator", report_category="redry")
     assert resolved["status"] == "resolved"
+
+
+def test_historical_redry_row_keeps_every_stored_reason():
+    from backend.lost_found import serialize_item
+
+    item = serialize_item({
+        "id": 9,
+        "organization_id": 3,
+        "reported_by_user_id": 23,
+        "reporter_name": "Sarah Kamran",
+        "reported_at": "2026-11-08 15:13:33",
+        "business_date": "2026-11-08",
+        "location_kind": "dryer",
+        "location_number": "4",
+        "location_detail": None,
+        "location_label": "Dryer 4",
+        "report_category": "redry",
+        "redry_missing_ticket": 1,
+        "redry_mesh_bag": 1,
+        "redry_wrong_pocket": 1,
+        "status": "new",
+        "revision": 1,
+        "status_changed_at": "2026-11-08 15:13:33",
+    })
+    assert item["redry_flags"] == {
+        "missing_ticket": True,
+        "mesh_bag": True,
+        "wrong_pocket": True,
+    }
+
+
+def test_built_in_staff_roles_can_file_reports(monkeypatch):
+    from backend.portal_system_users import user_is_reporting_service_account
+
+    monkeypatch.setattr(
+        "backend.portal_system_users.user_has_system_employment_category",
+        lambda *_a, **_k: False,
+    )
+    monkeypatch.setattr("backend.portal_system_users.fetch_user_role_codes", lambda *_a, **_k: ["OPS"])
+    assert user_is_reporting_service_account(object(), 4) is False
+    monkeypatch.setattr("backend.portal_system_users.fetch_user_role_codes", lambda *_a, **_k: ["CLOCK"])
+    assert user_is_reporting_service_account(object(), 33) is False
+    monkeypatch.setattr("backend.portal_system_users.fetch_user_role_codes", lambda *_a, **_k: ["ADMIN"])
+    assert user_is_reporting_service_account(object(), 15) is False
+    monkeypatch.setattr("backend.portal_system_users.fetch_user_role_codes", lambda *_a, **_k: ["SYSTEM"])
+    assert user_is_reporting_service_account(object(), 23) is True
 
 
 def test_redry_stays_out_of_the_lost_and_found_box(db):
@@ -244,11 +298,11 @@ def test_redry_stays_out_of_the_lost_and_found_box(db):
         request_id="redry-all-three",
         report_category="redry",
         number="D4",
-        redry_flags={"missing_ticket": True, "mesh_bag": True, "wrong_pocket": True},
+        redry_flags={"missing_ticket": True},
     )
     assert created is True
     assert item["report_category"] == "redry"
-    assert item["redry_flags"] == {"missing_ticket": True, "mesh_bag": True, "wrong_pocket": True}
+    assert item["redry_flags"] == {"missing_ticket": True, "mesh_bag": False, "wrong_pocket": False}
     view = reconciliation_view(db, organization_id=1, business_date=date(2026, 11, 7))
     assert view["items"] == []
     assert len(view["redry_items"]) == 1
@@ -305,7 +359,7 @@ def test_veewash_numbers_and_equipment_are_separate_from_lost_and_found():
         validate_redry({"wrong_pocket": True}, "9", allowed_pockets=["1", "2"])
     assert pocket.value.code == "pocket_not_designated"
     cleaned = validate_redry(
-        {"missing_ticket": True, "mesh_bag": True, "wrong_pocket": True},
+        {"wrong_pocket": True},
         "D1",
         bag_number="",
         allowed_pockets=["1"],
@@ -846,7 +900,7 @@ def test_pin_report_requires_a_photo(monkeypatch):
     def _must_not_create(*_a, **_k):
         raise AssertionError("a missing photo must not create a report")
 
-    monkeypatch.setattr("backend.portal_system_users.user_has_system_role_flag", lambda *_a, **_k: False)
+    monkeypatch.setattr("backend.portal_system_users.user_is_reporting_service_account", lambda *_a, **_k: False)
     monkeypatch.setattr("backend.lost_found_routes.report_found_item", _must_not_create)
     client = app.test_client()
     res = client.post(
@@ -905,7 +959,7 @@ def test_report_submission_is_separate_from_supervisor_review(monkeypatch):
     flags = {"system": False}
     monkeypatch.setattr("backend.lost_found_routes._gate_common", gate)
     monkeypatch.setattr(
-        "backend.portal_system_users.user_has_system_role_flag",
+        "backend.portal_system_users.user_is_reporting_service_account",
         lambda *_a, **_k: flags["system"],
     )
     monkeypatch.setattr(

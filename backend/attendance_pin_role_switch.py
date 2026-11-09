@@ -72,7 +72,13 @@ def _current_assignment_payload(conn, session_id: int) -> dict:
 
 
 def _resolve_user_by_hub_token(
-    conn, organization_id: int, org_slug: str, hub_token: str, fetch_roles_fn
+    conn,
+    organization_id: int,
+    org_slug: str,
+    hub_token: str,
+    fetch_roles_fn,
+    *,
+    allow_admin: bool = False,
 ) -> Optional[dict]:
     """Resolve employee from a verified PIN Hub session token (no bcrypt)."""
     from backend.employee_pin_hub import verify_hub_session_token
@@ -109,7 +115,7 @@ def _resolve_user_by_hub_token(
             return None
         roles = fetch_roles_fn(c, row["id"])
         rs = {str(r).upper() for r in roles}
-        if rs & ADMIN_ROLE_CODES:
+        if not allow_admin and rs & ADMIN_ROLE_CODES:
             return None
         row["_roles"] = roles
         return row

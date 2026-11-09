@@ -10,10 +10,21 @@ import { clearPinHubSession, loadPinHubSession, pinHubMenuPath } from "../utils/
 import { VEEWASH_BRAND, VEEWASH_LOGO_URL } from "../theme/veewashBrand";
 import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
 import { displayFoundLocation, veewashIssueCatalog } from "../utils/lostFoundLocation";
+import { reportFailureMessage, savedReport } from "../utils/lostFoundSubmit";
 
 const VEEWASH_THEME = createTheme({
   palette: { primary: { main: VEEWASH_BRAND.primary, dark: VEEWASH_BRAND.primaryDark } },
 });
+
+function messageForReportKey(key, t, body) {
+  if (key === "reporting_not_allowed") return t("lostFound.cannotReport");
+  if (key === "pin_session") return t("lostFound.pinAgain");
+  if (key === "photo_required") return t("lostFound.photoRequired");
+  if (key === "redry_one_reason" || key === "redry_flag_required") return t("lostFound.redry.flagRequired");
+  if (key === "pocket_required") return t("lostFound.redry.pocketRequired");
+  if (key && key !== "Forbidden") return body?.error || key;
+  return t("lostFound.saveFailed");
+}
 
 function slugOf(raw) {
   try {
@@ -80,10 +91,16 @@ export default function LostFoundReportPinPage() {
     try {
       const res = await pinLostFoundReport(slug, hub.pin, { hubToken: hub.token, ...payload });
       const body = res?.data || {};
-      if (!body.ok) throw new Error(body.error || t("lostFound.saveFailed"));
-      setDone(body.item);
+      const saved = savedReport(body);
+      if (!saved) {
+        const key = reportFailureMessage(body, t("lostFound.saveFailed"));
+        throw new Error(messageForReportKey(key, t, body));
+      }
+      setDone(saved);
     } catch (err) {
-      setError(err?.response?.data?.error || err?.message || t("lostFound.saveFailed"));
+      const data = err?.response?.data;
+      const key = reportFailureMessage(data, "");
+      setError(key ? messageForReportKey(key, t, data) : (err?.message || t("lostFound.saveFailed")));
     } finally {
       setSubmitting(false);
     }
@@ -99,7 +116,7 @@ export default function LostFoundReportPinPage() {
   }
 
   const page = (
-    <OpsMobileShell showLocaleToggle contentSx={{ gap: 1 }} maxWidth={440}>
+    <OpsMobileShell showLocaleToggle contentSx={{ gap: 1.25 }} maxWidth={880}>
       <OpsTopBar
         title={t("lostFound.report")}
         logoSrc={logoSrc}
@@ -114,12 +131,11 @@ export default function LostFoundReportPinPage() {
           <Typography sx={{ fontWeight: 800 }}>{displayFoundLocation(done, t)}</Typography>
           <Typography variant="body2" color="text.secondary">{done.reported_at_display}</Typography>
           <Button
-            variant="contained"
             onClick={() => {
               setDone(null);
               setFormKey((n) => n + 1);
             }}
-            sx={{ fontWeight: 800, textTransform: "none" }}
+            sx={{ minHeight: 52, fontWeight: 800, textTransform: "none", color: "#fff", bgcolor: "#16192b", borderRadius: "14px", "&:hover": { bgcolor: "#2d3d9c" } }}
           >
             {t("lostFound.reportAnother")}
           </Button>

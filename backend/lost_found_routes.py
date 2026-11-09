@@ -75,7 +75,7 @@ def register_lost_found_routes(
     fetch_user_roles: Callable,
     get_request_ip: Callable,
 ):
-    def _pin(action: str, *, require_shift: bool = True):
+    def _pin(action: str, *, require_shift: bool = True, allow_admin: bool = False):
         from backend.db import get_db
 
         data = _form_or_json()
@@ -92,6 +92,7 @@ def register_lost_found_routes(
             get_request_ip(),
             action_prefix=action,
             require_shift=require_shift,
+            allow_admin=allow_admin,
         )
         if err:
             return None, conn, err
@@ -132,10 +133,17 @@ def register_lost_found_routes(
         except (TypeError, ValueError):
             return None, None, (jsonify({"error": "Forbidden"}), 403)
         try:
-            from backend.portal_system_users import user_has_system_role_flag
+            from backend.portal_system_users import user_is_reporting_service_account
 
-            if user_has_system_role_flag(conn, uid):
-                return None, None, (jsonify({"error": "Forbidden"}), 403)
+            if user_is_reporting_service_account(conn, uid):
+                return None, None, (
+                    jsonify({
+                        "ok": False,
+                        "error": "This account cannot file issue reports.",
+                        "code": "reporting_not_allowed",
+                    }),
+                    403,
+                )
         except Exception:
             pass
         try:
@@ -146,7 +154,7 @@ def register_lost_found_routes(
 
     @app.route("/api/public/attendance/pin-lost-found/locations", methods=["POST"])
     def pin_lost_found_locations():
-        ctx, conn, err = _pin("lost_found_locations", require_shift=False)
+        ctx, conn, err = _pin("lost_found_locations", require_shift=False, allow_admin=True)
         if err:
             body, status = err
             _close(conn)
@@ -159,17 +167,21 @@ def register_lost_found_routes(
 
     @app.route("/api/public/attendance/pin-lost-found/report", methods=["POST"])
     def pin_lost_found_report():
-        ctx, conn, err = _pin("lost_found_report", require_shift=False)
+        ctx, conn, err = _pin("lost_found_report", require_shift=False, allow_admin=True)
         if err:
             body, status = err
             _close(conn)
             return jsonify(body), status
         try:
-            from backend.portal_system_users import user_has_system_role_flag
+            from backend.portal_system_users import user_is_reporting_service_account
 
-            if user_has_system_role_flag(conn, int(ctx["user_id"])):
+            if user_is_reporting_service_account(conn, int(ctx["user_id"])):
                 _close(conn)
-                return jsonify({"ok": False, "error": "Forbidden"}), 403
+                return jsonify({
+                    "ok": False,
+                    "error": "This account cannot file issue reports.",
+                    "code": "reporting_not_allowed",
+                }), 403
         except Exception:
             pass
         cursor = conn.cursor(dictionary=True)

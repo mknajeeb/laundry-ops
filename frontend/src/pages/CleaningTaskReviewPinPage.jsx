@@ -16,7 +16,7 @@ import {
 } from "../api";
 import TaskVerificationReviewCard from "../components/tasks/TaskVerificationReviewCard";
 import { formatDashboardTime } from "../components/tasks/taskDashboardFormat";
-import { OpsLocaleToggle, OpsMobileShell, OpsTopBar, OPS_MOBILE } from "../opsMobile";
+import { OpsLocaleToggle, OpsMobileShell, OpsStatusChip, OpsTopBar, OPS_MOBILE } from "../opsMobile";
 import { useI18n } from "../i18n/I18nContext";
 import {
   clearPinHubSession,
@@ -178,7 +178,7 @@ export default function CleaningTaskReviewPinPage() {
 
   if (!hub?.token) {
     return (
-      <OpsMobileShell>
+      <OpsMobileShell maxWidth={880}>
         <Alert severity="warning">{t("tasks.pin.enterPin")}</Alert>
         <Button onClick={lock}>{t("tasks.pin.backToPin")}</Button>
       </OpsMobileShell>
@@ -186,7 +186,7 @@ export default function CleaningTaskReviewPinPage() {
   }
 
   return (
-    <OpsMobileShell>
+    <OpsMobileShell maxWidth={880}>
       <OpsTopBar
         title={t("tasks.pin.reviewTitle")}
         onBack={goHub}
@@ -222,12 +222,13 @@ export default function CleaningTaskReviewPinPage() {
               <Box
                 key={label}
                 sx={{
-                  px: 1,
-                  py: 0.5,
-                  borderRadius: 1.5,
+                  px: 1.25,
+                  py: 0.75,
+                  borderRadius: `${OPS_MOBILE.radius.button}px`,
                   bgcolor: "#fff",
-                  border: `1px solid ${OPS_MOBILE.border}`,
-                  minWidth: 72,
+                  border: `2px solid ${OPS_MOBILE.border}`,
+                  minWidth: 88,
+                  boxShadow: "0 8px 18px -16px rgba(22, 25, 43, 0.6)",
                 }}
               >
                 <Typography variant="caption" color="text.secondary" display="block" sx={{ lineHeight: 1.1 }}>
@@ -284,15 +285,19 @@ export default function CleaningTaskReviewPinPage() {
                       <Box
                         key={`${row.responsibility_id}-${id || "none"}`}
                         sx={{
-                          p: 1.5,
-                          borderRadius: 2,
-                          border: `1px solid ${OPS_MOBILE.border}`,
+                          p: 1.75,
+                          borderRadius: `${OPS_MOBILE.radius.card}px`,
+                          border: `2px solid ${OPS_MOBILE.border}`,
                           bgcolor: "#fff",
+                          boxShadow: "0 10px 24px -18px rgba(22, 25, 43, 0.55)",
                         }}
                       >
-                        <Typography sx={{ fontWeight: 800 }}>
+                        <Stack direction="row" alignItems="flex-start" spacing={1}>
+                        <Typography sx={{ fontWeight: 900, color: OPS_MOBILE.navy, flex: 1 }}>
                           {row.role_label || row.role} · {row.employee_name}
                         </Typography>
+                        <OpsStatusChip label={row.status || ""} tone={row.status === "approved" ? "success" : row.status === "rejected" || row.status === "overdue" ? "danger" : row.status === "in_progress" ? "warning" : "info"} />
+                        </Stack>
                         {row.activity_group_label ? (
                           <Typography variant="caption" color="text.secondary" display="block">
                             {row.activity_group_label}

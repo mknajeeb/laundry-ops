@@ -70,6 +70,21 @@ def fetch_user_role_codes(conn, user_id: int) -> list[str]:
     return out
 
 
+def user_is_reporting_service_account(conn, user_id: int) -> bool:
+    """True only for a technical service identity, not a built-in staff role.
+
+    roles.is_system means the role cannot be deleted (ADMIN, OPS, FINANCE, and
+    so on). Those people file issue reports. A service account is a SYSTEM
+    role, a portal-only RINSE/SYSTEM login, or the EC_SYSTEM employment category.
+    """
+    codes = fetch_user_role_codes(conn, int(user_id))
+    if "SYSTEM" in codes:
+        return True
+    if is_portal_system_only_user(codes):
+        return True
+    return user_has_system_employment_category(conn, int(user_id))
+
+
 def user_has_system_role_flag(conn, user_id: int) -> bool:
     """True if the user is assigned any role marked is_system in the roles table."""
     c = conn.cursor(dictionary=True)

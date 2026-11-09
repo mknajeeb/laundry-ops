@@ -79,10 +79,11 @@ export default function TaskVerificationReviewCard({
   return (
     <Box
       sx={{
-        p: 1.5,
-        borderRadius: 2,
-        border: `1px solid ${OPS_MOBILE.border}`,
+        p: 1.75,
+        borderRadius: `${OPS_MOBILE.radius.card}px`,
+        border: `2px solid ${OPS_MOBILE.border}`,
         bgcolor: "#fff",
+        boxShadow: "0 10px 24px -18px rgba(22, 25, 43, 0.55)",
       }}
     >
       <Stack direction="row" alignItems="center" spacing={0.5}>
@@ -249,7 +250,15 @@ export default function TaskVerificationReviewCard({
             variant="contained"
             disabled={busy}
             onClick={() => onApproveAll?.(card.pending_activity_ids || [], { remark: supervisorRemark })}
-            sx={{ textTransform: "none", fontWeight: 800 }}
+            sx={{
+              textTransform: "none",
+              fontWeight: 800,
+              minHeight: 44,
+              color: "#fff",
+              bgcolor: OPS_MOBILE.navy,
+              borderRadius: `${OPS_MOBILE.radius.button}px`,
+              "&:hover": { bgcolor: OPS_MOBILE.blue },
+            }}
           >
             {t("tasks.pin.approveAll")}
           </Button>

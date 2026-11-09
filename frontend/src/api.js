@@ -439,7 +439,7 @@ export const pinLostFoundReport = (organization_slug, pin, options = {}) =>
       redry_mesh_bag: options.redry_mesh_bag ? "1" : "0",
       redry_wrong_pocket: options.redry_wrong_pocket ? "1" : "0",
     }),
-    { ..._pinCleaningOpts, headers: { "Content-Type": "multipart/form-data" } },
+    _pinCleaningOpts,
   );
 
 export const pinLostFoundReconciliation = (organization_slug, pin, options = {}) =>
@@ -467,7 +467,7 @@ export const pinLostFoundBoxPhoto = (organization_slug, pin, options = {}) =>
   axios.post(
     `${API_BASE}/api/public/attendance/pin-lost-found/box-photo`,
     _lostFoundForm(organization_slug, pin, options),
-    { ..._pinCleaningOpts, headers: { "Content-Type": "multipart/form-data" } },
+    _pinCleaningOpts,
   );
 
 export const getPinLostFoundPhoto = (organization_slug, hubToken, photoId) =>
