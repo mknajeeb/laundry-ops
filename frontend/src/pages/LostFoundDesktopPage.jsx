@@ -290,6 +290,9 @@ export default function LostFoundDesktopPage() {
             <Typography sx={{ fontWeight: 700 }}>{categoryLabel(selected, t)}</Typography>
             <Typography>{problemLabel(selected, t)}</Typography>
             <Typography variant="body2">{selected.employee_name}</Typography>
+            {selected.employee_code ? (
+              <Typography variant="caption" color="text.secondary">{selected.employee_code}</Typography>
+            ) : null}
             <Typography variant="body2">{selected.reported_at_display}</Typography>
             {selected.notes ? <Typography variant="body2">{selected.notes}</Typography> : null}
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>

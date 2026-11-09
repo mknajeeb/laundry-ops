@@ -16,6 +16,7 @@ from backend.lost_found import (
     change_status,
     get_item,
     list_found_items,
+    list_issue_employees,
     search_issue_reports,
     notify_found_item,
     reconciliation_view,
@@ -384,8 +385,8 @@ def test_issue_register_filters_use_eastern_days_and_employee(db):
     assert "UTC" not in (page["items"][0]["reported_at_display"] or "")
 
 
-def test_employee_filter_matches_the_name_shown_on_the_report(db, monkeypatch):
-    db.conn.execute(
+def test_shared_display_name_does_not_change_reporter_identity(db, monkeypatch):
+    db.conn.executescript(
         """
         CREATE TABLE users (
           id INTEGER PRIMARY KEY,
@@ -393,33 +394,74 @@ def test_employee_filter_matches_the_name_shown_on_the_report(db, monkeypatch):
           display_name TEXT,
           username TEXT,
           active INT
-        )
+        );
+        CREATE TABLE payroll_profiles (
+          user_id INT PRIMARY KEY,
+          employee_id TEXT,
+          first_name TEXT,
+          last_name TEXT
+        );
+        CREATE TABLE roles (id INTEGER PRIMARY KEY, is_system INT);
+        CREATE TABLE user_roles (user_id INT, role_id INT);
+        INSERT INTO roles (id, is_system) VALUES (1, 1);
+        INSERT INTO users (id, organization_id, display_name, username, active) VALUES
+          (23, 1, 'Sarah', 'veetest', 1),
+          (33, 1, 'Sarah Kamran', 'Sarah_kams', 1),
+          (99, 1, 'Other Sarah', 'other', 1);
+        INSERT INTO payroll_profiles (user_id, employee_id, first_name, last_name) VALUES
+          (23, 'WP23', 'Sarah', 'Kamran'),
+          (33, 'WP33', 'Sarah', 'Kamran');
+        INSERT INTO user_roles (user_id, role_id) VALUES (23, 1);
         """
     )
-    db.conn.execute(
-        "INSERT INTO users (id, organization_id, display_name, username, active) VALUES (33, 1, 'Sarah Kamran', 'sarah', 1)"
-    )
-    db.conn.commit()
     monkeypatch.setattr(
         "backend.lost_found.table_exists",
-        lambda _cursor, name: str(name).startswith("found_") or name == "users",
+        lambda _cursor, name: str(name).startswith("found_")
+        or name in {"users", "payroll_profiles", "roles", "user_roles"},
     )
-    _report(
+    service, _created = _report(
         db,
-        request_id="pin-display-name",
+        request_id="service-account-report",
         user_id=23,
         reporter_name="Sarah Kamran",
         business_date=date(2026, 11, 8),
     )
-    matched = search_issue_reports(
+    employee, _created = _report(
+        db,
+        request_id="employee-account-report",
+        user_id=33,
+        reporter_name="Sarah Kamran",
+        business_date=date(2026, 11, 8),
+        kind="dryer",
+        number="4",
+    )
+    stored = db.conn.execute(
+        "SELECT id, reported_by_user_id, reporter_name FROM found_items ORDER BY id"
+    ).fetchall()
+    assert stored == [
+        (service["id"], 23, "Sarah Kamran"),
+        (employee["id"], 33, "Sarah Kamran"),
+    ]
+    by_service = search_issue_reports(
+        db, 1, date_from=date(2026, 11, 8), date_to=date(2026, 11, 8), employee_id=23
+    )
+    by_employee = search_issue_reports(
         db, 1, date_from=date(2026, 11, 8), date_to=date(2026, 11, 8), employee_id=33
     )
-    assert matched["total"] == 1
-    assert matched["items"][0]["employee_name"] == "Sarah Kamran"
-    other = search_issue_reports(
+    by_other = search_issue_reports(
         db, 1, date_from=date(2026, 11, 8), date_to=date(2026, 11, 8), employee_id=99
     )
-    assert other["total"] == 0
+    assert [item["id"] for item in by_service["items"]] == [service["id"]]
+    assert [item["id"] for item in by_employee["items"]] == [employee["id"]]
+    assert by_other["total"] == 0
+    assert by_service["items"][0]["employee_code"] == "WP23"
+    assert by_employee["items"][0]["employee_code"] == "WP33"
+    assert by_service["items"][0]["employee_name"] != by_employee["items"][0]["employee_name"]
+    assert by_service["items"][0]["reporter_name"] == "Sarah Kamran"
+    directory = {person["id"]: person for person in list_issue_employees(db, 1)}
+    assert set(directory) == {23, 33, 99}
+    assert "WP23" in directory[23]["name"]
+    assert "WP33" in directory[33]["name"]
 
 
 def test_status_rules_do_not_touch_orders():
@@ -860,13 +902,23 @@ def test_report_submission_is_separate_from_supervisor_review(monkeypatch):
             return None
 
     monkeypatch.setattr("backend.db.get_db", lambda: Conn())
+    flags = {"system": False}
     monkeypatch.setattr("backend.lost_found_routes._gate_common", gate)
-    monkeypatch.setattr("backend.portal_system_users.user_has_system_role_flag", lambda *_a, **_k: False)
-    monkeypatch.setattr("backend.lost_found_routes.find_client_item", lambda *_a, **_k: {"id": 9})
     monkeypatch.setattr(
-        "backend.lost_found_routes.report_found_item",
-        lambda *_a, **_k: ({"id": 9}, False),
+        "backend.portal_system_users.user_has_system_role_flag",
+        lambda *_a, **_k: flags["system"],
     )
+    monkeypatch.setattr(
+        "backend.lost_found_routes.reconciliation_view",
+        lambda *_a, **_k: {"items": [], "ready": True},
+    )
+    monkeypatch.setattr("backend.lost_found_routes.find_client_item", lambda *_a, **_k: {"id": 9})
+
+    def _record(*_a, **kwargs):
+        seen["reports"] = seen.get("reports", []) + [kwargs]
+        return {"id": 9}, False
+
+    monkeypatch.setattr("backend.lost_found_routes.report_found_item", _record)
     client = app.test_client()
     pin = client.post(
         "/api/public/attendance/pin-lost-found/report",
@@ -880,6 +932,7 @@ def test_report_submission_is_separate_from_supervisor_review(monkeypatch):
     )
     assert pin.status_code == 200
     assert seen["require_shift"] is False
+    assert seen["reports"][0]["user_id"] == 8
     signed_in = client.post(
         "/api/lost-found/report",
         data={
@@ -889,6 +942,26 @@ def test_report_submission_is_separate_from_supervisor_review(monkeypatch):
         },
     )
     assert signed_in.status_code == 200
+    assert seen["reports"][1]["user_id"] == 4
+    reconciliation = client.post(
+        "/api/public/attendance/pin-lost-found/reconciliation",
+        json={"organization_slug": "veewash", "hub_token": "hub"},
+    )
+    assert reconciliation.status_code == 200
+    assert seen["require_shift"] is True
+    flags["system"] = True
+    blocked = client.post(
+        "/api/public/attendance/pin-lost-found/report",
+        data={
+            "organization_slug": "veewash",
+            "hub_token": "hub",
+            "client_request_id": "client-req-003",
+            "location_kind": "floor",
+            "report_category": "orphan",
+        },
+    )
+    assert blocked.status_code == 403
+    assert len(seen["reports"]) == 2
     review = client.post("/api/lost-found/9/status", json={"status": "under_review", "comment": "Checked"})
     assert review.status_code == 403
 

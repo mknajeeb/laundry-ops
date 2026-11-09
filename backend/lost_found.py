@@ -428,7 +428,9 @@ def serialize_item(
         "reported_at": reported.isoformat(sep=" ") if reported else None,
         "reported_at_display": format_et_desktop(reported),
         "employee_id": int(row["reported_by_user_id"]) if row.get("reported_by_user_id") is not None else None,
-        "employee_name": row.get("reporter_name"),
+        "employee_name": row.get("employee_name") or row.get("reporter_name"),
+        "employee_code": row.get("employee_code") or None,
+        "reporter_name": row.get("reporter_name"),
         "facility_name": row.get("facility_name"),
         "shift_session_id": int(row["shift_session_id"]) if row.get("shift_session_id") not in (None, "") else None,
         "location_kind": row.get("location_kind"),
@@ -556,15 +558,23 @@ def _hydrate(cursor, organization_id: int, rows: Sequence[Mapping[str, Any]], *,
     ids = [int(r["id"]) for r in rows]
     photos = _photos_for(cursor, organization_id, ids)
     events = _events_for(cursor, organization_id, ids)
-    return [
-        serialize_item(
-            row,
-            photos=photos.get(int(row["id"]), []),
-            events=events.get(int(row["id"]), []),
-            reconciliation_date=reconciliation_date,
+    people = {int(person["id"]): person for person in issue_people(cursor, organization_id)}
+    hydrated = []
+    for row in rows:
+        labeled = dict(row)
+        person = people.get(int(row["reported_by_user_id"])) if row.get("reported_by_user_id") is not None else None
+        if person:
+            labeled["employee_name"] = person["name"]
+            labeled["employee_code"] = person.get("employee_code") or None
+        hydrated.append(
+            serialize_item(
+                labeled,
+                photos=photos.get(int(row["id"]), []),
+                events=events.get(int(row["id"]), []),
+                reconciliation_date=reconciliation_date,
+            )
         )
-        for row in rows
-    ]
+    return hydrated
 
 
 def report_found_item(
@@ -876,25 +886,159 @@ def list_found_items(
     return _hydrate(cursor, organization_id, rows)
 
 
-def _selected_employee_name(cursor, organization_id: int, employee_id: int) -> str:
-    """Display name for the desktop employee filter, scoped to this organization."""
+def _plain_person_name(display_name: Any, username: Any, first_name: Any = None, last_name: Any = None) -> str:
+    payroll = " ".join(f"{first_name or ''} {last_name or ''}".split())
+    if payroll:
+        return payroll[:160]
+    for value in (display_name, username):
+        text = " ".join(str(value or "").split())
+        if text:
+            return text[:160]
+    return "Employee"
+
+
+def _with_unique_labels(people: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Same display text must not hide two user ids. The suffix is not a filter key."""
+    counts: dict[str, int] = {}
+    for person in people:
+        counts[person["plain_name"]] = counts.get(person["plain_name"], 0) + 1
+    labeled = []
+    for person in people:
+        name = person["plain_name"]
+        if counts[name] > 1:
+            suffix = person.get("employee_code") or person.get("username") or str(person["id"])
+            name = f"{name} ({suffix})"[:160]
+        labeled.append(
+            {
+                "id": int(person["id"]),
+                "name": name,
+                "plain_name": person["plain_name"],
+                "employee_code": person.get("employee_code") or None,
+            }
+        )
+    labeled.sort(key=lambda person: (person["name"].lower(), person["id"]))
+    return labeled
+
+
+def _reporter_ids(cursor, organization_id: int) -> set[int]:
+    if not table_exists(cursor, ITEMS):
+        return set()
+    rows = _fetch_all(
+        cursor,
+        f"SELECT DISTINCT reported_by_user_id AS id FROM {ITEMS} WHERE organization_id=%s",
+        (int(organization_id),),
+    )
+    return {int(row["id"]) for row in rows if row.get("id") is not None}
+
+
+def _system_user_ids(cursor) -> set[int]:
+    if not (table_exists(cursor, "user_roles") and table_exists(cursor, "roles")):
+        return set()
+    rows = _fetch_all(
+        cursor,
+        """
+        SELECT DISTINCT ur.user_id AS id
+        FROM user_roles ur
+        JOIN roles r ON r.id = ur.role_id
+        WHERE COALESCE(r.is_system, 0) = 1
+        """,
+        (),
+    )
+    return {int(row["id"]) for row in rows if row.get("id") is not None}
+
+
+def issue_people(cursor, organization_id: int) -> list[dict[str, Any]]:
+    """Active non-system users, plus anyone who already filed a report in this organization.
+
+    The id is users.id. A payroll employee code is only a label. Historical
+    reported_by_user_id values are not rewritten or matched by name.
+    """
     try:
         if not table_exists(cursor, "users"):
-            return ""
-        row = _fetch_one(
+            raise LookupError("users")
+        users = _fetch_all(
             cursor,
             """
-            SELECT COALESCE(NULLIF(display_name, ''), NULLIF(username, ''), '') AS name
+            SELECT id, display_name, username, active
             FROM users
-            WHERE id=%s AND organization_id=%s
-            LIMIT 1
+            WHERE organization_id=%s
             """,
-            (int(employee_id), int(organization_id)),
-        ) or {}
+            (int(organization_id),),
+        )
+        payroll: dict[int, dict[str, Any]] = {}
+        if users and table_exists(cursor, "payroll_profiles"):
+            marks = ",".join(["%s"] * len(users))
+            for row in _fetch_all(
+                cursor,
+                f"""
+                SELECT user_id, employee_id, first_name, last_name
+                FROM payroll_profiles
+                WHERE user_id IN ({marks})
+                """,
+                tuple(int(row["id"]) for row in users),
+            ):
+                if row.get("user_id") is not None:
+                    payroll[int(row["user_id"])] = row
+        reporters = _reporter_ids(cursor, organization_id)
+        system_ids = _system_user_ids(cursor)
+        people = []
+        for row in users:
+            if row.get("id") is None:
+                continue
+            user_id = int(row["id"])
+            active = row.get("active") in (None, 1, True, "1")
+            if not ((active and user_id not in system_ids) or user_id in reporters):
+                continue
+            profile = payroll.get(user_id) or {}
+            code = " ".join(str(profile.get("employee_id") or "").split())[:40]
+            people.append(
+                {
+                    "id": user_id,
+                    "plain_name": _plain_person_name(
+                        row.get("display_name"),
+                        row.get("username"),
+                        profile.get("first_name"),
+                        profile.get("last_name"),
+                    ),
+                    "employee_code": code or None,
+                    "username": " ".join(str(row.get("username") or "").split())[:80],
+                }
+            )
+        if people:
+            return _with_unique_labels(people)
     except Exception:
-        logger.debug("employee name lookup skipped", exc_info=True)
-        return ""
-    return " ".join(str(row.get("name") or "").split())[:120]
+        logger.debug("issue reporter directory unavailable", exc_info=True)
+    rows = _fetch_all(
+        cursor,
+        f"""
+        SELECT reported_by_user_id AS id, MAX(reporter_name) AS name
+        FROM {ITEMS}
+        WHERE organization_id=%s
+        GROUP BY reported_by_user_id
+        ORDER BY name
+        """,
+        (int(organization_id),),
+    )
+    return [
+        {"id": int(row["id"]), "name": row.get("name") or "", "employee_code": None}
+        for row in rows
+        if row.get("id") is not None
+    ]
+
+
+def reporter_name_for_user(cursor, organization_id: int, user_id: int, fallback: str = "") -> str:
+    """Snapshot label for the authenticated user only. Never resolves a shared name."""
+    try:
+        for person in issue_people(cursor, organization_id):
+            if int(person["id"]) != int(user_id):
+                continue
+            name = str(person.get("plain_name") or person.get("name") or "")
+            if name:
+                return name[:160]
+    except Exception:
+        logger.debug("reporter name lookup skipped", exc_info=True)
+    text = " ".join(str(fallback or "").split())
+    return (text or "Employee")[:160]
 
 
 def search_issue_reports(
@@ -921,14 +1065,8 @@ def search_issue_reports(
         where.append("business_date<=%s")
         params.append(date_to)
     if employee_id:
-        shown_name = _selected_employee_name(cursor, int(organization_id), int(employee_id))
-        if shown_name:
-            # PIN reports keep the matched employee name even when the session user differs.
-            where.append("(reported_by_user_id=%s OR reporter_name=%s)")
-            params.extend([int(employee_id), shown_name])
-        else:
-            where.append("reported_by_user_id=%s")
-            params.append(int(employee_id))
+        where.append("reported_by_user_id=%s")
+        params.append(int(employee_id))
     code = str(category or "").strip().lower()
     if code in {"orphan", "redry", "equipment"}:
         where.append("COALESCE(report_category, 'orphan')=%s")
@@ -970,55 +1108,8 @@ def search_issue_reports(
 
 
 def list_issue_employees(cursor, organization_id: int) -> list[dict[str, Any]]:
-    """Active organization users, excluding system-role accounts when that flag exists."""
-    if table_exists(cursor, "users"):
-        system_sql = ""
-        if table_exists(cursor, "user_roles") and table_exists(cursor, "roles"):
-            system_sql = """
-              AND u.id NOT IN (
-                SELECT ur.user_id FROM user_roles ur
-                JOIN roles r ON r.id = ur.role_id
-                WHERE COALESCE(r.is_system, 0) = 1
-              )
-            """
-        try:
-            rows = _fetch_all(
-                cursor,
-                f"""
-                SELECT u.id AS id,
-                       COALESCE(NULLIF(u.display_name, ''), u.username, '') AS name
-                FROM users u
-                WHERE u.organization_id=%s AND COALESCE(u.active, 1)=1
-                {system_sql}
-                ORDER BY name
-                """,
-                (int(organization_id),),
-            )
-            people = []
-            for row in rows:
-                if row.get("id") is None:
-                    continue
-                people.append({"id": int(row["id"]), "name": row.get("name") or f"User {row['id']}"})
-            if people:
-                return people
-        except Exception:
-            logger.debug("issue employee directory unavailable", exc_info=True)
-    rows = _fetch_all(
-        cursor,
-        f"""
-        SELECT reported_by_user_id AS id, MAX(reporter_name) AS name
-        FROM {ITEMS}
-        WHERE organization_id=%s
-        GROUP BY reported_by_user_id
-        ORDER BY name
-        """,
-        (int(organization_id),),
-    )
-    return [
-        {"id": int(row["id"]), "name": row.get("name") or ""}
-        for row in rows
-        if row.get("id") is not None
-    ]
+    """Directory for the desktop employee filter. Each option is one users.id."""
+    return issue_people(cursor, organization_id)
 
 
 REDRY_POCKETS_KEY = "redry_designated_pockets"

@@ -26,6 +26,7 @@ from backend.lost_found import (
     get_photo_row,
     list_found_items,
     list_issue_employees,
+    reporter_name_for_user,
     search_issue_reports,
     location_choices,
     notify_found_item,
@@ -208,7 +209,12 @@ def register_lost_found_routes(
                 organization_id=int(ctx["org_id"]),
                 client_request_id=client_request_id,
                 user_id=int(ctx["user_id"]),
-                reporter_name=_employee_display_name(ctx["matched"]),
+                reporter_name=reporter_name_for_user(
+                    cursor,
+                    int(ctx["org_id"]),
+                    int(ctx["user_id"]),
+                    _employee_display_name(ctx["matched"]),
+                ),
                 facility_name=facility_name,
                 shift_session_id=session.get("id"),
                 business_date=business_today(),
@@ -477,12 +483,18 @@ def register_lost_found_routes(
                 for handle in photos:
                     raw = handle.read()
                     stored_photos.append(save_found_item_image(oid, raw, handle.filename or "photo.jpg"))
+            uid = int(me.get("user_id") or me.get("id") or 0)
             item, created = report_found_item(
                 cursor,
                 organization_id=oid,
                 client_request_id=client_request_id,
-                user_id=int(me.get("user_id") or me.get("id") or 0),
-                reporter_name=(me.get("display_name") or me.get("name") or me.get("username") or "Employee"),
+                user_id=uid,
+                reporter_name=reporter_name_for_user(
+                    cursor,
+                    oid,
+                    uid,
+                    me.get("display_name") or me.get("name") or me.get("username") or "Employee",
+                ),
                 facility_name=None,
                 shift_session_id=None,
                 business_date=business_today(),
@@ -498,7 +510,6 @@ def register_lost_found_routes(
                 },
             )
             if created:
-                uid = int(me.get("user_id") or me.get("id") or 0)
                 for stored in stored_photos:
                     add_item_photo(
                         cursor,
