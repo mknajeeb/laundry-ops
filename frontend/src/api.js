@@ -480,6 +480,23 @@ export const getPinLostFoundPhoto = (organization_slug, hubToken, photoId) =>
 export const getLostFoundList = (params = {}) =>
   axios.get(`${API_BASE}/api/lost-found`, { params });
 
+export const getLostFoundLocations = () => axios.get(`${API_BASE}/api/lost-found/locations`);
+
+export const postLostFoundReport = (options = {}) => {
+  const body = new FormData();
+  body.append("client_request_id", options.client_request_id || "");
+  body.append("report_category", options.report_category || "");
+  body.append("location_kind", options.location_kind || "");
+  if (options.location_number) body.append("location_number", options.location_number);
+  if (options.location_detail) body.append("location_detail", options.location_detail);
+  if (options.notes) body.append("notes", options.notes);
+  body.append("redry_missing_ticket", options.redry_missing_ticket ? "1" : "0");
+  body.append("redry_mesh_bag", options.redry_mesh_bag ? "1" : "0");
+  body.append("redry_wrong_pocket", options.redry_wrong_pocket ? "1" : "0");
+  for (const file of options.files || []) body.append("photos", file);
+  return axios.post(`${API_BASE}/api/lost-found/report`, body);
+};
+
 export const getRedryPockets = () => axios.get(`${API_BASE}/api/lost-found/redry-pockets`);
 
 export const saveRedryPockets = (pockets) =>

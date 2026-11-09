@@ -69,6 +69,7 @@ import CleaningTaskReviewPinPage from "./pages/CleaningTaskReviewPinPage";
 import LostFoundReportPinPage from "./pages/LostFoundReportPinPage";
 import LostFoundReconcilePinPage from "./pages/LostFoundReconcilePinPage";
 import LostFoundDesktopPage from "./pages/LostFoundDesktopPage";
+import LostFoundReportAuthPage from "./pages/LostFoundReportAuthPage";
 import EmployeePinHubPage from "./pages/EmployeePinHubPage";
 import ManagementTasksPage from "./pages/ManagementTasksPage";
 import TaskDashboardPhase3PreviewPage from "./pages/TaskDashboardPhase3PreviewPage";
@@ -1356,6 +1357,14 @@ function AppShell() {
                   <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
                     <LostFoundDesktopPage />
                   </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/report-issue"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <LostFoundReportAuthPage />
                 </TenantOnlyRoute>
               }
             />

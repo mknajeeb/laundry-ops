@@ -177,8 +177,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
       ...tile,
       icon: iconForTile(tile),
     }));
-    const clockedIn = hub?.attendance?.clocked_in === true;
-    if (clockedIn && hub?.is_system !== true) {
+    if (hub?.token && hub?.is_system !== true) {
       const reportTile = {
         id: "lost_found_report",
         label: t("lostFound.report"),
@@ -442,10 +441,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         return;
       }
       if (featureId === "lost_found_report") {
-        if (hub?.is_system === true || hub?.attendance?.clocked_in !== true) {
-          setError(t("mobileOps.clockInFirst"));
-          return;
-        }
+        if (hub?.is_system === true) return;
         navigate(`/attendance/lost-found/${encodeURIComponent(slug)}`);
         return;
       }

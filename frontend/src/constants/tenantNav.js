@@ -30,6 +30,7 @@ export const RINSE_HUB_RESERVED = [
 /** Tenant app sidebar / mobile drawer — single source of truth. */
 export const TENANT_NAV_ITEMS = [
   { to: "/", labelKey: "nav.home", anyTenantUser: true, moduleKey: "home" },
+  { to: "/report-issue", labelKey: "lostFound.report", anyTenantUser: true, moduleKey: "home" },
   {
     to: "/dashboard",
     labelKey: "nav.dashboard",

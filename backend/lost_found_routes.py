@@ -74,7 +74,7 @@ def register_lost_found_routes(
     fetch_user_roles: Callable,
     get_request_ip: Callable,
 ):
-    def _pin(action: str):
+    def _pin(action: str, *, require_shift: bool = True):
         from backend.db import get_db
 
         data = _form_or_json()
@@ -90,6 +90,7 @@ def register_lost_found_routes(
             fetch_user_roles,
             get_request_ip(),
             action_prefix=action,
+            require_shift=require_shift,
         )
         if err:
             return None, conn, err
@@ -120,9 +121,31 @@ def register_lost_found_routes(
             return None, None, (jsonify({"error": "Forbidden"}), 403)
         return me, oid, None
 
+    def _member(cursor, conn):
+        """Any active signed-in user in their own organization. Not a reviewer."""
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return None, None, (err_resp, err_code)
+        try:
+            uid = int(me.get("user_id") or me.get("id") or 0)
+        except (TypeError, ValueError):
+            return None, None, (jsonify({"error": "Forbidden"}), 403)
+        try:
+            from backend.portal_system_users import user_has_system_role_flag
+
+            if user_has_system_role_flag(conn, uid):
+                return None, None, (jsonify({"error": "Forbidden"}), 403)
+        except Exception:
+            pass
+        try:
+            oid = int(user_org_id(me))
+        except (TypeError, ValueError):
+            return None, None, (jsonify({"error": "Forbidden"}), 403)
+        return me, oid, None
+
     @app.route("/api/public/attendance/pin-lost-found/locations", methods=["POST"])
     def pin_lost_found_locations():
-        ctx, conn, err = _pin("lost_found_locations")
+        ctx, conn, err = _pin("lost_found_locations", require_shift=False)
         if err:
             body, status = err
             _close(conn)
@@ -135,11 +158,19 @@ def register_lost_found_routes(
 
     @app.route("/api/public/attendance/pin-lost-found/report", methods=["POST"])
     def pin_lost_found_report():
-        ctx, conn, err = _pin("lost_found_report")
+        ctx, conn, err = _pin("lost_found_report", require_shift=False)
         if err:
             body, status = err
             _close(conn)
             return jsonify(body), status
+        try:
+            from backend.portal_system_users import user_has_system_role_flag
+
+            if user_has_system_role_flag(conn, int(ctx["user_id"])):
+                _close(conn)
+                return jsonify({"ok": False, "error": "Forbidden"}), 403
+        except Exception:
+            pass
         cursor = conn.cursor(dictionary=True)
         stored_photos: list[dict[str, str]] = []
         try:
@@ -399,6 +430,114 @@ def register_lost_found_routes(
             row = cursor.fetchone() or {}
             locale = str(row.get("ui_locale") or "").strip().lower()
             return jsonify({"ok": True, "locale": locale if locale in {"en", "es"} else None, "persisted": True})
+        finally:
+            _close(conn)
+
+    @app.route("/api/lost-found/locations", methods=["GET"])
+    def lost_found_locations_auth():
+        from backend.db import get_db
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            _me, oid, denied = _member(cursor, conn)
+            if denied:
+                resp, code = denied
+                return resp, code
+            return jsonify({"ok": True, **location_choices(cursor, oid)})
+        finally:
+            _close(conn)
+
+    @app.route("/api/lost-found/report", methods=["POST"])
+    def lost_found_report_auth():
+        """Signed-in submission. Does not require a shift and cannot change status."""
+        from backend.db import get_db
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        stored_photos: list[dict[str, str]] = []
+        try:
+            me, oid, denied = _member(cursor, conn)
+            if denied:
+                resp, code = denied
+                return resp, code
+            try:
+                conn.autocommit = False
+            except Exception:
+                pass
+            data = _form_or_json()
+            photos = _photo_files()
+            client_request_id = str(data.get("client_request_id") or "").strip()
+            if not client_request_id:
+                raise LostFoundError("A client request id is required.", code="client_request_required")
+            existing = find_client_item(cursor, oid, client_request_id)
+            if existing is None:
+                if not photos:
+                    raise LostFoundError("At least one photo is required.", code="photo_required")
+                for handle in photos:
+                    raw = handle.read()
+                    stored_photos.append(save_found_item_image(oid, raw, handle.filename or "photo.jpg"))
+            item, created = report_found_item(
+                cursor,
+                organization_id=oid,
+                client_request_id=client_request_id,
+                user_id=int(me.get("user_id") or me.get("id") or 0),
+                reporter_name=(me.get("display_name") or me.get("name") or me.get("username") or "Employee"),
+                facility_name=None,
+                shift_session_id=None,
+                business_date=business_today(),
+                location_kind=str(data.get("location_kind") or ""),
+                location_number=data.get("location_number"),
+                location_detail=data.get("location_detail"),
+                notes=data.get("notes"),
+                report_category=str(data.get("report_category") or "orphan"),
+                redry_flags={
+                    "missing_ticket": data.get("redry_missing_ticket"),
+                    "mesh_bag": data.get("redry_mesh_bag"),
+                    "wrong_pocket": data.get("redry_wrong_pocket"),
+                },
+            )
+            if created:
+                uid = int(me.get("user_id") or me.get("id") or 0)
+                for stored in stored_photos:
+                    add_item_photo(
+                        cursor,
+                        organization_id=oid,
+                        found_item_id=int(item["id"]),
+                        user_id=uid,
+                        stored=stored,
+                    )
+                fresh = get_item(cursor, oid, int(item["id"]))
+                from backend.lost_found import _hydrate
+
+                item = _hydrate(cursor, oid, [fresh])[0]
+                notify_found_item(cursor, oid, item)
+            else:
+                for stored in stored_photos:
+                    discard_found_item_image(stored)
+                stored_photos = []
+            conn.commit()
+            return jsonify({"ok": True, "created": created, "item": item})
+        except LostFoundError as exc:
+            for stored in stored_photos:
+                discard_found_item_image(stored)
+            return _fail(conn, exc)
+        except ValueError as exc:
+            for stored in stored_photos:
+                discard_found_item_image(stored)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"ok": False, "error": str(exc), "code": "photo_invalid"}), 400
+        except Exception:
+            for stored in stored_photos:
+                discard_found_item_image(stored)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"ok": False, "error": "Could not save the found item."}), 500
         finally:
             _close(conn)
 

@@ -18,6 +18,7 @@ import {
 } from "@mui/material";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
+import { Link as RouterLink } from "react-router-dom";
 import { getLostFoundList, getLostFoundPhoto, getRedryPockets, saveRedryPockets, updateLostFoundStatus } from "../api";
 import { useI18n } from "../i18n/I18nContext";
 import { displayFoundEvent, displayFoundLocation, displayMachineNumber } from "../utils/lostFoundLocation";
@@ -207,7 +208,12 @@ export default function LostFoundDesktopPage() {
 
   return (
     <Box sx={{ p: { xs: 1.5, sm: 2 }, maxWidth: 1200 }}>
-      <Typography variant="h5" sx={{ fontWeight: 800 }}>{t("lostFound.issueReports")}</Typography>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
+        <Typography variant="h5" sx={{ fontWeight: 800 }}>{t("lostFound.issueReports")}</Typography>
+        <Button component={RouterLink} to="/report-issue" variant="contained" sx={{ textTransform: "none" }}>
+          {t("lostFound.report")}
+        </Button>
+      </Stack>
       <Stack direction="row" flexWrap="wrap" useFlexGap spacing={1} sx={{ my: 1.5 }}>
         <TextField type="date" size="small" label={t("lostFound.dateFrom")} value={dateFrom} onChange={(e) => { setPage(1); setDateFrom(e.target.value); }} InputLabelProps={{ shrink: true }} />
         <TextField type="date" size="small" label={t("lostFound.dateTo")} value={dateTo} onChange={(e) => { setPage(1); setDateTo(e.target.value); }} InputLabelProps={{ shrink: true }} />

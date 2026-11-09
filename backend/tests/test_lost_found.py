@@ -766,6 +766,7 @@ def test_pin_report_requires_a_photo(monkeypatch):
     def _must_not_create(*_a, **_k):
         raise AssertionError("a missing photo must not create a report")
 
+    monkeypatch.setattr("backend.portal_system_users.user_has_system_role_flag", lambda *_a, **_k: False)
     monkeypatch.setattr("backend.lost_found_routes.report_found_item", _must_not_create)
     client = app.test_client()
     res = client.post(
@@ -774,6 +775,84 @@ def test_pin_report_requires_a_photo(monkeypatch):
     )
     assert res.status_code == 400
     assert res.get_json()["code"] == "photo_required"
+
+
+def test_report_submission_is_separate_from_supervisor_review(monkeypatch):
+    app = Flask(__name__)
+    seen = {}
+
+    def gate(*_args, **kwargs):
+        seen["require_shift"] = kwargs.get("require_shift")
+        return (
+            {"org_id": 1, "user_id": 8, "matched": {"display_name": "Ana"}, "session": None},
+            None,
+        )
+
+    def require_user(_cursor):
+        return {"user_id": 4, "roles": ["SUPERVISOR"], "display_name": "Pat"}, None, None
+
+    register_lost_found_routes(
+        app,
+        require_user=require_user,
+        user_org_id=lambda _me: 3,
+        fetch_user_roles=lambda *_a, **_k: [],
+        get_request_ip=lambda: "127.0.0.1",
+    )
+
+    class Conn:
+        def cursor(self, dictionary=True):
+            return self
+
+        def execute(self, *_a, **_k):
+            return None
+
+        def fetchone(self):
+            return None
+
+        def fetchall(self):
+            return []
+
+        def close(self):
+            return None
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+    monkeypatch.setattr("backend.db.get_db", lambda: Conn())
+    monkeypatch.setattr("backend.lost_found_routes._gate_common", gate)
+    monkeypatch.setattr("backend.portal_system_users.user_has_system_role_flag", lambda *_a, **_k: False)
+    monkeypatch.setattr("backend.lost_found_routes.find_client_item", lambda *_a, **_k: {"id": 9})
+    monkeypatch.setattr(
+        "backend.lost_found_routes.report_found_item",
+        lambda *_a, **_k: ({"id": 9}, False),
+    )
+    client = app.test_client()
+    pin = client.post(
+        "/api/public/attendance/pin-lost-found/report",
+        data={
+            "organization_slug": "veewash",
+            "hub_token": "hub",
+            "client_request_id": "client-req-001",
+            "location_kind": "floor",
+            "report_category": "orphan",
+        },
+    )
+    assert pin.status_code == 200
+    assert seen["require_shift"] is False
+    signed_in = client.post(
+        "/api/lost-found/report",
+        data={
+            "client_request_id": "client-req-002",
+            "location_kind": "floor",
+            "report_category": "orphan",
+        },
+    )
+    assert signed_in.status_code == 200
+    review = client.post("/api/lost-found/9/status", json={"status": "under_review", "comment": "Checked"})
+    assert review.status_code == 403
 
 
 def test_activity_code_is_end_of_day_task():

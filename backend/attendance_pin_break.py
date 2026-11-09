@@ -80,6 +80,7 @@ def _gate_common(
     ip_address: str,
     *,
     action_prefix: str,
+    require_shift: bool = True,
 ):
     org_slug = (organization_slug or "").strip().lower()
     pin_clean = str(pin or "").strip()
@@ -121,7 +122,7 @@ def _gate_common(
 
     user_id = int(matched["id"])
     active = _active_shift(conn, user_id)
-    if not active:
+    if require_shift and not active:
         record_pin_attempt(
             conn,
             org_id,
