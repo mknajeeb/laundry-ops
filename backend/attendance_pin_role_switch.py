@@ -16,6 +16,7 @@ from backend.attendance_pin_punch import (
     PIN_LEN_KIOSK,
     _active_shift,
     fetch_organization_by_slug,
+    commit_pin_audit,
     is_rate_limited,
     record_pin_attempt,
     resolve_user_by_attendance_pin,
@@ -175,7 +176,7 @@ def perform_pin_role_switch(
             record_pin_attempt(
                 conn, org_id, ip_address, success=False, action="pin_role_switch_hub_fail"
             )
-            conn.commit()
+            commit_pin_audit(conn)
             return {"ok": False, "error": INVALID_PIN_MESSAGE}, 401
     else:
         matched = resolve_user_by_attendance_pin(conn, org_id, pin_clean, fetch_roles_fn)
@@ -183,7 +184,7 @@ def perform_pin_role_switch(
             record_pin_attempt(
                 conn, org_id, ip_address, success=False, action="pin_role_switch_fail"
             )
-            conn.commit()
+            commit_pin_audit(conn)
             return {"ok": False, "error": INVALID_PIN_MESSAGE}, 401
 
     user_id = int(matched["id"])
@@ -192,7 +193,7 @@ def perform_pin_role_switch(
         record_pin_attempt(
             conn, org_id, ip_address, success=False, user_id=user_id, action="pin_role_switch_not_in"
         )
-        conn.commit()
+        commit_pin_audit(conn)
         return {"ok": False, "error": NOT_CLOCKED_IN_MESSAGE}, 400
 
     # Standalone Change Role is not available while on break — Resume flow selects role.
@@ -305,7 +306,7 @@ def perform_pin_role_switch(
                 ip_address,
                 success=False,
                 user_id=user_id,
-                action="pin_role_switch_module_denied_mutate",
+                action="pin_role_switch_denied_mutate",
             )
             conn.commit()
             return {"ok": False, "error": DENIED_MODULE_MESSAGE}, 403

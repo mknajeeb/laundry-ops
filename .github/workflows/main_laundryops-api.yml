@@ -173,51 +173,19 @@ jobs:
           package: './deploy_pkg'
           restart: true
 
+      # Required. A successful zip upload does not make this job green.
+      # The probe never restarts the app: old-process SHA responses and startup
+      # timeouts are retried until the deadline; an expected SHA that is unhealthy
+      # fails as an unhealthy deployment.
       - name: Verify API health after deploy
         shell: bash
         run: |
-          API="https://laundryops-api-dscucxa8c6dbghd9.centralus-01.azurewebsites.net"
-          EXPECTED="${{ github.sha }}"
-          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
-            BODY=$(curl -sS --max-time 20 "$API/health" || true)
-            echo "health attempt $i: $BODY"
-            CHECK=$(HEALTH_BODY="$BODY" EXPECTED_SHA="$EXPECTED" python - <<'PYHEALTH'
-          import json
-          import os
-          import sys
-
-          try:
-              body = json.loads(os.environ.get("HEALTH_BODY", "{}"))
-          except Exception:
-              print("parse_error")
-              sys.exit(0)
-          expected = (os.environ.get("EXPECTED_SHA") or "").strip()
-          status = str(body.get("status") or "")
-          runtime = str(
-              body.get("runtime_revision")
-              or body.get("artifact_revision")
-              or body.get("git_sha")
-              or ""
-          ).strip()
-          source = str(body.get("source_revision") or "").strip()
-          build = str(body.get("build_revision") or "").strip()
-          if status != "ok":
-              print("not_ok")
-          elif expected and expected not in (runtime, source, build, str(body.get("git_sha") or "")):
-              print("sha_mismatch")
-          elif body.get("revision_stamp_agreement") is False:
-              print("stamp_disagree")
-          else:
-              print("ok")
-          PYHEALTH
-          )
-            if [ "$CHECK" = "ok" ]; then
-              echo "Verified production /health reports agreed revision ${EXPECTED}"
-              exit 0
-            fi
-            echo "health check result=$CHECK"
-            sleep 10
-          done
-          echo "::error::API /health did not return agreed revision ${EXPECTED} after deploy"
-          curl -i --max-time 20 "$API/health" || true
-          exit 1
+          python3 deploy_pkg/scripts/verify_api_deploy_health.py \
+            --url "https://laundryops-api-dscucxa8c6dbghd9.centralus-01.azurewebsites.net/health" \
+            --expected-sha "${{ github.sha }}" \
+            --warmup-seconds 45 \
+            --deadline-seconds 600 \
+            --interval-seconds 15 \
+            --request-timeout 20 \
+            --max-attempts 36 \
+            --unhealthy-limit 2

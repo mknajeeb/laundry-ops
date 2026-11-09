@@ -26,6 +26,15 @@ OPEN_BREAK_MESSAGE = "Please end your break before clocking out."
 PIN_LEN_KIOSK = 4
 RATE_LIMIT_WINDOW_MINUTES = 15
 RATE_LIMIT_MAX_FAILURES = 10
+PIN_AUDIT_ACTION_MAX = 32
+PIN_AUDIT_ACTION_REJECTED = "pin_audit_name_rejected"
+
+# auth_pin_attempts.action is VARCHAR(32). These labels are the stored form of
+# names that do not fit. Existing rows are left unchanged.
+PIN_AUDIT_ACTION_ALIASES = {
+    "lost_found_reconciliation_hub_fail": "lost_found_recon_hub_fail",
+    "pin_role_switch_module_denied_mutate": "pin_role_switch_denied_mutate",
+}
 
 ADMIN_ROLE_CODES = frozenset({"ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"})
 
@@ -69,6 +78,29 @@ def ensure_auth_pin_attempts_table(conn) -> bool:
         return False
 
 
+def canonical_pin_audit_action(action: Optional[str]) -> Optional[str]:
+    """Return an action name that fits auth_pin_attempts.action.
+
+    Unknown names that are still too long are not inserted as given. The attempt
+    is recorded under PIN_AUDIT_ACTION_REJECTED and the original name is logged.
+    """
+    if action is None:
+        return None
+    name = str(action).strip()
+    if not name:
+        return None
+    name = PIN_AUDIT_ACTION_ALIASES.get(name, name)
+    if len(name) <= PIN_AUDIT_ACTION_MAX:
+        return name
+    logger.error(
+        "pin audit action rejected; length %s exceeds %s: %s",
+        len(name),
+        PIN_AUDIT_ACTION_MAX,
+        name[:80],
+    )
+    return PIN_AUDIT_ACTION_REJECTED
+
+
 def record_pin_attempt(
     conn,
     organization_id: int,
@@ -76,17 +108,57 @@ def record_pin_attempt(
     success: bool,
     user_id: Optional[int] = None,
     action: Optional[str] = None,
-) -> None:
-    if not ensure_auth_pin_attempts_table(conn):
-        return
-    c = conn.cursor()
-    c.execute(
-        """
-        INSERT INTO auth_pin_attempts (organization_id, ip_address, user_id, success, action)
-        VALUES (%s, %s, %s, %s, %s)
-        """,
-        (int(organization_id), ip_address[:64] if ip_address else None, user_id, 1 if success else 0, action),
-    )
+) -> bool:
+    """Insert one audit row. Database failures are logged and do not propagate."""
+    stored_action = canonical_pin_audit_action(action)
+    try:
+        if not ensure_auth_pin_attempts_table(conn):
+            logger.error(
+                "pin audit table unavailable org=%s user=%s action=%s success=%s",
+                organization_id,
+                user_id,
+                stored_action,
+                bool(success),
+            )
+            return False
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT INTO auth_pin_attempts (organization_id, ip_address, user_id, success, action)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                int(organization_id),
+                ip_address[:64] if ip_address else None,
+                user_id,
+                1 if success else 0,
+                stored_action,
+            ),
+        )
+        return True
+    except Exception:
+        logger.exception(
+            "pin audit insert failed org=%s user=%s action=%s success=%s",
+            organization_id,
+            user_id,
+            stored_action,
+            bool(success),
+        )
+        return False
+
+
+def commit_pin_audit(conn) -> bool:
+    """Commit an audit write. A commit failure must not change the auth response."""
+    try:
+        conn.commit()
+        return True
+    except Exception:
+        logger.exception("pin audit commit failed")
+        try:
+            conn.rollback()
+        except Exception:
+            logger.exception("pin audit rollback after commit failure failed")
+        return False
 
 
 def is_rate_limited(conn, organization_id: int, ip_address: str) -> bool:
@@ -574,7 +646,7 @@ def perform_pin_punch(
     matched = resolve_user_by_attendance_pin(conn, org_id, pin_clean, fetch_roles_fn)
     if not matched:
         record_pin_attempt(conn, org_id, ip_address, success=False, action="pin_punch_fail")
-        conn.commit()
+        commit_pin_audit(conn)
         return {"ok": False, "error": INVALID_PIN_MESSAGE}, 401
 
     user_id = int(matched["id"])
