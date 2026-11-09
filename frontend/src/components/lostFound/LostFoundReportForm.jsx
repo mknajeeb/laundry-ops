@@ -7,6 +7,7 @@ import { alpha, useTheme } from "@mui/material/styles";
 import { useI18n } from "../../i18n/I18nContext";
 import {
   addReportPhotos,
+  displayMachineNumber,
   filterIdentifiers,
   identifierChoices,
   removeReportPhoto,
@@ -22,8 +23,8 @@ const CATEGORIES = [
 const FOUND_PLACES = ["washer", "dryer", "folding_table", "floor", "cart", "other"];
 const EQUIPMENT_TYPES = ["washer", "dryer", "dehumidifier", "other"];
 const REDRY_FLAGS = [
-  ["missing_ticket", "lostFound.redry.missingTicket"],
   ["mesh_bag", "lostFound.redry.meshBag"],
+  ["missing_ticket", "lostFound.redry.missingTicket"],
   ["wrong_pocket", "lostFound.redry.wrongPocket"],
 ];
 
@@ -71,8 +72,8 @@ function NumberPicker({ label, options, value, onChange, optional = false }) {
               variant={selected ? "contained" : "outlined"}
               onClick={() => onChange(id)}
               sx={{
-                minWidth: 52,
-                minHeight: 36,
+                minWidth: 48,
+                minHeight: 44,
                 px: 1,
                 py: 0.25,
                 fontWeight: 700,
@@ -80,7 +81,7 @@ function NumberPicker({ label, options, value, onChange, optional = false }) {
                 borderColor: alpha(theme.palette.primary.main, 0.35),
               }}
             >
-              {id}
+              {displayMachineNumber(id)}
             </Button>
           );
         })}
@@ -95,6 +96,7 @@ function PhotoManager({ photos, onChange }) {
   const cameraRef = useRef(null);
   const libraryRef = useRef(null);
   const replaceRef = useRef(null);
+  const libraryReplaceRef = useRef(null);
   const replaceId = useRef("");
   const urls = useMemo(
     () => photos.map((photo) => ({ ...photo, url: URL.createObjectURL(photo.file) })),
@@ -110,10 +112,10 @@ function PhotoManager({ photos, onChange }) {
         {t("lostFound.photos")} · {photos.length}
       </Typography>
       <Stack direction="row" spacing={0.75}>
-        <Button type="button" variant="outlined" onClick={() => cameraRef.current?.click()} sx={{ flex: 1, minHeight: 40, textTransform: "none", fontWeight: 700 }}>
-          {t("lostFound.takePhoto")}
+        <Button type="button" variant="outlined" onClick={() => cameraRef.current?.click()} sx={{ flex: 1, minHeight: 44, textTransform: "none", fontWeight: 700 }}>
+          {photos.length ? t("lostFound.addMore") : t("lostFound.takePhoto")}
         </Button>
-        <Button type="button" variant="text" onClick={() => libraryRef.current?.click()} sx={{ minHeight: 40, textTransform: "none", fontWeight: 700 }}>
+        <Button type="button" variant="outlined" onClick={() => libraryRef.current?.click()} sx={{ flex: 1, minHeight: 44, textTransform: "none", fontWeight: 700 }}>
           {t("lostFound.choosePhoto")}
         </Button>
       </Stack>
@@ -131,16 +133,30 @@ function PhotoManager({ photos, onChange }) {
           event.target.value = "";
         }}
       />
+      <input
+        ref={libraryReplaceRef}
+        hidden
+        type="file"
+        accept="image/*"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file && replaceId.current) onChange(replaceReportPhoto(photos, replaceId.current, file));
+          event.target.value = "";
+        }}
+      />
       {urls.length ? (
         <Stack direction="row" spacing={0.75} sx={{ overflowX: "auto" }}>
           {urls.map((photo) => (
             <Box key={photo.id} sx={{ width: 84, flexShrink: 0 }}>
               <Box component="img" src={photo.url} alt="" sx={{ width: 84, height: 84, objectFit: "cover", borderRadius: 1, display: "block" }} />
               <Stack direction="row" spacing={0.25}>
-                <Button type="button" size="small" sx={{ minWidth: 0, px: 0.5, textTransform: "none" }} onClick={() => { replaceId.current = photo.id; replaceRef.current?.click(); }}>
+                <Button type="button" size="small" sx={{ minWidth: 0, minHeight: 44, px: 0.5, textTransform: "none" }} onClick={() => { replaceId.current = photo.id; replaceRef.current?.click(); }}>
+                  {t("lostFound.retake")}
+                </Button>
+                <Button type="button" size="small" sx={{ minWidth: 0, minHeight: 44, px: 0.5, textTransform: "none" }} onClick={() => { replaceId.current = photo.id; libraryReplaceRef.current?.click(); }}>
                   {t("lostFound.replacePhoto")}
                 </Button>
-                <Button type="button" size="small" color="inherit" sx={{ minWidth: 0, px: 0.5, textTransform: "none" }} onClick={() => onChange(removeReportPhoto(photos, photo.id))}>
+                <Button type="button" size="small" color="inherit" sx={{ minWidth: 0, minHeight: 44, px: 0.5, textTransform: "none" }} onClick={() => onChange(removeReportPhoto(photos, photo.id))}>
                   {t("lostFound.deletePhoto")}
                 </Button>
               </Stack>
@@ -160,27 +176,25 @@ export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
   const [kind, setKind] = useState("");
   const [number, setNumber] = useState("");
   const [detail, setDetail] = useState("");
-  const [bagNumber, setBagNumber] = useState("");
   const [notes, setNotes] = useState("");
   const [photos, setPhotos] = useState([]);
   const [flags, setFlags] = useState({ missing_ticket: false, mesh_bag: false, wrong_pocket: false });
   const [error, setError] = useState("");
 
   const pocketOptions = (choices?.redry_pockets || []).length ? choices.redry_pockets : (choices?.dryers || []);
-  const showBag = category === "redry" && (flags.mesh_bag || flags.wrong_pocket);
+  const dryerRequired = category === "redry" && flags.wrong_pocket;
   const numberOptions = category === "redry"
     ? pocketOptions
     : identifierChoices(kind, choices);
-  const needsNumber = category === "redry"
+  const needsNumber = dryerRequired
     || (category === "equipment" && kind && kind !== "other")
-    || ["washer", "dryer", "folding_table"].includes(kind);
+    || (category === "orphan" && ["washer", "dryer", "folding_table"].includes(kind));
   const numberOptional = (category === "orphan" && kind === "cart") || (category === "equipment" && kind === "other");
 
   const resetDetails = () => {
     setKind("");
     setNumber("");
     setDetail("");
-    setBagNumber("");
     setFlags({ missing_ticket: false, mesh_bag: false, wrong_pocket: false });
     setError("");
   };
@@ -197,7 +211,7 @@ export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
         setError(t("lostFound.redry.flagRequired"));
         return;
       }
-      if (!String(number || "").trim()) {
+      if (flags.wrong_pocket && !String(number || "").trim()) {
         setError(t("lostFound.redry.pocketRequired"));
         return;
       }
@@ -229,8 +243,8 @@ export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
       client_request_id: requestId.current,
       report_category: category === "orphan" ? "orphan" : category,
       location_kind: category === "redry" ? "dryer" : kind,
-      location_number: number,
-      location_detail: category === "redry" ? (showBag ? bagNumber : "") : detail,
+      location_number: dryerRequired || category !== "redry" ? number : "",
+      location_detail: category === "redry" ? "" : detail,
       notes,
       files: photos.map((photo) => photo.file),
       redry_missing_ticket: flags.missing_ticket,
@@ -244,7 +258,7 @@ export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
       {error ? <Alert severity="warning">{error}</Alert> : null}
       {!category ? (
         <Stack spacing={0.75}>
-          {CATEGORIES.map(([id, title, hint, Icon]) => (
+          {CATEGORIES.map(([id, title, , Icon]) => (
             <Button
               key={id}
               type="button"
@@ -258,7 +272,7 @@ export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
                 justifyContent: "flex-start",
                 textAlign: "left",
                 textTransform: "none",
-                minHeight: 64,
+                minHeight: 48,
                 px: 1.25,
                 py: 0.75,
                 borderColor: alpha(theme.palette.primary.main, 0.35),
@@ -267,8 +281,7 @@ export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
             >
               <Icon sx={{ mr: 1.25, color: "primary.main" }} />
               <Box>
-                <Typography sx={{ fontWeight: 800, lineHeight: 1.2 }}>{t(title)}</Typography>
-                <Typography variant="caption" color="text.secondary">{t(hint)}</Typography>
+                <Typography sx={{ fontWeight: 800, lineHeight: 1.25, fontSize: "1rem" }}>{t(title)}</Typography>
               </Box>
             </Button>
           ))}
@@ -289,8 +302,12 @@ export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
               key={id}
               type="button"
               variant={flags[id] ? "contained" : "outlined"}
-              onClick={() => setFlags((current) => ({ ...current, [id]: !current[id] }))}
-              sx={{ minHeight: 40, justifyContent: "flex-start", textTransform: "none", fontWeight: 700, textAlign: "left" }}
+              onClick={() => setFlags((current) => {
+                const next = { ...current, [id]: !current[id] };
+                if (id === "wrong_pocket" && !next.wrong_pocket) setNumber("");
+                return next;
+              })}
+              sx={{ minHeight: 48, justifyContent: "flex-start", textTransform: "none", fontWeight: 700, textAlign: "left", lineHeight: 1.25 }}
             >
               {t(key)}
             </Button>
@@ -307,7 +324,7 @@ export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
               size="small"
               variant={kind === id ? "contained" : "outlined"}
               onClick={() => { setKind(id); setNumber(""); setDetail(""); }}
-              sx={{ textTransform: "none", minHeight: 36 }}
+              sx={{ textTransform: "none", minHeight: 44 }}
             >
               {t(`lostFound.location.${id}`)}
             </Button>
@@ -324,7 +341,7 @@ export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
               size="small"
               variant={kind === id ? "contained" : "outlined"}
               onClick={() => { setKind(id); setNumber(""); setDetail(""); }}
-              sx={{ textTransform: "none", minHeight: 36 }}
+              sx={{ textTransform: "none", minHeight: 44 }}
             >
               {t(`lostFound.location.${id}`)}
             </Button>
@@ -335,20 +352,10 @@ export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
       {category && (needsNumber || numberOptional) ? (
         <NumberPicker
           label={category === "redry" ? t("lostFound.redry.pocket") : t(`lostFound.number.${kind || "cart"}`)}
-          options={numberOptional && kind === "cart" ? [] : numberOptions}
+          options={numberOptional ? (kind === "other" ? numberOptions : []) : numberOptions}
           value={number}
           optional={numberOptional}
           onChange={setNumber}
-        />
-      ) : null}
-
-      {showBag ? (
-        <TextField
-          size="small"
-          label={t("lostFound.bagNumber")}
-          value={bagNumber}
-          helperText={t("lostFound.bagHint")}
-          onChange={(event) => setBagNumber(event.target.value.slice(0, 40))}
         />
       ) : null}
 

@@ -477,8 +477,8 @@ export const getPinLostFoundPhoto = (organization_slug, hubToken, photoId) =>
     validateStatus: (status) => status >= 200 && status < 600,
   });
 
-export const getLostFoundList = ({ scope = "today", date } = {}) =>
-  axios.get(`${API_BASE}/api/lost-found`, { params: { scope, date } });
+export const getLostFoundList = (params = {}) =>
+  axios.get(`${API_BASE}/api/lost-found`, { params });
 
 export const getRedryPockets = () => axios.get(`${API_BASE}/api/lost-found/redry-pockets`);
 
@@ -495,8 +495,9 @@ export const getLostFoundReconciliation = (date) =>
 export const updateLostFoundStatus = (itemId, body) =>
   axios.post(`${API_BASE}/api/lost-found/${itemId}/status`, body);
 
-export const getLostFoundPhoto = (photoId) =>
+export const getLostFoundPhoto = (photoId, { download = false } = {}) =>
   axios.get(`${API_BASE}/api/lost-found/photos/${photoId}`, {
+    params: download ? { download: 1 } : undefined,
     responseType: "blob",
     validateStatus: (status) => status >= 200 && status < 600,
   });

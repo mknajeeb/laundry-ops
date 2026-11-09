@@ -42,7 +42,7 @@ describe("found item location", () => {
 
   it("translates a stored dryer label without changing the machine number", () => {
     const t = (key) => ({ "lostFound.location.dryer": "Secadora" }[key] || key);
-    expect(displayFoundLocation({ location_kind: "dryer", location_number: "D4", location_label: "Dryer D4" }, t)).toBe("Secadora D4");
+    expect(displayFoundLocation({ location_kind: "dryer", location_number: "D4", location_label: "Dryer D4" }, t)).toBe("Secadora 4");
     expect(displayFoundEvent("reported", (key) => (key === "lostFound.event.reported" ? "Reportado" : key))).toBe("Reportado");
   });
 

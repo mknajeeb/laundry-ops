@@ -94,6 +94,15 @@ def _serializer() -> URLSafeTimedSerializer:
     )
 
 
+def _hub_user_is_system(conn, employee_id: int) -> bool:
+    try:
+        from backend.portal_system_users import user_has_system_role_flag
+
+        return bool(user_has_system_role_flag(conn, int(employee_id)))
+    except Exception:
+        return False
+
+
 def issue_hub_session_token(*, organization_id: int, employee_id: int) -> str:
     return _serializer().dumps(
         {
@@ -687,4 +696,5 @@ def perform_pin_hub_open(
         "maintenance_token": maintenance_token,
         "attendance": attendance,
         "selection_tree": selection_tree,
+        "is_system": _hub_user_is_system(conn, employee_id),
     }, 200

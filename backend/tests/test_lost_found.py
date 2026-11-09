@@ -16,6 +16,7 @@ from backend.lost_found import (
     change_status,
     get_item,
     list_found_items,
+    search_issue_reports,
     notify_found_item,
     reconciliation_view,
     report_found_item,
@@ -211,16 +212,23 @@ def test_redry_is_one_record_for_every_flag_combination():
     with pytest.raises(LostFoundError) as missing:
         validate_redry({}, "D1")
     assert missing.value.code == "redry_flag_required"
+    without_dryer = validate_redry({"missing_ticket": True}, "")
+    assert without_dryer["location_number"] is None
+    mesh_only = validate_redry({"mesh_bag": True}, "")
+    assert mesh_only["location_number"] is None
     with pytest.raises(LostFoundError) as pocket:
-        validate_redry({"missing_ticket": True}, "")
+        validate_redry({"wrong_pocket": True}, "")
     assert pocket.value.code == "location_number_required"
     names = ("missing_ticket", "mesh_bag", "wrong_pocket")
     for size in (1, 2, 3):
         for picked in combinations(names, size):
             flags = {name: name in picked for name in names}
-            cleaned = validate_redry(flags, "D4")
+            cleaned = validate_redry(flags, "4" if "wrong_pocket" in picked else "")
             assert cleaned["location_kind"] == "dryer"
-            assert cleaned["location_number"] == "D4"
+            if "wrong_pocket" in picked:
+                assert cleaned["location_number"] == "4"
+            else:
+                assert cleaned["location_number"] is None
             assert [name for name in names if cleaned[name]] == list(picked)
     with pytest.raises(LostFoundError) as stored:
         validate_status_change("stored", report_category="redry")
@@ -278,31 +286,40 @@ def test_location_rules():
 
 
 def test_veewash_numbers_and_equipment_are_separate_from_lost_and_found():
+    from backend.lost_found_rules import et_calendar_date, format_et_desktop, matched_identifier
+    from datetime import timezone
+
     catalog = veewash_issue_catalog()
-    assert catalog["washers"] == [f"W{number}" for number in range(1, 45)]
-    assert catalog["dryers"] == [f"D{number}" for number in range(1, 41)]
-    assert catalog["folding_tables"] == [f"F{number}" for number in range(1, 21)]
-    assert catalog["washers"][0] == "W1" and catalog["washers"][-1] == "W44"
-    assert catalog["dryers"][-1] == "D40"
-    assert catalog["folding_tables"][-1] == "F20"
-    require_configured_identifier("W44", catalog["washers"], code="identifier_not_configured")
+    assert catalog["washers"] == [str(number) for number in range(1, 45)]
+    assert catalog["dryers"] == [str(number) for number in range(1, 41)]
+    assert catalog["folding_tables"] == [str(number) for number in range(1, 21)]
+    assert catalog["washers"][0] == "1" and catalog["washers"][-1] == "44"
+    assert catalog["dryers"][-1] == "40"
+    assert catalog["folding_tables"][-1] == "20"
+    assert matched_identifier("W44", catalog["washers"], code="identifier_not_configured") == "44"
     with pytest.raises(LostFoundError) as outside:
-        require_configured_identifier("W45", catalog["washers"], code="identifier_not_configured")
+        matched_identifier("45", catalog["washers"], code="identifier_not_configured")
     assert outside.value.code == "identifier_not_configured"
     with pytest.raises(LostFoundError) as pocket:
-        validate_redry({"wrong_pocket": True}, "D9", allowed_pockets=["D1", "D2"])
+        validate_redry({"wrong_pocket": True}, "9", allowed_pockets=["1", "2"])
     assert pocket.value.code == "pocket_not_designated"
     cleaned = validate_redry(
         {"missing_ticket": True, "mesh_bag": True, "wrong_pocket": True},
         "D1",
         bag_number="",
-        allowed_pockets=["D1"],
+        allowed_pockets=["1"],
     )
+    assert cleaned["location_number"] == "1"
     assert cleaned["redry_bag_number"] is None
-    optional = validate_redry({"mesh_bag": True}, "D2", bag_number="MB-4", allowed_pockets=["D2"])
+    optional = validate_redry({"mesh_bag": True}, "", bag_number="MB-4")
+    assert optional["location_number"] is None
     assert optional["redry_bag_number"] == "MB-4"
-    washer = validate_equipment("washer", "W12", allowed=catalog["washers"])
-    assert washer["location_label"] == "Washer W12"
+    washer = validate_equipment("washer", "12", allowed=catalog["washers"])
+    assert washer["location_label"] == "Washer 12"
+    assert "UTC" not in (format_et_desktop(datetime(2026, 11, 8, 20, 28)) or "")
+    assert et_calendar_date(datetime(2026, 11, 8, 3, 30, tzinfo=timezone.utc)) == date(2026, 11, 7)
+    assert et_calendar_date(datetime(2026, 3, 8, 4, 30, tzinfo=timezone.utc)) == date(2026, 3, 7)
+    assert et_calendar_date(datetime(2026, 3, 8, 7, 30, tzinfo=timezone.utc)) == date(2026, 3, 8)
     with pytest.raises(LostFoundError) as named:
         validate_equipment("other", "", detail="x")
     assert named.value.code == "equipment_name_required"
@@ -337,6 +354,34 @@ def test_equipment_report_does_not_block_reconciliation(db):
     assert len(view["equipment_items"]) == 1
     assert view["blockers"] == []
     assert view["counts"]["equipment"] == 1
+
+
+def test_issue_register_filters_use_eastern_days_and_employee(db):
+    _report(db, request_id="day-a-ana", user_id=8, reporter_name="Ana", business_date=date(2026, 11, 7))
+    _report(db, request_id="day-b-sam", user_id=9, reporter_name="Sam", business_date=date(2026, 11, 8), kind="dryer", number="4")
+    _report(
+        db,
+        request_id="day-b-equip",
+        user_id=8,
+        reporter_name="Ana",
+        business_date=date(2026, 11, 8),
+        report_category="equipment",
+        kind="washer",
+        number="3",
+    )
+    today = search_issue_reports(db, 1, date_from=date(2026, 11, 8), date_to=date(2026, 11, 8))
+    assert today["total"] == 2
+    assert all(item["business_date"] == "2026-11-08" for item in today["items"])
+    ana = search_issue_reports(
+        db, 1, date_from=date(2026, 11, 7), date_to=date(2026, 11, 8), employee_id=8, category="equipment"
+    )
+    assert ana["total"] == 1
+    assert ana["items"][0]["employee_name"] == "Ana"
+    assert ana["items"][0]["report_category"] == "equipment"
+    page = search_issue_reports(db, 1, date_from=date(2026, 11, 7), date_to=date(2026, 11, 8), page=1, page_size=2)
+    assert page["total"] == 3
+    assert len(page["items"]) == 2
+    assert "UTC" not in (page["items"][0]["reported_at_display"] or "")
 
 
 def test_status_rules_do_not_touch_orders():
@@ -625,11 +670,12 @@ def test_desktop_route_uses_caller_org_and_rejects_other_roles(monkeypatch):
 
     monkeypatch.setattr("backend.db.get_db", lambda: Conn())
 
-    def fake_list(_cursor, organization_id, **_kwargs):
+    def fake_search(_cursor, organization_id, **_kwargs):
         state["org"] = organization_id
-        return []
+        return {"items": [], "total": 0, "page": 1, "page_size": 25}
 
-    monkeypatch.setattr("backend.lost_found_routes.list_found_items", fake_list)
+    monkeypatch.setattr("backend.lost_found_routes.search_issue_reports", fake_search)
+    monkeypatch.setattr("backend.lost_found_routes.list_issue_employees", lambda *_a, **_k: [])
     client = app.test_client()
     res = client.get("/api/lost-found?scope=today&date=2026-11-07")
     assert res.status_code == 200
@@ -637,6 +683,45 @@ def test_desktop_route_uses_caller_org_and_rejects_other_roles(monkeypatch):
     state["roles"] = ["RINSE"]
     denied = client.get("/api/lost-found")
     assert denied.status_code == 403
+
+
+def test_photo_download_returns_the_original_bytes(monkeypatch):
+    app = Flask(__name__)
+
+    def require_user(_cursor):
+        return {"user_id": 9, "roles": ["OPS"], "display_name": "Sam"}, None, None
+
+    register_lost_found_routes(
+        app,
+        require_user=require_user,
+        user_org_id=lambda _me: 3,
+        fetch_user_roles=lambda *_a, **_k: [],
+        get_request_ip=lambda: "127.0.0.1",
+    )
+
+    class Conn:
+        def cursor(self, dictionary=True):
+            return self
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("backend.db.get_db", lambda: Conn())
+    monkeypatch.setattr(
+        "backend.lost_found_routes.get_photo_row",
+        lambda _cursor, org_id, photo_id: {"id": photo_id, "blob_name": "org/photo.jpg", "organization_id": org_id},
+    )
+    original = b"\xff\xd8\xff original-report-photo"
+    monkeypatch.setattr(
+        "backend.lost_found_routes.read_found_item_image",
+        lambda blob, org_id: (original, "image/jpeg"),
+    )
+    client = app.test_client()
+    res = client.get("/api/lost-found/photos/15?download=1")
+    assert res.status_code == 200
+    assert res.data == original
+    assert res.mimetype == "image/jpeg"
+    assert "attachment" in res.headers.get("Content-Disposition", "")
 
 
 def test_pin_report_requires_a_photo(monkeypatch):

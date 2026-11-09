@@ -1,14 +1,25 @@
 export const LOST_FOUND_ACTIVITY_CODE = "custom_lost_found_reconciliation";
 
 export function veewashIssueCatalog() {
-  const range = (prefix, count) => Array.from({ length: count }, (_, index) => `${prefix}${index + 1}`);
+  const range = (count) => Array.from({ length: count }, (_, index) => String(index + 1));
   return {
-    washers: range("W", 44),
-    dryers: range("D", 40),
-    folding_tables: range("F", 20),
+    washers: range(44),
+    dryers: range(40),
+    folding_tables: range(20),
     dehumidifiers: [],
     redry_pockets: [],
   };
+}
+
+export function displayMachineNumber(value) {
+  const token = String(value || "").trim();
+  const prefixed = token.match(/^[WDFdf](\d+)$/);
+  if (prefixed) return String(parseInt(prefixed[1], 10));
+  return token;
+}
+
+export function redryNeedsDryer(flags) {
+  return Boolean(flags?.wrong_pocket);
 }
 
 export const FOUND_LOCATION_KINDS = [
@@ -87,7 +98,7 @@ export function displayFoundLocation(item, t) {
   if (!name || name === `lostFound.location.${kind}`) return stored;
   if (kind === "other") return detail || stored;
   if (kind === "floor" || !number) return name;
-  return `${name} ${number}`;
+  return `${name} ${displayMachineNumber(number)}`;
 }
 
 export function displayFoundEvent(eventType, t) {

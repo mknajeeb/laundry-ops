@@ -26,6 +26,7 @@ import {
   FreeBreakfast,
   Groups,
   Inventory2,
+  ReportProblemOutlined,
   Login,
   Logout,
   RequestQuote,
@@ -51,7 +52,7 @@ import {
   buildPinLauncherTiles,
 } from "../opsMobile";
 import OpsLocaleToggle from "../opsMobile/OpsLocaleToggle";
-import { VEEWASH_LOGO_URL } from "../theme/veewashBrand";
+import { VEEWASH_BRAND, VEEWASH_LOGO_URL } from "../theme/veewashBrand";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 import { applyAttendancePwaManifest } from "../utils/attendancePwaManifest";
 import { saveMtlPinSession } from "../utils/maintenanceTaskListHelpers";
@@ -85,6 +86,7 @@ const TILE_ICONS = {
   stock: Inventory2,
   revenue: RequestQuote,
   team: Groups,
+  issue: ReportProblemOutlined,
 };
 
 function sanitizeSlug(raw) {
@@ -171,11 +173,24 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
       attendance: hub?.attendance,
       t,
     });
-    return built.map((tile) => ({
+    const tiles = built.map((tile) => ({
       ...tile,
       icon: iconForTile(tile),
     }));
-  }, [hub, t]);
+    const clockedIn = hub?.attendance?.clocked_in === true;
+    if (clockedIn && hub?.is_system !== true) {
+      const reportTile = {
+        id: "lost_found_report",
+        label: t("lostFound.report"),
+        color: slug === "veewash" ? VEEWASH_BRAND.primary : "#0e7490",
+        iconKey: "issue",
+        icon: ReportProblemOutlined,
+      };
+      const clockAt = tiles.findIndex((tile) => tile.id === "clock");
+      tiles.splice(clockAt === -1 ? tiles.length : clockAt, 0, reportTile);
+    }
+    return tiles;
+  }, [hub, slug, t]);
 
   useLayoutEffect(() => {
     return applyAttendancePwaManifest(routeSlug || selectedSlug, "hub");
@@ -424,6 +439,14 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
           return;
         }
         setBreakConfirmOpen(true);
+        return;
+      }
+      if (featureId === "lost_found_report") {
+        if (hub?.is_system === true || hub?.attendance?.clocked_in !== true) {
+          setError(t("mobileOps.clockInFirst"));
+          return;
+        }
+        navigate(`/attendance/lost-found/${encodeURIComponent(slug)}`);
         return;
       }
       if (featureId === "cleaning_tasks") {
@@ -784,16 +807,6 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
             </Stack>
           )}
 
-          {phase === "menu" && hub?.attendance?.clocked_in ? (
-            <Button
-              fullWidth
-              variant="contained"
-              onClick={() => navigate(`/attendance/lost-found/${encodeURIComponent(slug)}`)}
-              sx={{ fontWeight: 900, textTransform: "none", py: 1.4 }}
-            >
-              {t("lostFound.report")}
-            </Button>
-          ) : null}
           {phase === "menu" &&
             (launcherTiles.length > 0 ? (
               <OpsLauncherGrid

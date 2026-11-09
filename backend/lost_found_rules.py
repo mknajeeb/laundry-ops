@@ -124,6 +124,33 @@ def format_et_report(value: Any) -> str | None:
     return f"{parsed.strftime('%Y-%m-%d %H:%M:%S')} ET ({utc.strftime('%H:%M:%S')} UTC)"
 
 
+def format_et_desktop(value: Any) -> str | None:
+    """Desktop clock: Eastern wall time only. No UTC text."""
+    parsed = as_dt(value)
+    if parsed is None:
+        return None
+    hour = parsed.hour % 12 or 12
+    suffix = "AM" if parsed.hour < 12 else "PM"
+    return f"{parsed.strftime('%Y-%m-%d')} {hour}:{parsed.strftime('%M')} {suffix} ET"
+
+
+def et_calendar_date(value: datetime) -> date:
+    """Eastern calendar day for an aware instant. Naive values are ET wall times."""
+    if value.tzinfo is None:
+        return value.date()
+    return value.astimezone(ET).date()
+
+
+def machine_token(raw: Any) -> str:
+    """Compare W12, D12, and 12 as the same employee-facing number."""
+    token = _clean_token(raw, limit=40)
+    if len(token) >= 2 and token[0].upper() in {"W", "D", "F"} and token[1:].isdigit():
+        return str(int(token[1:]))
+    if token.isdigit():
+        return str(int(token))
+    return token
+
+
 def _clean_token(raw: Any, *, limit: int) -> str:
     return " ".join(str(raw or "").split())[:limit]
 
@@ -173,15 +200,30 @@ def report_category_of(item: Mapping[str, Any] | None) -> str:
     return code if code in REPORT_CATEGORIES else CATEGORY_ORPHAN
 
 
-def require_configured_identifier(token: str, allowed: Sequence[Any] | None, *, code: str) -> None:
-    """Restrict a number only when this organization published a list."""
+def matched_identifier(token: str, allowed: Sequence[Any] | None, *, code: str) -> str:
+    """Return the configured number, matching a bare number to a stored prefix.
+
+    An empty list means this organization has not published numbers, so the
+    submitted text is kept.
+    """
+    cleaned = _clean_token(token, limit=40)
     choices = []
     for value in allowed or []:
-        cleaned = _clean_token(value, limit=40)
-        if cleaned and cleaned not in choices:
-            choices.append(cleaned)
-    if choices and token not in choices:
-        raise LostFoundError("Choose one of the configured numbers.", code=code)
+        choice = _clean_token(value, limit=40)
+        if choice and choice not in choices:
+            choices.append(choice)
+    if not choices:
+        return cleaned
+    wanted = machine_token(cleaned)
+    for choice in choices:
+        if cleaned == choice or machine_token(choice) == wanted:
+            return choice
+    raise LostFoundError("Choose one of the configured numbers.", code=code)
+
+
+def require_configured_identifier(token: str, allowed: Sequence[Any] | None, *, code: str) -> None:
+    """Restrict a number only when this organization published a list."""
+    matched_identifier(token, allowed, code=code)
 
 
 def validate_redry(
@@ -205,13 +247,23 @@ def validate_redry(
             "Select at least one Re-Dry issue.",
             code="redry_flag_required",
         )
-    location = validate_location(LOCATION_DRYER, pocket, None)
-    token = location["location_number"] or ""
-    if selected[REDRY_FLAG_WRONG_POCKET] and allowed_pockets:
-        require_configured_identifier(token, allowed_pockets, code="pocket_not_designated")
-    elif allowed_dryers:
-        require_configured_identifier(token, allowed_dryers, code="identifier_not_configured")
     bag = _clean_token(bag_number, limit=40)
+    if selected[REDRY_FLAG_WRONG_POCKET]:
+        token = _clean_token(pocket, limit=40)
+        if not token:
+            raise LostFoundError("Dryer number is required.", code="location_number_required")
+        if allowed_pockets:
+            token = matched_identifier(token, allowed_pockets, code="pocket_not_designated")
+        elif allowed_dryers:
+            token = matched_identifier(token, allowed_dryers, code="identifier_not_configured")
+        location = validate_location(LOCATION_DRYER, token, None)
+    else:
+        location = {
+            "location_kind": LOCATION_DRYER,
+            "location_number": None,
+            "location_detail": None,
+            "location_label": "Re-Dry",
+        }
     location["location_detail"] = bag or None
     location["redry_bag_number"] = bag or None
     return {**selected, **location}
@@ -236,7 +288,7 @@ def validate_equipment(
     elif not token:
         raise LostFoundError("An equipment number is required.", code="identifier_required")
     if token and allowed:
-        require_configured_identifier(token, allowed, code="identifier_not_configured")
+        token = matched_identifier(token, allowed, code="identifier_not_configured")
     titles = {
         EQUIPMENT_WASHER: "Washer",
         EQUIPMENT_DRYER: "Dryer",

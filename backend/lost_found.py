@@ -20,14 +20,14 @@ from backend.lost_found_rules import (
     LostFoundError,
     as_day,
     as_dt,
-    format_et_report,
+    format_et_desktop,
     item_in_completion_scope,
     item_in_equipment_scope,
     item_in_reconciliation_scope,
     item_in_redry_scope,
     reconciliation_blockers,
     report_category_of,
-    require_configured_identifier,
+    matched_identifier,
     validate_equipment,
     validate_redry,
     snapshot_is_current,
@@ -392,7 +392,7 @@ def _photo_out(row: Mapping[str, Any]) -> dict[str, Any]:
         "photo_role": row.get("photo_role"),
         "content_type": row.get("content_type"),
         "captured_at": as_dt(row.get("captured_at")).isoformat(sep=" ") if as_dt(row.get("captured_at")) else None,
-        "captured_at_display": format_et_report(row.get("captured_at")),
+        "captured_at_display": format_et_desktop(row.get("captured_at")),
         "uploaded_by_user_id": row.get("uploaded_by_user_id"),
     }
 
@@ -403,7 +403,7 @@ def _event_out(row: Mapping[str, Any]) -> dict[str, Any]:
         "event_type": row.get("event_type"),
         "actor_user_id": row.get("actor_user_id"),
         "actor_name": row.get("actor_name"),
-        "created_at_display": format_et_report(row.get("created_at")),
+        "created_at_display": format_et_desktop(row.get("created_at")),
         "payload": _loads(row.get("payload_json")) or {},
     }
 
@@ -426,7 +426,7 @@ def serialize_item(
         "client_request_id": row.get("client_request_id"),
         "business_date": day,
         "reported_at": reported.isoformat(sep=" ") if reported else None,
-        "reported_at_display": format_et_report(reported),
+        "reported_at_display": format_et_desktop(reported),
         "employee_id": int(row["reported_by_user_id"]) if row.get("reported_by_user_id") is not None else None,
         "employee_name": row.get("reporter_name"),
         "facility_name": row.get("facility_name"),
@@ -448,7 +448,7 @@ def serialize_item(
         "status_comment": row.get("status_comment"),
         "resolved_reason": row.get("resolved_reason"),
         "revision": int(row.get("revision") or 1),
-        "status_changed_at_display": format_et_report(changed),
+        "status_changed_at_display": format_et_desktop(changed),
         "status_changed_by_user_id": row.get("status_changed_by_user_id"),
         "photos": [_photo_out(p) for p in (photos or [])],
         "events": [_event_out(e) for e in (events or [])],
@@ -467,7 +467,7 @@ def _account_out(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "comment": row.get("comment"),
         "accounted_by_user_id": row.get("accounted_by_user_id"),
         "accounted_by_name": row.get("accounted_by_name"),
-        "accounted_at_display": format_et_report(row.get("accounted_at")),
+        "accounted_at_display": format_et_desktop(row.get("accounted_at")),
     }
 
 
@@ -625,12 +625,19 @@ def report_found_item(
             "dryer": catalog.get("dryers") or [],
             "folding_table": catalog.get("folding_tables") or [],
         }.get(kind) or []
-        if location.get("location_number"):
-            require_configured_identifier(
+        if location.get("location_number") and allowed:
+            stored = matched_identifier(
                 location["location_number"],
                 allowed,
                 code="identifier_not_configured",
             )
+            location["location_number"] = stored
+            titles = {
+                "washer": "Washer",
+                "dryer": "Dryer",
+                "folding_table": "Folding Table",
+            }
+            location["location_label"] = f"{titles.get(kind, 'Location')} {stored}"[:200]
         flags = {"missing_ticket": False, "mesh_bag": False, "wrong_pocket": False}
     note = " ".join(str(notes or "").split())[:1000] or None
     at = eastern_now_naive().replace(microsecond=0)
@@ -869,6 +876,124 @@ def list_found_items(
     return _hydrate(cursor, organization_id, rows)
 
 
+def search_issue_reports(
+    cursor,
+    organization_id: int,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    employee_id: int | None = None,
+    category: str | None = None,
+    status: str | None = None,
+    location: str | None = None,
+    page: int = 1,
+    page_size: int = 25,
+) -> dict[str, Any]:
+    """Eastern calendar-day range. business_date is already an ET day."""
+    require_lost_found_tables(cursor)
+    where = ["organization_id=%s"]
+    params: list[Any] = [int(organization_id)]
+    if date_from is not None:
+        where.append("business_date>=%s")
+        params.append(date_from)
+    if date_to is not None:
+        where.append("business_date<=%s")
+        params.append(date_to)
+    if employee_id:
+        where.append("reported_by_user_id=%s")
+        params.append(int(employee_id))
+    code = str(category or "").strip().lower()
+    if code in {"orphan", "redry", "equipment"}:
+        where.append("COALESCE(report_category, 'orphan')=%s")
+        params.append(code)
+    state = str(status or "").strip().lower()
+    if state in {"new", "under_review", "returned", "stored", "resolved"}:
+        where.append("status=%s")
+        params.append(state)
+    needle = " ".join(str(location or "").split())[:40]
+    if needle:
+        like = f"%{needle}%"
+        where.append("(location_label LIKE %s OR IFNULL(location_number,'') LIKE %s OR location_kind LIKE %s)")
+        params.extend([like, like, like])
+    clause = " AND ".join(where)
+    size = max(1, min(int(page_size or 25), 100))
+    index = max(1, int(page or 1))
+    total_row = _fetch_one(
+        cursor,
+        f"SELECT COUNT(*) AS total FROM {ITEMS} WHERE {clause}",
+        tuple(params),
+    ) or {}
+    total = int(total_row.get("total") or 0)
+    rows = _fetch_all(
+        cursor,
+        f"""
+        SELECT * FROM {ITEMS}
+        WHERE {clause}
+        ORDER BY reported_at DESC, id DESC
+        LIMIT %s OFFSET %s
+        """,
+        tuple([*params, size, (index - 1) * size]),
+    )
+    return {
+        "items": _hydrate(cursor, organization_id, rows),
+        "total": total,
+        "page": index,
+        "page_size": size,
+    }
+
+
+def list_issue_employees(cursor, organization_id: int) -> list[dict[str, Any]]:
+    """Active organization users, excluding system-role accounts when that flag exists."""
+    if table_exists(cursor, "users"):
+        system_sql = ""
+        if table_exists(cursor, "user_roles") and table_exists(cursor, "roles"):
+            system_sql = """
+              AND u.id NOT IN (
+                SELECT ur.user_id FROM user_roles ur
+                JOIN roles r ON r.id = ur.role_id
+                WHERE COALESCE(r.is_system, 0) = 1
+              )
+            """
+        try:
+            rows = _fetch_all(
+                cursor,
+                f"""
+                SELECT u.id AS id,
+                       COALESCE(NULLIF(u.display_name, ''), u.username, '') AS name
+                FROM users u
+                WHERE u.organization_id=%s AND COALESCE(u.active, 1)=1
+                {system_sql}
+                ORDER BY name
+                """,
+                (int(organization_id),),
+            )
+            people = []
+            for row in rows:
+                if row.get("id") is None:
+                    continue
+                people.append({"id": int(row["id"]), "name": row.get("name") or f"User {row['id']}"})
+            if people:
+                return people
+        except Exception:
+            logger.debug("issue employee directory unavailable", exc_info=True)
+    rows = _fetch_all(
+        cursor,
+        f"""
+        SELECT reported_by_user_id AS id, MAX(reporter_name) AS name
+        FROM {ITEMS}
+        WHERE organization_id=%s
+        GROUP BY reported_by_user_id
+        ORDER BY name
+        """,
+        (int(organization_id),),
+    )
+    return [
+        {"id": int(row["id"]), "name": row.get("name") or ""}
+        for row in rows
+        if row.get("id") is not None
+    ]
+
+
 REDRY_POCKETS_KEY = "redry_designated_pockets"
 
 
@@ -921,9 +1046,9 @@ ISSUE_CATALOG_KEY = "issue_report_catalog"
 def veewash_issue_catalog() -> dict[str, list[str]]:
     """Employee numbers used at VeeWash. Other organizations do not inherit these."""
     return {
-        "washers": [f"W{number}" for number in range(1, 45)],
-        "dryers": [f"D{number}" for number in range(1, 41)],
-        "folding_tables": [f"F{number}" for number in range(1, 21)],
+        "washers": [str(number) for number in range(1, 45)],
+        "dryers": [str(number) for number in range(1, 41)],
+        "folding_tables": [str(number) for number in range(1, 21)],
         "dehumidifiers": [],
     }
 
@@ -1099,8 +1224,8 @@ def reconciliation_view(cursor, organization_id: int, business_date: date) -> di
     return {
         "business_date": as_day(business_date),
         "status": recon.get("status") or "open",
-        "started_at_display": format_et_report(recon.get("started_at")),
-        "completed_at_display": format_et_report(recon.get("completed_at")),
+        "started_at_display": format_et_desktop(recon.get("started_at")),
+        "completed_at_display": format_et_desktop(recon.get("completed_at")),
         "activity_id": recon.get("activity_id"),
         "activity_code": ACTIVITY_CODE,
         "items": items,
@@ -1268,7 +1393,7 @@ def _snapshot_summary(row: Mapping[str, Any]) -> dict[str, Any]:
     payload = row.get("snapshot") if isinstance(row.get("snapshot"), dict) else _loads(row.get("snapshot_json")) or {}
     return {
         "id": int(row["id"]),
-        "completed_at_display": format_et_report(row.get("completed_at")),
+        "completed_at_display": format_et_desktop(row.get("completed_at")),
         "completed_by_user_id": row.get("completed_by_user_id"),
         "completed_by_name": row.get("completed_by_name"),
         "activity_id": row.get("activity_id"),
@@ -1330,7 +1455,7 @@ def snapshot_reconciliation_on_complete(
                 "status": row.get("status"),
                 "location_label": row.get("location_label"),
                 "business_date": as_day(row.get("business_date")),
-                "reported_at_display": format_et_report(row.get("reported_at")),
+                "reported_at_display": format_et_desktop(row.get("reported_at")),
                 "employee_name": row.get("reporter_name"),
                 "escalated": bool((accounts.get(int(row["id"])) or {}).get("escalated")),
             }

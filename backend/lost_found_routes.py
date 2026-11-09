@@ -25,6 +25,8 @@ from backend.lost_found import (
     get_item,
     get_photo_row,
     list_found_items,
+    list_issue_employees,
+    search_issue_reports,
     location_choices,
     notify_found_item,
     reconciliation_view,
@@ -411,18 +413,49 @@ def register_lost_found_routes(
             if denied:
                 resp, code = denied
                 return resp, code
-            scope = (request.args.get("scope") or "today").strip().lower()
             selected = _day(request.args.get("date")) or business_today()
-            if scope == "history":
-                items = list_found_items(cursor, oid, before_date=selected)
-            else:
-                items = list_found_items(cursor, oid, business_date=selected)
+            date_from = _day(request.args.get("date_from")) or selected
+            date_to = _day(request.args.get("date_to")) or date_from
+            if date_to < date_from:
+                date_from, date_to = date_to, date_from
+            employee_raw = str(request.args.get("employee_id") or "").strip()
+            try:
+                employee_id = int(employee_raw) if employee_raw else None
+            except ValueError:
+                employee_id = None
+            try:
+                page = int(request.args.get("page") or 1)
+            except ValueError:
+                page = 1
+            try:
+                page_size = int(request.args.get("page_size") or 25)
+            except ValueError:
+                page_size = 25
+            found = search_issue_reports(
+                cursor,
+                oid,
+                date_from=date_from,
+                date_to=date_to,
+                employee_id=employee_id,
+                category=request.args.get("category"),
+                status=request.args.get("status"),
+                location=request.args.get("location"),
+                page=page,
+                page_size=page_size,
+            )
+            employees = []
+            try:
+                employees = list_issue_employees(cursor, oid)
+            except Exception:
+                employees = []
             return jsonify({
                 "ok": True,
-                "scope": scope,
-                "business_date": selected.isoformat(),
+                "business_date": business_today().isoformat(),
+                "date_from": date_from.isoformat(),
+                "date_to": date_to.isoformat(),
                 "activity_code": ACTIVITY_CODE,
-                "items": items,
+                "employees": employees,
+                **found,
             })
         finally:
             _close(conn)
@@ -518,7 +551,10 @@ def register_lost_found_routes(
             if not row:
                 return jsonify({"error": "Photo not found"}), 404
             data, content_type = read_found_item_image(row["blob_name"], oid)
-            return Response(data, mimetype=content_type)
+            headers = {}
+            if str(request.args.get("download") or "") == "1":
+                headers["Content-Disposition"] = f'attachment; filename="issue-photo-{int(photo_id)}.jpg"'
+            return Response(data, mimetype=content_type, headers=headers)
         except ValueError:
             return jsonify({"error": "Photo not found"}), 404
         finally:
