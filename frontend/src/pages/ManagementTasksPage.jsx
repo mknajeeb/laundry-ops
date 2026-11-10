@@ -620,7 +620,7 @@ export default function ManagementTasksPage() {
               <Button
                 size="small"
                 component={RouterLink}
-                to="/management/lost-found"
+                to="/management/issues?source=employee"
                 sx={{ bgcolor: "#fff" }}
               >
                 {t("nav.lostFound")}

@@ -319,7 +319,9 @@ export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
               subtitle={t(hint)}
               icon={Icon}
               selected={false}
+              compact
               disabled={submitting}
+              sx={{ minHeight: 84 }}
               onClick={() => {
                 setCategory(id);
                 resetDetails();
@@ -394,7 +396,9 @@ export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
             type="submit"
             disabled={submitting}
             sx={{
-              minHeight: 56,
+              position: "sticky",
+              bottom: 0,
+              minHeight: 52,
               fontWeight: 800,
               fontSize: "1.05rem",
               textTransform: "none",

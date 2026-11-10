@@ -710,11 +710,10 @@ function AppShell() {
     return (
       <Box
         sx={{
-          flex: 1,
+          height: "100dvh",
           minHeight: 0,
           width: "100%",
-          overflowY: "auto",
-          WebkitOverflowScrolling: "touch",
+          overflow: "hidden",
           background: shellBackground,
         }}
       >

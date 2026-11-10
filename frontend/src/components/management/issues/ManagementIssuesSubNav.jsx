@@ -71,11 +71,11 @@ export default function ManagementIssuesSubNav() {
   );
 }
 
-export function IssuesPageShell({ title, children, showSubNav = true }) {
+export function IssuesPageShell({ title, children, showSubNav = true, maxWidth = 960 }) {
   return (
     <Box
       sx={{
-        maxWidth: 960,
+        maxWidth,
         mx: "auto",
         px: { xs: 1.5, sm: 2 },
         py: 1.5,

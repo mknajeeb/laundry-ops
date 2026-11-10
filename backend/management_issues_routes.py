@@ -7,6 +7,7 @@ from datetime import date
 from flask import jsonify, request
 
 from backend.db import get_db
+from backend.issues_register import load_issue_register
 from backend.management_issues import (
     build_order_context,
     create_issue,
@@ -160,6 +161,35 @@ def register_management_issues_routes(
                 date_basis=(request.args.get("date_basis") or "production"),
                 limit=int(request.args.get("limit") or 50),
                 offset=int(request.args.get("offset") or 0),
+            )
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/issues/register", methods=["GET"])
+    def management_issues_register():
+        """Customer issues and employee reports in one view. Tables stay separate."""
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            _me, oid, err, code = _gate(cursor)
+            if err:
+                return err, code
+            payload = load_issue_register(
+                cursor,
+                oid,
+                date_from=_parse_date(request.args.get("date_from")),
+                date_to=_parse_date(request.args.get("date_to")),
+                source=request.args.get("source") or "all",
+                category=request.args.get("category") or "",
+                status_group=request.args.get("status_group") or "",
+                employee=request.args.get("employee") or "",
+                q=request.args.get("q") or "",
+                page=int(request.args.get("page") or 1),
+                page_size=int(request.args.get("page_size") or 50),
             )
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:

@@ -72,7 +72,7 @@ export const TENANT_NAV_ITEMS = [
     moduleKey: "scoreboard",
   },
   {
-    to: "/management/lost-found",
+    to: "/management/issues?source=employee",
     labelKey: "nav.lostFound",
     roles: ["ADMIN", "OPS", "MANAGER"],
     moduleKey: "scoreboard",

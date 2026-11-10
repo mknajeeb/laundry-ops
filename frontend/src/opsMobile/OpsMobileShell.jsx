@@ -19,18 +19,36 @@ export default function OpsMobileShell({
         sx={{
           width: "100%",
           maxWidth,
+          height: "100%",
+          minHeight: 0,
           display: "flex",
           flexDirection: "column",
-          gap: 2,
-          ...contentSx,
+          overflow: "hidden",
+          px: 1.5,
+          pt: `max(12px, env(safe-area-inset-top, 0px))`,
+          pb: `max(8px, env(safe-area-inset-bottom, 0px))`,
         }}
       >
         {showLocaleToggle ? (
-          <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+          <Box sx={{ display: "flex", justifyContent: "flex-end", flexShrink: 0 }}>
             <OpsLocaleToggle />
           </Box>
         ) : null}
-        {children}
+        <Box
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: "auto",
+            overflowX: "hidden",
+            WebkitOverflowScrolling: "touch",
+            display: "flex",
+            flexDirection: "column",
+            gap: 1.25,
+            ...contentSx,
+          }}
+        >
+          {children}
+        </Box>
       </Box>
     </Box>
   );

@@ -509,6 +509,9 @@ export const saveUiLocale = (locale) => axios.post(`${API_BASE}/api/me/ui-locale
 export const getLostFoundReconciliation = (date) =>
   axios.get(`${API_BASE}/api/lost-found/reconciliation`, { params: { date } });
 
+export const getLostFoundItem = (itemId) =>
+  axios.get(`${API_BASE}/api/lost-found/${itemId}`);
+
 export const updateLostFoundStatus = (itemId, body) =>
   axios.post(`${API_BASE}/api/lost-found/${itemId}/status`, body);
 
@@ -3395,6 +3398,9 @@ export const getManagementIssuesOrderContext = (bagId, orderInstanceId) =>
 
 export const getManagementIssues = (params = {}) =>
   axios.get(`${API_BASE}/api/management/issues`, { params, timeout: 20000 });
+
+export const getIssuesRegister = (params = {}) =>
+  axios.get(`${API_BASE}/api/management/issues/register`, { params, timeout: 20000 });
 
 export const createManagementIssue = (body) =>
   axios.post(`${API_BASE}/api/management/issues`, body, { timeout: 20000 });
