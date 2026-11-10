@@ -11,6 +11,7 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableContainer,
   TableHead,
   TableRow,
   TextField,
@@ -195,7 +196,8 @@ export default function ManagementIssuesPage() {
         {loading ? (
           <Box sx={{ py: 4, textAlign: "center" }}><CircularProgress size={28} /></Box>
         ) : (
-          <Table size="small" sx={{ bgcolor: "#fff", borderRadius: 2, overflow: "hidden" }}>
+          <TableContainer sx={{ bgcolor: "#fff", borderRadius: 2, overflowX: "auto" }}>
+            <Table size="small">
             <TableHead>
               <TableRow>
                 <TableCell>When (ET)</TableCell>
@@ -225,6 +227,7 @@ export default function ManagementIssuesPage() {
               ))}
             </TableBody>
           </Table>
+          </TableContainer>
         )}
       </IssuesPageShell>
       <Drawer anchor="right" open={Boolean(detail)} onClose={() => setDetail(null)} PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, p: 2 } }}>

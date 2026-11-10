@@ -111,19 +111,22 @@ function RinseClientSidebar({ user, onLogout, locale, setLocale, t, navItems }) 
             <NavLink
               key={item.to}
               to={item.to}
-              style={({ isActive }) => ({
-                display: "block",
-                textDecoration: "none",
-                padding: "10px 12px",
-                borderRadius: "8px",
-                color: isActive ? "#ffffff" : VEEWASH_DASHBOARD.primaryBlueDark,
-                background: isActive ? VEEWASH_DASHBOARD.primaryBlue : "#fff",
-                border: isActive
-                  ? `1px solid ${VEEWASH_DASHBOARD.primaryBlue}`
-                  : `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
-                fontSize: 13,
-                fontWeight: isActive ? 700 : 600,
-              })}
+              style={({ isActive }) => {
+                const active = linkActive(item, isActive);
+                return {
+                  display: "block",
+                  textDecoration: "none",
+                  padding: "10px 12px",
+                  borderRadius: "8px",
+                  color: active ? "#ffffff" : VEEWASH_DASHBOARD.primaryBlueDark,
+                  background: active ? VEEWASH_DASHBOARD.primaryBlue : "#fff",
+                  border: active
+                    ? `1px solid ${VEEWASH_DASHBOARD.primaryBlue}`
+                    : `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
+                  fontSize: 13,
+                  fontWeight: active ? 700 : 600,
+                };
+              }}
             >
               {item.labelKey && t(item.labelKey) !== item.labelKey
                 ? t(item.labelKey)
@@ -193,6 +196,12 @@ function SidebarHeader({ user, t }) {
       </Box>
     </Box>
   );
+}
+
+function linkActive(item, isActive) {
+  if (!item.matchSource) return isActive;
+  const source = new URLSearchParams(window.location.search).get("source") || "";
+  return window.location.pathname === "/management/issues" && source === item.matchSource;
 }
 
 function Sidebar({ activeBatch, user, onLogout, showKioskLock, onKioskLock }) {
@@ -296,17 +305,20 @@ function Sidebar({ activeBatch, user, onLogout, showKioskLock, onKioskLock }) {
               <NavLink
                 key={item.to}
                 to={item.to}
-                style={({ isActive }) => ({
-                  display: "block",
-                  textDecoration: "none",
-                  padding: "12px 14px",
-                  borderRadius: "10px",
-                  color: isActive ? "#0f172a" : "#e2e8f0",
-                  background: isActive ? "#f8fafc" : "#1e293b",
-                  fontSize: 15,
-                  fontWeight: isActive ? 700 : 500,
-                  transition: "background 0.15s ease, color 0.15s ease",
-                })}
+                style={({ isActive }) => {
+                  const active = linkActive(item, isActive);
+                  return {
+                    display: "block",
+                    textDecoration: "none",
+                    padding: "12px 14px",
+                    borderRadius: "10px",
+                    color: active ? "#0f172a" : "#e2e8f0",
+                    background: active ? "#f8fafc" : "#1e293b",
+                    fontSize: 15,
+                    fontWeight: active ? 700 : 500,
+                    transition: "background 0.15s ease, color 0.15s ease",
+                  };
+                }}
               >
                 {t(item.labelKey)}
               </NavLink>

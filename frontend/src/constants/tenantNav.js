@@ -74,6 +74,7 @@ export const TENANT_NAV_ITEMS = [
   {
     to: "/management/issues?source=employee",
     labelKey: "nav.lostFound",
+    matchSource: "employee",
     roles: ["ADMIN", "OPS", "MANAGER"],
     moduleKey: "scoreboard",
   },
