@@ -38,6 +38,7 @@ import {
   postContractorPaymentSummary,
 } from "../api";
 import { useAuth } from "../context/AuthContext";
+import { inclusivePeriodText } from "../utils/businessTime";
 import { useI18n } from "../i18n/I18nContext";
 import ContractorDocumentsPanel from "./ContractorDocumentsPanel";
 import packetMarkdown from "../contractorForms/veewash_1099_contractor_packet.md?raw";
@@ -495,9 +496,11 @@ export default function ContractorManagementPanel() {
     const id = summary?.id;
     if (!id) return;
     const amount = Number(summary.amount_paid ?? summary.total_payment ?? 0);
-    const period = `${summary.pay_period_start || summary.work_period_start || "?"} – ${
-      summary.pay_period_end || summary.work_period_end || "?"
-    }`;
+    const period =
+      inclusivePeriodText(
+        summary.pay_period_start || summary.work_period_start,
+        summary.pay_period_end || summary.work_period_end,
+      ) || "?";
     const ok = window.confirm(
       `Delete payment record #${id} (${period}, $${amount.toFixed(2)})? This cannot be undone.`,
     );
@@ -976,8 +979,11 @@ export default function ContractorManagementPanel() {
                         sx={{ flex: 1, minWidth: 0 }}
                       >
                         #{s.id}{" "}
-                        {s.pay_period_start || s.work_period_start || "?"} –{" "}
-                        {s.pay_period_end || s.work_period_end || "?"} · $
+                        {inclusivePeriodText(
+                          s.pay_period_start || s.work_period_start,
+                          s.pay_period_end || s.work_period_end,
+                        ) || "?"}{" "}
+                        · $
                         {Number(s.amount_paid ?? s.total_payment ?? 0).toFixed(2)}
                         {editingRecordId === s.id ? " · editing" : ""}
                       </Typography>

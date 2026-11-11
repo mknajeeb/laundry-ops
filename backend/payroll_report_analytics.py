@@ -129,12 +129,25 @@ def normalize_compare_with(value: Any, *, mode: str) -> str:
 def period_key_from_row(row: dict) -> tuple[str, str]:
     ps = str(row.get("pay_period_start") or "")[:10]
     pe = str(row.get("pay_period_end") or "")[:10]
+    if ps and pe:
+        from backend.payroll_week_period import canonical_inclusive_period
+
+        try:
+            start_d, end_d = canonical_inclusive_period(ps, pe)
+            return start_d.isoformat(), end_d.isoformat()
+        except ValueError:
+            return ps, pe
     return ps, pe
 
 
 def period_label(ps: str, pe: str) -> str:
     if ps and pe:
-        return f"{ps} – {pe}"
+        from backend.payroll_week_period import inclusive_period_label
+
+        try:
+            return inclusive_period_label(ps, pe)
+        except ValueError:
+            return f"{ps} – {pe}"
     return ps or pe or "Unknown period"
 
 
@@ -367,8 +380,12 @@ def format_focus_period_label(ps: str, pe: str) -> str:
     try:
         from datetime import date as _date
 
-        s = _date.fromisoformat(str(ps)[:10])
-        e = _date.fromisoformat(str(pe)[:10])
+        from backend.payroll_week_period import canonical_inclusive_period
+
+        s, e = canonical_inclusive_period(ps, pe)
+        if not isinstance(s, _date):
+            s = _date.fromisoformat(str(s)[:10])
+            e = _date.fromisoformat(str(e)[:10])
     except ValueError:
         return period_label(ps, pe)
     if s.year == e.year and s.month == e.month:
@@ -379,13 +396,9 @@ def format_focus_period_label(ps: str, pe: str) -> str:
 
 
 def _ordered_period_keys(periods: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    return sorted(
-        {
-            (str(ps)[:10], str(pe)[:10])
-            for ps, pe in periods or []
-            if str(ps or "")[:10] and str(pe or "")[:10]
-        }
-    )
+    from backend.payroll_week_period import collapse_period_pairs
+
+    return sorted(collapse_period_pairs(periods))
 
 
 def format_selected_periods_label(periods: list[tuple[str, str]]) -> str:
@@ -1092,11 +1105,18 @@ def complete_period_keys_from_batches(
     Does not apply eligible-work coverage (no DB). Use list_org_periods_asc
     with require_work_coverage=True for full historical completeness.
     """
+    from backend.payroll_week_period import canonical_inclusive_period
+
     by_period: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for b in batches or []:
         ps = str(b.get("pay_period_start") or "")[:10]
         pe = str(b.get("pay_period_end") or "")[:10]
         if ps and pe:
+            try:
+                start_d, end_d = canonical_inclusive_period(ps, pe)
+                ps, pe = start_d.isoformat(), end_d.isoformat()
+            except ValueError:
+                pass
             by_period[(ps, pe)].append(b)
     return {key for key, rows in by_period.items() if period_batches_are_complete(rows)}
 
@@ -1144,6 +1164,9 @@ def list_org_periods_asc(
             pe = str(r["pay_period_end"])[:10]
             if ps and pe:
                 out.append((ps, pe))
+    from backend.payroll_week_period import collapse_period_pairs
+
+    out = collapse_period_pairs(out)
     if require_work_coverage and out:
         from backend.payroll_period_coverage import filter_periods_with_full_work_coverage
 
@@ -1160,17 +1183,25 @@ def build_period_completeness_map(
     from backend.payroll_period_coverage import period_completeness_status
 
     out: dict[tuple[str, str], dict[str, Any]] = {}
+    from backend.payroll_week_period import period_lookup_pairs
+
     c = conn.cursor(dictionary=True)
     for ps, pe in periods or []:
+        pairs = period_lookup_pairs(ps, pe)
+        placeholders = " OR ".join(
+            ["(pay_period_start=%s AND pay_period_end=%s)"] * len(pairs)
+        )
+        params: list[Any] = [int(organization_id)]
+        for start_value, end_value in pairs:
+            params.extend([start_value, end_value])
         c.execute(
-            """
+            f"""
             SELECT status, payout_details_finalized_at
             FROM payout_batches
             WHERE organization_id=%s
-              AND pay_period_start=%s
-              AND pay_period_end=%s
+              AND ({placeholders})
             """,
-            (int(organization_id), str(ps)[:10], str(pe)[:10]),
+            tuple(params),
         )
         batches = c.fetchall() or []
         terminal = period_batches_are_complete(batches)

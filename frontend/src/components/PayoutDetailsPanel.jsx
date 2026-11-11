@@ -37,6 +37,7 @@ import MoreVertIcon from "@mui/icons-material/MoreVert";
 import PrintIcon from "@mui/icons-material/Print";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import SaveIcon from "@mui/icons-material/Save";
+import { inclusivePeriodText } from "../utils/businessTime";
 import LockIcon from "@mui/icons-material/Lock";
 import LockOpenIcon from "@mui/icons-material/LockOpen";
 import { useAuth } from "../context/AuthContext";
@@ -1787,7 +1788,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
           <Typography variant="body2" sx={{ mb: 1 }}>
             Permanently delete <strong>{detail?.batch_name || "this batch"}</strong>
             {detail?.pay_period_start && detail?.pay_period_end
-              ? ` (${detail.pay_period_start} – ${detail.pay_period_end})`
+              ? ` (${inclusivePeriodText(detail.pay_period_start, detail.pay_period_end)})`
               : ""}
             ? This cannot be undone.
           </Typography>
@@ -1824,8 +1825,11 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
             return (
               <Stack spacing={0.75} sx={{ mb: 2 }}>
                 <Typography variant="body2">
-                  <strong>Payroll period:</strong> {s.pay_period_start || detail?.pay_period_start} –{" "}
-                  {s.pay_period_end || detail?.pay_period_end}
+                  <strong>Payroll period:</strong>{" "}
+                  {inclusivePeriodText(
+                    s.pay_period_start || detail?.pay_period_start,
+                    s.pay_period_end || detail?.pay_period_end,
+                  )}
                 </Typography>
                 <Typography variant="body2">
                   <strong>Employee count:</strong> {s.employee_count ?? detail?.lines?.length ?? "—"}

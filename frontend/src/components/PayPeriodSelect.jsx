@@ -15,6 +15,7 @@ import {
   groupPayPeriodOptionsByYear,
   normPayPeriodYmd,
 } from "../payroll/payPeriodOptions";
+import { canonicalInclusiveYmd } from "../utils/businessTime";
 
 /**
  * Pay period dropdown — recent weeks by default, optional expand for full history.
@@ -50,12 +51,13 @@ export default function PayPeriodSelect({
 
   const groups = useMemo(() => groupPayPeriodOptionsByYear(options), [options]);
 
+  const selectedPeriod = canonicalInclusiveYmd(normPayPeriodYmd(start), normPayPeriodYmd(end));
   const selectedKey = batchOnly
     ? batchId != null && batchId !== ""
       ? accountantBatchOptionKey(batchId)
       : ""
-    : start && end
-      ? `${normPayPeriodYmd(start)}|${normPayPeriodYmd(end)}`
+    : selectedPeriod.start && selectedPeriod.end
+      ? `${selectedPeriod.start}|${selectedPeriod.end}`
       : "";
 
   const handleChange = (key) => {
@@ -95,7 +97,7 @@ export default function PayPeriodSelect({
       ) : null}
       {start && end ? (
         <Typography variant="caption" color="text.secondary">
-          {normPayPeriodYmd(start)} – {normPayPeriodYmd(end)}
+          {selectedPeriod.start} – {selectedPeriod.end}
         </Typography>
       ) : null}
     </Stack>

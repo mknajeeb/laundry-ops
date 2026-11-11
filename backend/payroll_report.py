@@ -381,7 +381,12 @@ def build_report_row(batch: dict, line: dict, *, report_type: Optional[str] = No
     pe = batch.get("pay_period_end")
     period_label = ""
     if ps and pe:
-        period_label = f"{str(ps)[:10]} – {str(pe)[:10]}"
+        from backend.payroll_week_period import canonical_inclusive_period, inclusive_period_label
+
+        start_d, end_d = canonical_inclusive_period(ps, pe)
+        ps = start_d.isoformat()
+        pe = end_d.isoformat()
+        period_label = inclusive_period_label(ps, pe)
     elif ps or pe:
         period_label = str(ps or pe)[:10]
 
@@ -685,11 +690,19 @@ def query_payroll_report(
     params: list[Any] = [int(organization_id), int(organization_id)]
 
     if resolved_type == "payroll_period" and period_pairs:
+        from backend.payroll_week_period import period_end_query_values
+
+        expanded_pairs = []
+        for ps, pe in period_pairs:
+            for end_value in period_end_query_values(ps, pe):
+                pair = (str(ps)[:10], end_value)
+                if pair not in expanded_pairs:
+                    expanded_pairs.append(pair)
         placeholders = " OR ".join(
-            ["(pb.pay_period_start = %s AND pb.pay_period_end = %s)"] * len(period_pairs)
+            ["(pb.pay_period_start = %s AND pb.pay_period_end = %s)"] * len(expanded_pairs)
         )
         q += f" AND ({placeholders})"
-        for ps, pe in period_pairs:
+        for ps, pe in expanded_pairs:
             params.extend([ps, pe])
     elif resolved_type == "monthly_paid":
         q += (
@@ -955,14 +968,24 @@ def list_report_periods(conn, organization_id: int) -> list[dict]:
     periods = list_org_periods_asc(
         conn, organization_id, require_complete=True, require_work_coverage=False
     )
-    return [
-        {
-            "pay_period_start": ps,
-            "pay_period_end": pe,
-            "label": f"{ps} – {pe}",
-        }
-        for ps, pe in reversed(periods)
-    ]
+    from backend.payroll_week_period import canonical_inclusive_period, inclusive_period_label
+
+    seen = set()
+    out = []
+    for ps, pe in reversed(periods):
+        start_d, end_d = canonical_inclusive_period(ps, pe)
+        key = (start_d.isoformat(), end_d.isoformat())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            {
+                "pay_period_start": key[0],
+                "pay_period_end": key[1],
+                "label": inclusive_period_label(key[0], key[1]),
+            }
+        )
+    return out
 
 
 def report_heading(filters: dict) -> str:

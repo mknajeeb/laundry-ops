@@ -52,6 +52,14 @@ def _batch_is_effective(batch: dict) -> bool:
     return False
 
 
+def _coverage_query_bounds(_conn, _organization_id: int, pay_period_start: str, pay_period_end: str):
+    from backend.payroll_operations import _date_end_exclusive_dt, _date_start_dt
+    from backend.payroll_week_period import canonical_inclusive_period
+
+    start_d, end_d = canonical_inclusive_period(pay_period_start, pay_period_end)
+    return _date_start_dt(start_d.isoformat()), _date_end_exclusive_dt(end_d.isoformat())
+
+
 def list_eligible_approved_session_facts(
     conn,
     organization_id: int,
@@ -68,8 +76,6 @@ def list_eligible_approved_session_facts(
         load_employment_assignments_for_users,
     )
     from backend.payroll_operations import (
-        _date_end_exclusive_dt,
-        _date_start_dt,
         _session_work_date_et,
         ensure_payroll_hours_approved_column,
         time_record_status,
@@ -134,8 +140,7 @@ def list_eligible_approved_session_facts(
         """,
         (
             int(organization_id),
-            _date_start_dt(pay_period_start),
-            _date_end_exclusive_dt(pay_period_end),
+            *_coverage_query_bounds(conn, organization_id, pay_period_start, pay_period_end),
         ),
     )
     rows = c.fetchall() or []
@@ -209,6 +214,15 @@ def load_effective_batch_coverage(
         if table_has_column(c, "payout_batches", "correction_reopened_at")
         else ""
     )
+    from backend.payroll_week_period import period_lookup_pairs
+
+    pairs = period_lookup_pairs(pay_period_start, pay_period_end)
+    period_sql = " OR ".join(
+        ["(pb.pay_period_start = %s AND pb.pay_period_end = %s)"] * len(pairs)
+    )
+    params: list = [int(organization_id)]
+    for start_value, end_value in pairs:
+        params.extend([start_value, end_value])
     c.execute(
         f"""
         SELECT pb.id, pb.worker_category, pb.status, pb.payout_details_finalized_at,
@@ -218,14 +232,9 @@ def load_effective_batch_coverage(
         LEFT JOIN payout_batch_lines pbl
           ON pbl.batch_id = pb.id AND pbl.organization_id = pb.organization_id
         WHERE pb.organization_id = %s
-          AND pb.pay_period_start = %s
-          AND pb.pay_period_end = %s
+          AND ({period_sql})
         """,
-        (
-            int(organization_id),
-            str(pay_period_start)[:10],
-            str(pay_period_end)[:10],
-        ),
+        tuple(params),
     )
     sessions: set[int] = set()
     user_cats: set[tuple[int, str]] = set()

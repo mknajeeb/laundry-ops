@@ -6,7 +6,8 @@ import {
   resolveAccountantBatchById,
 } from "./payPeriodOptions";
 import { accountantPeriodStatusLabel } from "./accountantBatchPick";
-import { formatWeekRangeLabel } from "../utils/businessTime";
+import { canonicalInclusiveYmd, formatWeekRangeLabel, inclusivePeriodText } from "../utils/businessTime";
+import { periodBatchesForDashboard } from "./payrollDashboardNav";
 import { displayStatusLabel } from "./payrollBatchStatus";
 
 describe("payPeriodOptions accountant batch status", () => {
@@ -249,5 +250,34 @@ describe("pay-period label is not a batch payment status", () => {
       `${formatWeekRangeLabel("2026-09-14", "2026-09-20")} · Available in Analysis`,
     );
     expect(withAvail[0].label).not.toMatch(/Paid|Pending|Draft/i);
+  });
+});
+
+describe("Monday–Sunday payroll weeks", () => {
+  it("shows November 2–8 for a period stored through November 9", () => {
+    const options = mergePayPeriodOptions(
+      [],
+      [{ id: 164, pay_period_start: "2026-11-02", pay_period_end: "2026-11-09" }],
+    );
+    expect(options).toHaveLength(1);
+    expect(options[0].start).toBe("2026-11-02");
+    expect(options[0].end).toBe("2026-11-08");
+    expect(canonicalInclusiveYmd("2026-11-09", "2026-11-16")).toEqual({
+      start: "2026-11-09",
+      end: "2026-11-15",
+    });
+    expect(canonicalInclusiveYmd("2026-10-26", "2026-11-01").end).toBe("2026-11-01");
+    expect(inclusivePeriodText("2026-11-02", "2026-11-09")).toBe("2026-11-02 – 2026-11-08");
+    expect(inclusivePeriodText("2026-03-02", "2026-03-09")).toBe("2026-03-02 – 2026-03-08");
+    expect(inclusivePeriodText("2026-10-26", "2026-11-02")).toBe("2026-10-26 – 2026-11-01");
+    expect(inclusivePeriodText("2026-09-14", "2026-09-20")).toBe("2026-09-14 – 2026-09-20");
+  });
+
+  it("matches a Sunday selection to a batch stored through the next Monday", () => {
+    const batches = [{ id: 164, pay_period_start: "2026-11-02", pay_period_end: "2026-11-09" }];
+    expect(periodBatchesForDashboard(batches, "2026-11-02", "2026-11-08").map((b) => b.id)).toEqual([
+      164,
+    ]);
+    expect(periodBatchesForDashboard(batches, "2026-11-09", "2026-11-15")).toEqual([]);
   });
 });

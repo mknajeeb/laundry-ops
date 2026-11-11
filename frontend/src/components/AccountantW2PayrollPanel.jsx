@@ -17,6 +17,7 @@ import {
   Typography,
 } from "@mui/material";
 import PayPeriodSelect from "./PayPeriodSelect";
+import { canonicalInclusiveYmd, inclusivePeriodText } from "../utils/businessTime";
 import TaxWithheldBreakdownDialog from "./TaxWithheldBreakdownDialog";
 import {
   getPayrollPeriodSettings,
@@ -24,7 +25,7 @@ import {
   getPayoutBatches,
   processPayoutBatch,
 } from "../api";
-import { normPayPeriodYmd } from "../payroll/payPeriodOptions";
+import { samePayrollWeek } from "../payroll/payPeriodOptions";
 import { defaultPayPeriodRange } from "../payroll/payPeriodDefaults";
 import {
   formatNetPaidDisplay,
@@ -146,24 +147,17 @@ export default function AccountantW2PayrollPanel() {
 
   const periodBatch = useMemo(() => {
     if (!periodStart || !periodEnd) return null;
-    const ps = normPayPeriodYmd(periodStart);
-    const pe = normPayPeriodYmd(periodEnd);
     return (
-      batches.find(
-        (b) =>
-          normPayPeriodYmd(b.pay_period_start) === ps &&
-          normPayPeriodYmd(b.pay_period_end) === pe,
+      batches.find((b) =>
+        samePayrollWeek(b.pay_period_start, b.pay_period_end, periodStart, periodEnd),
       ) || null
     );
   }, [batches, periodStart, periodEnd]);
 
   useEffect(() => {
     if (!batches.length || autoPickedRef.current) return;
-    const ps = normPayPeriodYmd(periodStart);
-    const pe = normPayPeriodYmd(periodEnd);
-    const hasBatch = batches.some(
-      (b) =>
-        normPayPeriodYmd(b.pay_period_start) === ps && normPayPeriodYmd(b.pay_period_end) === pe,
+    const hasBatch = batches.some((b) =>
+      samePayrollWeek(b.pay_period_start, b.pay_period_end, periodStart, periodEnd),
     );
     if (hasBatch) {
       autoPickedRef.current = true;
@@ -172,8 +166,9 @@ export default function AccountantW2PayrollPanel() {
     const pending = batches.find((b) => b.accountant_processing_status === "PENDING");
     const pick = pending || batches[0];
     if (pick) {
-      setPeriodStart(normPayPeriodYmd(pick.pay_period_start));
-      setPeriodEnd(normPayPeriodYmd(pick.pay_period_end));
+      const period = canonicalInclusiveYmd(pick.pay_period_start, pick.pay_period_end);
+      setPeriodStart(period.start);
+      setPeriodEnd(period.end);
     }
     autoPickedRef.current = true;
   }, [batches, periodStart, periodEnd]);
@@ -355,7 +350,7 @@ export default function AccountantW2PayrollPanel() {
           {batch ? (
             <Paper sx={{ p: 2 }}>
               <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 2 }}>
-                {batch.pay_period_start} – {batch.pay_period_end}
+                {inclusivePeriodText(batch.pay_period_start, batch.pay_period_end)}
                 {batch.batch_name ? ` · ${batch.batch_name}` : ""}
               </Typography>
 
@@ -475,7 +470,7 @@ export default function AccountantW2PayrollPanel() {
                         <TableCell>{ln.worker_name_snapshot}</TableCell>
                         <TableCell>{ln.employee_id || "—"}</TableCell>
                         <TableCell>
-                          {ln.pay_period_start} – {ln.pay_period_end}
+                          {inclusivePeriodText(ln.pay_period_start, ln.pay_period_end)}
                         </TableCell>
                         <TableCell>{ln.batch_number || ln.batch_id}</TableCell>
                         <TableCell align="right">{pay.totalHours.toFixed(2)}</TableCell>

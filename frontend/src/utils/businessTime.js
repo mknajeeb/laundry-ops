@@ -52,6 +52,29 @@ export function weekEndFromStart(weekStartYmd) {
   return addDaysYmd(weekStartYmd, 6);
 }
 
+/**
+ * Inclusive payroll week. A Monday-aligned end that falls on the next Monday
+ * is the exclusive boundary saved as the last day; the week ends the Sunday before.
+ */
+export function canonicalInclusiveYmd(start, end, weekStartsOn = 0) {
+  const s = String(start || "").slice(0, 10);
+  const e = String(end || "").slice(0, 10);
+  if (!s || !e) return { start: s, end: e };
+  const anchor = Number(weekStartsOn);
+  if (dayOfWeekMon0(s) === anchor && addDaysYmd(s, 7) === e) {
+    return { start: s, end: addDaysYmd(s, 6) };
+  }
+  return { start: s, end: e };
+}
+
+/** Inclusive calendar label. Keeps a stored next-Monday end off the screen. */
+export function inclusivePeriodText(start, end, weekStartsOn = 0) {
+  const period = canonicalInclusiveYmd(start, end, weekStartsOn);
+  if (!period.start && !period.end) return "";
+  if (!period.start || !period.end) return period.start || period.end;
+  return `${period.start} – ${period.end}`;
+}
+
 /** Readable label: Mon, Jun 8 */
 export function formatDateShortLabel(ymd) {
   if (!ymd) return "—";

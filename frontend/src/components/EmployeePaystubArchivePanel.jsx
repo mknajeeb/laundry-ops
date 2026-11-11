@@ -14,6 +14,7 @@ import {
 } from "@mui/material";
 import DownloadIcon from "@mui/icons-material/Download";
 import { getEmployeePaystubArchiveHtml, getPaystubArchiveMeta } from "../api";
+import { inclusivePeriodText } from "../utils/businessTime";
 import { downloadEmployeeRecentPaystubsPdf } from "../payroll/downloadEmployeePaystubArchive";
 import {
   downloadPdfFromFetch,
@@ -278,7 +279,7 @@ export default function EmployeePaystubArchivePanel({
                 <Chip
                   key={b.id}
                   size="small"
-                  label={`${b.batch_name} · ${b.pay_period_start} – ${b.pay_period_end}`}
+                  label={`${b.batch_name} · ${inclusivePeriodText(b.pay_period_start, b.pay_period_end)}`}
                   color={selected ? "primary" : "default"}
                   variant={selected ? "filled" : "outlined"}
                   onClick={() => toggleBatch(b.id)}

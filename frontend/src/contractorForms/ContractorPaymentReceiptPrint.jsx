@@ -1,3 +1,5 @@
+import { canonicalInclusiveYmd } from "../utils/businessTime";
+
 function FieldRow({ label, children }) {
   return (
     <div className="cform-field">
@@ -19,7 +21,8 @@ export default function ContractorPaymentReceiptPrint({ prefill, receipt }) {
       </p>
       <FieldRow label="Contractor Name">{name || "______________________________"}</FieldRow>
       <FieldRow label="Pay period covered">
-        From {r.pay_period_start || "________"} To {r.pay_period_end || "________"}
+        From {canonicalInclusiveYmd(r.pay_period_start, r.pay_period_end).start || "________"} To{" "}
+        {canonicalInclusiveYmd(r.pay_period_start, r.pay_period_end).end || "________"}
       </FieldRow>
       <FieldRow label="Invoice / reference date">{r.invoice_date || "________"}</FieldRow>
       <table className="contractor-payment-table">

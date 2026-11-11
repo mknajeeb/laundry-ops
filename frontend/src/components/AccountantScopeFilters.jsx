@@ -11,13 +11,14 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { normPayPeriodYmd } from "../payroll/payPeriodOptions";
+import { samePayrollWeek } from "../payroll/payPeriodOptions";
+import { inclusivePeriodText } from "../utils/businessTime";
 
 export function formatAccountantBatchLabel(batch, batchStatusLabel) {
   if (!batch) return "";
   const name = batch.batch_name || `W2-${batch.id}`;
   const status = batchStatusLabel?.(batch);
-  const period = `${batch.pay_period_start} – ${batch.pay_period_end}`;
+  const period = inclusivePeriodText(batch.pay_period_start, batch.pay_period_end);
   return status ? `${period} · ${name} · ${status}` : `${period} · ${name}`;
 }
 
@@ -170,8 +171,5 @@ export default function AccountantScopeFilters({
 
 export function batchMatchesPeriod(batch, start, end) {
   if (!batch || !start || !end) return true;
-  return (
-    normPayPeriodYmd(batch.pay_period_start) === normPayPeriodYmd(start) &&
-    normPayPeriodYmd(batch.pay_period_end) === normPayPeriodYmd(end)
-  );
+  return samePayrollWeek(batch.pay_period_start, batch.pay_period_end, start, end);
 }

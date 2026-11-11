@@ -1,5 +1,13 @@
 /** Grouping helpers for Payroll Reports (Monthly Payroll Paid, PDF, on-screen). */
 
+import { canonicalInclusiveYmd } from "../utils/businessTime";
+
+function payrollPeriodText(row) {
+  if (row?.payroll_period) return row.payroll_period;
+  const period = canonicalInclusiveYmd(row?.pay_period_start, row?.pay_period_end);
+  return [period.start, period.end].filter(Boolean).join(" – ");
+}
+
 /**
  * Group report rows: Payroll Period → Official Pay Date → employee rows.
  * Matches backend payroll_report_analytics.group_rows_by_period_then_pay_date.
@@ -15,10 +23,7 @@
 export function groupMonthlyPaidRows(rows) {
   const byPeriod = new Map();
   for (const row of rows || []) {
-    const period =
-      row?.payroll_period ||
-      [row?.pay_period_start, row?.pay_period_end].filter(Boolean).join(" – ") ||
-      "Unknown period";
+    const period = payrollPeriodText(row) || "Unknown period";
     const payDate =
       row?.pay_date || row?.official_pay_date || row?.pay_date_display || "Pay Date Missing";
     if (!byPeriod.has(period)) byPeriod.set(period, new Map());
@@ -89,8 +94,7 @@ export function distinctPayrollPeriods(rows) {
       (rows || [])
         .map(
           (r) =>
-            r?.payroll_period ||
-            [r?.pay_period_start, r?.pay_period_end].filter(Boolean).join(" – "),
+            payrollPeriodText(r),
         )
         .filter(Boolean),
     ),

@@ -56,7 +56,8 @@ import { ContractorPrintLetterhead } from "../contractorForms/ContractorPrintShe
 import { openPrintWindow } from "../contractorForms/contractorPrint";
 import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
 import { computeEarningsBreakdown } from "../payroll/payrollOtDisplay";
-import { formatPayrollWeekLabel, normPayPeriodYmd } from "../payroll/payPeriodOptions";
+import { formatPayrollWeekLabel, samePayrollWeek } from "../payroll/payPeriodOptions";
+import { canonicalInclusiveYmd, inclusivePeriodText } from "../utils/businessTime";
 import {
   displayStatusColor,
   displayStatusLabel,
@@ -84,7 +85,7 @@ function PayoutBatchSummaryPrint({ batch }) {
         documentTitle="Payroll / Contractor Payout Summary"
       />
       <p className="cform-p">
-        <strong>Pay period:</strong> {b.pay_period_start} – {b.pay_period_end}
+        <strong>Pay period:</strong> {inclusivePeriodText(b.pay_period_start, b.pay_period_end)}
         <br />
         <strong>Category:</strong> {b.worker_category_label || b.worker_category}
         <br />
@@ -527,11 +528,8 @@ export default function PayoutBatchesPanel({
 
   useEffect(() => {
     if (!payPeriodStart || !payPeriodEnd || !batches.length || autoPickRef.current) return;
-    const ps = normPayPeriodYmd(payPeriodStart);
-    const pe = normPayPeriodYmd(payPeriodEnd);
-    const match = batches.find(
-      (b) =>
-        normPayPeriodYmd(b.pay_period_start) === ps && normPayPeriodYmd(b.pay_period_end) === pe,
+    const match = batches.find((b) =>
+      samePayrollWeek(b.pay_period_start, b.pay_period_end, payPeriodStart, payPeriodEnd),
     );
     if (match && selectedId !== match.id) {
       autoPickRef.current = true;
@@ -558,6 +556,9 @@ export default function PayoutBatchesPanel({
   const createBatch = async () => {
     try {
       const payload = { ...draft };
+      const period = canonicalInclusiveYmd(draft.pay_period_start, draft.pay_period_end);
+      payload.pay_period_start = period.start;
+      payload.pay_period_end = period.end;
       if (!payload.supplemental) {
         delete payload.supplemental_for_user_id;
         delete payload.supplemental_reason;
@@ -1076,7 +1077,7 @@ export default function PayoutBatchesPanel({
               >
                 <ListItemText
                   primary={b.batch_name}
-                  secondary={`${b.pay_period_start} – ${b.pay_period_end}${
+                  secondary={`${inclusivePeriodText(b.pay_period_start, b.pay_period_end)}${
                     b.supplemental_for_user_id ? " · Supplemental" : ""
                   }`}
                   primaryTypographyProps={{ noWrap: true, variant: "body2" }}

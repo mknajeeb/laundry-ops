@@ -7,6 +7,7 @@ import {
   payrollSummary,
   primaryAction,
 } from "../payroll/payrollBatchStatus";
+import { formatPayrollWeekLabel } from "../payroll/payPeriodOptions";
 
 export default function PayrollBatchSummaryCard({
   batch,
@@ -26,7 +27,7 @@ export default function PayrollBatchSummaryCard({
   const action = primaryAction(batch);
   const period =
     batch.pay_period_start && batch.pay_period_end
-      ? `${batch.pay_period_start} – ${batch.pay_period_end}`
+      ? formatPayrollWeekLabel(batch.pay_period_start, batch.pay_period_end)
       : null;
 
   return (

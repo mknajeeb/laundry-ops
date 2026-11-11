@@ -431,6 +431,12 @@ def list_time_records(
     """
     params: list[Any] = [int(organization_id)]
     # Prefer range predicates (sargable) over DATE(column) so clock_in indexes can be used.
+    if from_date and to_date:
+        from backend.payroll_week_period import canonical_inclusive_period
+
+        start_d, end_d = canonical_inclusive_period(from_date, to_date)
+        from_date = start_d.isoformat()
+        to_date = end_d.isoformat()
     if from_date:
         q += " AND s.clock_in_at >= %s"
         params.append(_date_start_dt(from_date))
@@ -2216,7 +2222,15 @@ def create_payout_batch(
     freq = str(body.get("payout_frequency") or "biweekly").strip()
     if freq not in ("weekly", "biweekly"):
         freq = "biweekly"
-    name = (body.get("batch_name") or "").strip() or f"{CATEGORY_LABELS[cat]} {body.get('pay_period_start')}"
+    period_start = body.get("pay_period_start")
+    period_end = body.get("pay_period_end")
+    if period_start and period_end:
+        from backend.payroll_week_period import canonical_inclusive_period
+
+        start_d, end_d = canonical_inclusive_period(period_start, period_end)
+        period_start = start_d.isoformat()
+        period_end = end_d.isoformat()
+    name = (body.get("batch_name") or "").strip() or f"{CATEGORY_LABELS[cat]} {period_start}"
     if "send_to_accountant" in body and body.get("send_to_accountant") is not None:
         send_flag = 1 if batch_send_to_accountant_enabled({"send_to_accountant": body.get("send_to_accountant"), "worker_category": cat}) else 0
     else:
@@ -2233,8 +2247,8 @@ def create_payout_batch(
             int(organization_id),
             name[:255],
             cat,
-            body.get("pay_period_start"),
-            body.get("pay_period_end"),
+            period_start,
+            period_end,
             freq,
             str(body.get("status") or "draft"),
             body.get("notes"),
@@ -2243,13 +2257,13 @@ def create_payout_batch(
         ),
     )
     batch_id = int(c.lastrowid)
-    if body.get("pay_period_start") and body.get("pay_period_end"):
+    if period_start and period_end:
         return build_batch_from_time_records(
             conn,
             organization_id,
             batch_id,
-            from_date=str(body["pay_period_start"]),
-            to_date=str(body["pay_period_end"]),
+            from_date=str(period_start),
+            to_date=str(period_end),
             allow_empty=True,
         )
     return get_payout_batch(conn, organization_id, batch_id) or {}

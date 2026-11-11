@@ -43,6 +43,7 @@ import {
   groupMonthlyPaidRows,
 } from "../payroll/payrollReportGroups";
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
+import { inclusivePeriodText } from "../utils/businessTime";
 import PayrollReportAnalyticsDashboard from "./PayrollReportAnalyticsDashboard";
 
 const RANGE_MODES = [
@@ -381,7 +382,7 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
     () =>
       (meta.periods || []).map((p) => ({
         value: `${p.pay_period_start}|${p.pay_period_end}`,
-        label: p.label || `${p.pay_period_start} – ${p.pay_period_end}`,
+        label: p.label || inclusivePeriodText(p.pay_period_start, p.pay_period_end),
       })),
     [meta.periods],
   );

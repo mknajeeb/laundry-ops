@@ -16,6 +16,7 @@ import {
   Typography,
 } from "@mui/material";
 import DownloadIcon from "@mui/icons-material/Download";
+import { inclusivePeriodText } from "../utils/businessTime";
 import PrintIcon from "@mui/icons-material/Print";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import {
@@ -448,7 +449,7 @@ export default function AccountantEmployeePaystubsPanel({ w2Only = false }) {
                         <TableCell>{ln.worker_name_snapshot}</TableCell>
                       ) : null}
                       <TableCell>
-                        {ln.pay_period_start} – {ln.pay_period_end}
+                        {inclusivePeriodText(ln.pay_period_start, ln.pay_period_end)}
                       </TableCell>
                       <TableCell>{categoryLabel}</TableCell>
                       <TableCell align="right">${lineGross(ln).toFixed(2)}</TableCell>

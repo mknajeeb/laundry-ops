@@ -1,10 +1,18 @@
 import {
   addDaysYmd,
   businessTodayYmd,
+  canonicalInclusiveYmd,
   formatWeekRangeLabel,
   weekEndFromStart,
   weekStartFromDate,
 } from "../utils/businessTime";
+
+/** True when both ranges are the same inclusive payroll week. */
+export function samePayrollWeek(startA, endA, startB, endB) {
+  const a = canonicalInclusiveYmd(normPayPeriodYmd(startA), normPayPeriodYmd(endA));
+  const b = canonicalInclusiveYmd(normPayPeriodYmd(startB), normPayPeriodYmd(endB));
+  return Boolean(a.start && a.end && a.start === b.start && a.end === b.end);
+}
 
 /** Normalize API date to YYYY-MM-DD for comparisons. */
 export function normPayPeriodYmd(val) {
@@ -54,8 +62,9 @@ export function formatMonthDayLabel(ymd) {
 }
 
 /** Week label for Analysis availability, e.g. "Sep 7–Sep 13". */
-export function formatPayrollWeekLabel(start, end) {
-  return `${formatMonthDayLabel(normPayPeriodYmd(start))}\u2013${formatMonthDayLabel(normPayPeriodYmd(end))}`;
+export function formatPayrollWeekLabel(start, end, weekStartsOn = 0) {
+  const period = canonicalInclusiveYmd(normPayPeriodYmd(start), normPayPeriodYmd(end), weekStartsOn);
+  return `${formatMonthDayLabel(period.start)}\u2013${formatMonthDayLabel(period.end)}`;
 }
 
 /** Select value for one canonical payout batch. Never a pay-period key. */
@@ -69,9 +78,7 @@ export function accountantBatchOptionKey(batchId) {
  * Example: "W2-2026-019 · Paid · Sep 7–Sep 13"
  */
 export function formatAccountantByBatchOptionLabel(batch, status) {
-  const start = normPayPeriodYmd(batch?.pay_period_start);
-  const end = normPayPeriodYmd(batch?.pay_period_end);
-  const period = `${formatMonthDayLabel(start)}\u2013${formatMonthDayLabel(end)}`;
+  const period = formatPayrollWeekLabel(batch?.pay_period_start, batch?.pay_period_end);
   const name = batch?.batch_name || (batch?.id != null ? `Batch ${batch.id}` : "Batch");
   return status ? `${name} · ${status} · ${period}` : `${name} · ${period}`;
 }
@@ -84,8 +91,12 @@ export function buildAccountantBatchOptions(batches = [], batchStatusLabel) {
   const options = [];
   for (const b of batches) {
     if (b?.id == null || b.id === "") continue;
-    const start = normPayPeriodYmd(b.pay_period_start);
-    const end = normPayPeriodYmd(b.pay_period_end);
+    const canonical = canonicalInclusiveYmd(
+      normPayPeriodYmd(b.pay_period_start),
+      normPayPeriodYmd(b.pay_period_end),
+    );
+    const start = canonical.start;
+    const end = canonical.end;
     if (!start || !end) continue;
     const status = batchStatusLabel
       ? batchStatusLabel(b)
@@ -141,8 +152,12 @@ export function mergePayPeriodOptions(
     map.set(o.key, { ...o, fromBatch: false, batchStatus: null });
   }
   for (const b of batches) {
-    const start = normPayPeriodYmd(b.pay_period_start);
-    const end = normPayPeriodYmd(b.pay_period_end);
+    const canonical = canonicalInclusiveYmd(
+      normPayPeriodYmd(b.pay_period_start),
+      normPayPeriodYmd(b.pay_period_end),
+    );
+    const start = canonical.start;
+    const end = canonical.end;
     if (!start || !end) continue;
     const key = periodKey(start, end);
     // _batchStatusLabel intentionally unused: period labels are not batch statuses.

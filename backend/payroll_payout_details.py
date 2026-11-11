@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import Any, Optional
 
 from backend.payroll_operations import _money, get_payout_batch
+from backend.payroll_week_period import display_pay_period
 from backend.ta_helpers import invalidate_schema_cache, json_safe, table_has_column
 
 EMPLOYEE_DEDUCTION_KEYS = (
@@ -3843,7 +3844,7 @@ def _render_paystub_html(
         )
         employee_meta = f"""
 <p class="employee-meta"><strong>{worker}</strong><br>
-Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p>"""
+Pay period: {display_pay_period(batch.get('pay_period_start'), batch.get('pay_period_end'))}</p>"""
         earnings_html = _employee_earnings_ytd_html(hours, rate, gross, ytd, line=line)
         emp_tax_table = _employee_taxes_ytd_html(details, totals, ytd)
         shown_net = net_pay if settlement.get("correction_accounting") else net_paid
@@ -3901,7 +3902,7 @@ Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p
 <dl class="info-grid">
 <dt>Employee name</dt><dd>{worker}</dd>
 {f'<dt>Employee ID</dt><dd>{emp_id}</dd>' if emp_id else ''}
-<dt>Pay period</dt><dd>{batch.get('pay_period_start')} – {batch.get('pay_period_end')}</dd>
+<dt>Pay period</dt><dd>{display_pay_period(batch.get('pay_period_start'), batch.get('pay_period_end'))}</dd>
 <dt>Hours worked</dt><dd>{hours:.2f}</dd>
 <dt>Hourly rate</dt><dd>${rate:,.2f}</dd>
 </dl>"""
@@ -4037,7 +4038,7 @@ def _combine_paystub_documents(
 ) -> str:
     if not sheets:
         raise ValueError("No paystub sheets to combine")
-    sub = subtitle or f"Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}"
+    sub = subtitle or f"Pay period: {display_pay_period(batch.get('pay_period_start'), batch.get('pay_period_end'))}"
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>{title}</title>
 <style>{_paystub_base_css()}</style></head><body>
@@ -4440,7 +4441,7 @@ def generate_employer_payroll_packet_html(
         batch,
         combined_sheets,
         title=title,
-        subtitle=f"Employer internal record · Pay period {batch.get('pay_period_start')} – {batch.get('pay_period_end')}",
+        subtitle=f"Employer internal record · Pay period {display_pay_period(batch.get('pay_period_start'), batch.get('pay_period_end'))}",
     )
 
 
@@ -4517,7 +4518,7 @@ def generate_pay_register_html(
 {logo_html}
 <h1>Pay Register — {batch.get('batch_name')}</h1>
 {preview_banner}
-<p class="meta">Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p>
+<p class="meta">Pay period: {display_pay_period(batch.get('pay_period_start'), batch.get('pay_period_end'))}</p>
 <p class="note">OT Premium represents only the additional amount paid above the employee’s regular hourly rate.
 Regular/Base earnings include overtime hours at the regular rate.</p>
 <table>
@@ -4623,7 +4624,7 @@ def generate_payment_receipt_html(
 <table>
 {row('Employee', str(line.get('worker_name_snapshot') or '—'))}
 {row('Employee ID', employee_id)}
-{row('Pay period', f"{batch.get('pay_period_start')} – {batch.get('pay_period_end')}")}
+{row('Pay period', f"{display_pay_period(batch.get('pay_period_start'), batch.get('pay_period_end'))}")}
 {row('Approved hours', f"{float(line.get('approved_hours') or 0):.2f}")}
 {row('Rate', f"${float(line.get('rate') or 0):,.2f}/hr")}
 {row('Gross earnings', f"${gross:,.2f}")}
@@ -4655,7 +4656,7 @@ def generate_payment_receipt_html(
 <div class="brand-head">{logo_html}<h1 style="margin:0">{company_name}</h1></div>
 <p class="meta"><strong>{title}</strong></p>
 <p class="meta">Employee: <strong>{line.get('worker_name_snapshot')}</strong><br>
-Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p>
+Pay period: {display_pay_period(batch.get('pay_period_start'), batch.get('pay_period_end'))}</p>
 {body_table}
 {signature_block}
 <p class="notice">{'Retain signed copy for payroll records.' if is_cash else 'Proof of manual payment — not a wage statement or official paystub.'}</p>
@@ -4904,7 +4905,7 @@ def generate_vendor_receipt_html(
     else:
         logo_html = f"<h1 style='margin:0;color:#0f2f66'>{esc(vendor_name)}</h1>"
 
-    work_period = f"{batch.get('pay_period_start')} — {batch.get('pay_period_end')}"
+    work_period = display_pay_period(batch.get("pay_period_start"), batch.get("pay_period_end"))
 
     earnings_rows = []
     if reg_hours > 0 or reg_rate > 0:

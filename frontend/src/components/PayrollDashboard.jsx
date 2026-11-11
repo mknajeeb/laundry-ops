@@ -8,6 +8,7 @@ import {
   resolveDashboardBatch,
 } from "../payroll/payrollDashboardNav";
 import { displayStatusColor } from "../payroll/payrollBatchStatus";
+import { canonicalInclusiveYmd } from "../utils/businessTime";
 
 export default function PayrollDashboard({
   payPeriodStart,
@@ -39,8 +40,9 @@ export default function PayrollDashboard({
     resolveDashboardBatch(periodBatches, selectedBatchId) ||
     resolveDashboardBatch(periodBatches, defaultDashboardBatchId(periodBatches));
 
+  const period = canonicalInclusiveYmd(payPeriodStart, payPeriodEnd);
   const periodLabel =
-    payPeriodStart && payPeriodEnd ? `${payPeriodStart} – ${payPeriodEnd}` : "Current pay period";
+    period.start && period.end ? `${period.start} – ${period.end}` : "Current pay period";
 
   return (
     <Paper sx={{ p: 1.5, mb: 2 }}>

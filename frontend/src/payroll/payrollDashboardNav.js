@@ -1,15 +1,15 @@
 import { normPayPeriodYmd } from "./payPeriodOptions";
+import { canonicalInclusiveYmd } from "../utils/businessTime";
 import { displayStatusLabel } from "./payrollBatchStatus";
 
 /** Batches in the dashboard pay period. Same period does not collapse rows. */
 export function periodBatchesForDashboard(batches = [], payPeriodStart, payPeriodEnd) {
-  const ps = normPayPeriodYmd(payPeriodStart);
-  const pe = normPayPeriodYmd(payPeriodEnd);
-  if (!ps || !pe) return [];
-  return (batches || []).filter(
-    (b) =>
-      normPayPeriodYmd(b.pay_period_start) === ps && normPayPeriodYmd(b.pay_period_end) === pe,
-  );
+  const selected = canonicalInclusiveYmd(normPayPeriodYmd(payPeriodStart), normPayPeriodYmd(payPeriodEnd));
+  if (!selected.start || !selected.end) return [];
+  return (batches || []).filter((b) => {
+    const stored = canonicalInclusiveYmd(b.pay_period_start, b.pay_period_end);
+    return stored.start === selected.start && stored.end === selected.end;
+  });
 }
 
 /**

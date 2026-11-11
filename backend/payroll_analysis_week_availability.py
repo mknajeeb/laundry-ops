@@ -53,21 +53,25 @@ def is_week_available_for_analysis(
 ) -> bool:
     cur = conn.cursor()
     ensure_payroll_analysis_week_availability_schema(cur)
+    from backend.payroll_week_period import period_lookup_pairs
+
+    pairs = period_lookup_pairs(pay_period_start, pay_period_end)
+    period_sql = " OR ".join(
+        ["(pay_period_start=%s AND pay_period_end=%s)"] * len(pairs)
+    )
+    params: list = [int(organization_id)]
+    for start_value, end_value in pairs:
+        params.extend([start_value, end_value])
     c = conn.cursor(dictionary=True)
     c.execute(
-        """
+        f"""
         SELECT analysis_available
         FROM payroll_analysis_week_availability
         WHERE organization_id=%s
-          AND pay_period_start=%s
-          AND pay_period_end=%s
+          AND ({period_sql})
         LIMIT 1
         """,
-        (
-            int(organization_id),
-            _norm_ymd(pay_period_start),
-            _norm_ymd(pay_period_end),
-        ),
+        tuple(params),
     )
     row = c.fetchone()
     return bool(row and int(row.get("analysis_available") or 0) == 1)
@@ -81,19 +85,26 @@ def get_week_analysis_availability(
 ) -> dict[str, Any]:
     cur = conn.cursor()
     ensure_payroll_analysis_week_availability_schema(cur)
-    ps = _norm_ymd(pay_period_start)
-    pe = _norm_ymd(pay_period_end)
+    from backend.payroll_week_period import period_lookup_pairs
+
+    pairs = period_lookup_pairs(pay_period_start, pay_period_end)
+    ps, pe = pairs[0]
+    period_sql = " OR ".join(
+        ["(pay_period_start=%s AND pay_period_end=%s)"] * len(pairs)
+    )
+    params: list = [int(organization_id)]
+    for start_value, end_value in pairs:
+        params.extend([start_value, end_value])
     c = conn.cursor(dictionary=True)
     c.execute(
-        """
+        f"""
         SELECT analysis_available, analysis_available_at, analysis_available_by
         FROM payroll_analysis_week_availability
         WHERE organization_id=%s
-          AND pay_period_start=%s
-          AND pay_period_end=%s
+          AND ({period_sql})
         LIMIT 1
         """,
-        (int(organization_id), ps, pe),
+        tuple(params),
     )
     row = c.fetchone() or {}
     available = bool(row and int(row.get("analysis_available") or 0) == 1)
@@ -118,20 +129,27 @@ def set_week_analysis_availability(
     """Flip week visibility for Analysis only. Never mutates payout batches."""
     cur = conn.cursor()
     ensure_payroll_analysis_week_availability_schema(cur)
-    ps = _norm_ymd(pay_period_start)
-    pe = _norm_ymd(pay_period_end)
+    from backend.payroll_week_period import period_lookup_pairs
+
+    pairs = period_lookup_pairs(pay_period_start, pay_period_end)
+    ps, pe = pairs[0]
     if not ps or not pe:
         raise ValueError("pay_period_start and pay_period_end are required")
+    period_sql = " OR ".join(
+        ["(pay_period_start=%s AND pay_period_end=%s)"] * len(pairs)
+    )
+    count_params: list = [int(organization_id)]
+    for start_value, end_value in pairs:
+        count_params.extend([start_value, end_value])
     # Require the week to exist as at least one payout batch (manager context).
     c = conn.cursor(dictionary=True)
     c.execute(
-        """
+        f"""
         SELECT COUNT(*) AS c FROM payout_batches
         WHERE organization_id=%s
-          AND pay_period_start=%s
-          AND pay_period_end=%s
+          AND ({period_sql})
         """,
-        (int(organization_id), ps, pe),
+        tuple(count_params),
     )
     if int((c.fetchone() or {}).get("c") or 0) <= 0:
         raise ValueError("No payout batches found for that payroll week")
@@ -189,7 +207,9 @@ def list_available_analysis_weeks_asc(
         pe = _norm_ymd(r.get("pay_period_end"))
         if ps and pe:
             out.append((ps, pe))
-    return out
+    from backend.payroll_week_period import collapse_period_pairs
+
+    return collapse_period_pairs(out)
 
 
 def periods_currently_terminal_complete(

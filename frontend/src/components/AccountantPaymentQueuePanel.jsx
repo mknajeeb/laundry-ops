@@ -19,6 +19,7 @@ import {
   getPayoutBatchDetails,
 } from "../api";
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
+import { inclusivePeriodText } from "../utils/businessTime";
 
 function statusLabel(batch) {
   if (batch.payout_workflow?.accountant_payment_confirmed) return "Confirmed";
@@ -110,7 +111,7 @@ export default function AccountantPaymentQueuePanel() {
                   sx={{ cursor: "pointer" }}
                 >
                   <TableCell>{b.batch_name}</TableCell>
-                  <TableCell>{b.pay_period_start} – {b.pay_period_end}</TableCell>
+                  <TableCell>{inclusivePeriodText(b.pay_period_start, b.pay_period_end)}</TableCell>
                   <TableCell>{b.worker_category}</TableCell>
                   <TableCell>
                     <Chip
@@ -142,7 +143,7 @@ export default function AccountantPaymentQueuePanel() {
         <Paper sx={{ p: 2 }}>
           <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
             <Typography variant="subtitle1" fontWeight={600}>
-              {detail.batch_name} ({detail.pay_period_start} – {detail.pay_period_end})
+              {detail.batch_name} ({inclusivePeriodText(detail.pay_period_start, detail.pay_period_end)})
             </Typography>
             {detail.payout_workflow?.can_edit_details === false &&
             !detail.payout_workflow?.accountant_payment_confirmed ? (

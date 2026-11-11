@@ -1,5 +1,7 @@
 /** Finalize Payroll batch navigator. Pay period is not a batch identity. */
 
+import { canonicalInclusiveYmd } from "../utils/businessTime";
+
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export const FINALIZE_NAV_INITIAL_COUNT = 5;
@@ -27,14 +29,17 @@ export function finalizeBatchStatusLabel(batch) {
 
 /** Sep 7–Sep 13 · W2-2026-019 · Ready For Payroll */
 export function formatFinalizeBatchRow(batch) {
-  const period = `${monthDay(batch?.pay_period_start)}\u2013${monthDay(batch?.pay_period_end)}`;
+  const periodDates = canonicalInclusiveYmd(batch?.pay_period_start, batch?.pay_period_end);
+  const period = `${monthDay(periodDates.start)}\u2013${monthDay(periodDates.end)}`;
   const name = batch?.batch_name || (batch?.id != null ? `Batch ${batch.id}` : "Batch");
   return `${period} · ${name} · ${finalizeBatchStatusLabel(batch)}`;
 }
 
 export function sortFinalizeBatches(batches = []) {
   return [...batches].sort((a, b) => {
-    const byEnd = ymd(b?.pay_period_end).localeCompare(ymd(a?.pay_period_end));
+    const endOf = (batch) =>
+      canonicalInclusiveYmd(batch?.pay_period_start, batch?.pay_period_end).end;
+    const byEnd = ymd(endOf(b)).localeCompare(ymd(endOf(a)));
     if (byEnd) return byEnd;
     return Number(b?.id) - Number(a?.id);
   });
