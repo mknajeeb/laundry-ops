@@ -81,6 +81,7 @@ import {
   payrollBreakRowActions,
 } from "../payroll/payrollBreakActions";
 import { PayrollDateField, PayrollDateTimeField } from "./PayrollDateTimeField";
+import { canonicalInclusiveYmd, inclusivePeriodText } from "../utils/businessTime";
 import { HourlyCostPanel } from "./HourlyCostAnalysis";
 import { formatBurdenPercent, targetComparisonText } from "../payroll/hourlyCostDisplay";
 import { useAuth } from "../context/AuthContext";
@@ -329,12 +330,11 @@ export default function PayrollTimeRecordsPanel({
   const approvableRows = rows.filter((row) => canApproveRecord(row, { canApprove: canApproveTime }));
 
   useEffect(() => {
-    if (payPeriodStart) setFromDate(payPeriodStart);
-  }, [payPeriodStart]);
-
-  useEffect(() => {
-    if (payPeriodEnd) setToDate(payPeriodEnd);
-  }, [payPeriodEnd]);
+    if (!payPeriodStart && !payPeriodEnd) return;
+    const period = canonicalInclusiveYmd(payPeriodStart, payPeriodEnd);
+    if (period.start) setFromDate(period.start);
+    if (period.end) setToDate(period.end);
+  }, [payPeriodStart, payPeriodEnd]);
 
   useEffect(() => {
     if (linkedCategory && linkedCategory !== "all") setCategory(linkedCategory);
@@ -889,7 +889,14 @@ export default function PayrollTimeRecordsPanel({
     return first;
   }, [displayRows]);
 
-  const anyOtDisabled = displayRows.some((r) => r.ot_week_mode === "disable_ot");
+  const otDisabledEmployees = useMemo(() => {
+    const names = new Map();
+    for (const row of displayRows) {
+      if (row.ot_week_mode !== "disable_ot") continue;
+      names.set(String(row.user_id), row.worker_name || `Employee ${row.user_id}`);
+    }
+    return Array.from(names.values());
+  }, [displayRows]);
 
   return (
     <Stack spacing={2} sx={{ width: "100%", minWidth: 0 }}>
@@ -898,10 +905,11 @@ export default function PayrollTimeRecordsPanel({
           {classNotice}
         </Alert>
       ) : null}
-      {anyOtDisabled ? (
+      {otDisabledEmployees.length ? (
         <Alert severity="info">
-          OT disabled for this payroll week — eligible hours stay straight-time. Session rates and
-          classifications are unchanged.
+          Overtime is off for {otDisabledEmployees.join(", ")} this week only. Their hours stay
+          straight-time. Other employees in this week still use the weekly overtime rule. This is
+          an employee-week override, not a company-wide setting.
         </Alert>
       ) : null}
       {segmentWarning ? (
@@ -1019,8 +1027,12 @@ export default function PayrollTimeRecordsPanel({
               Period summary
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              {fromDate && toDate ? `${fromDate} – ${toDate}` : "Set dates to see totals"}
+              {fromDate && toDate ? inclusivePeriodText(fromDate, toDate) : "Set dates to see totals"}
               {userId ? " · filtered to one worker" : ""}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+              Live approved time for this week. Stored payout-batch totals are separate and are not
+              recalculated here.
             </Typography>
           </Box>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -1210,7 +1222,7 @@ export default function PayrollTimeRecordsPanel({
                     <Chip
                       size="small"
                       color="warning"
-                      label="OT disabled for this payroll week"
+                      label="OT off for this employee this week"
                       sx={{ mt: 0.5, height: 22, fontSize: 11 }}
                     />
                   ) : null}

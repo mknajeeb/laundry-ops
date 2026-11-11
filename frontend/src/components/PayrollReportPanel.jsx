@@ -3,13 +3,10 @@ import {
   Alert,
   Box,
   Button,
-  Checkbox,
   Chip,
   FormControl,
   InputLabel,
-  ListItemText,
   MenuItem,
-  OutlinedInput,
   Paper,
   Select,
   Stack,
@@ -44,6 +41,7 @@ import {
 } from "../payroll/payrollReportGroups";
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
 import { inclusivePeriodText } from "../utils/businessTime";
+import { payrollPeriodChoicesFromMeta } from "../payroll/payPeriodOptions";
 import PayrollReportAnalyticsDashboard from "./PayrollReportAnalyticsDashboard";
 
 const RANGE_MODES = [
@@ -110,8 +108,17 @@ function buildQueryParams(filters) {
     if (filters.dateTo) params.date_to = filters.dateTo;
     params.date_basis = filters.dateBasis || "pay_date";
   } else if (filters.selectedPeriods?.length) {
-    params.period_start = filters.selectedPeriods.map((p) => p.split("|")[0]).join(",");
-    params.period_end = filters.selectedPeriods.map((p) => p.split("|")[1]).join(",");
+    const choices = payrollPeriodChoicesFromMeta(
+      filters.selectedPeriods.map((value) => {
+        const [start, end] = String(value).split("|");
+        return { pay_period_start: start, pay_period_end: end };
+      }),
+    );
+    const chosen = choices[0];
+    if (chosen) {
+      params.period_start = chosen.start;
+      params.period_end = chosen.end;
+    }
   }
   if (filters.userId) params.user_id = filters.userId;
   if (filters.workerCategory && filters.workerCategory !== "all") {
@@ -187,11 +194,10 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
           date_match_rule: res.data?.date_match_rule || "",
           can_view_employee_detail: res.data?.can_view_employee_detail !== false,
         });
-        const periods = res.data?.periods || [];
+        const periods = payrollPeriodChoicesFromMeta(res.data?.periods || []);
         if (periods.length) {
-          const first = `${periods[0].pay_period_start}|${periods[0].pay_period_end}`;
-          setFilters((f) => ({ ...f, selectedPeriods: [first] }));
-          setApplied((f) => ({ ...f, selectedPeriods: [first] }));
+          setFilters((f) => ({ ...f, selectedPeriods: [periods[0].value] }));
+          setApplied((f) => ({ ...f, selectedPeriods: [periods[0].value] }));
         }
       })
       .catch((e) => setError(e.response?.data?.error || e.message || "Could not load report meta"));
@@ -379,13 +385,26 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
   );
 
   const periodOptions = useMemo(
-    () =>
-      (meta.periods || []).map((p) => ({
-        value: `${p.pay_period_start}|${p.pay_period_end}`,
-        label: p.label || inclusivePeriodText(p.pay_period_start, p.pay_period_end),
-      })),
+    () => payrollPeriodChoicesFromMeta(meta.periods || []),
     [meta.periods],
   );
+  const selectedPeriodValue = useMemo(() => {
+    const raw = filters.selectedPeriods[0] || "";
+    const [start, end] = raw.split("|");
+    const normalized = payrollPeriodChoicesFromMeta(
+      raw ? [{ pay_period_start: start, pay_period_end: end }] : [],
+    )[0]?.value || "";
+    if (normalized && periodOptions.some((o) => o.value === normalized)) return normalized;
+    return periodOptions[0]?.value || "";
+  }, [filters.selectedPeriods, periodOptions]);
+
+  useEffect(() => {
+    if (!selectedPeriodValue) return;
+    if (filters.selectedPeriods.length === 1 && filters.selectedPeriods[0] === selectedPeriodValue) {
+      return;
+    }
+    setFilters((f) => ({ ...f, selectedPeriods: [selectedPeriodValue] }));
+  }, [selectedPeriodValue, filters.selectedPeriods]);
 
   const applyFilters = () => {
     if (filters.rangeMode === "date_range") {
@@ -490,12 +509,9 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
         applied.dateBasis === "period_overlap" ? "Payroll Period Overlap" : "Pay Date";
       return `Payroll Report: ${applied.dateFrom} – ${applied.dateTo} (${basis} Basis)`;
     }
-    if (applied.rangeMode === "period" && applied.selectedPeriods?.length === 1) {
+    if (applied.rangeMode === "period" && applied.selectedPeriods?.length) {
       const [ps, pe] = applied.selectedPeriods[0].split("|");
-      return `Payroll Period: ${ps} – ${pe}`;
-    }
-    if (applied.rangeMode === "period" && applied.selectedPeriods?.length > 1) {
-      return `Payroll Period Report (${applied.selectedPeriods.length} periods)`;
+      return `Payroll Period: ${inclusivePeriodText(ps, pe)}`;
     }
     return "Payroll Reports";
   }, [report, applied]);
@@ -556,28 +572,13 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
               <FormControl size="small" sx={{ minWidth: 220, flex: { md: "1 1 240px" } }}>
                 <InputLabel>Payroll period</InputLabel>
                 <Select
-                  multiple
                   label="Payroll period"
-                  value={filters.selectedPeriods}
-                  onChange={(e) =>
-                    patch({
-                      selectedPeriods:
-                        typeof e.target.value === "string"
-                          ? e.target.value.split(",")
-                          : e.target.value,
-                    })
-                  }
-                  input={<OutlinedInput label="Payroll period" />}
-                  renderValue={(selected) =>
-                    selected
-                      .map((v) => periodOptions.find((o) => o.value === v)?.label || v)
-                      .join(", ")
-                  }
+                  value={selectedPeriodValue}
+                  onChange={(e) => patch({ selectedPeriods: e.target.value ? [e.target.value] : [] })}
                 >
                   {periodOptions.map((o) => (
                     <MenuItem key={o.value} value={o.value}>
-                      <Checkbox checked={filters.selectedPeriods.includes(o.value)} />
-                      <ListItemText primary={o.label} />
+                      {o.label}
                     </MenuItem>
                   ))}
                 </Select>

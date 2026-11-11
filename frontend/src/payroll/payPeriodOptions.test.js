@@ -3,6 +3,7 @@ import {
   buildPayrollPeriodChoices,
   formatAccountantByBatchOptionLabel,
   mergePayPeriodOptions,
+  payrollPeriodChoicesFromMeta,
   resolveAccountantBatchById,
 } from "./payPeriodOptions";
 import { accountantPeriodStatusLabel } from "./accountantBatchPick";
@@ -279,5 +280,21 @@ describe("Monday–Sunday payroll weeks", () => {
       164,
     ]);
     expect(periodBatchesForDashboard(batches, "2026-11-09", "2026-11-15")).toEqual([]);
+  });
+
+  it("drops the invalid next-Monday duplicate from the report selector", () => {
+    const choices = payrollPeriodChoicesFromMeta([
+      { pay_period_start: "2026-11-02", pay_period_end: "2026-11-09", label: "2026-11-02 – 2026-11-09" },
+      { pay_period_start: "2026-11-02", pay_period_end: "2026-11-08", label: "2026-11-02 – 2026-11-08" },
+      { pay_period_start: "2026-11-09", pay_period_end: "2026-11-15" },
+    ]);
+    expect(choices.map((c) => c.value)).toEqual([
+      "2026-11-02|2026-11-08",
+      "2026-11-09|2026-11-15",
+    ]);
+    expect(choices[0].label).toBe("2026-11-02 – 2026-11-08");
+    expect(choices.some((c) => c.label.includes("2026-11-09") && c.value.startsWith("2026-11-02"))).toBe(
+      false,
+    );
   });
 });

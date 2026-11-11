@@ -499,9 +499,10 @@ export default function PayoutBatchesPanel({
         setDetail(batch);
         setSelectedId(id);
         if (batch?.pay_period_start && batch?.pay_period_end) {
+          const period = canonicalInclusiveYmd(batch.pay_period_start, batch.pay_period_end);
           onPayPeriodChange?.({
-            start: batch.pay_period_start,
-            end: batch.pay_period_end,
+            start: period.start,
+            end: period.end,
             category: batch.worker_category,
           });
         }
@@ -570,8 +571,8 @@ export default function PayoutBatchesPanel({
       const res = await postPayoutBatch(payload);
       setCreateOpen(false);
       onPayPeriodChange?.({
-        start: draft.pay_period_start,
-        end: draft.pay_period_end,
+        start: period.start,
+        end: period.end,
         category: draft.worker_category,
       });
       const n = res.data?.lines?.length || 0;
@@ -602,8 +603,7 @@ export default function PayoutBatchesPanel({
       setDetail(res.data);
       setEditOpen(false);
       onPayPeriodChange?.({
-        start: draft.pay_period_start,
-        end: draft.pay_period_end,
+        ...canonicalInclusiveYmd(draft.pay_period_start, draft.pay_period_end),
         category: detail?.worker_category || draft.worker_category,
       });
       await loadList();

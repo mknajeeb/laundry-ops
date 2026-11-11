@@ -17,7 +17,7 @@ import {
   PAYROLL_SEARCH_MODES,
 } from "../payroll/payPeriodDefaults";
 import { normPayPeriodYmd } from "../payroll/payPeriodOptions";
-import { weekEndFromStart } from "../utils/businessTime";
+import { canonicalInclusiveYmd, weekEndFromStart, weekStartFromDate } from "../utils/businessTime";
 
 /**
  * Shared payroll date search: weekly pay period dropdown or free range (default today).
@@ -59,6 +59,15 @@ export default function PayrollPeriodSearchBar({ value, onChange, batches = [] }
     if (!settingsLoaded || start) return;
     applyModeDefaults(mode, weekStartsOn);
   }, [settingsLoaded, start, mode, weekStartsOn, applyModeDefaults]);
+
+  useEffect(() => {
+    if (mode !== "pay_period" || !start) return;
+    const period = canonicalInclusiveYmd(start, end || weekEndFromStart(start), weekStartsOn);
+    const nextStart = period.start || start;
+    const nextEnd = weekEndFromStart(nextStart);
+    if (nextStart === start && nextEnd === end) return;
+    onChange?.({ mode, start: nextStart, end: nextEnd, category });
+  }, [mode, start, end, weekStartsOn, category, onChange]);
 
   const patch = (p) => onChange?.({ mode, start, end, category, ...p });
 
@@ -108,8 +117,12 @@ export default function PayrollPeriodSearchBar({ value, onChange, batches = [] }
               />
               <PayrollDateField
                 label="Week end"
-                value={end}
-                onChange={(v) => patch({ end: v })}
+                value={start ? weekEndFromStart(start) : end}
+                onChange={(v) => {
+                  if (!v) return;
+                  const weekStart = weekStartFromDate(v, weekStartsOn);
+                  patch({ start: weekStart, end: weekEndFromStart(weekStart) });
+                }}
               />
             </Stack>
           </Box>

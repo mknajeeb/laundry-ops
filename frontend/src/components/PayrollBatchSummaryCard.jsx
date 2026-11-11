@@ -8,6 +8,7 @@ import {
   primaryAction,
 } from "../payroll/payrollBatchStatus";
 import { formatPayrollWeekLabel } from "../payroll/payPeriodOptions";
+import { canonicalInclusiveYmd } from "../utils/businessTime";
 
 export default function PayrollBatchSummaryCard({
   batch,
@@ -29,6 +30,9 @@ export default function PayrollBatchSummaryCard({
     batch.pay_period_start && batch.pay_period_end
       ? formatPayrollWeekLabel(batch.pay_period_start, batch.pay_period_end)
       : null;
+  const storedPeriod = canonicalInclusiveYmd(batch.pay_period_start, batch.pay_period_end);
+  const storedEnd = String(batch.pay_period_end || "").slice(0, 10);
+  const legacyEnd = storedEnd && storedPeriod.end && storedEnd !== storedPeriod.end;
 
   return (
     <Paper variant="outlined" sx={{ p: compact ? 1.25 : 1.5 }}>
@@ -105,6 +109,12 @@ export default function PayrollBatchSummaryCard({
               </Box>
             ) : null}
           </Stack>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+            Stored payout-batch amounts. They are not recalculated when the week label is corrected.
+            {legacyEnd
+              ? ` Saved end ${storedEnd} is shown as ${storedPeriod.end}.`
+              : ""}
+          </Typography>
         </Box>
         {action && onPrimaryAction ? (
           <Stack direction="row" alignItems="center" spacing={0.5}>

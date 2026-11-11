@@ -3,6 +3,7 @@ import {
   businessTodayYmd,
   canonicalInclusiveYmd,
   formatWeekRangeLabel,
+  inclusivePeriodText,
   weekEndFromStart,
   weekStartFromDate,
 } from "../utils/businessTime";
@@ -44,8 +45,30 @@ export function buildPayPeriodOptions(weekStartsOn = 0, { weeksBack = 78, weeksF
 }
 
 export function findPayPeriodOption(options, start, end) {
-  const key = `${normPayPeriodYmd(start)}|${normPayPeriodYmd(end)}`;
+  const period = canonicalInclusiveYmd(normPayPeriodYmd(start), normPayPeriodYmd(end));
+  const key = `${period.start}|${period.end}`;
   return options.find((o) => o.key === key) || null;
+}
+
+/** One menu entry per Monday–Sunday week. A stored next-Monday end is not a second week. */
+export function payrollPeriodChoicesFromMeta(periods = []) {
+  const map = new Map();
+  for (const p of periods || []) {
+    const period = canonicalInclusiveYmd(
+      normPayPeriodYmd(p.pay_period_start || p.start),
+      normPayPeriodYmd(p.pay_period_end || p.end),
+    );
+    if (!period.start || !period.end) continue;
+    const value = `${period.start}|${period.end}`;
+    if (map.has(value)) continue;
+    map.set(value, {
+      value,
+      start: period.start,
+      end: period.end,
+      label: inclusivePeriodText(period.start, period.end),
+    });
+  }
+  return Array.from(map.values());
 }
 
 function periodKey(start, end) {
