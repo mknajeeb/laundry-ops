@@ -123,6 +123,7 @@ export default function MaintenanceTaskListPinPage() {
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [menuCategory, setMenuCategory] = useState("");
   const [branding, setBranding] = useState(null);
   const [pendingTick, setPendingTick] = useState(0);
   const [unavailableMessage, setUnavailableMessage] = useState(
@@ -355,7 +356,7 @@ export default function MaintenanceTaskListPinPage() {
         setPin("");
         prevPinLenRef.current = 0;
         await loadTodayList(sess);
-      } catch (e) {
+      } catch {
         setUnavailableMessage(t("maintenance.checklistUnavailable"));
         setPhase("unavailable");
         setPin("");
@@ -542,8 +543,37 @@ export default function MaintenanceTaskListPinPage() {
                 }}
               />
 
+              {!menuCategory && grouped.length > 1 ? (
+                <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1 }}>
+                  {grouped.map((group) => (
+                    <Button
+                      key={group.category}
+                      onClick={() => setMenuCategory(group.category)}
+                      sx={{
+                        minHeight: 72,
+                        textTransform: "none",
+                        fontWeight: 800,
+                        color: OPS_MOBILE.navy,
+                        bgcolor: "#fff",
+                        border: `1px solid ${OPS_MOBILE.border}`,
+                        borderRadius: 2,
+                      }}
+                    >
+                      {group.category}
+                      <Typography component="span" sx={{ display: "block", fontWeight: 900 }}>
+                        {group.items.filter((item) => item.completed).length}/{group.items.length}
+                      </Typography>
+                    </Button>
+                  ))}
+                </Box>
+              ) : (
               <Stack spacing={1.25}>
-                {grouped.map((group) => (
+                {menuCategory ? (
+                  <Button onClick={() => setMenuCategory("")} sx={{ alignSelf: "flex-start", textTransform: "none", fontWeight: 800 }}>
+                    {t("mobileOps.back")}
+                  </Button>
+                ) : null}
+                {grouped.filter((group) => !menuCategory || group.category === menuCategory).map((group) => (
                   <Box key={group.category}>
                     <Typography
                       sx={{
@@ -572,6 +602,7 @@ export default function MaintenanceTaskListPinPage() {
                   </Box>
                 ))}
               </Stack>
+              )}
             </>
           ) : null}
 

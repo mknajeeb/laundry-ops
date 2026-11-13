@@ -33,14 +33,27 @@ describe("Management Issues Phase 1 wiring", () => {
     expect(page).toContain("html5-qrcode");
   });
 
-  it("dashboard supports by-issue and by-employee with production default", () => {
+  it("dashboard counts every issue source from the unified register", () => {
     const page = fs.readFileSync(
       path.join(root, "src/pages/ManagementIssuesDashboardPage.jsx"),
       "utf8"
     );
-    expect(page).toContain("By Issue");
-    expect(page).toContain("By Employee");
-    expect(page).toContain('useState("production")');
-    expect(page).toContain("Rate unavailable");
+    expect(page).toContain("getIssuesRegister");
+    expect(page).toContain("Found Item");
+    expect(page).not.toContain("By Issue");
+    expect(page).not.toContain("Customer order issues");
+    expect(page).toContain("Employee reports");
+    expect(page).toContain("Needs attention");
+    expect(page).toContain("date_from");
+    expect(page).toContain("status_group");
+    expect(page).toContain("category");
+    const register = fs.readFileSync(
+      path.join(root, "src/pages/ManagementIssuesPage.jsx"),
+      "utf8"
+    );
+    for (const key of ["date_from", "date_to", "source", "category", "status_group"]) {
+      expect(page).toContain(key);
+      expect(register).toContain(`searchParams.get("${key}")`);
+    }
   });
 });

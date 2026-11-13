@@ -13,10 +13,8 @@ export const OPS_MOBILE = {
   border: "rgba(22, 25, 43, 0.12)",
   /** Minimum primary touch target (px). */
   touchMin: 56,
-  /** Launcher tile height. Stays above the 56px touch minimum and fits a phone menu. */
-  tileMinHeight: 104,
-  /** Below this width, launcher uses a single column. */
-  launcherSingleColMax: 359,
+  /** Launcher tile height. Stays above the 56px touch minimum and fits a 320px menu in two columns. */
+  tileMinHeight: 84,
   radius: {
     card: 16,
     tile: 20,

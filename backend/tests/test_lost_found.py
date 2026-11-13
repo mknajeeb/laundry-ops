@@ -1020,5 +1020,121 @@ def test_report_submission_is_separate_from_supervisor_review(monkeypatch):
     assert review.status_code == 403
 
 
+def test_staff_photo_submission_is_saved_and_listed(monkeypatch, tmp_path):
+    """A non-supervisor can file a real photograph, and that report is a register row."""
+    import io
+
+    from backend.issues_register import compose_register
+
+    jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 32 + b"\xff\xd9"
+    monkeypatch.setenv("LOST_FOUND_MEDIA_ROOT", str(tmp_path))
+    monkeypatch.setenv("AZURE_STORAGE_CONNECTION_STRING", "")
+    app = Flask(__name__)
+    saved = {}
+
+    def require_user(_cursor):
+        return {"user_id": 28, "roles": ["FOLDER"], "display_name": "Ana Folder"}, None, None
+
+    register_lost_found_routes(
+        app,
+        require_user=require_user,
+        user_org_id=lambda _me: 3,
+        fetch_user_roles=lambda *_a, **_k: ["FOLDER"],
+        get_request_ip=lambda: "127.0.0.1",
+    )
+
+    class Conn:
+        def cursor(self, dictionary=True):
+            return self
+
+        def execute(self, *_a, **_k):
+            return None
+
+        def fetchone(self):
+            return None
+
+        def fetchall(self):
+            return []
+
+        def close(self):
+            return None
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+    monkeypatch.setattr("backend.db.get_db", lambda: Conn())
+    monkeypatch.setattr("backend.portal_system_users.user_is_reporting_service_account", lambda *_a, **_k: False)
+
+    def _record(*_a, **kwargs):
+        saved["report"] = kwargs
+        return {"id": 41}, True
+
+    def _photo(*_a, **kwargs):
+        saved["photo"] = kwargs
+
+    monkeypatch.setattr("backend.lost_found_routes.find_client_item", lambda *_a, **_k: None)
+    monkeypatch.setattr("backend.lost_found_routes.reporter_name_for_user", lambda *_a, **_k: "Ana Folder")
+    monkeypatch.setattr("backend.lost_found_routes.report_found_item", _record)
+    monkeypatch.setattr("backend.lost_found_routes.add_item_photo", _photo)
+    monkeypatch.setattr("backend.lost_found_routes.get_item", lambda *_a, **_k: {"id": 41})
+    monkeypatch.setattr("backend.lost_found_routes.notify_found_item", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "backend.lost_found._hydrate",
+        lambda *_a, **_k: [{
+            "id": 41,
+            "report_category": "equipment",
+            "status": "new",
+            "employee_name": "Ana Folder",
+            "location_label": "Washer 4",
+            "reported_at_display": "2026-11-13 17:00:00 ET",
+            "photos": [{"id": 7}],
+        }],
+    )
+    client = app.test_client()
+    res = client.post(
+        "/api/lost-found/report",
+        data={
+            "client_request_id": "photo-req-001",
+            "report_category": "equipment",
+            "location_kind": "washer",
+            "location_number": "4",
+            "employee_id": "99",
+            "organization_id": "9",
+            "reporter_name": "Someone Else",
+            "photos": (io.BytesIO(jpeg), "washer.jpg"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200, res.get_json()
+    body = res.get_json()
+    assert body["ok"] is True
+    assert body["created"] is True
+    assert body["item"]["photos"][0]["id"] == 7
+    assert saved["report"]["user_id"] == 28
+    assert saved["report"]["organization_id"] == 3
+    assert saved["report"]["reporter_name"] == "Ana Folder"
+    assert saved["report"]["report_category"] == "equipment"
+    assert client.get("/api/lost-found/photos/7").status_code == 403
+    assert client.post("/api/lost-found/41/status", json={"status": "resolved", "reason": "fixed"}).status_code == 403
+    stored = list(tmp_path.rglob("*.jpg"))
+    assert len(stored) == 1
+    assert stored[0].read_bytes().startswith(b"\xff\xd8")
+    register = compose_register([], [{
+        "id": 41,
+        "report_category": "equipment",
+        "status": "new",
+        "employee_name": "Ana Folder",
+        "location_label": "Washer 4",
+        "reported_at": "2026-11-13 17:00:00",
+        "photos": [{"id": 7}],
+    }])
+    assert register["rows"][0]["category_label"] == "Equipment Not Working"
+    assert register["rows"][0]["photo_count"] == 1
+    assert register["summary"]["by_source"]["employee"] == 1
+
+
 def test_activity_code_is_end_of_day_task():
     assert ACTIVITY_CODE == "custom_lost_found_reconciliation"

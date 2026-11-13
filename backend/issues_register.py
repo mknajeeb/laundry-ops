@@ -158,12 +158,12 @@ def compose_register(
 
 def _summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     by_source = {"rinse": 0, "employee": 0}
-    by_category: dict[str, int] = {}
+    by_category: dict[tuple[str, str, str], int] = {}
     groups = {"open": 0, "review": 0, "resolved": 0}
     for row in rows:
         by_source[row["source"]] = by_source.get(row["source"], 0) + 1
-        label = str(row["category_label"])
-        by_category[label] = by_category.get(label, 0) + 1
+        key = (str(row["source"]), str(row["category"]), str(row["category_label"]))
+        by_category[key] = by_category.get(key, 0) + 1
         groups[row["status_group"]] = groups.get(row["status_group"], 0) + 1
     attention = [row for row in rows if row["status_group"] in {"open", "review"}][:8]
     return {
@@ -172,7 +172,10 @@ def _summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "review": groups["review"],
         "resolved": groups["resolved"],
         "by_source": by_source,
-        "by_category": [{"label": label, "count": count} for label, count in sorted(by_category.items())],
+        "by_category": [
+            {"source": source, "category": category, "label": label, "count": count}
+            for (source, category, label), count in sorted(by_category.items(), key=lambda item: (-item[1], item[0][2]))
+        ],
         "recent": attention,
     }
 

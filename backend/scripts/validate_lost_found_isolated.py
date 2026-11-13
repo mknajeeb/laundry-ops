@@ -479,7 +479,23 @@ def main() -> int:
         client_id="redry-no-pocket",
         extra={"report_category": "redry", "redry_missing_ticket": "1"},
     )
-    check("re-dry without a pocket rejected", no_pocket.status_code == 400, no_pocket.get_data(as_text=True)[:220])
+    no_pocket_item = (no_pocket.get_json() or {}).get("item") or {}
+    check(
+        "re-dry missing ticket does not require a dryer number",
+        no_pocket.status_code == 200 and no_pocket_item.get("report_category") == "redry",
+        no_pocket.get_data(as_text=True)[:220],
+    )
+    wrong_pocket_missing = report(
+        "dryer",
+        client_id="redry-wrong-pocket-missing-number",
+        extra={"report_category": "redry", "redry_wrong_pocket": "1"},
+    )
+    check(
+        "re-dry wrong pocket requires a dryer number",
+        wrong_pocket_missing.status_code == 400
+        and (wrong_pocket_missing.get_json() or {}).get("code") == "location_number_required",
+        wrong_pocket_missing.get_data(as_text=True)[:220],
+    )
     redry_ids = []
     for size in (1, 2, 3):
         for picked in combinations(flag_names, size):
@@ -487,16 +503,24 @@ def main() -> int:
             extra.update({name: "1" if name in picked else "0" for name in flag_names})
             body = report("dryer", number="D4", client_id=f"redry-{size}-{'-'.join(picked)}", extra=extra)
             item = (body.get_json() or {}).get("item") or {}
-            flags = item.get("redry_flags") or {}
-            expected = {
-                "missing_ticket": "redry_missing_ticket" in picked,
-                "mesh_bag": "redry_mesh_bag" in picked,
-                "wrong_pocket": "redry_wrong_pocket" in picked,
-            }
-            ok = body.status_code == 200 and item.get("report_category") == "redry" and flags == expected
-            check(f"re-dry flags {','.join(picked)}", ok, body.get_data(as_text=True)[:240])
-            if item.get("id"):
-                redry_ids.append(item["id"])
+            if size == 1:
+                flags = item.get("redry_flags") or {}
+                expected = {
+                    "missing_ticket": "redry_missing_ticket" in picked,
+                    "mesh_bag": "redry_mesh_bag" in picked,
+                    "wrong_pocket": "redry_wrong_pocket" in picked,
+                }
+                ok = body.status_code == 200 and item.get("report_category") == "redry" and flags == expected
+                check(f"re-dry flags {','.join(picked)}", ok, body.get_data(as_text=True)[:240])
+                if item.get("id"):
+                    redry_ids.append(item["id"])
+            else:
+                ok = body.status_code == 400 and (body.get_json() or {}).get("code") == "redry_one_reason"
+                check(
+                    f"re-dry rejects multiple flags {','.join(picked)}",
+                    ok,
+                    body.get_data(as_text=True)[:240],
+                )
     check("re-dry reports created", bool(redry_ids), str(redry_ids))
     stored_redry = client.post(
         f"/api/lost-found/{(redry_ids or [0])[0]}/status",

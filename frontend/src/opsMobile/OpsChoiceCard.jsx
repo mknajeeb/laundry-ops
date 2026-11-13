@@ -69,8 +69,8 @@ export default function OpsChoiceCard({
               lineHeight: 1.2,
               letterSpacing: "-0.02em",
               whiteSpace: "normal",
-              wordBreak: "break-word",
-              overflowWrap: "anywhere",
+              wordBreak: compact ? "normal" : "break-word",
+              overflowWrap: compact ? "break-word" : "anywhere",
             }}
           >
             {title}

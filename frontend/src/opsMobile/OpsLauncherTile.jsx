@@ -28,10 +28,10 @@ export default function OpsLauncherTile({
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
-        gap: 0.75,
-        minHeight: { xs: OPS_MOBILE.tileMinHeight, sm: 132 },
-        px: 1.25,
-        py: 1.5,
+        gap: 0.5,
+        minHeight: { xs: OPS_MOBILE.tileMinHeight, sm: 112 },
+        px: 1,
+        py: 1,
         borderRadius: `${OPS_MOBILE.radius.tile}px`,
         textTransform: "none",
         color: OPS_MOBILE.navy,
@@ -48,8 +48,8 @@ export default function OpsLauncherTile({
     >
       <Box
         sx={{
-          width: 52,
-          height: 52,
+          width: { xs: 40, sm: 48 },
+          height: { xs: 40, sm: 48 },
           borderRadius: "14px",
           display: "flex",
           alignItems: "center",
@@ -62,14 +62,14 @@ export default function OpsLauncherTile({
         {busy ? (
           <CircularProgress size={26} sx={{ color }} />
         ) : Icon ? (
-          <Icon sx={{ fontSize: 30 }} />
+          <Icon sx={{ fontSize: { xs: 24, sm: 28 } }} />
         ) : null}
       </Box>
       <Typography
         component="span"
         sx={{
           fontWeight: 800,
-          fontSize: { xs: "1rem", sm: OPS_MOBILE.type.tileLabel },
+          fontSize: { xs: "0.92rem", sm: OPS_MOBILE.type.tileLabel },
           lineHeight: 1.2,
           textAlign: "center",
           letterSpacing: "-0.01em",

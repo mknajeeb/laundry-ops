@@ -47,9 +47,11 @@ export default function OpsTopBar({
       sx={{
         display: "flex",
         alignItems: "center",
-        gap: 1,
+        flexWrap: "wrap",
+        gap: 0.75,
         minHeight: 40,
         width: "100%",
+        maxWidth: "100%",
       }}
     >
       {onBack ? (
@@ -70,7 +72,8 @@ export default function OpsTopBar({
             bgcolor: alpha(accent, 0.08),
           }}
         >
-          {resolvedBack}
+          <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>{resolvedBack}</Box>
+          <Box component="span" sx={{ display: { xs: "inline", sm: "none" } }}>PIN</Box>
         </Button>
       ) : null}
 
@@ -83,7 +86,13 @@ export default function OpsTopBar({
         />
       ) : null}
 
-      <Box sx={{ flex: 1, minWidth: 0 }}>
+      <Box
+        sx={{
+          flex: onBack ? { xs: "1 1 100%", sm: 1 } : 1,
+          order: onBack ? { xs: 4, sm: 0 } : 0,
+          minWidth: 0,
+        }}
+      >
         {identity ? (
           <Typography
             sx={{
@@ -91,10 +100,10 @@ export default function OpsTopBar({
               fontSize: "0.8rem",
               color: theme.palette.text.primary,
               lineHeight: 1.2,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              textAlign: title || onBack ? "right" : "left",
+              overflow: onBack ? { xs: "visible", sm: "hidden" } : "hidden",
+              textOverflow: onBack ? { xs: "clip", sm: "ellipsis" } : "ellipsis",
+              whiteSpace: onBack ? { xs: "normal", sm: "nowrap" } : "nowrap",
+              textAlign: title || onBack ? { xs: "left", sm: "right" } : "left",
             }}
           >
             {identity}

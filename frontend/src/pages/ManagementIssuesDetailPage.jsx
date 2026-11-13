@@ -23,6 +23,7 @@ import {
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import { IssuesPageShell } from "../components/management/issues/ManagementIssuesSubNav";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
+import { formatIsoEtWall } from "../utils/rinseTimeFormat";
 
 export default function ManagementIssuesDetailPage() {
   const { issueId } = useParams();
@@ -187,7 +188,7 @@ export default function ManagementIssuesDetailPage() {
             </Typography>
           ) : null}
           <Typography sx={{ fontSize: 12, color: "#94a3b8", mt: 1 }}>
-            Reported {iss.reported_at_et}
+            Reported {formatIsoEtWall(iss.reported_at_et)}
           </Typography>
         </Box>
 
@@ -420,7 +421,7 @@ export default function ManagementIssuesDetailPage() {
             {events.map((ev) => (
               <Typography key={ev.id} sx={{ fontSize: 13 }}>
                 <strong>{ev.action}</strong> · {ev.actor_display_name || "—"} ·{" "}
-                {ev.created_at}
+                {formatIsoEtWall(ev.created_at)}
                 {ev.reason ? ` · ${ev.reason}` : ""}
               </Typography>
             ))}

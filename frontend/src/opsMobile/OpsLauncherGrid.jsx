@@ -1,10 +1,9 @@
 import { Box } from "@mui/material";
 import OpsLauncherTile from "./OpsLauncherTile";
-import { OPS_MOBILE } from "./tokens";
 
 /**
- * Launcher grid: two equal columns by default; one column under 360px
- * so labels and 56px+ targets stay comfortable (no text squeeze).
+ * Launcher grid stays two columns at 320px so the PIN menu fits the viewport.
+ * Tiles remain at least the shared touch minimum and wrap Spanish labels.
  */
 export default function OpsLauncherGrid({ tiles = [], busyId = "", disabled = false, onSelect }) {
   return (
@@ -12,10 +11,7 @@ export default function OpsLauncherGrid({ tiles = [], busyId = "", disabled = fa
       sx={{
         display: "grid",
         gridTemplateColumns: "1fr 1fr",
-        [`@media (max-width: ${OPS_MOBILE.launcherSingleColMax}px)`]: {
-          gridTemplateColumns: "1fr",
-        },
-        gap: 1.25,
+        gap: 1,
         width: "100%",
       }}
     >

@@ -12,6 +12,7 @@ from backend.management_issues import (
     UNMATCHED,
     _period_bounds,
     _rate,
+    append_issue_event,
     build_order_context,
     create_issue,
     dashboard_by_employee,
@@ -58,6 +59,22 @@ class FakeCursor:
 
     def fetchall(self):
         return list(self._fetchall or [])
+
+
+def test_issue_event_clock_is_explicit_utc_and_does_not_rewrite_rows():
+    cur = FakeCursor()
+    append_issue_event(
+        cur,
+        issue_id=1,
+        organization_id=1,
+        action="unmatched_created",
+        actor_user_id=3,
+        actor_display_name="Sam Supervisor",
+    )
+    sql, params = cur.executed[-1]
+    assert "UTC_TIMESTAMP()" in sql
+    assert "UPDATE" not in sql.upper()
+    assert params == (1, 1, "unmatched_created", None, None, None, 3, "Sam Supervisor")
 
 
 def test_period_bounds_and_rate():

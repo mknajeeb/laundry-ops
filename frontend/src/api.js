@@ -72,6 +72,13 @@ export const getSavedUser = () => {
 
 axios.interceptors.request.use((config) => {
   const url = String(config.url || "");
+  if (typeof FormData !== "undefined" && config.data instanceof FormData && config.headers) {
+    if (typeof config.headers.delete === "function") config.headers.delete("Content-Type");
+    else {
+      delete config.headers["Content-Type"];
+      delete config.headers["content-type"];
+    }
+  }
   /** Public PIN surfaces — never send another user's Bearer token. */
   if (
     url.includes("/auth/attendance-pin-unlock") ||

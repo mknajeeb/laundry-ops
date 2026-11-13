@@ -1297,11 +1297,8 @@ export default function TeamStatusFlow({ onBack, onLock }) {
             spacing={0.5}
             sx={{
               mb: 1,
-              overflowX: "auto",
-              pb: 0.25,
-              mx: -0.25,
-              px: 0.25,
-              WebkitOverflowScrolling: "touch",
+              flexWrap: "wrap",
+              rowGap: 0.5,
             }}
           >
             {(upcomingData?.chips || []).map((chip) => {
@@ -1314,7 +1311,6 @@ export default function TeamStatusFlow({ onBack, onLock }) {
                     minWidth: 64,
                     minHeight: 40,
                     px: 1,
-                    flexShrink: 0,
                     textTransform: "none",
                     fontWeight: 850,
                     fontSize: "0.78rem",

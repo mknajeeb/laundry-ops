@@ -22,6 +22,7 @@ import { getIssuesRegister, getLostFoundItem, getLostFoundPhoto, updateLostFound
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import { IssuesPageShell } from "../components/management/issues/ManagementIssuesSubNav";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
+import { formatIsoEtWall } from "../utils/rinseTimeFormat";
 import { businessTodayYmd } from "../utils/businessTime";
 
 const FOUND_STATUSES = ["new", "under_review", "returned", "stored", "resolved"];
@@ -67,8 +68,8 @@ export default function ManagementIssuesPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const today = businessTodayYmd();
-  const [dateFrom, setDateFrom] = useState(shiftDay(today, -29));
-  const [dateTo, setDateTo] = useState(today);
+  const [dateFrom, setDateFrom] = useState(searchParams.get("date_from") || shiftDay(today, -29));
+  const [dateTo, setDateTo] = useState(searchParams.get("date_to") || today);
   const [q, setQ] = useState("");
   const [source, setSource] = useState(searchParams.get("source") || "all");
   const [category, setCategory] = useState(searchParams.get("category") || "");
@@ -216,7 +217,7 @@ export default function ManagementIssuesPage() {
                 </TableRow>
               ) : rows.map((row) => (
                 <TableRow key={row.key} hover onClick={() => openRow(row)} sx={{ cursor: "pointer" }}>
-                  <TableCell>{row.reported_at || row.business_date}</TableCell>
+                  <TableCell>{formatIsoEtWall(row.reported_at || row.business_date)}</TableCell>
                   <TableCell>{row.source === "employee" ? "Employee" : "Customer"}</TableCell>
                   <TableCell>{row.category_label}</TableCell>
                   <TableCell>{row.employee_name || "—"}</TableCell>

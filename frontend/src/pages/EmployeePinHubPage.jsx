@@ -652,7 +652,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         sx={{
           width: "100%",
           borderRadius: `${OPS_MOBILE.radius.card}px`,
-          p: { xs: 2, sm: 2.5 },
+          p: { xs: phase === "menu" ? 1.25 : 2, sm: 2.5 },
           bgcolor: alpha("#fff", 0.96),
           boxShadow: `0 8px 28px -16px ${alpha(VW.navy, 0.35)}`,
         }}

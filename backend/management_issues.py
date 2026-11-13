@@ -321,12 +321,17 @@ def append_issue_event(
     before: Any = None,
     after: Any = None,
 ) -> None:
+    # created_at is an infrastructure clock. The issue API treats that key as
+    # UTC and shows it in Eastern. CURRENT_TIMESTAMP follows the database
+    # server timezone, so an Eastern server stored Eastern wall time and the
+    # display shifted it a second time. UTC_TIMESTAMP() keeps new events on
+    # the UTC contract. Rows already stored are not updated.
     cursor.execute(
         f"""
         INSERT INTO {EVENTS_TABLE}
           (issue_id, organization_id, action, before_json, after_json, reason,
-           actor_user_id, actor_display_name)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+           actor_user_id, actor_display_name, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, UTC_TIMESTAMP())
         """,
         (
             int(issue_id),

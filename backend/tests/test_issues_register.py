@@ -40,6 +40,9 @@ def test_employee_and_customer_issues_stay_distinct_and_count_together():
     employee = payload["rows"][0]
     assert employee["photo_count"] == 1
     assert employee["category_label"] == "Found Item"
+    categories = {(row["source"], row["category"], row["count"]) for row in payload["summary"]["by_category"]}
+    assert ("employee", "orphan", 1) in categories
+    assert ("rinse", "MISSING", 1) in categories
 
 
 def test_status_card_counts_ignore_the_status_filter():

@@ -229,6 +229,8 @@ export default function CleaningTasksPinPage() {
   const [inputRemarks, setInputRemarks] = useState("");
   const [checkoffCode, setCheckoffCode] = useState(null);
   const [workRemark, setWorkRemark] = useState("");
+  const [taskPane, setTaskPane] = useState("");
+  const [taskCategory, setTaskCategory] = useState("");
 
   const activeSchema = active?.input_schema || inputDraftTask?.input_schema || [];
   const completedName = localizedConfigured(
@@ -983,14 +985,79 @@ export default function CleaningTasksPinPage() {
           </Button>
         </Stack>
       ) : (
-        <Stack spacing={2.5}>
+        <>
+        {taskPane === "" ? (
+          <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1 }}>
+            {[
+              ["tasks", t("tasks.pin.myTasks"), (data?.tasks_by_category || []).reduce((n, group) => n + (group.tasks || []).length, 0)],
+              ["verify", t("tasks.pin.toVerify", { count: verifyQueue.length }), verifyQueue.length],
+              ["checklists", t("tasks.pin.checklists", { count: checklists.length }), checklists.length],
+            ].map(([id, label, count]) => (
+              <Button
+                key={id}
+                onClick={() => { setTaskCategory(""); setTaskPane(id); }}
+                sx={{
+                  minHeight: 84,
+                  display: "flex",
+                  flexDirection: "column",
+                  textTransform: "none",
+                  fontWeight: 800,
+                  color: OPS_MOBILE.navy,
+                  bgcolor: "#fff",
+                  border: `1px solid ${OPS_MOBILE.border}`,
+                  borderRadius: 2,
+                }}
+              >
+                {label}
+                <Typography component="span" sx={{ fontWeight: 900, fontSize: 22 }}>{count}</Typography>
+              </Button>
+            ))}
+          </Box>
+        ) : (
+          <Button
+            onClick={() => {
+              if (taskPane === "tasks" && taskCategory) {
+                setTaskCategory("");
+                return;
+              }
+              setTaskPane("");
+              setTaskCategory("");
+            }}
+            sx={{ alignSelf: "flex-start", textTransform: "none", fontWeight: 800, mb: 1 }}
+          >
+            {t("mobileOps.back")}
+          </Button>
+        )}
+        <Stack spacing={1.25} sx={{ display: taskPane ? "flex" : "none" }}>
+          {taskPane === "tasks" ? (
           <Box>
             <Typography sx={{ fontWeight: 900, mb: 1, color: OPS_MOBILE.navy, fontSize: "1.1rem" }}>
               {t("tasks.pin.myTasks")}
             </Typography>
-            {(data?.tasks_by_category || []).length ? (
-              <Stack spacing={2}>
+            {(data?.tasks_by_category || []).length && !taskCategory ? (
+              <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1 }}>
                 {(data.tasks_by_category || []).map((group) => (
+                  <Button
+                    key={group.category_code}
+                    onClick={() => setTaskCategory(group.category_code)}
+                    sx={{
+                      minHeight: 72,
+                      textTransform: "none",
+                      fontWeight: 800,
+                      color: OPS_MOBILE.navy,
+                      bgcolor: "#fff",
+                      border: `1px solid ${OPS_MOBILE.border}`,
+                      borderRadius: 2,
+                    }}
+                  >
+                    {categoryLabel(t, group.category_code, group.category_name)}
+                    <Typography component="span" sx={{ display: "block", fontWeight: 900 }}>{(group.tasks || []).length}</Typography>
+                  </Button>
+                ))}
+              </Box>
+            ) : (data?.tasks_by_category || []).length ? (
+              <Stack spacing={2}>
+                {(data.tasks_by_category || []).filter((group) => !taskCategory || group.category_code === taskCategory).map((group) => (
                   <Box key={group.category_code}>
                     <Typography sx={{ fontWeight: 800, mb: 1, color: OPS_MOBILE.navy }}>
                       {categoryLabel(t, group.category_code, group.category_name)}
@@ -1016,7 +1083,10 @@ export default function CleaningTasksPinPage() {
               </Typography>
             )}
           </Box>
+          ) : null}
 
+          {taskPane === "verify" ? (
+          <>
           <Box>
             <Typography sx={{ fontWeight: 900, mb: 1, color: OPS_MOBILE.navy, fontSize: "1.1rem" }}>
               {t("tasks.pin.toVerify", { count: verifyQueue.length })}
@@ -1158,7 +1228,10 @@ export default function CleaningTasksPinPage() {
               </Stack>
             </Box>
           ) : null}
+          </>
+          ) : null}
 
+          {taskPane === "checklists" ? (
           <Box>
             <Typography sx={{ fontWeight: 900, mb: 1, color: OPS_MOBILE.navy, fontSize: "1.1rem" }}>
               {t("tasks.pin.checklists", { count: checklists.length })}
@@ -1308,7 +1381,9 @@ export default function CleaningTasksPinPage() {
               )}
             </Stack>
           </Box>
+          ) : null}
         </Stack>
+        </>
       )}
     </OpsMobileShell>
   );
