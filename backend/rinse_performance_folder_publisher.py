@@ -324,6 +324,8 @@ def partition_employees_by_exclusion(day: dict[str, Any]) -> dict[str, Any]:
     an EXCLUDED badge. They are also mirrored in ``excluded_employees``. Active
     summary / rates never include EXCLUDED days.
     """
+    from backend.rinse_performance_employee_day import approved_contribution_is_rankable
+
     employees = list(day.get("employees") or [])
     active = [
         e
@@ -339,7 +341,7 @@ def partition_employees_by_exclusion(day: dict[str, Any]) -> dict[str, Any]:
         st = str(emp.get("day_publication_status") or emp.get("publication_status") or "")
         emp["excluded_from_metrics"] = st == "EXCLUDED"
         emp["metrics_basis"] = emp.get("metrics_basis") or "approved_non_excluded"
-        emp["dashboard_rankable"] = st == "APPROVED"
+        emp["dashboard_rankable"] = approved_contribution_is_rankable(emp)
     summary = dict(day.get("summary") or {})
     summary.update(_recompute_summary_from_employees(active))
     # Preserve unmapped counts from original summary.

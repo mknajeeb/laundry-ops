@@ -3187,6 +3187,23 @@ export const postManagementWfFolderAttributionReset = (body) =>
     timeout: 60000,
   });
 
+export const putManagementFolderAutoApprove = (body) =>
+  axios.put(`${API_BASE}/api/management/performance/FOLDER/auto-approve`, body, {
+    timeout: 30000,
+  });
+
+export const postManagementFolderAdjustment = (body) =>
+  axios.post(`${API_BASE}/api/management/performance/wf-folder/adjustments`, body, {
+    timeout: 60000,
+  });
+
+export const postManagementFolderAdjustmentPublication = (adjustmentKey, body) =>
+  axios.post(
+    `${API_BASE}/api/management/performance/wf-folder/adjustments/${encodeURIComponent(adjustmentKey)}/publication`,
+    body,
+    { timeout: 60000 }
+  );
+
 export const postManagementPerformanceApproveSession = (roleKey, sessionId, body = {}) =>
   axios.post(
     `${API_BASE}/api/management/performance/${encodeURIComponent(roleKey)}/sessions/${encodeURIComponent(sessionId)}/approve`,

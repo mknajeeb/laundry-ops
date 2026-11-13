@@ -96,7 +96,7 @@ def test_maria_disapprove_drops_from_performance_keeps_visible():
     )
     emp = _compose(patched)
     assert emp["day_publication_status"] == "PARTIALLY_APPROVED"
-    assert emp["dashboard_rankable"] is False
+    assert emp["dashboard_rankable"] is True
     assert len(emp["sessions"]) == 2
     # Performance = WF-02 only
     assert emp["orders_completed"] == 4
@@ -123,14 +123,15 @@ def test_maria_acceptance_sequence_approved_subset():
     )
     emp = _compose(sessions)
     assert emp["day_publication_status"] == "PARTIALLY_APPROVED"
-    assert emp["dashboard_rankable"] is False
+    assert emp["dashboard_rankable"] is True
     assert emp["orders_completed"] == 4
     assert abs(float(emp["lbs_per_hour"]) - 40.0) < 0.05
 
     day = {"employees": [emp], "summary": {}}
     partition_employees_by_exclusion(day)
     assert day["summary"]["employee_day_count"] == 1
-    assert day["summary_approved"]["employee_day_count"] == 0
+    assert day["summary_approved"]["employee_day_count"] == 1
+    assert day["summary_approved"]["orders_completed"] == 4
 
     # Exclude WF-01 → still visible EXCLUDED; Performance still WF-02
     sessions = apply_session_publication_patch(
@@ -150,7 +151,7 @@ def test_maria_acceptance_sequence_approved_subset():
     emp = _compose(sessions)
     assert emp["orders_completed"] == 4
     assert emp["all_visible_orders_completed"] == 12
-    assert emp["dashboard_rankable"] is False
+    assert emp["dashboard_rankable"] is True
 
     # Re-approve WF-01 → full day
     sessions = apply_session_publication_patch(
@@ -256,7 +257,7 @@ def test_tarannum_approved_subset_sequence():
     emp = compose(sessions)
     assert len(emp["sessions"]) == 3
     assert emp["day_publication_status"] == "PARTIALLY_APPROVED"
-    assert emp["dashboard_rankable"] is False
+    assert emp["dashboard_rankable"] is True
     assert emp["orders_completed"] == 4
     assert emp["total_pre_lbs"] == 100.0
     assert emp["performance_hours"] == 1.5
@@ -267,7 +268,8 @@ def test_tarannum_approved_subset_sequence():
 
     day = {"employees": [emp], "summary": {}}
     partition_employees_by_exclusion(day)
-    assert day["summary_approved"]["employee_day_count"] == 0  # not Published
+    assert day["summary_approved"]["employee_day_count"] == 1
+    assert day["summary_approved"]["orders_completed"] == 4
 
     # Approve WF-01 → WF-01 + WF-03
     sessions = apply_session_publication_patch(
@@ -279,7 +281,8 @@ def test_tarannum_approved_subset_sequence():
     assert abs(float(emp["performance_hours"]) - 6.2) < 0.01  # 4.7+1.5
     assert abs(float(emp["lbs_per_hour"]) - (305.0 / 6.2)) < 0.05
     assert emp["pending_session_count"] == 1
-    assert emp["dashboard_rankable"] is False
+    assert emp["day_publication_status"] == "PARTIALLY_APPROVED"
+    assert emp["dashboard_rankable"] is True
 
     # Approve WF-02 → full day ~49.7
     sessions = apply_session_publication_patch(
@@ -307,7 +310,8 @@ def test_tarannum_approved_subset_sequence():
     assert abs(float(emp["total_pre_lbs"]) - 148.0) < 0.01
     assert abs(float(emp["performance_hours"]) - 2.4) < 0.01
     assert abs(float(emp["lbs_per_hour"]) - (148.0 / 2.4)) < 0.05
-    assert emp["dashboard_rankable"] is False
+    assert emp["day_publication_status"] == "PARTIALLY_APPROVED"
+    assert emp["dashboard_rankable"] is True
     assert len(emp["sessions"]) == 3  # still visible
 
     # Exclude WF-01 → zero contribution; Performance still WF-02+WF-03

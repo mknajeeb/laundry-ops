@@ -146,6 +146,14 @@ def _annotate_dashboard(cursor, oid: int, payload: dict, selected: date) -> dict
         payload.pop(_BASELINE_DAY_STASH, None) if isinstance(payload, dict) else None
     )
     attach_publication_status_to_day(cursor, oid, payload)
+    try:
+        from backend.rinse_performance_supervisor_adjustments import (
+            attach_supervisor_adjustments,
+        )
+
+        attach_supervisor_adjustments(cursor, oid, payload)
+    except Exception:
+        payload["supervisor_adjustments"] = payload.get("supervisor_adjustments") or []
     partition_employees_by_exclusion(payload)
 
     # Backfill Rinse Hub publication cache from authoritative employee-days.
@@ -195,6 +203,12 @@ def _annotate_dashboard(cursor, oid: int, payload: dict, selected: date) -> dict
             }
 
     payload["folder_benchmark_lbs_hr"] = get_folder_benchmark(cursor, oid)
+    try:
+        from backend.rinse_performance_auto_approve import get_auto_approve_setting
+
+        payload.update(get_auto_approve_setting(cursor, oid))
+    except Exception:
+        payload["auto_approve_at_target"] = False
     payload["performance_unit"] = "employee_day"
     payload["roles_available"] = [
         {
@@ -272,11 +286,13 @@ def register_management_wf_folder_performance_routes(
             if err_ce:
                 return err_ce
             # Baseline delta is optional — default on for Today UX, skippable for speed.
+            # Baseline is a second request from the client so the first paint
+            # does not wait on the same-weekday rebuild.
             include_baseline = str(
                 request.args.get("include_baseline")
                 or request.args.get("include_baseline_delta")
-                or "1"
-            ).strip().lower() not in {"0", "false", "no"}
+                or "0"
+            ).strip().lower() in {"1", "true", "yes"}
             payload = build_folder_performance_dashboard(
                 cursor,
                 oid,
@@ -1128,6 +1144,154 @@ def register_management_wf_folder_performance_routes(
             out = put_folder_benchmark(cursor, oid, value)
             conn.commit()
             return jsonify(json_safe_rinse({"ok": True, "role_key": ROLE_FOLDER, **out}))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/performance/FOLDER/auto-approve", methods=["GET", "PUT"])
+    def management_folder_auto_approve_setting():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            from backend.rinse_performance_auto_approve import (
+                get_auto_approve_setting,
+                put_auto_approve_setting,
+            )
+
+            if request.method == "GET":
+                if not (_role_set(me) & HUB_READ_ROLES):
+                    return jsonify({"error": "Forbidden"}), 403
+                return jsonify(json_safe_rinse(get_auto_approve_setting(cursor, oid)))
+            if not (_role_set(me) & HUB_WRITE_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            body = request.get_json(silent=True) or {}
+            enabled = body.get("enabled", body.get("auto_approve_at_target"))
+            if not isinstance(enabled, bool):
+                return jsonify({"error": "enabled boolean required"}), 400
+            out = put_auto_approve_setting(cursor, oid, enabled=enabled)
+            conn.commit()
+            return jsonify(json_safe_rinse({"ok": True, **out}))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/performance/wf-folder/adjustments", methods=["POST"])
+    def management_wf_folder_adjustment():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_WRITE_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            blocked = refuse_wf_mutation_if_maintenance(cursor, oid)
+            if blocked:
+                return blocked
+            body = request.get_json(silent=True) or {}
+            selected, err = _selected_date_et(body.get("date_et") or body.get("business_date_et"))
+            if err:
+                return err
+            from backend.rinse_performance_supervisor_adjustments import (
+                create_or_update_adjustment,
+                resolve_bag_cycle,
+            )
+
+            actor_id, actor_name = _actor(me)
+            cycles = []
+            for bag in body.get("bags") or []:
+                if not isinstance(bag, dict):
+                    continue
+                cycle = resolve_bag_cycle(
+                    cursor,
+                    oid,
+                    bag_id=str(bag.get("bag_id") or ""),
+                    selected_date_et=selected,
+                    order_instance_id=bag.get("order_instance_id"),
+                )
+                if not cycle:
+                    return jsonify({"error": "missing_cycle", "bag_id": bag.get("bag_id")}), 400
+                cycle["original_employee"] = bag.get("original_employee")
+                cycle["weight_lbs"] = bag.get("weight_lbs")
+                cycle["segment_id"] = bag.get("segment_id")
+                cycle["from_session_id"] = bag.get("from_session_id")
+                cycle["replace_existing"] = bool(bag.get("replace_existing"))
+                cycles.append(cycle)
+            out = create_or_update_adjustment(
+                cursor,
+                oid,
+                business_date_et=selected,
+                employee_user_id=body.get("employee_user_id"),
+                employee_name=str(body.get("employee_name") or ""),
+                reason=str(body.get("reason") or ""),
+                notes=body.get("notes"),
+                adjustment_key=body.get("adjustment_key"),
+                target_session_id=body.get("target_session_id"),
+                raw_orders=body.get("raw_orders"),
+                raw_lbs=body.get("raw_lbs"),
+                raw_hours=body.get("raw_hours"),
+                corrected_orders=body.get("corrected_orders"),
+                corrected_lbs=body.get("corrected_lbs"),
+                corrected_hours=body.get("corrected_hours"),
+                approved_lbs_per_hour=body.get("approved_lbs_per_hour"),
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+                bag_cycles=cycles,
+            )
+            if not out.get("ok"):
+                conn.rollback()
+                return jsonify(json_safe_rinse(out)), 400
+            conn.commit()
+            return jsonify(json_safe_rinse(out))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/api/management/performance/wf-folder/adjustments/<adjustment_key>/publication",
+        methods=["POST"],
+    )
+    def management_wf_folder_adjustment_publication(adjustment_key: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_WRITE_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            body = request.get_json(silent=True) or {}
+            from backend.rinse_performance_supervisor_adjustments import (
+                set_adjustment_publication,
+            )
+
+            actor_id, actor_name = _actor(me)
+            out = set_adjustment_publication(
+                cursor,
+                oid,
+                adjustment_key=adjustment_key,
+                status=str(body.get("status") or ""),
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+                reason=body.get("reason"),
+            )
+            if not out.get("ok"):
+                conn.rollback()
+                return jsonify(json_safe_rinse(out)), 400
+            conn.commit()
+            return jsonify(json_safe_rinse(out))
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
         finally:

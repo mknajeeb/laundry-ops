@@ -24,10 +24,18 @@ def main(argv: list[str] | None = None) -> int:
 
     from backend.db import get_db
     from backend.hr_compliance import run_document_compliance_tick
+    from backend.rinse_performance_auto_approve import process_pending_auto_approve_queue
 
     conn = get_db()
     try:
         out = run_document_compliance_tick(conn, dry_run=args.dry_run)
+        if not args.dry_run:
+            cur = conn.cursor(dictionary=True)
+            try:
+                out["folder_auto_approve"] = process_pending_auto_approve_queue(cur)
+                conn.commit()
+            finally:
+                cur.close()
         print(json.dumps(out, indent=2, default=str))
         return 0 if not out.get("errors") else 2
     finally:

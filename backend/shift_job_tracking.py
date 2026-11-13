@@ -1146,6 +1146,12 @@ def close_open_job_segment(
             """,
             (ended, int(session_id)),
         )
+    try:
+        from backend.rinse_performance_auto_approve import enqueue_folder_segment_close
+
+        enqueue_folder_segment_close(conn, int(session_id))
+    except Exception:
+        pass
     sets = []
     if table_has_column(c, "shift_sessions", "current_job_name_id"):
         sets.append("current_job_name_id=NULL")

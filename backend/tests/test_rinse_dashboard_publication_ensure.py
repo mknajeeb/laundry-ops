@@ -205,7 +205,7 @@ def test_cold_start_empty_pubs_fully_approved_appears_without_management_visit()
     assert len(cur.rows) == 1  # no duplicates
 
 
-def test_cold_start_partial_tarannum_not_published():
+def test_cold_start_partial_tarannum_publishes_approved_subset():
     cur = EnsureCursor()
     cur.approvals.append(_approval("3", touch=datetime(2026, 9, 21, 10, 0, 0)))
     sessions = [
@@ -238,15 +238,15 @@ def test_cold_start_partial_tarannum_not_published():
         )
 
     assert len(cur.rows) == 1
-    assert next(iter(cur.rows.values()))["dashboard_rankable"] == 0
-    # Live subset still WF-03
+    assert next(iter(cur.rows.values()))["dashboard_rankable"] == 1
     emp = day_payload["employees"][0]
     assert emp["orders_completed"] == 4
     assert abs(float(emp["lbs_per_hour"]) - (100.0 / 1.5)) < 0.05
 
     payload = build_role_leaderboard(cur, 3, role_key=ROLE_FOLDER, week_start=WEEK)
-    assert payload["approved_employee_day_count"] == 0
-    assert "Tarannum" not in [r["name"] for r in payload["leaderboard"]]
+    assert payload["approved_employee_day_count"] == 1
+    assert payload["included_bags"] == 4
+    assert "Tarannum" in [r["name"] for r in payload["leaderboard"]]
 
 
 def test_orphan_publication_key_removed_on_day_resync():

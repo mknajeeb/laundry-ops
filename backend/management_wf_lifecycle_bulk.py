@@ -159,6 +159,49 @@ def bulk_load_lifecycle_rfv_scan_rows(
     return out
 
 
+def load_shared_bag_timelines(
+    cursor,
+    organization_id: int,
+    bag_ids: Iterable[str],
+) -> TimelineMap:
+    """One lifetime scan read shared by PRE weight and fold attribution.
+
+    No epoch filter here. Callers that already applied ``epoch_sql_predicate``
+    must filter with ``filter_scan_event_rows`` so the row set stays the same.
+    """
+    bags = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
+    out: TimelineMap = {b: [] for b in bags}
+    if not bags or not table_exists(cursor, "rinse_bag_scan_events"):
+        return out
+    org = int(organization_id)
+    chunk = 200
+    for i in range(0, len(bags), chunk):
+        part = bags[i : i + chunk]
+        ph = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT id, bag_id, purpose, rack, user_name, scanned_at_parsed,
+                   weight_lbs, weight_role, weight_source, weight_observed_at,
+                   weight_attach_reason, weight_presence_run_id,
+                   weight_presence_run_row_id, source_filename,
+                   time_scanned_raw
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s
+              AND bag_id IN ({ph})
+              AND scanned_at_parsed IS NOT NULL
+            ORDER BY bag_id ASC, scanned_at_parsed ASC, id ASC
+            """,
+            (org, *part),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            bid = normalize_bag_id(row.get("bag_id"))
+            if bid and bid in out:
+                out[bid].append(dict(row))
+    return out
+
+
 def bulk_load_bag_timelines(
     cursor,
     organization_id: int,

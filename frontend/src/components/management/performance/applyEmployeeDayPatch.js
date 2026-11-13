@@ -60,11 +60,24 @@ function recomputeSummary(employees) {
   return sumEmployees(active);
 }
 
+function hasApprovedContribution(employee) {
+  const status = String(employee?.day_publication_status || employee?.publication_status || "");
+  if (status === "EXCLUDED" || employee?.excluded_from_metrics) return false;
+  if (status === "APPROVED" || employee?.dashboard_rankable === true) return true;
+  const approvedSessions = Number(employee?.approved_session_count) || 0;
+  const approvedAdjustments = Number(employee?.approved_adjustment_count) || 0;
+  if (approvedSessions <= 0 && approvedAdjustments <= 0) return false;
+  const orders = Number(employee?.orders_completed) || 0;
+  const hours = Number(employee?.performance_hours || employee?.session_hours) || 0;
+  return orders > 0 || hours > 0;
+}
+
 function recomputeApprovedSummary(employees) {
   const approved = (employees || []).filter(
     (e) =>
       e.dashboard_rankable === true ||
-      String(e.day_publication_status || e.publication_status || "") === "APPROVED"
+      String(e.day_publication_status || e.publication_status || "") === "APPROVED" ||
+      hasApprovedContribution(e)
   );
   return sumEmployees(approved);
 }

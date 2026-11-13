@@ -5,7 +5,7 @@ HARD RULES:
 - Prefer 1–3 SQL queries per endpoint (hard ceiling documented per handler).
 - No N+1. No per-employee queries. No unbounded history on page load.
 
-Published eligibility: dashboard_rankable=1 (fully APPROVED employee-days only).
+Published eligibility: dashboard_rankable=1 (any employee-day with an approved contribution).
 Weekly rates: Σ day pounds / Σ day hours — never AVG of session or day rates.
 rinse_performance_employee_day_publications is a derived cache only; metrics
 come from Management compose/recompute_employee_day_metrics.

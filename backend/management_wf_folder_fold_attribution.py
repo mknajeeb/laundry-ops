@@ -259,6 +259,8 @@ def enrich_folder_performance_bags_with_oi_fold_attribution(
     organization_id: int,
     selected_date_et: date,
     bags: Sequence[Mapping[str, Any]],
+    *,
+    preloaded_timelines: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Filter to qualifying folds and fill missing employee from OI-window evidence.
 
@@ -308,7 +310,13 @@ def enrich_folder_performance_bags_with_oi_fold_attribution(
             oi_keys.append((bid, anchor))
 
     next_anchors = bulk_load_next_oi_anchors(cursor, organization_id, oi_keys)
-    timelines = bulk_load_bag_timelines(cursor, organization_id, list(picked.keys()))
+    if preloaded_timelines is not None:
+        timelines = {
+            bid: list(preloaded_timelines.get(bid) or [])
+            for bid in picked
+        }
+    else:
+        timelines = bulk_load_bag_timelines(cursor, organization_id, list(picked.keys()))
 
     out: list[dict[str, Any]] = []
     for raw in bags or []:

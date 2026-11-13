@@ -76,6 +76,8 @@ def apply_canonical_pre_to_folder_performance_bags(
     organization_id: int,
     selected_date_et: date,
     bags: Sequence[Mapping[str, Any]],
+    *,
+    preloaded_timelines: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Overlay shared canonical PRE onto Folder Performance bag rows.
 
@@ -103,6 +105,7 @@ def apply_canonical_pre_to_folder_performance_bags(
         ids,
         selected_date_et=selected_date_et,
         include_settled_bulk_post=False,
+        preloaded_timelines=preloaded_timelines,
     )
     for bag in out:
         bid = normalize_bag_id(bag.get("bag_id"))
@@ -890,14 +893,21 @@ def build_day_folder_performance(
         for b in bags
         if str(b.get("service_type") or b.get("service_bucket") or "").upper() == "WF"
     ]
+    from backend.management_wf_lifecycle_bulk import load_shared_bag_timelines
+
+    shared_timelines = load_shared_bag_timelines(
+        cursor,
+        org,
+        [normalize_bag_id(b.get("bag_id")) for b in bags],
+    )
     bags = apply_canonical_pre_to_folder_performance_bags(
-        cursor, org, selected_date_et, bags
+        cursor, org, selected_date_et, bags, preloaded_timelines=shared_timelines
     )
     # Automatic fold / weight-entry attribution, then manager override.
     # Precedence: manual manager attribution > fold or weight-entry user.
     # Recalculation must not replace an active override.
     bags = enrich_folder_performance_bags_with_oi_fold_attribution(
-        cursor, org, selected_date_et, bags
+        cursor, org, selected_date_et, bags, preloaded_timelines=shared_timelines
     )
     for b in bags:
         b["selected_date_et"] = selected_date_et.isoformat()
@@ -1677,6 +1687,189 @@ def pop_stashed_baseline_day(payload: dict[str, Any], baseline_date: date) -> di
     return day
 
 
+def _segment_id_from_session_key(session_id: str) -> int | None:
+    tail = str(session_id or "").rsplit("-", 1)[-1]
+    if tail.isdigit():
+        return int(tail)
+    return None
+
+
+def build_targeted_session_orders(
+    cursor,
+    organization_id: int,
+    *,
+    selected_date_et: date,
+    session_id: str,
+) -> dict[str, Any] | None:
+    """Orders for one session from that employee's bags, not every mapped user.
+
+    Returns None when the session key cannot be resolved, so the caller can
+    fall back to the full day build and keep the same orders.
+    """
+    from backend.management_wf_lifecycle_bulk import load_shared_bag_timelines
+    from backend.rinse_simple_shift_performance import _load_rinse_user_maps
+    from backend.rinse_step1_productivity_fast import load_completed_productivity_day_bags
+
+    sid = str(session_id or "").strip()
+    seg_id = _segment_id_from_session_key(sid)
+    if seg_id is None or not table_exists_shift_segment(cursor):
+        return None
+    cursor.execute(
+        """
+        SELECT sjs.user_id
+        FROM shift_job_segments sjs
+        JOIN shift_sessions ss ON ss.id = sjs.shift_session_id
+        WHERE sjs.id=%s AND ss.organization_id=%s
+        LIMIT 1
+        """,
+        (seg_id, int(organization_id)),
+    )
+    row = cursor.fetchone()
+    if not isinstance(row, dict) or row.get("user_id") is None:
+        return None
+    uid = int(row["user_id"])
+    now = eastern_now().replace(tzinfo=None)
+    segs_by_user = _load_operational_folder_segments(
+        cursor, int(organization_id), [uid], selected_date_et=selected_date_et
+    )
+    segs = segs_by_user.get(uid) or []
+    session_ids = []
+    for seg in segs:
+        if seg.get("shift_session_id") is not None:
+            try:
+                session_ids.append(int(seg["shift_session_id"]))
+            except (TypeError, ValueError):
+                pass
+    sessions_by_id = load_shift_sessions_by_id(cursor, int(organization_id), session_ids)
+    sessions = _build_folder_sessions_for_user(
+        segs,
+        selected_date_et=selected_date_et,
+        sessions_by_id=sessions_by_id,
+        now_et=now,
+    )
+    if not any(str(s.get("session_id")) == sid for s in sessions):
+        signed_in = _build_sessions_from_segments(
+            segs,
+            selected_date_et=selected_date_et,
+            sessions_by_id=sessions_by_id,
+            now_et=now,
+            folder_only=False,
+            open_only=False,
+            manual_destination_only=True,
+        )
+        sessions = list(sessions) + [
+            s for s in signed_in if str(s.get("session_id")) == sid
+        ]
+    match = next((s for s in sessions if str(s.get("session_id")) == sid), None)
+    if match is None:
+        return None
+    bags = load_completed_productivity_day_bags(
+        cursor,
+        int(organization_id),
+        selected_date_et=selected_date_et,
+        include_hd=False,
+        rush_filter="all",
+    )
+    bags = [
+        dict(b)
+        for b in bags
+        if str(b.get("service_type") or b.get("service_bucket") or "").upper() == "WF"
+    ]
+    overrides = load_active_attribution_overrides(
+        cursor,
+        int(organization_id),
+        selected_date_et=selected_date_et,
+        bag_ids=[str(b.get("bag_id") or "") for b in bags],
+    )
+    owner = str(match.get("employee") or "").strip()
+    if not owner:
+        for rinse_name, mapping in (_load_rinse_user_maps(cursor, int(organization_id)) or {}).items():
+            if not isinstance(mapping, dict):
+                continue
+            try:
+                mapped_uid = int(mapping.get("user_id"))
+            except (TypeError, ValueError):
+                continue
+            if mapped_uid == uid:
+                owner = str(mapping.get("rinse_user_name") or rinse_name).strip()
+                break
+
+    def _keep(bag: Mapping[str, Any]) -> bool:
+        bid = normalize_bag_id(bag.get("bag_id"))
+        ov = overrides.get(bid) or {}
+        if str(ov.get("effective_session_id") or "") == sid:
+            return True
+        if owner and str(ov.get("effective_employee_name") or "").casefold() == owner.casefold():
+            return True
+        credited = bag.get("credited_employee") or bag.get("employee")
+        if owner and str(credited or "").casefold() == owner.casefold():
+            return True
+        if not is_provable_folder_employee(credited):
+            return True
+        return False
+
+    bags = [b for b in bags if _keep(b)]
+    timelines = load_shared_bag_timelines(
+        cursor, int(organization_id), [normalize_bag_id(b.get("bag_id")) for b in bags]
+    )
+    bags = apply_canonical_pre_to_folder_performance_bags(
+        cursor,
+        int(organization_id),
+        selected_date_et,
+        bags,
+        preloaded_timelines=timelines,
+    )
+    bags = enrich_folder_performance_bags_with_oi_fold_attribution(
+        cursor,
+        int(organization_id),
+        selected_date_et,
+        bags,
+        preloaded_timelines=timelines,
+    )
+    attributed = [
+        apply_override_to_bag(bag, overrides.get(normalize_bag_id(bag.get("bag_id"))))
+        for bag in bags
+    ]
+    if owner:
+        for sess in sessions:
+            sess["employee"] = owner
+    assigned_rows = []
+    for bag in attributed:
+        assigned = _assign_bag_into_folder_sessions(bag, sessions)
+        if str(assigned.get("session_id") or "") != sid:
+            continue
+        if assigned.get("session_assignment") in (ASSIGNMENT_UNASSIGNED, ASSIGNMENT_NEEDS_REVIEW):
+            continue
+        assigned_rows.append(assigned)
+    start = match.get("_start_dt") or _parse_dt(match.get("start_time"))
+    timed = (
+        compute_order_completion_timing(assigned_rows, session_start=start)
+        if start is not None
+        else assigned_rows
+    )
+    if timed:
+        timed = resolve_customer_names_for_bags(
+            cursor, int(organization_id), timed, selected_date_et=selected_date_et
+        )
+    from backend.order_display_id import stamp_order_display_ids
+
+    public = [_public_order_row(o) for o in timed]
+    stamp_order_display_ids(cursor, public)
+    card = _public_session_card(match, timed)
+    card["employee"] = owner or card.get("employee")
+    return {
+        "selected_date_et": selected_date_et.isoformat(),
+        "session": {k: v for k, v in card.items() if k != "orders"},
+        "orders": public,
+    }
+
+
+def table_exists_shift_segment(cursor) -> bool:
+    from backend.ta_helpers import table_exists
+
+    return table_exists(cursor, "shift_job_segments") and table_exists(cursor, "shift_sessions")
+
+
 def get_session_orders(
     cursor,
     organization_id: int,
@@ -1684,7 +1877,15 @@ def get_session_orders(
     selected_date_et: date,
     session_id: str,
 ) -> dict[str, Any]:
-    """Lazy session order drill-down (no full scan chronology)."""
+    """Lazy session order drill-down for one employee's candidate bags."""
+    targeted = build_targeted_session_orders(
+        cursor,
+        organization_id,
+        selected_date_et=selected_date_et,
+        session_id=session_id,
+    )
+    if targeted is not None:
+        return targeted
     day = build_day_folder_performance(
         cursor,
         organization_id,

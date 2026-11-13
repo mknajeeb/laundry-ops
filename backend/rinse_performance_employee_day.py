@@ -811,6 +811,7 @@ def apply_employee_day_end_time(
             "status": "invalid_session_segment",
             "session_id": perf_sid or final_sess.get("session_id"),
             "segment_id": final_sess.get("segment_id"),
+            "error": "Could not save End Time because this session is not linked to a shift segment.",
         }
 
     if end_unchanged:
@@ -891,7 +892,9 @@ def apply_employee_day_end_time(
 # Live Management Performance rates use APPROVED non-excluded sessions only.
 # Pending / Needs Approval / Disapproved remain visible in Review but contribute
 # zero until approved. Exclude zeros contribution and marks EXCLUDED.
-# Fully APPROVED employee-days are dashboard_rankable for Published boards.
+# An employee-day with any approved session or approved adjustment is
+# dashboard_rankable. The badge can stay PARTIALLY_APPROVED. Pending-only
+# days stay unranked.
 # DASHBOARD_ELIGIBILITY (module top) = approved_non_excluded.
 
 
@@ -931,6 +934,31 @@ def apply_session_publication_patch(
     return out
 
 
+def approved_contribution_is_rankable(emp: Mapping[str, Any] | None) -> bool:
+    """Approved sessions and approved adjustments publish immediately.
+
+    The employee-day badge can stay PARTIALLY_APPROVED. Pending-only days
+    stay unranked. Excluded days stay unranked.
+    """
+    if not emp:
+        return False
+    status = str(emp.get("day_publication_status") or emp.get("publication_status") or "").upper()
+    if status == "EXCLUDED" or emp.get("excluded_from_metrics"):
+        return False
+    if status == "APPROVED":
+        return True
+    approved_sessions = int(emp.get("approved_session_count") or 0)
+    approved_adjustments = int(emp.get("approved_adjustment_count") or 0)
+    if approved_sessions <= 0 and approved_adjustments <= 0:
+        return False
+    orders = int(emp.get("orders_completed") or 0)
+    try:
+        hours = float(emp.get("performance_hours") or 0)
+    except (TypeError, ValueError):
+        hours = 0.0
+    return orders > 0 or hours > 0
+
+
 def compose_employee_day_from_sessions(
     *,
     employee_name: str,
@@ -963,8 +991,8 @@ def compose_employee_day_from_sessions(
     emp["day_publication_status"] = day_pub["status"]
     emp["day_publication"] = day_pub
     emp["publication_status"] = day_pub["status"]
-    # Rankable for approved-only team boards; Performance rates use approved subset.
-    emp["dashboard_rankable"] = day_pub["status"] == "APPROVED"
+    # Rankable when any approved session contributes, even if siblings are pending.
+    emp["dashboard_rankable"] = approved_contribution_is_rankable(emp)
     emp["eligibility_rule"] = DASHBOARD_ELIGIBILITY
     return emp
 
@@ -1037,7 +1065,7 @@ def mutation_employee_day_payload(
             "Performance rates use APPROVED non-excluded sessions only. "
             "Pending sessions stay visible in Review but contribute zero until "
             "approved. Exclude removes a session from calculations. "
-            "dashboard_rankable requires a fully APPROVED employee-day."
+            "dashboard_rankable is true for any employee-day that already has an approved contribution."
         ),
     }
 
@@ -1130,9 +1158,10 @@ def sync_employee_day_publication(
 
     Source of truth remains compose/recompute — this table is a Rinse-safe cache.
     - EXCLUDED days are deleted (not Published, not By-Employee active).
-    - PARTIAL / NEEDS_APPROVAL days are stored with dashboard_rankable=0 so
-      By Employee can show Status, while Published boards filter rankable=1.
-    - Fully APPROVED days store complete approved-day totals (never a lone session).
+    - PARTIALLY_APPROVED days with an approved session or adjustment are stored
+      with dashboard_rankable=1. Stored pounds and hours are that approved subset.
+    - Pending-only days are stored with dashboard_rankable=0.
+    - Fully APPROVED days store the complete approved-day totals.
     """
     import json
 
@@ -1169,7 +1198,7 @@ def sync_employee_day_publication(
         )
         return
 
-    rankable = emp.get("dashboard_rankable") is True or day_status == "APPROVED"
+    rankable = approved_contribution_is_rankable(emp) or day_status == "APPROVED"
     lbs = float(emp.get("total_pre_lbs") or 0)
     hours = emp.get("performance_hours")
     hours_f = float(hours) if hours is not None else 0.0
@@ -1178,8 +1207,8 @@ def sync_employee_day_publication(
     bags_hr = emp.get("bags_per_hour")
     sessions_json = json.dumps(_sessions_publication_snapshot(emp.get("sessions") or []))
 
-    # Published board filters dashboard_rankable=1. Partial days keep rankable=0
-    # so a single approved session can never appear as a weekly observation.
+    # Published boards include any employee-day with an approved contribution.
+    # Pending siblings stay out of the stored totals (recompute uses approved only).
     cursor.execute(
         f"""
         INSERT INTO {DAY_PUBLICATIONS_TABLE} (

@@ -46,8 +46,12 @@ import {
   postManagementPerformanceUnapproveSession,
   postManagementPerformanceEditEmployeeDay,
   putManagementFolderBenchmark,
+  putManagementFolderAutoApprove,
+  postManagementFolderAdjustment,
+  postManagementFolderAdjustmentPublication,
   postVeewashStep1Correction,
 } from "../../api";
+import SupervisorAdjustmentDialog from "./performance/SupervisorAdjustmentDialog";
 import {
   applyEmployeeDayPatch,
   employeeSessionsPayload,
@@ -581,6 +585,9 @@ export default function ManagementWfFolderPerformanceSection({
   const [approveBusy, setApproveBusy] = useState(false);
   const controlsLocked = Boolean(approveBusy || actionBusy || wfMutationsLocked);
   const [benchDraft, setBenchDraft] = useState("");
+  const [autoApprove, setAutoApprove] = useState(false);
+  const [adjustOpen, setAdjustOpen] = useState(false);
+  const [adjustInitial, setAdjustInitial] = useState(null);
   const [pubMessage, setPubMessage] = useState("");
   const [editSession, setEditSession] = useState(null);
   const [editRate, setEditRate] = useState("");
@@ -726,6 +733,7 @@ export default function ManagementWfFolderPerformanceSection({
         });
         const b = res.data?.folder_benchmark_lbs_hr;
         if (!silent && b != null) setBenchDraft(String(b));
+        if (!silent) setAutoApprove(Boolean(res.data?.auto_approve_at_target));
         // Lazy baseline deltas for Today — do not block first paint.
         // The clock refresh does not repeat this; rates do not depend on it.
         if (
@@ -1660,7 +1668,62 @@ export default function ManagementWfFolderPerformanceSection({
         <Button size="small" variant="outlined" disabled={controlsLocked} onClick={saveBenchmark} sx={{ textTransform: "none" }}>
           Save
         </Button>
+        <FormControlLabel
+          control={
+            <Checkbox
+              size="small"
+              checked={autoApprove}
+              disabled={controlsLocked}
+              onChange={async (e) => {
+                const next = e.target.checked;
+                setAutoApprove(next);
+                try {
+                  await putManagementFolderAutoApprove({ enabled: next });
+                  setPubMessage(
+                    next
+                      ? "Auto-approve is on for sessions that close after now. Earlier days stay manual."
+                      : "Auto-approve is off. Manual approval is unchanged."
+                  );
+                } catch (err) {
+                  setAutoApprove(!next);
+                  setError(apiErr(err, "Unable to save auto-approve"));
+                }
+              }}
+            />
+          }
+          label={<Typography sx={{ fontSize: 12 }}>Auto-approve at or above target</Typography>}
+        />
+        <Button size="small" variant="outlined" disabled={controlsLocked} onClick={() => { setAdjustInitial(null); setAdjustOpen(true); }} sx={{ textTransform: "none" }}>
+          Adjust performance
+        </Button>
       </Stack>
+      <SupervisorAdjustmentDialog
+        open={adjustOpen}
+        dateEt={dateEt}
+        busy={actionBusy}
+        initial={adjustInitial}
+        onClose={() => setAdjustOpen(false)}
+        onSave={async (body) => {
+          setActionBusy(true);
+          try {
+            const res = await postManagementFolderAdjustment(body);
+            const key = res.data?.adjustment?.adjustment_key;
+            if (key && body.approved_lbs_per_hour != null) {
+              await postManagementFolderAdjustmentPublication(key, {
+                status: "APPROVED",
+                reason: body.reason,
+              });
+            }
+            setAdjustOpen(false);
+            setPubMessage("Adjustment saved. Approved scores are in the published totals.");
+            await load({ silent: true, skip_lazy_baseline: true });
+          } catch (err) {
+            setError(apiErr(err, "Adjustment failed"));
+          } finally {
+            setActionBusy(false);
+          }
+        }}
+      />
 
       {loading && !data ? (
         <Box sx={{ py: 5, textAlign: "center" }}>

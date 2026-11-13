@@ -458,18 +458,18 @@ def test_evelin_unapproved_edit_awaits_approval_not_on_graph():
     )
     emp = _compose("Evelin", 55, sessions)
     assert emp["day_publication_status"] == "PARTIALLY_APPROVED"
-    assert emp["dashboard_rankable"] is False
+    assert emp["dashboard_rankable"] is True
     # Performance still includes approved WF-E1 only
     assert emp["orders_completed"] == 7
     assert abs(float(emp["total_pre_lbs"]) - 140.0) < 0.01
 
     _day, published, live, graph_rows = _graph_and_rank([emp])
-    assert published == []
-    assert graph_rows == []
-    assert len(live) == 1
-    assert live[0]["employee"] == "Evelin"
-    # Clear awaiting-approval signal for UI (not silently stale on graph)
-    assert live[0]["day_publication_status"] == "PARTIALLY_APPROVED"
+    assert len(published) == 1
+    assert len(graph_rows) == 1
+    assert abs(graph_rows[0]["value"] - (140.0 / 2.5)) < 0.05
+    assert live == []
+    assert published[0]["employee"] == "Evelin"
+    assert published[0]["day_publication_status"] == "PARTIALLY_APPROVED"
 
 
 def test_evelin_graph_never_shows_stale_evidence_after_override():

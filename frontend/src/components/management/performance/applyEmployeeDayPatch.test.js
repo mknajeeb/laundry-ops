@@ -28,7 +28,8 @@ function stampSessionAndCompose(employeeDay, sessionId, status) {
     sessions,
     day_publication_status: dayStatus,
     publication_status: dayStatus,
-    dashboard_rankable: dayStatus === "APPROVED",
+    dashboard_rankable:
+      dayStatus === "APPROVED" || (dayStatus === "PARTIALLY_APPROVED" && approved.length > 0),
   };
 }
 
@@ -199,14 +200,13 @@ describe("Tarannum 3-session approve → Published (mutation patch only)", () =>
       "APPROVED"
     );
     expect(reviewModal.day_publication_status).toBe("PARTIALLY_APPROVED");
-    expect(reviewModal.dashboard_rankable).toBe(false);
+    expect(reviewModal.dashboard_rankable).toBe(true);
     {
       const { published, live } = partitionPublishedLiveExcluded(data.employees);
-      expect(published.map((e) => e.employee)).not.toContain("Tarannum");
-      expect(live).toHaveLength(1);
-      expect(live[0].employee).toBe("Tarannum");
+      expect(published.map((e) => e.employee)).toContain("Tarannum");
+      expect(live).toHaveLength(0);
     }
-    expect(data.summary_approved.employee_day_count).toBe(0);
+    expect(data.summary_approved.employee_day_count).toBe(1);
     // Rates unchanged by approval alone.
     expect(reviewModal.orders_completed).toBe(30);
     expect(reviewModal.total_pre_lbs).toBe(600);
@@ -238,14 +238,14 @@ describe("Tarannum 3-session approve → Published (mutation patch only)", () =>
     data = applyEmployeeDayPatch(data, afterDis);
     reviewModal = data.employees.find((e) => e.employee === "Tarannum");
     expect(reviewModal.day_publication_status).toBe("PARTIALLY_APPROVED");
-    expect(reviewModal.dashboard_rankable).toBe(false);
+    expect(reviewModal.dashboard_rankable).toBe(true);
     {
       const { published, live } = partitionPublishedLiveExcluded(data.employees);
-      expect(published).toHaveLength(0);
-      expect(live).toHaveLength(1);
-      expect(live[0].employee).toBe("Tarannum");
+      expect(published).toHaveLength(1);
+      expect(published[0].employee).toBe("Tarannum");
+      expect(live).toHaveLength(0);
     }
-    expect(data.summary_approved.employee_day_count).toBe(0);
+    expect(data.summary_approved.employee_day_count).toBe(1);
   });
 });
 
@@ -272,7 +272,6 @@ describe("employeeSessionsPayload", () => {
     expect(rows[0].segment_id).toBe(2418);
     expect(rows[0].shift_session_id).toBe(8802);
     expect(rows[0].employee).toBe("Maria");
-    expect(rows[0].shift_session_id).toBeUndefined();
   });
 
   it("passes shift_session_id through for Edit Day", () => {
@@ -352,7 +351,7 @@ describe("Guiling / Evelin consecutive edit patches", () => {
     expect(payload.filter((s) => s.publication?.is_rate_override).length).toBe(3);
   });
 
-  it("moves Evelin from published graph to live awaiting-approval after partial unapprove", () => {
+  it("keeps Evelin's approved session on the published graph after a sibling is unapproved", () => {
     let data = {
       employees: [
         {
@@ -379,7 +378,7 @@ describe("Guiling / Evelin consecutive edit patches", () => {
       employee: "Evelin",
       user_id: 55,
       day_publication_status: "PARTIALLY_APPROVED",
-      dashboard_rankable: false,
+      dashboard_rankable: true,
       orders_completed: 7,
       total_pre_lbs: 140,
       performance_hours: 2.5,
@@ -390,11 +389,10 @@ describe("Guiling / Evelin consecutive edit patches", () => {
       ],
     });
     const { published, live } = partitionPublishedLiveExcluded(data.employees);
-    expect(published).toHaveLength(0);
-    expect(live).toHaveLength(1);
-    expect(live[0].day_publication_status).toBe("PARTIALLY_APPROVED");
-    expect(data.summary_approved.employee_day_count).toBe(0);
-    // Stale published rate must not remain in approved summary after patch.
-    expect(data.summary_approved.lbs_per_hour).toBeNull();
+    expect(published).toHaveLength(1);
+    expect(published[0].day_publication_status).toBe("PARTIALLY_APPROVED");
+    expect(live).toHaveLength(0);
+    expect(data.summary_approved.employee_day_count).toBe(1);
+    expect(data.summary_approved.lbs_per_hour).toBe(56);
   });
 });

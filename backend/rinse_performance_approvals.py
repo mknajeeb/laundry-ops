@@ -19,6 +19,7 @@ ACTION_UNAPPROVE = "UNAPPROVE"
 ACTION_OVERRIDE = "OVERRIDE"
 ACTION_EXCLUDE = "EXCLUDE"
 ACTION_INCLUDE = "INCLUDE"
+ACTION_AUTO_APPROVE = "AUTO_APPROVE"
 
 APPROVALS_TABLE = "rinse_performance_session_approvals"
 EVENTS_TABLE = "rinse_performance_approval_events"
@@ -62,6 +63,10 @@ def _ensure_publication_extension_columns(cursor) -> None:
         alters.append(
             "ADD COLUMN excluded_reason VARCHAR(255) NULL AFTER excluded_by"
         )
+    if "approval_source" not in have:
+        alters.append("ADD COLUMN approval_source VARCHAR(16) NULL")
+    if "applied_target_lbs_per_hour" not in have:
+        alters.append("ADD COLUMN applied_target_lbs_per_hour DECIMAL(14,4) NULL")
     for clause in alters:
         try:
             cursor.execute(f"ALTER TABLE {APPROVALS_TABLE} {clause}")
@@ -355,6 +360,8 @@ def upsert_approved_snapshot(
     snapshot: Mapping[str, Any],
     actor_user_id: int | None = None,
     actor_name: str | None = None,
+    approval_source: str | None = None,
+    applied_target_lbs_per_hour: float | None = None,
 ) -> dict[str, Any]:
     """Insert or replace an APPROVED snapshot (clears invalidation)."""
     if not role_is_publishable(role_key):
@@ -373,6 +380,9 @@ def upsert_approved_snapshot(
     existing = get_approval_row(cursor, org, role_key=rk, session_id=sid)
     was_active = bool(existing and existing.get("invalidated_at") is None)
     action = ACTION_REAPPROVE if existing else ACTION_APPROVE
+    source = str(approval_source or snapshot.get("approval_source") or "").upper() or None
+    if source == "AUTO" and action == ACTION_APPROVE:
+        action = ACTION_AUTO_APPROVE
 
     fp = str(snapshot.get("content_fingerprint") or "")
     metric_value = float(snapshot["published_metric_value"])
@@ -502,9 +512,25 @@ def upsert_approved_snapshot(
         snapshot_metric_value=metric_value,
         content_fingerprint=fp,
     )
+    if source:
+        target = applied_target_lbs_per_hour
+        if target is None:
+            target = snapshot.get("applied_target_lbs_per_hour")
+        try:
+            cursor.execute(
+                f"""
+                UPDATE {APPROVALS_TABLE}
+                SET approval_source=%s, applied_target_lbs_per_hour=%s
+                WHERE organization_id=%s AND role_key=%s AND session_id=%s
+                """,
+                (source, target, org, rk, sid),
+            )
+        except Exception:
+            pass
     return {
         "ok": True,
         "action": action,
+        "approval_source": source or "MANUAL",
         "session_id": sid,
         "role_key": rk,
         "already_approved": was_active
@@ -522,6 +548,8 @@ def upsert_approved_snapshot(
             "calculated_metric_value": calc_rate,
             "is_rate_override": bool(is_override),
             "content_fingerprint": fp,
+            "approval_source": source or "MANUAL",
+            "applied_target_lbs_per_hour": applied_target_lbs_per_hour,
         },
     }
 

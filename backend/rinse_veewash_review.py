@@ -948,6 +948,7 @@ def load_bag_weight_map(
     *,
     selected_date_et: date | None = None,
     include_settled_bulk_post: bool = True,
+    preloaded_timelines: Mapping[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """
     Pre/Post weight map for workload / Shift Monitor / review surfaces.
@@ -979,6 +980,7 @@ def load_bag_weight_map(
             organization_id,
             ids,
             selected_date_et=selected_date_et,
+            preloaded_timelines=preloaded_timelines,
         )
         if not include_settled_bulk_post:
             # Folder Performance credits canonical PRE only. The settled-bulk

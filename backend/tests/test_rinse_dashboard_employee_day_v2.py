@@ -206,8 +206,8 @@ class PubCursor:
         return list(self._last or [])
 
 
-def test_tarannum_partial_live_ok_but_not_published():
-    """WF-03-only Live Performance; Rinse Published must stay empty (no 64.9 / 1 session)."""
+def test_tarannum_partial_publishes_approved_subset():
+    """WF-03 approved while siblings stay pending: publish only the approved subset."""
     sessions = _tarannum_three()
     emp = compose_employee_day_from_sessions(
         employee_name="Tarannum",
@@ -221,22 +221,23 @@ def test_tarannum_partial_live_ok_but_not_published():
     assert abs(float(emp["performance_hours"]) - 1.5) < 0.01
     assert abs(float(emp["lbs_per_hour"]) - (100.0 / 1.5)) < 0.05
     assert emp["day_publication_status"] == "PARTIALLY_APPROVED"
-    assert emp["dashboard_rankable"] is False
+    assert emp["dashboard_rankable"] is True
 
     cur = PubCursor()
     sync_employee_day_publication(cur, 3, emp, role_key=ROLE_FOLDER, business_date_et=DAY)
-    # Partial day is cached with rankable=0 for By Employee Status — not Published.
     assert len(cur.rows) == 1
     only = next(iter(cur.rows.values()))
-    assert int(only["dashboard_rankable"]) == 0
+    assert int(only["dashboard_rankable"]) == 1
     assert abs(float(only["published_metric_value"]) - (100.0 / 1.5)) < 0.05
+    assert int(only["orders_completed"]) == 4
 
     payload = build_role_leaderboard(cur, 3, role_key=ROLE_FOLDER, week_start=DAY)
     names = [r["name"] for r in payload.get("leaderboard") or []]
-    assert "Tarannum" not in names
-    assert payload.get("approved_employee_day_count") == 0
-    # Must not look like the old session board (64.9 / Sessions=1).
-    assert all((r.get("days") or 0) != 1 or "Tarannum" not in str(r.get("name")) for r in payload.get("leaderboard") or [])
+    assert "Tarannum" in names
+    assert payload.get("approved_employee_day_count") == 1
+    row = next(r for r in payload["leaderboard"] if r["name"] == "Tarannum")
+    assert row["bags"] == 4
+    assert abs(float(row["weekly_avg"]) - (100.0 / 1.5)) < 0.05
 
 
 def test_tarannum_fully_approved_publishes_one_employee_day():
@@ -299,17 +300,21 @@ def test_tarannum_disapprove_clears_published_rankable():
         selected_date_et=DAY,
     )
     assert emp2["day_publication_status"] == "PARTIALLY_APPROVED"
+    assert emp2["orders_completed"] == 11
     sync_employee_day_publication(cur, 3, emp2, role_key=ROLE_FOLDER, business_date_et=DAY)
-    assert next(iter(cur.rows.values()))["dashboard_rankable"] == 0
+    stored = next(iter(cur.rows.values()))
+    assert int(stored["dashboard_rankable"]) == 1
+    assert int(stored["orders_completed"]) == 11
 
     payload = build_role_leaderboard(cur, 3, role_key=ROLE_FOLDER, week_start=DAY)
-    assert payload["approved_employee_day_count"] == 0
-    assert "Tarannum" not in [r["name"] for r in payload["leaderboard"]]
+    assert payload["approved_employee_day_count"] == 1
+    assert payload["included_bags"] == 11
+    assert "Tarannum" in [r["name"] for r in payload["leaderboard"]]
 
     hist = build_employee_role_history(
         cur, 3, employee_id="7", role_key=ROLE_FOLDER, week_start=DAY
     )
     assert len(hist["employee_days"]) == 1
     assert hist["employee_days"][0]["status"] == "PARTIALLY_APPROVED"
-    assert hist["employee_days"][0]["dashboard_rankable"] is False
+    assert hist["employee_days"][0]["dashboard_rankable"] is True
     assert len(hist["employee_days"][0]["sessions"]) == 3

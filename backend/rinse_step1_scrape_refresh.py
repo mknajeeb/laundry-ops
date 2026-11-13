@@ -584,6 +584,25 @@ def refresh_step1_after_scrape(
                 clear_management_today_cache(org, day, include_supplies=False)
             except Exception:
                 pass
+            try:
+                from backend.rinse_performance_auto_approve import (
+                    auto_approve_finalized_folder_day,
+                )
+
+                diag["auto_approve"] = auto_approve_finalized_folder_day(
+                    cursor, org, selected_date_et=day
+                )
+                try:
+                    conn.commit()
+                except Exception:
+                    pass
+            except Exception as auto_exc:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                diag["auto_approve_error"] = str(auto_exc)[:300]
+                _log(f"WARNING: folder auto-approve skipped for {day}: {auto_exc}\n")
             deferred_n = int(diag.get("projection_deferred_count") or 0)
             _log(
                 f"Step-1 day snapshot refreshed for {day} "

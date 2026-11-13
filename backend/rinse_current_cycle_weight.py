@@ -1461,6 +1461,7 @@ def load_current_cycle_weight_map(
     selected_date_et: date,
     entry_racks: Iterable[str] | None = None,
     cycle_anchor_overrides: Mapping[str, datetime] | None = None,
+    preloaded_timelines: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """
     DB-backed current-cycle PRE/POST map — single canonical resolver entry.
@@ -1475,7 +1476,13 @@ def load_current_cycle_weight_map(
         return {}
 
     timelines: dict[str, list[dict[str, Any]]] = {b: [] for b in ids}
-    if table_exists(cursor, "rinse_bag_scan_events"):
+    if preloaded_timelines is not None:
+        from backend.wf_ops_reset_epoch import filter_scan_event_rows
+
+        for bid in ids:
+            rows = preloaded_timelines.get(bid) or preloaded_timelines.get(bid.upper()) or []
+            timelines[bid] = filter_scan_event_rows(cursor, int(organization_id), rows)
+    elif table_exists(cursor, "rinse_bag_scan_events"):
         from backend.wf_ops_reset_epoch import epoch_sql_predicate
 
         placeholders = ",".join(["%s"] * len(ids))
