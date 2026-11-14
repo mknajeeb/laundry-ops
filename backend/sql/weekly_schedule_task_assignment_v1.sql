@@ -1,8 +1,16 @@
--- Weekly Schedule task assignment: card order and audited corrections.
--- Applied automatically on first use. Safe to run once on an existing database.
-
-ALTER TABLE planned_weekly_schedule_responsibilities
-  ADD COLUMN display_order INT NOT NULL DEFAULT 0;
+-- Weekly Schedule assignment audit.
+--
+-- Provision this table BEFORE deploying application code that records
+-- assignment corrections. The application does not create it. If the table
+-- is missing, an audited assignment write fails with
+-- "assignment audit table is not provisioned" and discards the assignment.
+--
+-- Idempotent. Production inspection on 2026-11-13 found this table absent
+-- and found planned_weekly_schedule_responsibilities.display_order already
+-- present. This script does not ALTER that table and does not insert rows.
+--
+-- Apply with the target database in MYSQL_* / DB_* (the worktree has no .env):
+--   python3 scripts/apply_sql_mysql_connector.py backend/sql/weekly_schedule_task_assignment_v1.sql
 
 CREATE TABLE IF NOT EXISTS planned_weekly_schedule_assignment_corrections (
   id INT AUTO_INCREMENT PRIMARY KEY,

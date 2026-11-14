@@ -535,6 +535,7 @@ export function exportWeeklyScheduleHourlyCsv({ days, weekStart, columns, tabLab
 function gridCellText(cell, showBreaks) {
   if (!cell) return "";
   const parts = [
+    ...(cell.shifts || []).map((shift) => (shift.label ? `Shift ${shift.label}` : "Shift")),
     ...cell.timed.map((range) => `Break ${range.label}`),
     ...cell.untimed.map(
       (item) => `Not scheduled ${Math.round(item.hours * 60)} min${item.unallocated ? " (not allocated to a role)" : ""}`,
@@ -544,6 +545,7 @@ function gridCellText(cell, showBreaks) {
       return `${task.label}${detail ? ` · ${detail}` : ""}: ${task.remarks || "no instructions"}`;
     }),
   ];
+  if (cell.tasks.length && !cell.hasShift) parts.push("No shift");
   if (!parts.length && cell.hasShift && showBreaks) return "No break planned";
   return parts.join("; ");
 }

@@ -14,16 +14,13 @@ function DayHeaders({ columns, weekStart, line }) {
 }
 
 /** Plain-HTML print of breaks by time plus the tasks section (copied into the print window, so no MUI). */
-export default function WeeklyScheduleBreaksByTimePrint({ byTime, grid, tasksByDay = {}, weekStart, showBreaks = true, noRolesText = "" }) {
+export default function WeeklyScheduleBreaksByTimePrint({ byTime, grid, tasksByDay = {}, weekStart, showBreaks = true }) {
   const columns = byTime?.columns || [];
   const gridColumns = new Map((grid?.columns || []).map((column) => [column.dow, column]));
   const hasUntimed = columns.some((column) => column.untimed.length);
   const hasUnassigned = (grid?.columns || []).some((column) => column.unassignedTasks.length);
   return (
     <>
-      {noRolesText ? (
-        <div className="weekly-schedule-print-employee-meta">{noRolesText}: breaks are not shown. Tasks are listed.</div>
-      ) : null}
       {showBreaks ? (
         <table className="weekly-schedule-print-table weekly-schedule-print-breaks-grid">
           <thead>

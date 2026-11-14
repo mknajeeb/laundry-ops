@@ -4,6 +4,7 @@ import { useI18n } from "../../i18n/I18nContext";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import { groupRoleCodes } from "./weeklyScheduleRoles";
 import {
+  buildBreaksTasksDayTabs,
   buildDayViewTabs,
   buildRoleViewTabs,
   filterEntriesByRoles,
@@ -70,6 +71,7 @@ export default function WeeklyScheduleViewTabs({
   responsibilities = [],
   hideRoles = false,
   roleUniverse = null,
+  dayCountMode = "employees",
 }) {
   const roleTabs = useMemo(
     () => buildRoleViewTabs(entries, { hiddenRoles }),
@@ -78,11 +80,13 @@ export default function WeeklyScheduleViewTabs({
   );
   const dayTabs = useMemo(
     () =>
-      buildDayViewTabs(filterEntriesByRoles(entries, selectedRoles), {
-        compact: true,
-        responsibilities: Array.isArray(selectedRoles) ? [] : responsibilities,
-      }),
-    [entries, selectedRoles, responsibilities],
+      dayCountMode === "activity"
+        ? buildBreaksTasksDayTabs(entries, responsibilities)
+        : buildDayViewTabs(filterEntriesByRoles(entries, selectedRoles), {
+            compact: true,
+            responsibilities: Array.isArray(selectedRoles) ? [] : responsibilities,
+          }),
+    [entries, selectedRoles, responsibilities, dayCountMode],
   );
   const allRoleTab = roleTabs.find((tab) => tab.value === SCHEDULE_VIEW_ALL);
   const singleRoleTabs = roleTabs.filter((tab) => tab.value !== SCHEDULE_VIEW_ALL);
@@ -91,8 +95,12 @@ export default function WeeklyScheduleViewTabs({
   const showAllRoles = !Array.isArray(selectedRoles);
   const universe = roleUniverse || singleRoleTabs.map((tab) => tab.value);
   const { t } = useI18n();
-  const countTitle = (count) =>
+  const employeeTitle = (count) =>
     t(count === 1 ? "weeklySchedule.filters.employee" : "weeklySchedule.filters.employees", { count });
+  const dayTitle = (count) =>
+    dayCountMode === "activity"
+      ? t(count === 1 ? "weeklySchedule.filters.dayActivityOne" : "weeklySchedule.filters.dayActivity", { count })
+      : employeeTitle(count);
 
   return (
     <Box
@@ -113,7 +121,7 @@ export default function WeeklyScheduleViewTabs({
             <FilterChip
               label={allRoleTab.label}
               count={allRoleTab.count}
-              title={countTitle(allRoleTab.count)}
+              title={employeeTitle(allRoleTab.count)}
               selected={showAllRoles}
               onClick={() => onSelectedRolesChange(null)}
             />
@@ -139,7 +147,7 @@ export default function WeeklyScheduleViewTabs({
                     key={role}
                     label={tab.label}
                     count={tab.count}
-                    title={countTitle(tab.count)}
+                    title={employeeTitle(tab.count)}
                     selected={isCodeSelected(selectedRoles, role)}
                     onClick={() => onSelectedRolesChange(toggleSelectionCode(selectedRoles, role, universe))}
                   />
@@ -156,7 +164,7 @@ export default function WeeklyScheduleViewTabs({
             key={tab.value}
             label={tab.label}
             count={tab.count}
-            title={countTitle(tab.count)}
+            title={dayTitle(tab.count)}
             selected={dayTab === tab.value}
             onClick={() => onDayTabChange(tab.value)}
           />

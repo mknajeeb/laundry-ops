@@ -2810,6 +2810,7 @@ def register_rinse_shift_analysis_routes(
         from backend.planned_weekly_schedule import normalize_day_of_week
         from backend.planned_weekly_schedule_responsibilities import (
             assign_tasks_for_days,
+            authenticated_actor_id,
             responsibility_week_snapshot,
         )
         from backend.weekly_schedule_week import (
@@ -2847,7 +2848,8 @@ def register_rinse_shift_analysis_routes(
                     days.append(dow)
             if not days:
                 return jsonify({"error": "choose at least one date"}), 400
-            actor = {**body, "actor_user_id": me.get("id")}
+            actor_id = authenticated_actor_id(me)
+            assignment = {key: value for key, value in body.items() if key != "actor_user_id"}
             if parsed_week.weekday() == 6:
                 groups = [(parsed_week, days)]
                 monday = schedule_monday_containing(parsed_week)
@@ -2869,7 +2871,8 @@ def register_rinse_shift_analysis_routes(
                     cursor,
                     tenant_oid,
                     week_start=storage,
-                    data={**actor, "days_of_week": group_days},
+                    data={**assignment, "days_of_week": group_days},
+                    actor_user_id=actor_id,
                 )
                 if err:
                     conn.rollback()
@@ -2987,8 +2990,15 @@ def register_rinse_shift_analysis_routes(
                 week: responsibility_week_snapshot(cursor, tenant_oid, week)
                 for week in (mon_sat_storage, sunday_storage)
             }
+            from backend.planned_weekly_schedule_responsibilities import authenticated_actor_id
+
             item, err = move_task_assignment(
-                conn, cursor, tenant_oid, responsibility_id, body, actor_user_id=me.get("id")
+                conn,
+                cursor,
+                tenant_oid,
+                responsibility_id,
+                {key: value for key, value in body.items() if key != "actor_user_id"},
+                actor_user_id=authenticated_actor_id(me),
             )
             if err:
                 conn.rollback()
@@ -3031,9 +3041,14 @@ def register_rinse_shift_analysis_routes(
             _, err_gate, code_gate = gate(cursor)
             if err_gate:
                 return err_gate, code_gate
+            from backend.planned_weekly_schedule_responsibilities import authenticated_actor_id
+
             tenant_oid = user_org_id(me)
             body = dict(request.get_json(silent=True) or {})
-            body["actor_user_id"] = me.get("id")
+            body.pop("actor_user_id", None)
+            server_actor = authenticated_actor_id(me)
+            if server_actor is not None:
+                body["actor_user_id"] = server_actor
             existing = get_responsibility(cursor, tenant_oid, responsibility_id)
             if not existing:
                 return jsonify({"error": "responsibility not found"}), 404

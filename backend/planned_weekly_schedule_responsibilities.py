@@ -967,6 +967,17 @@ def _correction_reason(data: Mapping[str, Any]) -> str:
     return str(data.get("correction_reason") or "").strip()
 
 
+def authenticated_actor_id(me: Mapping[str, Any] | None) -> int | None:
+    """Server session user. Callers must not pass a request-body actor."""
+    if not isinstance(me, Mapping):
+        return None
+    try:
+        actor = int(me.get("user_id"))
+    except (TypeError, ValueError):
+        return None
+    return actor if actor > 0 else None
+
+
 def _record_assignment_correction(
     cursor,
     organization_id: int,
@@ -978,27 +989,14 @@ def _record_assignment_correction(
     actor_user_id: Any,
     before: Mapping[str, Any],
     after: Mapping[str, Any],
-) -> None:
+) -> str | None:
     import json
 
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {CORRECTION_TABLE} (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          organization_id INT NOT NULL,
-          assignment_group_id VARCHAR(36) NULL,
-          responsibility_id INT NULL,
-          action VARCHAR(40) NOT NULL,
-          reason VARCHAR(255) NOT NULL,
-          actor_user_id INT NULL,
-          before_json TEXT NULL,
-          after_json TEXT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          INDEX idx_pws_corr_org (organization_id, created_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    actor = int(actor_user_id) if str(actor_user_id or "").isdigit() else None
+    actor = authenticated_actor_id({"user_id": actor_user_id})
+    if actor is None:
+        return "authenticated user is required"
+    if not table_exists(cursor, CORRECTION_TABLE):
+        return "assignment audit table is not provisioned"
     cursor.execute(
         f"""
         INSERT INTO {CORRECTION_TABLE} (
@@ -1017,6 +1015,7 @@ def _record_assignment_correction(
             json.dumps(dict(after), default=str)[:4000],
         ),
     )
+    return None
 
 
 def _active_change_guard(
@@ -1043,14 +1042,14 @@ def _active_change_guard(
             "This assignment has already started or been completed. "
             "Confirm an audited correction before changing participants, the day, timing, or execution mode."
         )
-    _record_assignment_correction(
+    audit_err = _record_assignment_correction(
         cursor,
         organization_id,
         assignment_group_id=str(existing.get("assignment_group_id") or "") or None,
         responsibility_id=int(existing.get("id") or 0),
         action="correct_assignment",
         reason=reason,
-        actor_user_id=actor_user_id if actor_user_id is not None else data.get("actor_user_id"),
+        actor_user_id=actor_user_id if actor_user_id is not None else None,
         before={
             "user_ids": [int(uid) for uid in existing_users],
             "day_of_week": existing.get("day_of_week"),
@@ -1068,7 +1067,7 @@ def _active_change_guard(
             "start_time": payload["start_time"],
         },
     )
-    return None
+    return audit_err
 
 
 def _unscheduled_names(
@@ -1085,6 +1084,12 @@ def _unscheduled_names(
     return [names[int(uid)] for uid in user_ids if not (shifts.get(int(uid)) or [])]
 
 
+def _discard_created_assignments(cursor, organization_id: int, created: Sequence[Mapping[str, Any]]) -> None:
+    for made in created:
+        for member in made.get("members") or []:
+            delete_responsibility(cursor, organization_id, int(member["id"]))
+
+
 def assign_tasks_for_days(
     conn,
     cursor,
@@ -1092,6 +1097,7 @@ def assign_tasks_for_days(
     *,
     week_start: date,
     data: Mapping[str, Any],
+    actor_user_id: Any = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """One task or activity group, one or more days. Each day gets its own assignment group."""
     raw_days = data.get("days_of_week")
@@ -1110,21 +1116,78 @@ def assign_tasks_for_days(
             days.append(dow)
     created: list[dict[str, Any]] = []
     warnings: list[str] = []
+    unscheduled_by_day: list[tuple[int, list[str]]] = []
     for dow in days:
         payload = dict(data)
         payload["day_of_week"] = dow
+        try:
+            requested_ids = [int(uid) for uid in (payload.get("user_ids") or [])]
+        except (TypeError, ValueError):
+            requested_ids = []
+        missing = (
+            _unscheduled_names(
+                conn,
+                cursor,
+                organization_id,
+                week_start=week_start,
+                day_of_week=dow,
+                user_ids=requested_ids,
+            )
+            if requested_ids
+            else []
+        )
+        if missing and not data.get("confirm_unscheduled"):
+            _discard_created_assignments(cursor, organization_id, created)
+            listed = ", ".join(missing)
+            return None, f"unscheduled: {listed} is not scheduled on this date"
+        if missing:
+            unscheduled_by_day.append((dow, missing))
         item, err = create_responsibility(conn, cursor, organization_id, week_start=week_start, data=payload)
         if err or item is None:
             # Drop this request's rows before the caller can commit, so one failed day
             # cannot leave the other days of a shared pairing half-saved.
-            for made in created:
-                for member in made.get("members") or []:
-                    delete_responsibility(cursor, organization_id, int(member["id"]))
+            _discard_created_assignments(cursor, organization_id, created)
             return None, err or "could not assign the task"
         created.append(item)
         for warning in item.get("timing_warnings") or []:
             if warning not in warnings:
                 warnings.append(warning)
+    if data.get("confirm_unscheduled") and unscheduled_by_day:
+        # The actor is the authenticated supervisor passed by the route.
+        # A client-supplied actor_user_id in `data` is ignored.
+        actor = authenticated_actor_id({"user_id": actor_user_id})
+        if actor is None:
+            _discard_created_assignments(cursor, organization_id, created)
+            return None, "authenticated user is required"
+        # Record the deliberate override. This does not create a shift, hours, or payroll time.
+        for item in created:
+            dow = int(item.get("day_of_week") or 0)
+            names = next((listed for day, listed in unscheduled_by_day if day == dow), [])
+            if not names:
+                continue
+            audit_err = _record_assignment_correction(
+                cursor,
+                organization_id,
+                assignment_group_id=str(item.get("assignment_group_id") or "") or None,
+                responsibility_id=int(item.get("id") or 0) or None,
+                action="assign_unscheduled",
+                reason="Assign anyway: employee is not scheduled on this date",
+                actor_user_id=actor,
+                before={"scheduled": False, "names": names, "day_of_week": dow},
+                after={
+                    "user_ids": [
+                        int(uid)
+                        for uid in (item.get("user_ids") or [])
+                        if str(uid).isdigit()
+                    ],
+                    "day_of_week": dow,
+                    "role": item.get("role"),
+                    "confirm_unscheduled": True,
+                },
+            )
+            if audit_err:
+                _discard_created_assignments(cursor, organization_id, created)
+                return None, audit_err
     group_ids = {str(item.get("assignment_group_id") or "") for item in created}
     return {
         "items": created,

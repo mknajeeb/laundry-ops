@@ -15,7 +15,7 @@ import {
   summarizeScheduleHours,
   summarizeSelectedRoleHours,
 } from "./weeklyScheduleRoles";
-import { buildDayViewTabs, filterResponsibilitiesByRoleView } from "./weeklyScheduleViewFilters";
+import { buildBreaksTasksDayTabs, buildDayViewTabs, filterEntriesByRoles, filterResponsibilitiesByRoleView } from "./weeklyScheduleViewFilters";
 import {
   defaultNewShiftEntity,
   pickDefaultEntityTab,
@@ -59,6 +59,23 @@ describe("day filter counts", () => {
     expect(count("Mo")).toBe(2);
     expect(count("We")).toBe(1);
     expect(count("Tu")).toBe(0);
+  });
+
+  it("counts Breaks & Tasks from shifts and tasks, including an unscheduled employee", () => {
+    const shifts = [
+      { user_id: 1, day_of_week: 1, roles: ["fold"] },
+      { user_id: 2, day_of_week: 1, roles: ["wash"] },
+    ];
+    const tasks = [{ user_id: 7, day_of_week: 3, role: "floor_cleaning" }];
+    const cleared = buildDayViewTabs(filterEntriesByRoles(shifts, []), { compact: true, responsibilities: [] });
+    const foldOnly = buildDayViewTabs(filterEntriesByRoles(shifts, ["fold"]), { compact: true, responsibilities: [] });
+    const breaks = buildBreaksTasksDayTabs(shifts, tasks);
+    expect(cleared.find((tab) => tab.value === "all").count).toBe(0);
+    expect(foldOnly.find((tab) => tab.value === "1").count).toBe(1);
+    expect(breaks.find((tab) => tab.value === "all").count).toBe(3);
+    expect(breaks.find((tab) => tab.value === "1").count).toBe(2);
+    expect(breaks.find((tab) => tab.value === "3").count).toBe(1);
+    expect(breaks.find((tab) => tab.value === "2").count).toBe(0);
   });
 
   it("applies the role filter to responsibilities", () => {

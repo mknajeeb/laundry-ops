@@ -198,7 +198,10 @@ export function filterResponsibilitiesByRoleView(responsibilities, selectedRoles
   return (responsibilities || []).filter((item) => roles.includes(item.role));
 }
 
-/** Day chips count distinct employees with a shift or daily responsibility on each day. */
+/**
+ * Day chips count distinct employees with a shift or daily responsibility on each day.
+ * All is those employees across the whole week. Selecting a day does not change the counts.
+ */
 export function buildDayViewTabs(entries, { compact = false, responsibilities = [] } = {}) {
   const items = [...(entries || []), ...(responsibilities || [])];
   const tabs = [{
@@ -215,6 +218,15 @@ export function buildDayViewTabs(entries, { compact = false, responsibilities = 
     });
   });
   return tabs;
+}
+
+/**
+ * Breaks & Tasks day chips. Each count is distinct employees in the active scope who have
+ * a shift, a planned break (stored on that shift), or an assigned task that day.
+ * Role selection is not an input. Unscheduled employees count on days they have a task.
+ */
+export function buildBreaksTasksDayTabs(shifts, responsibilities = []) {
+  return buildDayViewTabs(shifts, { compact: true, responsibilities });
 }
 
 export function visibleDayIndices(dayTab) {

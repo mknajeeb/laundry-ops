@@ -1,7 +1,7 @@
+import { useState } from "react";
 import {
   Alert,
   Box,
-  Button,
   Chip,
   IconButton,
   Paper,
@@ -12,6 +12,7 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -20,7 +21,7 @@ import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import { DAY_LABELS } from "./weeklyScheduleDates";
 import { roleStyle, scheduleRoleLabel, UNALLOCATED_BREAK_NOTE } from "./weeklyScheduleRoles";
 import { ASSIGNMENT_KIND, dayDateLabel, formatCoverageHours } from "./weeklyScheduleTimeBlocks";
-import { gridDayBreakText, gridDayTaskText } from "./weeklyScheduleBreaksGrid";
+import { filterBreaksGridByEmployee, gridDayBreakText, gridDayTaskText } from "./weeklyScheduleBreaksGrid";
 import { isCodeSelected, toggleSelectionCode } from "./weeklyScheduleViewFilters";
 
 const BREAK_ACCENT = "#9a3412";
@@ -50,26 +51,11 @@ function activate(handler) {
   };
 }
 
-export function BreaksNotices({ showBreaks, endTimeEnabled, noRolesSelected, noRolesText, onSelectAllRoles }) {
+export function BreaksNotices({ showBreaks, endTimeEnabled }) {
   return (
     <>
       {!endTimeEnabled ? <Alert severity="info">Planned break times need shift end times. Tasks are listed below.</Alert> : null}
       {endTimeEnabled && !showBreaks ? <Alert severity="info">Break details are hidden in this view.</Alert> : null}
-      {noRolesSelected && showBreaks && endTimeEnabled ? (
-        <Alert
-          severity="info"
-          data-no-roles-selected
-          action={
-            onSelectAllRoles ? (
-              <Button color="inherit" size="small" onClick={onSelectAllRoles} sx={{ fontWeight: 800 }}>
-                Select all
-              </Button>
-            ) : null
-          }
-        >
-          {`${noRolesText}—breaks are hidden until a role is selected. Tasks are still shown.`}
-        </Alert>
-      ) : null}
     </>
   );
 }
@@ -186,17 +172,28 @@ function TaskLine({ task, canEdit, onEditResponsibility }) {
 }
 
 function GridCell({ cell, showBreakDetail, canEdit, onEditEntry, onEditResponsibility, onAddTask, userId, dow }) {
-  const empty = !cell || (!cell.timed.length && !cell.untimed.length && !cell.tasks.length);
+  const shifts = cell?.shifts || [];
+  const empty = !cell || (!shifts.length && !cell.timed.length && !cell.untimed.length && !cell.tasks.length);
+  const taskWithoutShift = Boolean(cell?.tasks?.length) && !cell?.hasShift;
   return (
     <TableCell sx={{ ...cellSx, position: "relative", "&:hover .grid-add-task": { opacity: 1 } }}>
       {empty ? (
-        cell?.hasShift && showBreakDetail ? (
-          <Typography sx={{ fontSize: "0.7rem", color: "text.disabled" }}>No break planned</Typography>
-        ) : (
-          <Typography sx={{ fontSize: "0.74rem", color: "text.disabled" }}>—</Typography>
-        )
+        <Typography sx={{ fontSize: "0.74rem", color: "text.disabled" }}>—</Typography>
       ) : (
         <>
+          {shifts.map((shift) => (
+            <Typography key={shift.id} data-shift-label sx={{ fontSize: "0.68rem", fontWeight: 700, color: "text.secondary", lineHeight: 1.2 }}>
+              {shift.label || "Shift"}
+            </Typography>
+          ))}
+          {taskWithoutShift ? (
+            <Typography data-no-shift sx={{ fontSize: "0.66rem", fontWeight: 800, color: "#b45309", lineHeight: 1.2 }}>
+              No shift
+            </Typography>
+          ) : null}
+          {showBreakDetail && cell.hasShift && !cell.timed.length && !cell.untimed.length ? (
+            <Typography sx={{ fontSize: "0.7rem", color: "text.disabled" }}>No break planned</Typography>
+          ) : null}
           {cell.timed.map((range) => (
             <TimedBreak key={`t${range.start}-${range.end}`} range={range} canEdit={canEdit} onEditEntry={onEditEntry} />
           ))}
@@ -225,10 +222,9 @@ function GridCell({ cell, showBreakDetail, canEdit, onEditEntry, onEditResponsib
 }
 
 /**
- * Breaks & tasks grid: shown days as columns, employees as rows. Each cell lists timed breaks, breaks
- * without a time ("Not scheduled"), and tasks with instructions; every item opens the same shift or task
- * dialog as the other views. Day headers carry the day's break total and task count; the last row holds
- * the task types nobody has that day. Tasks follow the task filter, never the role selection.
+ * Breaks & tasks grid: shown days as columns, employees as rows. Role selection does not apply.
+ * Each cell lists the shift, any break, and tasks. Employees with a task and no shift are marked.
+ * Day headers carry the day's break total and task count. Tasks follow the task filter.
  */
 export default function WeeklyScheduleBreaksTasksView({
   weekStart,
@@ -236,9 +232,6 @@ export default function WeeklyScheduleBreaksTasksView({
   canEdit = false,
   showBreaks = true,
   endTimeEnabled = true,
-  noRolesSelected = false,
-  noRolesText = "No roles selected",
-  onSelectAllRoles,
   taskOptions = [],
   taskSelection = null,
   onTaskSelectionChange,
@@ -246,20 +239,35 @@ export default function WeeklyScheduleBreaksTasksView({
   onEditResponsibility,
   onAdd,
   onAddTask,
+  employeeQuery: employeeQueryProp,
+  onEmployeeQueryChange,
 }) {
-  const columns = grid?.columns || [];
-  const rows = grid?.rows || [];
-  const showBreakDetail = showBreaks && endTimeEnabled && !noRolesSelected;
+  const [localQuery, setLocalQuery] = useState("");
+  const employeeQuery = employeeQueryProp ?? localQuery;
+  const setEmployeeQuery = onEmployeeQueryChange ?? setLocalQuery;
+  const visibleGrid = filterBreaksGridByEmployee(grid, employeeQuery);
+  const columns = visibleGrid?.columns || [];
+  const visibleRows = visibleGrid?.rows || [];
+  const showBreakDetail = showBreaks && endTimeEnabled;
   const hasUnassigned = columns.some((column) => column.unassignedTasks.length);
+  const breakCount = columns.reduce((sum, column) => sum + Number(column.breakCount || 0), 0);
+  const taskCount = columns.reduce((sum, column) => sum + Number(column.taskCount || 0), 0);
   return (
-    <Stack spacing={0.75} sx={{ pb: 2 }}>
-      <BreaksNotices
-        showBreaks={showBreaks}
-        endTimeEnabled={endTimeEnabled}
-        noRolesSelected={noRolesSelected}
-        noRolesText={noRolesText}
-        onSelectAllRoles={onSelectAllRoles}
-      />
+    <Stack spacing={0.75} sx={{ pb: 2 }} data-breaks-tasks-view>
+      <BreaksNotices showBreaks={showBreaks} endTimeEnabled={endTimeEnabled} />
+      <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
+        <TextField
+          size="small"
+          label="Employee"
+          value={employeeQuery}
+          onChange={(event) => setEmployeeQuery(event.target.value)}
+          inputProps={{ "aria-label": "Filter employees" }}
+          sx={{ width: 180, "& .MuiInputBase-input": { py: 0.45, fontSize: "0.8rem" } }}
+        />
+        <Typography variant="caption" sx={{ fontWeight: 700, color: "text.secondary" }}>
+          {`${visibleRows.length} employees · ${breakCount} breaks · ${taskCount} tasks`}
+        </Typography>
+      </Stack>
       <TaskFilter options={taskOptions} selection={taskSelection} onChange={onTaskSelectionChange} />
       <Paper elevation={0} sx={{ border: "1px solid #e2e8f0", borderRadius: 2, overflow: "hidden", bgcolor: "#fff" }}>
         <TableContainer sx={{ overflowX: "auto" }}>
@@ -288,8 +296,8 @@ export default function WeeklyScheduleBreaksTasksView({
               </TableRow>
             </TableHead>
             <TableBody>
-              {rows.length ? (
-                rows.map((row) => (
+              {visibleRows.length ? (
+                visibleRows.map((row) => (
                   <TableRow key={row.userId} data-grid-employee={row.userId}>
                     <TableCell sx={{ position: "sticky", left: 0, zIndex: 1, bgcolor: "#fff", fontWeight: 800 }}>
                       {row.name}
@@ -297,6 +305,7 @@ export default function WeeklyScheduleBreaksTasksView({
                         {[
                           showBreakDetail && row.breakHours ? `${formatCoverageHours(row.breakHours)} breaks` : "",
                           row.taskCount ? `${row.taskCount} ${row.taskCount === 1 ? "task" : "tasks"}` : "",
+                          row.unscheduledTaskDays ? "Task without a shift" : "",
                         ]
                           .filter(Boolean)
                           .join(" · ")}
@@ -320,7 +329,7 @@ export default function WeeklyScheduleBreaksTasksView({
               ) : (
                 <TableRow>
                   <TableCell colSpan={columns.length + 1} sx={{ color: "text.secondary" }}>
-                    {showBreakDetail ? "No breaks or tasks planned for these days." : "No tasks assigned for these days."}
+                    {query ? "No employees match." : showBreakDetail ? "No breaks or tasks planned for these days." : "No tasks assigned for these days."}
                   </TableCell>
                 </TableRow>
               )}

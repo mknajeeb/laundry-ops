@@ -6,7 +6,7 @@ import WeeklyScheduleBreaksTasksPrint from "./WeeklyScheduleBreaksTasksPrint";
 import WeeklyScheduleSummaryBar from "./WeeklyScheduleSummaryBar";
 import WeeklyScheduleSummaryPrint from "./WeeklyScheduleSummaryPrint";
 import { buildHourlyCoverage } from "./weeklyScheduleTimeBlocks";
-import { buildBreaksTasksGrid, filterResponsibilitiesByTaskSelection, taskRoleOptions } from "./weeklyScheduleBreaksGrid";
+import { buildBreaksTasksGrid, filterBreaksGridByEmployee, filterResponsibilitiesByTaskSelection, taskRoleOptions } from "./weeklyScheduleBreaksGrid";
 import { buildBreaksTasksCsvRows } from "./weeklyScheduleExport";
 import { computeWeekSummary, DEFAULT_ROLE_CATALOG, setScheduleRoleCatalog, setScheduleRoleGroups } from "./weeklyScheduleRoles";
 import { summaryRoleLines, summaryTextLines, summaryTotalsMetrics } from "./weeklyScheduleSummaryLines";
@@ -118,18 +118,44 @@ describe("breaks & tasks grid", () => {
     expect(csv).toContain("Lint Cleaning: Dryers 1-12");
     expect(csv).toContain("Not scheduled 30 min");
     expect(csv).toContain("Unassigned tasks");
+    const filtered = filterBreaksGridByEmployee(g, "cam");
+    expect(filtered.rows.map((row) => row.name)).toEqual(["Cam"]);
+    const filteredCsv = buildBreaksTasksCsvRows({ grid: filtered, weekStart: "2026-10-04" }).join("\n");
+    expect(filteredCsv).toContain("Cam");
+    expect(filteredCsv).not.toContain("Ana");
+    expect(filteredCsv).not.toContain("Ben");
   });
 
-  it("shows a select-all prompt instead of zero breaks when no roles are selected", () => {
-    const g = grid({ roles: [], includeBreaks: false });
+  it("shows breaks and tasks without a role selection, including a task with no shift", () => {
+    const g = grid();
+    const withRoster = buildBreaksTasksGrid({
+      days: [],
+      dayIndices: [1],
+      shiftEntries: [],
+      responsibilities: [{ id: 11, user_id: 4, day_of_week: 1, role: "floor_cleaning", remarks: "Lobby" }],
+      employeesById: { 4: { user_id: 4, display_name: "Dee" }, 5: { user_id: 5, display_name: "Eli" } },
+      roster: [
+        { user_id: 4, display_name: "Dee" },
+        { user_id: 5, display_name: "Eli" },
+      ],
+      includeBreaks: true,
+    });
+    expect(withRoster.rows.map((row) => row.name)).toEqual(["Dee", "Eli"]);
+    expect(withRoster.rows[0].cells[1].hasShift).toBe(false);
+    expect(withRoster.rows[0].unscheduledTaskDays).toBe(1);
     const html = renderToString(
-      <WeeklyScheduleBreaksTasksView weekStart="2026-10-04" grid={g} noRolesSelected onSelectAllRoles={() => {}} />,
+      <>
+        <WeeklyScheduleBreaksTasksView weekStart="2026-10-04" grid={g} />
+        <WeeklyScheduleBreaksTasksView weekStart="2026-10-04" grid={withRoster} />
+      </>,
     );
-    expect(html).toContain("No roles selected");
-    expect(html).toContain("Select all");
+    expect(html).toContain("Breaks 1h · 0.5h not scheduled");
     expect(html).toContain("Dryers 1-12");
-    expect(html).not.toContain("No planned breaks");
-    expect(html).not.toContain("No breaks");
+    expect(html).toContain("No shift");
+    expect(html).toContain("Lobby");
+    expect(html).toContain("Task without a shift");
+    expect(html).not.toContain("No roles selected");
+    expect(html).not.toContain("breaks are hidden");
   });
 });
 

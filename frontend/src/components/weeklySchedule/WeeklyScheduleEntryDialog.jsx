@@ -36,7 +36,8 @@ import {
   scheduleRoleLabel,
   validateBreakSlots,
 } from "./weeklyScheduleRoles";
-import { ASSIGNMENT_KIND } from "./weeklyScheduleTimeBlocks";
+import { DAY_LABELS } from "./weeklyScheduleDates";
+import { ASSIGNMENT_KIND, dayDateLabel } from "./weeklyScheduleTimeBlocks";
 import { reconcileChecklistAssignment, rosterReleaseNote } from "./checklistAssignment";
 import WeeklyScheduleBreakFields from "./WeeklyScheduleBreakFields";
 import {
@@ -120,6 +121,7 @@ export default function WeeklyScheduleEntryDialog({
   scheduleEntries = [],
   employeesById = {},
   scheduleEndTimeEnabled = true,
+  weekStart = "",
   shiftCategoryChoices = null,
   categoryLabel = (value) => value,
   dailyResponsibilities = NO_TASKS,
@@ -535,10 +537,24 @@ export default function WeeklyScheduleEntryDialog({
   const title = isShift
     ? (isEdit ? "Edit shift" : "Add shift")
     : (isEdit ? "Edit task" : "Add task");
+  const contextNames = (isShift ? [userId] : userIds)
+    .map((id) => scheduleEmployeeName(employeesById, id))
+    .filter(Boolean);
+  const contextWhen = [DAY_LABELS[Number(dayOfWeek)] || "", weekStart ? dayDateLabel(weekStart, dayOfWeek) : ""]
+    .filter(Boolean)
+    .join(" ");
+  const contextLabel = [contextNames.join(", "), contextWhen].filter(Boolean).join(" · ");
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>{title}</DialogTitle>
+      <DialogTitle>
+        {title}
+        {contextLabel ? (
+          <Typography component="div" variant="body2" color="text.secondary" data-assignment-context sx={{ fontWeight: 700 }}>
+            {contextLabel}
+          </Typography>
+        ) : null}
+      </DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           {!isEdit && untimedOptions.length ? (

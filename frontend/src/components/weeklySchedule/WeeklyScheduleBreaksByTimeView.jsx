@@ -170,9 +170,6 @@ export default function WeeklyScheduleBreaksByTimeView({
   canEdit = false,
   showBreaks = true,
   endTimeEnabled = true,
-  noRolesSelected = false,
-  noRolesText = "No roles selected",
-  onSelectAllRoles,
   taskOptions = [],
   taskSelection = null,
   onTaskSelectionChange,
@@ -181,20 +178,14 @@ export default function WeeklyScheduleBreaksByTimeView({
   onAdd,
 }) {
   const columns = byTime?.columns || [];
-  const showBreakDetail = showBreaks && endTimeEnabled && !noRolesSelected;
+  const showBreakDetail = showBreaks && endTimeEnabled;
   const gridColumns = new Map((grid?.columns || []).map((column) => [column.dow, column]));
   const hasUntimed = columns.some((column) => column.untimed.length);
   const hasUnassigned = (grid?.columns || []).some((column) => column.unassignedTasks.length);
   const minWidth = 150 + columns.length * 170;
   return (
     <Stack spacing={0.75} sx={{ pb: 2 }}>
-      <BreaksNotices
-        showBreaks={showBreaks}
-        endTimeEnabled={endTimeEnabled}
-        noRolesSelected={noRolesSelected}
-        noRolesText={noRolesText}
-        onSelectAllRoles={onSelectAllRoles}
-      />
+      <BreaksNotices showBreaks={showBreaks} endTimeEnabled={endTimeEnabled} />
       {showBreakDetail ? (
         <Paper elevation={0} sx={{ border: "1px solid #e2e8f0", borderRadius: 2, overflow: "hidden", bgcolor: "#fff" }}>
           <TableContainer sx={{ overflowX: "auto" }}>

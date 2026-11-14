@@ -8,15 +8,12 @@ function minutesText(hours) {
 }
 
 /** Plain-HTML print of the breaks & tasks grid (copied into the print window, so no MUI styling). */
-export default function WeeklyScheduleBreaksTasksPrint({ grid, weekStart, showBreaks = true, noRolesText = "" }) {
+export default function WeeklyScheduleBreaksTasksPrint({ grid, weekStart, showBreaks = true }) {
   const columns = grid?.columns || [];
   const rows = grid?.rows || [];
   const hasUnassigned = columns.some((column) => column.unassignedTasks.length);
   return (
     <>
-      {noRolesText ? (
-        <div className="weekly-schedule-print-employee-meta">{noRolesText}: breaks are not shown. Tasks are listed.</div>
-      ) : null}
       <table className="weekly-schedule-print-table weekly-schedule-print-breaks-grid">
         <thead>
           <tr>
@@ -41,6 +38,7 @@ export default function WeeklyScheduleBreaksTasksPrint({ grid, weekStart, showBr
                   {[
                     showBreaks && row.breakHours ? `${formatCoverageHours(row.breakHours)} breaks` : "",
                     row.taskCount ? `${row.taskCount} ${row.taskCount === 1 ? "task" : "tasks"}` : "",
+                    row.unscheduledTaskDays ? "Task without a shift" : "",
                   ]
                     .filter(Boolean)
                     .join(" · ")}
@@ -48,10 +46,17 @@ export default function WeeklyScheduleBreaksTasksPrint({ grid, weekStart, showBr
               </td>
               {columns.map((column) => {
                 const cell = row.cells[column.dow];
-                const empty = !cell || (!cell.timed.length && !cell.untimed.length && !cell.tasks.length);
+                const empty = !cell || (!(cell.shifts || []).length && !cell.timed.length && !cell.untimed.length && !cell.tasks.length);
                 return (
                   <td key={column.dow}>
-                    {empty ? (cell?.hasShift && showBreaks ? "No break planned" : "—") : null}
+                    {empty ? "—" : null}
+                    {(cell?.shifts || []).map((shift) => (
+                      <div key={shift.id} className="weekly-schedule-print-shift-line">
+                        {shift.label || "Shift"}
+                      </div>
+                    ))}
+                    {cell?.tasks?.length && !cell?.hasShift ? <div>No shift</div> : null}
+                    {showBreaks && cell?.hasShift && !cell.timed.length && !cell.untimed.length ? <div>No break planned</div> : null}
                     {cell?.timed.map((range) => (
                       <div key={`t${range.start}`} className="weekly-schedule-print-shift-line">
                         <strong>Break {range.label}</strong>

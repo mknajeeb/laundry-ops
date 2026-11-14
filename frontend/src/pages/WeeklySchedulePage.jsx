@@ -124,6 +124,7 @@ import {
 } from "../components/weeklySchedule/weeklyScheduleViewFilters";
 import {
   buildBreaksTasksGrid,
+  filterBreaksGridByEmployee,
   filterResponsibilitiesByTaskSelection,
   gridTasksByDay,
   taskRoleOptions,
@@ -405,6 +406,7 @@ export default function WeeklySchedulePage() {
   // Task types shown in Breaks & tasks (null = all); independent of the role selection.
   const [taskSelection, setTaskSelection] = useState(null);
   const [breaksView, setBreaksView] = useState(BREAKS_VIEW.EMPLOYEE);
+  const [breaksEmployeeQuery, setBreaksEmployeeQuery] = useState("");
   const [breakInterval, setBreakInterval] = useState(30);
   const [dayViewTab, setDayViewTab] = useState(SCHEDULE_VIEW_ALL);
   const [showCoverageNames, setShowCoverageNames] = useState(true);
@@ -784,44 +786,99 @@ export default function WeeklySchedulePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [viewResponsibilities, roleCatalog],
   );
+  /** Eligible resources for this employer tab, including people with no shift and no role. */
+  const breaksRoster = useMemo(() => {
+    const byId = new Map();
+    const add = (employee) => {
+      if (!employee || employee.user_id == null) return;
+      if (!showExcluded && employee.excluded) return;
+      byId.set(Number(employee.user_id), employee);
+    };
+    shiftTabEmployees.forEach(add);
+    addableForTab.forEach(add);
+    for (const item of tabResponsibilities) {
+      add(employeesById[item.user_id] || employeesById[String(item.user_id)]);
+    }
+    return [...byId.values()];
+  }, [shiftTabEmployees, addableForTab, tabResponsibilities, employeesById, showExcluded]);
+  const breaksRosterIds = useMemo(
+    () => new Set(breaksRoster.map((employee) => Number(employee.user_id))),
+    [breaksRoster],
+  );
+  /** Shifts and tasks for day chips. The role selection and the selected day are not inputs. */
+  const breaksScopeEntries = useMemo(
+    () => tabEntries.filter((entry) => breaksRosterIds.has(Number(entry.user_id))),
+    [tabEntries, breaksRosterIds],
+  );
+  const breaksScopeResponsibilities = useMemo(
+    () =>
+      filterResponsibilitiesByTaskSelection(
+        tabResponsibilities.filter((item) => breaksRosterIds.has(Number(item.user_id))),
+        taskSelection,
+      ),
+    [tabResponsibilities, breaksRosterIds, taskSelection],
+  );
+  const breaksEntries = useMemo(
+    () => dayEntries.filter((entry) => breaksRosterIds.has(Number(entry.user_id))),
+    [dayEntries, breaksRosterIds],
+  );
+  const breaksCoverage = useMemo(
+    () =>
+      buildHourlyCoverage(breaksEntries, {
+        dayIndices: visibleDayColumns,
+        employeesById,
+        responsibilities: gridResponsibilities,
+        roles: null,
+        timingEntries: breaksEntries,
+      }),
+    // role catalog supplies labels inside coverage; the grid itself is not role-filtered.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [breaksEntries, visibleDayColumns, employeesById, gridResponsibilities, roleCatalog],
+  );
   const breaksTasksGrid = useMemo(() => {
-    const includeBreaks = showBreakMinutes && scheduleEndTimeEnabled && !noRolesSelected;
+    const includeBreaks = showBreakMinutes && scheduleEndTimeEnabled;
     return buildBreaksTasksGrid({
-      days: includeBreaks ? coverageAllHours : [],
+      days: includeBreaks ? breaksCoverage : [],
       dayIndices: visibleDayColumns,
-      shiftEntries: includeBreaks ? viewEntries.filter((entry) => visibleUserIds.has(Number(entry.user_id))) : [],
-      timingEntries: tabEntries.filter((entry) => visibleUserIds.has(Number(entry.user_id))),
+      shiftEntries: breaksEntries,
+      timingEntries: breaksEntries,
       responsibilities: gridResponsibilities,
       employeesById,
+      roster: breaksRoster,
       includeBreaks,
       taskTypes: taskSelection,
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    coverageAllHours,
+    breaksCoverage,
     visibleDayColumns,
-    viewEntries,
-    tabEntries,
-    visibleUserIds,
+    breaksEntries,
     gridResponsibilities,
     employeesById,
+    breaksRoster,
     showBreakMinutes,
     scheduleEndTimeEnabled,
-    noRolesSelected,
     taskSelection,
-    roleCatalog,
   ]);
-  /** Breaks by time: the same coverage records and filters as the employee grid, in time intervals. */
+  /** Breaks by time uses the same unfiltered coverage as the employee grid. */
   const breaksByTime = useMemo(() => {
-    const includeBreaks = showBreakMinutes && scheduleEndTimeEnabled && !noRolesSelected;
+    const includeBreaks = showBreakMinutes && scheduleEndTimeEnabled;
     return buildBreaksByTime({
-      days: includeBreaks ? coverageAllHours : [],
+      days: includeBreaks ? breaksCoverage : [],
       dayIndices: visibleDayColumns,
       interval: breakInterval,
       includeBreaks,
     });
-  }, [coverageAllHours, visibleDayColumns, breakInterval, showBreakMinutes, scheduleEndTimeEnabled, noRolesSelected]);
+  }, [breaksCoverage, visibleDayColumns, breakInterval, showBreakMinutes, scheduleEndTimeEnabled]);
   const breaksTasksByDay = useMemo(() => gridTasksByDay(breaksTasksGrid), [breaksTasksGrid]);
+  const printableBreaksGrid = useMemo(
+    () =>
+      viewMode === VIEW_MODE.BREAKS_TASKS && breaksView === BREAKS_VIEW.EMPLOYEE
+        ? filterBreaksGridByEmployee(breaksTasksGrid, breaksEmployeeQuery)
+        : breaksTasksGrid,
+    [viewMode, breaksView, breaksTasksGrid, breaksEmployeeQuery],
+  );
+  const canExportSchedule =
+    viewMode === VIEW_MODE.BREAKS_TASKS ? printableBreaksGrid.rows.length > 0 : visibleEmployees.length > 0;
 
   const addableEmployees = useMemo(() => {
     const ids = new Set(tabEmployees.map((e) => Number(e.user_id)));
@@ -1092,6 +1149,25 @@ export default function WeeklySchedulePage() {
     }
   };
 
+  const handleSaveBreak = async (entry, patch) => {
+    if (!entry?.id) return false;
+    setAssignSaving(true);
+    setAssignError("");
+    try {
+      const res = await updateWeeklyScheduleEntry(entry.id, {
+        break_slots: patch.break_slots,
+        unscheduled_break_minutes: patch.unscheduled_break_minutes,
+      });
+      setData(res.data);
+      return true;
+    } catch (e) {
+      setAssignError(e?.response?.data?.error || "Failed to save break");
+      return false;
+    } finally {
+      setAssignSaving(false);
+    }
+  };
+
   const handleDrop = async (userId, dayOfWeek, entryId) => {
     if (!entryId) return;
     setError("");
@@ -1135,22 +1211,26 @@ export default function WeeklySchedulePage() {
         tasksByDay: breaksTasksByDay,
         weekStart,
         tabLabel: `${entityLabel(employerTab)}${viewSuffix}`,
-        summaryLines: noRolesSelected
-          ? [noRolesText]
-          : summaryTextLines(weekSummary, { showBreaks: showBreakMinutes, hideLaborHours }),
-        showBreaks: showBreakMinutes && scheduleEndTimeEnabled && !noRolesSelected,
+        summaryLines: [
+          `${breaksTasksGrid.rows.length} employees`,
+          `${breaksTasksGrid.columns.reduce((sum, column) => sum + Number(column.breakCount || 0), 0)} breaks`,
+          `${breaksTasksGrid.columns.reduce((sum, column) => sum + Number(column.taskCount || 0), 0)} tasks`,
+        ],
+        showBreaks: showBreakMinutes && scheduleEndTimeEnabled,
       });
       return;
     }
     if (viewMode === VIEW_MODE.BREAKS_TASKS) {
       exportWeeklyScheduleBreaksTasksCsv({
-        grid: breaksTasksGrid,
+        grid: printableBreaksGrid,
         weekStart,
-        tabLabel: `${entityLabel(employerTab)}${viewSuffix}`,
-        summaryLines: noRolesSelected
-          ? [noRolesText]
-          : summaryTextLines(weekSummary, { showBreaks: showBreakMinutes, hideLaborHours }),
-        showBreaks: showBreakMinutes && scheduleEndTimeEnabled && !noRolesSelected,
+        tabLabel: `${entityLabel(employerTab)}`,
+        summaryLines: [
+          `${printableBreaksGrid.rows.length} employees`,
+          `${printableBreaksGrid.columns.reduce((sum, column) => sum + Number(column.breakCount || 0), 0)} breaks`,
+          `${printableBreaksGrid.columns.reduce((sum, column) => sum + Number(column.taskCount || 0), 0)} tasks`,
+        ],
+        showBreaks: showBreakMinutes && scheduleEndTimeEnabled,
       });
       return;
     }
@@ -1460,7 +1540,7 @@ export default function WeeklySchedulePage() {
                   }}
                   sx={{ fontWeight: 800, py: 0.35 }}
                 >
-                  {t("weeklySchedule.assignTasks")}
+                  {t("weeklySchedule.assignBreaksTasks")}
                 </Button>
               ) : null}
               {canEdit ? (
@@ -1500,7 +1580,7 @@ export default function WeeklySchedulePage() {
                 variant="outlined"
                 startIcon={<FileDownloadOutlinedIcon />}
                 onClick={handleExport}
-                disabled={!visibleEmployees.length}
+                disabled={!canExportSchedule}
                 sx={{ fontWeight: 700, py: 0.35 }}
               >
                 {t("weeklySchedule.exportExcel")}
@@ -1510,7 +1590,7 @@ export default function WeeklySchedulePage() {
                 variant="contained"
                 startIcon={<PrintIcon />}
                 onClick={handlePrint}
-                disabled={!visibleEmployees.length}
+                disabled={!canExportSchedule}
                 sx={{
                   fontWeight: 700,
                   py: 0.35,
@@ -1557,16 +1637,17 @@ export default function WeeklySchedulePage() {
 
           {!loading && data ? (
             <WeeklyScheduleViewTabs
-              entries={tabEntries}
-              selectedRoles={roleSelection}
+              entries={viewMode === VIEW_MODE.BREAKS_TASKS ? breaksScopeEntries : tabEntries}
+              selectedRoles={viewMode === VIEW_MODE.BREAKS_TASKS ? null : roleSelection}
               onSelectedRolesChange={updateRoleSelection}
               dayTab={dayViewTab}
               onDayTabChange={setDayViewTab}
               hiddenRoles={hiddenScheduleRoles}
               roleCatalog={roleCatalog}
-              responsibilities={tabResponsibilities}
+              responsibilities={viewMode === VIEW_MODE.BREAKS_TASKS ? breaksScopeResponsibilities : tabResponsibilities}
               hideRoles={viewMode !== VIEW_MODE.EMPLOYEE}
               roleUniverse={roleUniverse}
+              dayCountMode={viewMode === VIEW_MODE.BREAKS_TASKS ? "activity" : "employees"}
             />
           ) : null}
 
@@ -1683,13 +1764,15 @@ export default function WeeklySchedulePage() {
               {formatWeekRange(normalizeWeekStart(data.carried_forward_from))}. Edit shifts here as needed.
             </Alert>
           ) : null}
-          {!loading && data && scheduleViewLabel ? (
+          {!loading && data && (viewMode === VIEW_MODE.BREAKS_TASKS || scheduleViewLabel) ? (
             <Typography
               variant="caption"
               className="no-print"
               sx={{ display: "block", mb: 0.5, px: 0.25, color: "text.secondary", fontWeight: 600 }}
             >
-              View: {entityLabel(employerTab)} · {scheduleViewLabel}
+              {viewMode === VIEW_MODE.BREAKS_TASKS
+                ? `View: ${entityLabel(employerTab)} · Breaks & tasks`
+                : `View: ${entityLabel(employerTab)} · ${scheduleViewLabel}`}
               {employerTab === ENTITY_TAB.COMBINED ? " (admin)" : ""}
             </Typography>
           ) : null}
@@ -1724,6 +1807,7 @@ export default function WeeklySchedulePage() {
             </Stack>
           ) : (
             <>
+              {viewMode === VIEW_MODE.BREAKS_TASKS ? null : (
               <Box sx={{ flexShrink: 0 }}>
                 <WeeklyScheduleSummaryBar
                   summary={weekSummary}
@@ -1736,6 +1820,7 @@ export default function WeeklySchedulePage() {
                   onSelectAllRoles={selectAllRoles}
                 />
               </Box>
+              )}
 
               <Box
                 sx={{
@@ -1750,13 +1835,6 @@ export default function WeeklySchedulePage() {
               >
                 {viewMode === VIEW_MODE.BREAKS_TASKS ? (
                   <>
-                    <HourlyCoverageControls
-                      roleOptions={coverageRoleOptions}
-                      selectedRoles={roleSelection}
-                      onSelectedRolesChange={updateRoleSelection}
-                      roleUniverse={roleUniverse}
-                      showViewOptions={false}
-                    />
                     <Box sx={{ px: 0.25, pb: 0.75 }}>
                       <BreaksViewToggle
                         view={breaksView}
@@ -1774,9 +1852,6 @@ export default function WeeklySchedulePage() {
                         canEdit={canEdit}
                         showBreaks={showBreakMinutes}
                         endTimeEnabled={scheduleEndTimeEnabled}
-                        noRolesSelected={noRolesSelected}
-                        noRolesText={noRolesText}
-                        onSelectAllRoles={selectAllRoles}
                         taskOptions={gridTaskOptions}
                         taskSelection={taskSelection}
                         onTaskSelectionChange={updateTaskSelection}
@@ -1788,12 +1863,11 @@ export default function WeeklySchedulePage() {
                       <WeeklyScheduleBreaksTasksView
                         weekStart={weekStart}
                         grid={breaksTasksGrid}
+                        employeeQuery={breaksEmployeeQuery}
+                        onEmployeeQueryChange={setBreaksEmployeeQuery}
                         canEdit={canEdit}
                         showBreaks={showBreakMinutes}
                         endTimeEnabled={scheduleEndTimeEnabled}
-                        noRolesSelected={noRolesSelected}
-                        noRolesText={noRolesText}
-                        onSelectAllRoles={selectAllRoles}
                         taskOptions={gridTaskOptions}
                         taskSelection={taskSelection}
                         onTaskSelectionChange={updateTaskSelection}
@@ -2034,15 +2108,17 @@ export default function WeeklySchedulePage() {
                   ? ` — ${t("weeklySchedule.breaksByTime", { minutes: breaksByTime.interval })}`
                   : ` — ${t("weeklySchedule.breaksByEmployee")}`
                 : ""}
-              {scheduleViewLabel ? ` — ${scheduleViewLabel}` : ""}
+              {viewMode === VIEW_MODE.BREAKS_TASKS || !scheduleViewLabel ? "" : ` — ${scheduleViewLabel}`}
             </div>
             <div className="weekly-schedule-print-doc-subtitle">{formatWeekRange(weekStart)}</div>
+            {viewMode === VIEW_MODE.BREAKS_TASKS ? null : (
             <WeeklyScheduleSummaryPrint
               summary={weekSummary}
               showBreaks={showBreakMinutes}
               hideLaborHours={hideLaborHours}
               noRolesText={noRolesText}
             />
+            )}
           </div>
           {viewMode === VIEW_MODE.BREAKS_TASKS && breaksView === BREAKS_VIEW.TIME ? (
             <WeeklyScheduleBreaksByTimePrint
@@ -2050,15 +2126,13 @@ export default function WeeklySchedulePage() {
               grid={breaksTasksGrid}
               tasksByDay={breaksTasksByDay}
               weekStart={weekStart}
-              showBreaks={showBreakMinutes && scheduleEndTimeEnabled && !noRolesSelected}
-              noRolesText={showBreakMinutes && scheduleEndTimeEnabled ? noRolesText : ""}
+              showBreaks={showBreakMinutes && scheduleEndTimeEnabled}
             />
           ) : viewMode === VIEW_MODE.BREAKS_TASKS ? (
             <WeeklyScheduleBreaksTasksPrint
-              grid={breaksTasksGrid}
+              grid={printableBreaksGrid}
               weekStart={weekStart}
-              showBreaks={showBreakMinutes && scheduleEndTimeEnabled && !noRolesSelected}
-              noRolesText={showBreakMinutes && scheduleEndTimeEnabled ? noRolesText : ""}
+              showBreaks={showBreakMinutes && scheduleEndTimeEnabled}
             />
           ) : viewMode !== VIEW_MODE.EMPLOYEE ? (
             <WeeklyScheduleTimeRolePrint
@@ -2091,10 +2165,12 @@ export default function WeeklySchedulePage() {
         open={assignOpen && canEdit}
         onClose={() => setAssignOpen(false)}
         onAssign={handleAssignTasks}
+        onSaveBreak={handleSaveBreak}
         saving={assignSaving}
         error={assignError}
         weekStart={weekStart}
         employees={pickerEmployees}
+        entries={tabEntries}
       />
       <TaskMoveDialog
         open={Boolean(taskMove) && canEdit}
@@ -2130,6 +2206,7 @@ export default function WeeklySchedulePage() {
         scheduleEntries={data?.entries || []}
         employeesById={employeesById}
         scheduleEndTimeEnabled={scheduleEndTimeEnabled}
+        weekStart={weekStart}
         shiftCategoryChoices={shiftCategoryChoices}
         categoryLabel={entityLabel}
         dailyResponsibilities={data?.daily_responsibilities}

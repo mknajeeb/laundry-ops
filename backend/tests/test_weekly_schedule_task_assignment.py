@@ -1,10 +1,14 @@
 """Daily task pairings, shared moves, and active-assignment guards."""
 
+import inspect
 from datetime import date
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from backend.planned_weekly_schedule_responsibilities import (
+    _record_assignment_correction,
     assign_tasks_for_days,
+    authenticated_actor_id,
     delete_assignment,
     list_week_responsibilities,
     move_task_assignment,
@@ -279,6 +283,127 @@ def test_participant_and_move_patches_touch_only_that_pairing():
     assert {row["id"] for row in order_patch["responsibilities"]} == {extra["items"][0]["id"]}
     assert order_patch["responsibilities"][0]["display_order"] == 1
     assert len(cursor.rows) == shift_count
+
+
+def test_unscheduled_assignment_waits_for_an_override_and_does_not_create_a_shift():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    _shifts(cursor)
+    shift_count = len(cursor.rows)
+    p1, p2 = _patched()
+    with p1, p2:
+        blocked, err = assign_tasks_for_days(
+            conn,
+            cursor,
+            1,
+            week_start=WEEK,
+            data={"days_of_week": [1, 3], "role": "lint_cleaning", "user_ids": [10]},
+        )
+        assert blocked is None
+        assert err and err.startswith("unscheduled:")
+        assert list_week_responsibilities(cursor, 1, week_start=WEEK) == []
+        with patch(
+            "backend.planned_weekly_schedule_responsibilities._record_assignment_correction",
+            return_value=None,
+        ) as recorded:
+            created, saved = assign_tasks_for_days(
+                conn,
+                cursor,
+                1,
+                week_start=WEEK,
+                data={
+                    "days_of_week": [3],
+                    "role": "lint_cleaning",
+                    "user_ids": [10],
+                    "confirm_unscheduled": True,
+                    "actor_user_id": 999,
+                },
+                actor_user_id=7,
+            )
+    assert saved is None, saved
+    assert created["items"][0]["day_of_week"] == 3
+    assert recorded.call_args.kwargs["action"] == "assign_unscheduled"
+    assert recorded.call_args.kwargs["reason"].startswith("Assign anyway:")
+    assert recorded.call_args.kwargs["actor_user_id"] == 7
+    assert recorded.call_args.kwargs["after"]["user_ids"] == [10]
+    assert recorded.call_args.kwargs["after"]["day_of_week"] == 3
+    assert recorded.call_args.kwargs["after"]["role"] == "lint_cleaning"
+    assert len(cursor.rows) == shift_count
+
+
+def test_assign_anyway_rejects_a_client_actor_and_a_missing_session_user():
+    assert authenticated_actor_id({"id": 999, "user_id": 15}) == 15
+    assert authenticated_actor_id({"id": 999}) is None
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    _shifts(cursor)
+    shift_count = len(cursor.rows)
+    p1, p2 = _patched()
+    with p1, p2:
+        created, err = assign_tasks_for_days(
+            conn,
+            cursor,
+            1,
+            week_start=WEEK,
+            data={
+                "days_of_week": [3],
+                "role": "lint_cleaning",
+                "user_ids": [10],
+                "confirm_unscheduled": True,
+                "actor_user_id": 999,
+            },
+        )
+    assert created is None
+    assert err == "authenticated user is required"
+    assert list_week_responsibilities(cursor, 1, week_start=WEEK) == []
+    assert len(cursor.rows) == shift_count
+
+
+def test_corrections_table_is_provisioned_by_migration_not_schedule_code():
+    root = Path(__file__).resolve().parents[2]
+    responsibilities = (root / "backend/planned_weekly_schedule_responsibilities.py").read_text()
+    routes = (root / "backend/rinse_shift_analysis_routes.py").read_text()
+    migration = (root / "backend/sql/weekly_schedule_task_assignment_v1.sql").read_text()
+    assert "ensure_assignment_corrections_table" not in responsibilities
+    assert "ensure_assignment_corrections_table" not in routes
+    assert "CREATE TABLE" not in inspect.getsource(_record_assignment_correction).upper()
+    assert "CREATE TABLE IF NOT EXISTS planned_weekly_schedule_assignment_corrections" in migration
+    assert "ALTER TABLE planned_weekly_schedule_responsibilities" not in migration
+
+
+def test_correction_insert_uses_the_authenticated_actor_and_does_not_create_a_table():
+    cursor = MagicMock()
+    with patch("backend.planned_weekly_schedule_responsibilities.table_exists", return_value=False):
+        missing = _record_assignment_correction(
+            cursor,
+            1,
+            assignment_group_id="g",
+            responsibility_id=5,
+            action="assign_unscheduled",
+            reason="Assign anyway: employee is not scheduled on this date",
+            actor_user_id=15,
+            before={"scheduled": False},
+            after={"user_ids": [10], "day_of_week": 3, "role": "lint_cleaning"},
+        )
+    assert missing == "assignment audit table is not provisioned"
+    cursor.execute.assert_not_called()
+    with patch("backend.planned_weekly_schedule_responsibilities.table_exists", return_value=True):
+        saved = _record_assignment_correction(
+            cursor,
+            1,
+            assignment_group_id="g",
+            responsibility_id=5,
+            action="assign_unscheduled",
+            reason="Assign anyway: employee is not scheduled on this date",
+            actor_user_id=15,
+            before={"scheduled": False},
+            after={"user_ids": [10], "day_of_week": 3, "role": "lint_cleaning"},
+        )
+    assert saved is None
+    sql = cursor.execute.call_args.args[0]
+    assert "CREATE TABLE" not in sql.upper()
+    assert cursor.execute.call_args.args[1][5] == 15
+    assert cursor.execute.call_args.args[1][3] == "assign_unscheduled"
 
 
 def test_deleting_a_shared_assignment_removes_every_member():

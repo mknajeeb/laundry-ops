@@ -1,5 +1,13 @@
+import { formatTime12 } from "../datetime/scheduleTimeUi";
 import { scheduleRoleCatalog, scheduleRoleLabel, sortRoles } from "./weeklyScheduleRoles";
 import { assignmentKey, taskExecutionLabel, taskGroupLabel, taskTimingIssues, taskTimingLabel } from "./weeklyScheduleTaskTiming";
+
+function shiftWindowLabel(entry) {
+  const start = formatTime12(entry?.start_time);
+  const end = formatTime12(entry?.end_time);
+  if (!start || !end) return "";
+  return `${start}–${end}`;
+}
 
 function employeeName(employeesById, userId) {
   const employee = employeesById?.[userId] || employeesById?.[String(userId)];
@@ -29,11 +37,10 @@ export function filterResponsibilitiesByTaskSelection(responsibilities, selectio
 /**
  * Breaks & tasks as a grid: shown days as columns, employees as rows.
  *
- * `days` comes from buildHourlyCoverage (already limited to the selected roles), so break figures are
- * the same ones the hourly views use. `shiftEntries` are the shifts in the selected roles, used to mark
- * employee-days that have a shift but no planned break. `responsibilities` are listed independently of
- * the role selection so tasks never disappear because timed roles are unchecked. `taskTypes` limits the
- * unassigned-task row (null = every task type).
+ * `days` comes from buildHourlyCoverage for the schedule scope, with no role filter. `shiftEntries`
+ * are that scope's shifts, including shifts that have no role. `roster` lists every eligible employee
+ * so someone with no shift and no task still appears. `responsibilities` follow the task filter only.
+ * `taskTypes` limits the unassigned-task row (null = every task type).
  */
 export function buildBreaksTasksGrid({
   days = [],
@@ -42,6 +49,7 @@ export function buildBreaksTasksGrid({
   timingEntries = null,
   responsibilities = [],
   employeesById = {},
+  roster = [],
   includeBreaks = true,
   taskTypes = null,
 } = {}) {
@@ -50,22 +58,39 @@ export function buildBreaksTasksGrid({
   const rowFor = (userId) => {
     const uid = Number(userId);
     if (!rows.has(uid)) {
-      rows.set(uid, { userId: uid, name: employeeName(employeesById, uid), breakHours: 0, taskCount: 0, cells: {} });
+      rows.set(uid, {
+        userId: uid,
+        name: employeeName(employeesById, uid),
+        breakHours: 0,
+        taskCount: 0,
+        unscheduledTaskDays: 0,
+        cells: {},
+      });
     }
     return rows.get(uid);
   };
   const cellFor = (row, dow) => {
-    if (!row.cells[dow]) row.cells[dow] = { hasShift: false, timed: [], untimed: [], tasks: [] };
+    if (!row.cells[dow]) row.cells[dow] = { hasShift: false, shifts: [], timed: [], untimed: [], tasks: [] };
     return row.cells[dow];
   };
 
+  for (const employee of roster || []) {
+    const uid = Number(employee?.user_id ?? employee?.userId);
+    if (uid) rowFor(uid);
+  }
+
   const dayByDow = new Map((days || []).map((day) => [day.dow, day]));
-  if (includeBreaks) {
-    for (const entry of shiftEntries || []) {
-      const dow = Number(entry.day_of_week);
-      if (!shown.has(dow)) continue;
-      cellFor(rowFor(entry.user_id), dow).hasShift = true;
+  for (const entry of shiftEntries || []) {
+    const dow = Number(entry.day_of_week);
+    if (!shown.has(dow)) continue;
+    const cell = cellFor(rowFor(entry.user_id), dow);
+    cell.hasShift = true;
+    const shiftId = entry.id ?? `${entry.user_id}-${dow}-${entry.start_time || ""}`;
+    if (!cell.shifts.some((shift) => shift.id === shiftId)) {
+      cell.shifts.push({ id: shiftId, label: shiftWindowLabel(entry) });
     }
+  }
+  if (includeBreaks) {
     for (const day of days || []) {
       if (!shown.has(day.dow)) continue;
       for (const range of day.breakRanges || []) {
@@ -113,9 +138,12 @@ export function buildBreaksTasksGrid({
   }
   const order = new Map(sortRoles([...new Set((responsibilities || []).map((item) => item.role))]).map((role, i) => [role, i]));
   for (const row of rows.values()) {
+    let unscheduledTaskDays = 0;
     for (const cell of Object.values(row.cells)) {
       cell.tasks.sort((a, b) => (order.get(a.role) ?? 0) - (order.get(b.role) ?? 0));
+      if (cell.tasks.length && !cell.hasShift) unscheduledTaskDays += 1;
     }
+    row.unscheduledTaskDays = unscheduledTaskDays;
   }
 
   const catalogTasks = scheduleRoleCatalog()
@@ -143,6 +171,37 @@ export function buildBreaksTasksGrid({
     columns,
     rows: [...rows.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" })),
   };
+}
+
+/** Keep the rows whose names match the employee search, and recount that day's visible breaks and tasks. */
+export function filterBreaksGridByEmployee(grid, query) {
+  if (!grid) return grid;
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return grid;
+  const rows = (grid.rows || []).filter((row) => String(row.name || "").toLowerCase().includes(q));
+  const columns = (grid.columns || []).map((column) => {
+    let breakCount = 0;
+    let timedBreakHours = 0;
+    let untimedBreakHours = 0;
+    const assignments = new Set();
+    for (const row of rows) {
+      const cell = row.cells?.[column.dow];
+      if (!cell) continue;
+      breakCount += (cell.timed?.length || 0) + (cell.untimed?.length || 0);
+      timedBreakHours += (cell.timed || []).reduce((sum, range) => sum + Number(range.hours || 0), 0);
+      untimedBreakHours += (cell.untimed || []).reduce((sum, item) => sum + Number(item.hours || 0), 0);
+      for (const task of cell.tasks || []) assignments.add(task.assignmentKey || task.key);
+    }
+    return {
+      ...column,
+      breakCount,
+      timedBreakHours,
+      untimedBreakHours,
+      breakHours: timedBreakHours + untimedBreakHours,
+      taskCount: assignments.size,
+    };
+  });
+  return { ...grid, rows, columns };
 }
 
 /** Tasks of each shown day with the employee's name, from the same grid rows (by task type, then name). */
