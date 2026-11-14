@@ -84,3 +84,44 @@ export function breakTargets({ people = [], days = [], entries = [] } = {}) {
 export function slotMinutes(slot) {
   return slotDurationMinutes(slot);
 }
+
+/** Payload for Assign. Unscheduled people are named; scheduled people stay in user_ids. */
+export function taskAssignmentPayload({ days, task, people, timingMode, taskStart, remarks, entries }) {
+  const missing = unscheduledAssignmentPairs(entries, people, days);
+  return {
+    missing,
+    payload: {
+      days_of_week: [...(days || [])],
+      role: task?.value,
+      user_ids: (people || []).map((person) => Number(person.user_id)),
+      timing_mode: timingMode,
+      start_time: timingMode === "specific_time" ? taskStart || null : null,
+      remarks: String(remarks || "").trim() || null,
+      execution_mode: task?.group && (people || []).length >= 2 ? "shared" : "individual",
+      confirm_unscheduled: missing.length > 0,
+    },
+  };
+}
+
+/** Existing task rows for this selection. A save must not replace them. */
+export function taskAssignmentConflicts(responsibilities, { role, people, days } = {}) {
+  const hits = [];
+  for (const person of people || []) {
+    for (const day of days || []) {
+      const found = (responsibilities || []).find(
+        (item) =>
+          Number(item.user_id) === Number(person.user_id) &&
+          Number(item.day_of_week) === Number(day) &&
+          String(item.role || "") === String(role || ""),
+      );
+      if (!found) continue;
+      hits.push({
+        id: found.id,
+        userId: Number(person.user_id),
+        day: Number(day),
+        name: person.display_name || `User #${person.user_id}`,
+      });
+    }
+  }
+  return hits;
+}

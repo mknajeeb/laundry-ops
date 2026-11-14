@@ -468,6 +468,7 @@ def _timing_for_members(
     day_of_week: int,
     user_ids: Sequence[int],
     timing: Mapping[str, Any],
+    allow_unscheduled: bool = False,
 ) -> tuple[list[str], list[str]]:
     names = _worker_names(conn, organization_id, user_ids)
     shifts = _day_shifts(cursor, organization_id, week_start, day_of_week, user_ids)
@@ -475,6 +476,7 @@ def _timing_for_members(
         timing_mode=str(timing.get("timing_mode") or TIMING_ANYTIME),
         start_time=timing.get("start_time"),
         members=[{"name": names[int(uid)], "shifts": shifts.get(int(uid)) or []} for uid in user_ids],
+        allow_unscheduled=allow_unscheduled,
     )
 
 
@@ -740,6 +742,7 @@ def create_responsibility(
         day_of_week=payload["day_of_week"],
         user_ids=payload["user_ids"],
         timing=payload,
+        allow_unscheduled=bool(data.get("confirm_unscheduled")),
     )
     if errors:
         return None, "; ".join(errors)
@@ -832,6 +835,7 @@ def update_responsibility(
         day_of_week=payload["day_of_week"],
         user_ids=payload["user_ids"],
         timing=payload,
+        allow_unscheduled=bool(data.get("confirm_unscheduled")),
     )
     if errors:
         return None, "; ".join(errors)
@@ -1255,6 +1259,7 @@ def move_task_assignment(
         "start_time": existing.get("start_time"),
         "execution_mode": existing.get("execution_mode"),
         "confirm_active_change": bool(data.get("confirm_active_change")),
+        "confirm_unscheduled": bool(data.get("confirm_unscheduled")),
         "correction_reason": data.get("correction_reason"),
         "actor_user_id": actor_user_id,
     }

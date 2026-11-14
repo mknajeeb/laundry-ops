@@ -285,6 +285,114 @@ def test_participant_and_move_patches_touch_only_that_pairing():
     assert len(cursor.rows) == shift_count
 
 
+def test_assign_anyway_keeps_a_shared_specific_time_when_one_employee_has_no_shift():
+    """Saturday 10:00 AM, one scheduled partner and one unscheduled partner.
+
+    Confirming Assign Anyway must keep both people on one shared group.
+    The specific time stays a warning for the employee with no shift, and
+    still fails when a scheduled partner is not working at that time or is
+    on a timed break. No shift, payroll, or attendance row is added.
+    """
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    with patch("backend.planned_weekly_schedule._schedule_end_time_enabled", return_value=True):
+        _create(
+            cursor,
+            {
+                "user_id": 10,
+                "day_of_week": 6,
+                "start_time": "07:00",
+                "end_time": "14:00",
+                "roles": ["wash"],
+                "break_minutes": 30,
+            },
+        )
+        _create(
+            cursor,
+            {
+                "user_id": 10,
+                "day_of_week": 1,
+                "start_time": "12:00",
+                "end_time": "16:00",
+                "roles": ["wash"],
+            },
+        )
+        _create(
+            cursor,
+            {
+                "user_id": 10,
+                "day_of_week": 2,
+                "start_time": "09:00",
+                "end_time": "17:00",
+                "roles": ["wash"],
+                "break_slots": [{"start_time": "10:00", "end_time": "10:30"}],
+                "break_minutes": 30,
+            },
+        )
+    shift_count = len(cursor.rows)
+    p1, p2 = _patched()
+    body = {
+        "days_of_week": [6],
+        "role": "floor_cleaning",
+        "user_ids": [10, 20],
+        "execution_mode": "shared",
+        "timing_mode": "specific_time",
+        "start_time": "10:00",
+        "confirm_unscheduled": True,
+    }
+    with p1, p2:
+        blocked, err = assign_tasks_for_days(
+            conn,
+            cursor,
+            1,
+            week_start=WEEK,
+            data={**body, "confirm_unscheduled": False},
+        )
+        assert blocked is None and err.startswith("unscheduled:")
+        assert "Bob" in err and "Alice" not in err
+        outside, outside_err = assign_tasks_for_days(
+            conn,
+            cursor,
+            1,
+            week_start=WEEK,
+            data={**body, "days_of_week": [1], "start_time": "10:00"},
+            actor_user_id=15,
+        )
+        assert outside is None and "Alice is not scheduled at 10:00 AM" in outside_err
+        on_break, break_err = assign_tasks_for_days(
+            conn,
+            cursor,
+            1,
+            week_start=WEEK,
+            data={**body, "days_of_week": [2], "start_time": "10:15"},
+            actor_user_id=15,
+        )
+        assert on_break is None and "scheduled break" in break_err
+        with patch(
+            "backend.planned_weekly_schedule_responsibilities._record_assignment_correction",
+            return_value=None,
+        ) as recorded:
+            created, saved = assign_tasks_for_days(
+                conn, cursor, 1, week_start=WEEK, data=body, actor_user_id=15
+            )
+    assert saved is None, saved
+    assert len(cursor.rows) == shift_count
+    rows = [
+        row
+        for row in list_week_responsibilities(cursor, 1, week_start=WEEK)
+        if row["role"] == "floor_cleaning"
+    ]
+    assert {row["user_id"] for row in rows} == {10, 20}
+    assert {row["execution_mode"] for row in rows} == {"shared"}
+    assert len({row["assignment_group_id"] for row in rows}) == 1
+    assert {row["timing_mode"] for row in rows} == {"specific_time"}
+    assert {row["start_time"] for row in rows} == {"10:00"}
+    assert created["timing_warnings"] == ["Bob is not scheduled on this day, so 10:00 AM is not on a shift"]
+    assert recorded.call_args.kwargs["actor_user_id"] == 15
+    assert recorded.call_args.kwargs["before"]["names"] == ["Bob"]
+    assert recorded.call_args.kwargs["after"]["user_ids"] == [10, 20]
+
+
 def test_unscheduled_assignment_waits_for_an_override_and_does_not_create_a_shift():
     cursor = _FakeCursor()
     conn = MagicMock()

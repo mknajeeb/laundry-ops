@@ -73,6 +73,7 @@ import LostFoundReportAuthPage from "./pages/LostFoundReportAuthPage";
 import EmployeePinHubPage from "./pages/EmployeePinHubPage";
 import ManagementTasksPage from "./pages/ManagementTasksPage";
 import TaskDashboardPhase3PreviewPage from "./pages/TaskDashboardPhase3PreviewPage";
+import BreaksTasksPlannerPreviewPage from "./pages/BreaksTasksPlannerPreviewPage";
 import ActivityResponsibilityPreviewPage from "./pages/ActivityResponsibilityPreviewPage";
 import ManagementTaskConfigPage from "./pages/ManagementTaskConfigPage";
 import MaintenanceTaskListReportsPage from "./pages/MaintenanceTaskListReportsPage";
@@ -265,7 +266,9 @@ function isDevPreviewRoute(path) {
     p === "/dev/task-dashboard-phase3-preview" ||
     p.startsWith("/dev/task-dashboard-phase3-preview/") ||
     p === "/dev/activity-responsibility-preview" ||
-    p.startsWith("/dev/activity-responsibility-preview/")
+    p.startsWith("/dev/activity-responsibility-preview/") ||
+    p === "/dev/breaks-tasks-preview" ||
+    p.startsWith("/dev/breaks-tasks-preview/")
   );
 }
 
@@ -765,6 +768,7 @@ function AppShell() {
         <Route path="/dev/change-role" element={<ChangeRolePreviewPage />} />
         <Route path="/dev/task-dashboard-phase3-preview" element={<TaskDashboardPhase3PreviewPage />} />
         <Route path="/dev/activity-responsibility-preview" element={<ActivityResponsibilityPreviewPage />} />
+        <Route path="/dev/breaks-tasks-preview" element={<BreaksTasksPlannerPreviewPage />} />
       </Routes>
     );
   }

@@ -56,6 +56,7 @@ import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import WeeklyScheduleCascadeDialog from "../components/weeklySchedule/WeeklyScheduleCascadeDialog";
 import WeeklyScheduleCopyShiftDialog from "../components/weeklySchedule/WeeklyScheduleCopyShiftDialog";
 import AssignTasksDialog from "../components/weeklySchedule/AssignTasksDialog";
+import BreaksTasksPlanner, { BreaksTasksPlannerPrint } from "../components/weeklySchedule/BreaksTasksPlanner";
 import TaskMoveDialog from "../components/weeklySchedule/TaskMoveDialog";
 import WeeklyScheduleEntryDialog from "../components/weeklySchedule/WeeklyScheduleEntryDialog";
 import WeeklyScheduleManageRolesDialog from "../components/weeklySchedule/WeeklyScheduleManageRolesDialog";
@@ -100,11 +101,18 @@ import {
   shiftWeek,
 } from "../components/weeklySchedule/weeklyScheduleDates";
 import {
-  exportWeeklyScheduleBreaksByTimeCsv,
-  exportWeeklyScheduleBreaksTasksCsv,
+  downloadScheduleCsv,
   exportWeeklyScheduleCsv,
   exportWeeklyScheduleHourlyCsv,
 } from "../components/weeklySchedule/weeklyScheduleExport";
+import {
+  PLANNER_SECTION,
+  buildEmployeeRows,
+  buildTaskGroups,
+  dayBreaks,
+  plannerCsv,
+  weekBreakSummary,
+} from "../components/weeklySchedule/breaksTasksPlannerModel";
 import WeeklySchedulePrintTable from "../components/weeklySchedule/WeeklySchedulePrintTable";
 import WeeklyScheduleTimeRolePrint from "../components/weeklySchedule/WeeklyScheduleTimeRolePrint";
 import WeeklyScheduleBreaksTasksPrint from "../components/weeklySchedule/WeeklyScheduleBreaksTasksPrint";
@@ -378,6 +386,9 @@ export default function WeeklySchedulePage() {
   const [dialogError, setDialogError] = useState("");
   const [responsibilityConflicts, setResponsibilityConflicts] = useState([]);
   const [viewMode, setViewMode] = useState(VIEW_MODE.EMPLOYEE);
+  const [plannerSection, setPlannerSection] = useState(PLANNER_SECTION.TIMELINE);
+  const [plannerDay, setPlannerDay] = useState(1);
+  const [assignSeed, setAssignSeed] = useState(null);
   const [rolesOpen, setRolesOpen] = useState(false);
   const [draggingId, setDraggingId] = useState(null);
   const [draggingTaskId, setDraggingTaskId] = useState(null);
@@ -810,6 +821,33 @@ export default function WeeklySchedulePage() {
     () => tabEntries.filter((entry) => breaksRosterIds.has(Number(entry.user_id))),
     [tabEntries, breaksRosterIds],
   );
+  const plannerResponsibilities = useMemo(
+    () => tabResponsibilities.filter((item) => breaksRosterIds.has(Number(item.user_id))),
+    [tabResponsibilities, breaksRosterIds],
+  );
+  const plannerTimeline = useMemo(
+    () => dayBreaks(breaksScopeEntries, employeesById, plannerDay),
+    [breaksScopeEntries, employeesById, plannerDay],
+  );
+  const plannerWeek = useMemo(
+    () => weekBreakSummary(breaksScopeEntries, employeesById),
+    [breaksScopeEntries, employeesById],
+  );
+  const plannerTasks = useMemo(
+    () => buildTaskGroups(plannerResponsibilities, employeesById),
+    [plannerResponsibilities, employeesById],
+  );
+  const plannerEmployees = useMemo(
+    () =>
+      buildEmployeeRows({
+        employees: breaksRoster,
+        entries: breaksScopeEntries,
+        responsibilities: plannerResponsibilities,
+        day: plannerDay,
+        employeesById,
+      }),
+    [breaksRoster, breaksScopeEntries, plannerResponsibilities, plannerDay, employeesById],
+  );
   const breaksScopeResponsibilities = useMemo(
     () =>
       filterResponsibilitiesByTaskSelection(
@@ -1138,8 +1176,10 @@ export default function WeeklySchedulePage() {
     try {
       const res = await assignWeeklyScheduleTasks({ week_start: weekStart, ...body });
       setData((prev) => mergeScheduleMutation(prev, res.data));
-      setTaskNotice("Tasks assigned.");
+      const warnings = res.data?.assigned_tasks?.timing_warnings || [];
+      setTaskNotice(warnings.length ? `Tasks assigned. ${warnings.join(" ")}` : "Tasks assigned.");
       setAssignOpen(false);
+      setAssignSeed(null);
     } catch (e) {
       setAssignError(e?.response?.data?.error || "Failed to assign tasks");
       setTaskNotice("");
@@ -1204,34 +1244,19 @@ export default function WeeklySchedulePage() {
 
   const handleExport = () => {
     const viewSuffix = scheduleViewLabel ? ` - ${scheduleViewLabel}` : "";
-    if (viewMode === VIEW_MODE.BREAKS_TASKS && breaksView === BREAKS_VIEW.TIME) {
-      exportWeeklyScheduleBreaksByTimeCsv({
-        byTime: breaksByTime,
-        grid: breaksTasksGrid,
-        tasksByDay: breaksTasksByDay,
-        weekStart,
-        tabLabel: `${entityLabel(employerTab)}${viewSuffix}`,
-        summaryLines: [
-          `${breaksTasksGrid.rows.length} employees`,
-          `${breaksTasksGrid.columns.reduce((sum, column) => sum + Number(column.breakCount || 0), 0)} breaks`,
-          `${breaksTasksGrid.columns.reduce((sum, column) => sum + Number(column.taskCount || 0), 0)} tasks`,
-        ],
-        showBreaks: showBreakMinutes && scheduleEndTimeEnabled,
-      });
-      return;
-    }
     if (viewMode === VIEW_MODE.BREAKS_TASKS) {
-      exportWeeklyScheduleBreaksTasksCsv({
-        grid: printableBreaksGrid,
-        weekStart,
-        tabLabel: `${entityLabel(employerTab)}`,
-        summaryLines: [
-          `${printableBreaksGrid.rows.length} employees`,
-          `${printableBreaksGrid.columns.reduce((sum, column) => sum + Number(column.breakCount || 0), 0)} breaks`,
-          `${printableBreaksGrid.columns.reduce((sum, column) => sum + Number(column.taskCount || 0), 0)} tasks`,
-        ],
-        showBreaks: showBreakMinutes && scheduleEndTimeEnabled,
-      });
+      downloadScheduleCsv(
+        plannerCsv({
+          section: plannerSection,
+          day: plannerDay,
+          weekStart,
+          timeline: plannerTimeline,
+          tasks: plannerTasks,
+          employees: plannerEmployees,
+          week: plannerWeek,
+        }),
+        `breaks-tasks-${weekStart}-${plannerSection}.csv`,
+      );
       return;
     }
     if (viewMode !== VIEW_MODE.EMPLOYEE) {
@@ -1536,6 +1561,7 @@ export default function WeeklySchedulePage() {
                   variant="contained"
                   onClick={() => {
                     setAssignError("");
+                    setAssignSeed(null);
                     setAssignOpen(true);
                   }}
                   sx={{ fontWeight: 800, py: 0.35 }}
@@ -1834,50 +1860,27 @@ export default function WeeklySchedulePage() {
                 className="weekly-schedule-grid-scroll"
               >
                 {viewMode === VIEW_MODE.BREAKS_TASKS ? (
-                  <>
-                    <Box sx={{ px: 0.25, pb: 0.75 }}>
-                      <BreaksViewToggle
-                        view={breaksView}
-                        onViewChange={setBreaksView}
-                        interval={breakInterval}
-                        onIntervalChange={setBreakInterval}
-                      />
-                    </Box>
-                    {breaksView === BREAKS_VIEW.TIME ? (
-                      <WeeklyScheduleBreaksByTimeView
-                        weekStart={weekStart}
-                        byTime={breaksByTime}
-                        grid={breaksTasksGrid}
-                        tasksByDay={breaksTasksByDay}
-                        canEdit={canEdit}
-                        showBreaks={showBreakMinutes}
-                        endTimeEnabled={scheduleEndTimeEnabled}
-                        taskOptions={gridTaskOptions}
-                        taskSelection={taskSelection}
-                        onTaskSelectionChange={updateTaskSelection}
-                        onEditEntry={openEdit}
-                        onEditResponsibility={openEditResponsibility}
-                        onAdd={openCreateFromTimeView}
-                      />
-                    ) : (
-                      <WeeklyScheduleBreaksTasksView
-                        weekStart={weekStart}
-                        grid={breaksTasksGrid}
-                        employeeQuery={breaksEmployeeQuery}
-                        onEmployeeQueryChange={setBreaksEmployeeQuery}
-                        canEdit={canEdit}
-                        showBreaks={showBreakMinutes}
-                        endTimeEnabled={scheduleEndTimeEnabled}
-                        taskOptions={gridTaskOptions}
-                        taskSelection={taskSelection}
-                        onTaskSelectionChange={updateTaskSelection}
-                        onEditEntry={openEdit}
-                        onEditResponsibility={openEditResponsibility}
-                        onAdd={openCreateFromTimeView}
-                        onAddTask={({ userId, day }) => openCreate(userId, day, { kind: ASSIGNMENT_KIND.RESPONSIBILITY })}
-                      />
-                    )}
-                  </>
+                  <BreaksTasksPlanner
+                    weekStart={weekStart}
+                    day={plannerDay}
+                    onDayChange={setPlannerDay}
+                    section={plannerSection}
+                    onSectionChange={setPlannerSection}
+                    employees={breaksRoster}
+                    employeesById={employeesById}
+                    entries={breaksScopeEntries}
+                    responsibilities={plannerResponsibilities}
+                    canEdit={canEdit}
+                    onSaveBreak={handleSaveBreak}
+                    onEditEntry={openEdit}
+                    onEditResponsibility={openEditResponsibility}
+                    onAssign={(seed) => {
+                      setAssignSeed(seed || null);
+                      setAssignError("");
+                      setAssignOpen(true);
+                    }}
+                    onMoveTask={(item) => setTaskMove({ item, day: item.day, userId: item.members?.[0]?.userId })}
+                  />
                 ) : viewMode === VIEW_MODE.TIME_ROLE ? (
                   <>
                     <HourlyCoverageControls
@@ -2103,11 +2106,7 @@ export default function WeeklySchedulePage() {
             <div className="weekly-schedule-print-doc-title">
               {t("nav.weeklySchedule")} — {entityLabel(employerTab)}
               {viewMode === VIEW_MODE.TIME_ROLE ? ` — ${t("weeklySchedule.hourlyByRole")}` : ""}
-              {viewMode === VIEW_MODE.BREAKS_TASKS
-                ? breaksView === BREAKS_VIEW.TIME
-                  ? ` — ${t("weeklySchedule.breaksByTime", { minutes: breaksByTime.interval })}`
-                  : ` — ${t("weeklySchedule.breaksByEmployee")}`
-                : ""}
+              {viewMode === VIEW_MODE.BREAKS_TASKS ? ` — ${t(`weeklySchedule.planner.${plannerSection === "tasks" ? "tasks" : plannerSection === "employees" ? "employees" : "timeline"}`)}` : ""}
               {viewMode === VIEW_MODE.BREAKS_TASKS || !scheduleViewLabel ? "" : ` — ${scheduleViewLabel}`}
             </div>
             <div className="weekly-schedule-print-doc-subtitle">{formatWeekRange(weekStart)}</div>
@@ -2120,19 +2119,15 @@ export default function WeeklySchedulePage() {
             />
             )}
           </div>
-          {viewMode === VIEW_MODE.BREAKS_TASKS && breaksView === BREAKS_VIEW.TIME ? (
-            <WeeklyScheduleBreaksByTimePrint
-              byTime={breaksByTime}
-              grid={breaksTasksGrid}
-              tasksByDay={breaksTasksByDay}
-              weekStart={weekStart}
-              showBreaks={showBreakMinutes && scheduleEndTimeEnabled}
-            />
-          ) : viewMode === VIEW_MODE.BREAKS_TASKS ? (
-            <WeeklyScheduleBreaksTasksPrint
-              grid={printableBreaksGrid}
-              weekStart={weekStart}
-              showBreaks={showBreakMinutes && scheduleEndTimeEnabled}
+          {viewMode === VIEW_MODE.BREAKS_TASKS ? (
+            <BreaksTasksPlannerPrint
+              section={plannerSection}
+              day={plannerDay}
+              timeline={plannerTimeline}
+              tasks={plannerTasks}
+              employeeRows={plannerEmployees}
+              week={plannerWeek}
+              employees={breaksRoster}
             />
           ) : viewMode !== VIEW_MODE.EMPLOYEE ? (
             <WeeklyScheduleTimeRolePrint
@@ -2171,6 +2166,12 @@ export default function WeeklySchedulePage() {
         weekStart={weekStart}
         employees={pickerEmployees}
         entries={tabEntries}
+        responsibilities={plannerResponsibilities}
+        defaultDays={assignSeed?.day != null ? [assignSeed.day] : []}
+        defaultUserIds={assignSeed?.userIds || []}
+        defaultRole={assignSeed?.role || ""}
+        defaultTiming={assignSeed?.timingMode || ""}
+        defaultStart={assignSeed?.startTime || ""}
       />
       <TaskMoveDialog
         open={Boolean(taskMove) && canEdit}

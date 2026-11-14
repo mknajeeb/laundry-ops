@@ -295,6 +295,10 @@ function csvFileName({ weekStart, tabLabel, filename }) {
   return filename || `weekly-schedule-${weekStart}-${safeTab || "schedule"}.csv`;
 }
 
+export function downloadScheduleCsv(lines, downloadName) {
+  downloadCsv(lines, downloadName);
+}
+
 function downloadCsv(lines, downloadName) {
   const body = `\uFEFF${lines.join("\r\n")}`;
   const blob = new Blob([body], { type: "text/csv;charset=utf-8;" });

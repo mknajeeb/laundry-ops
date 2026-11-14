@@ -31,6 +31,8 @@ import {
   breakTargets,
   slotMinutes,
   suggestedBreakSlot,
+  taskAssignmentConflicts,
+  taskAssignmentPayload,
   unscheduledAssignmentPairs,
 } from "./weeklyScheduleBreakAssignment";
 
@@ -272,7 +274,12 @@ export default function AssignTasksDialog({
   weekStart,
   employees = [],
   entries = [],
+  responsibilities = [],
   defaultDays = NO_DAYS,
+  defaultUserIds = [],
+  defaultRole = "",
+  defaultTiming = "",
+  defaultStart = "",
 }) {
   const { t } = useI18n();
   const options = useMemo(() => taskOptions(), [open]);
@@ -290,10 +297,11 @@ export default function AssignTasksDialog({
     if (!open) return;
     setSection("tasks");
     setDays(defaultDays.length ? defaultDays.map(Number) : []);
-    setTask(null);
-    setPeople([]);
-    setTimingMode(TASK_TIMING.ANYTIME);
-    setTaskStart("");
+    const seededIds = new Set((defaultUserIds || []).map(Number));
+    setPeople(employees.filter((person) => seededIds.has(Number(person.user_id))));
+    setTask(taskOptions().find((option) => option.value === defaultRole) || null);
+    setTimingMode(defaultTiming || TASK_TIMING.ANYTIME);
+    setTaskStart(defaultStart || "");
     setRemarks("");
     setConfirmUnscheduled(false);
     setHideServerWarning(false);
@@ -320,33 +328,40 @@ export default function AssignTasksDialog({
     [entries, people, days],
   );
   const unscheduledError = String(error || "").startsWith("unscheduled:");
+  const conflicts = useMemo(
+    () => (section === "tasks" && task ? taskAssignmentConflicts(responsibilities, { role: task.value, people, days }) : []),
+    [section, responsibilities, task, people, days],
+  );
   const showUnscheduledWarning =
-    section === "tasks" && missing.length > 0 && (confirmUnscheduled || (unscheduledError && !hideServerWarning));
-  const canSave = days.length > 0 && task && people.length > 0 && (timingMode !== TASK_TIMING.SPECIFIC || taskStart);
+    section === "tasks" && missing.length > 0 && !conflicts.length && (confirmUnscheduled || (unscheduledError && !hideServerWarning));
+  const canSave =
+    days.length > 0 && task && people.length > 0 && !conflicts.length && (timingMode !== TASK_TIMING.SPECIFIC || taskStart);
 
   const toggleDay = (dow) => {
     setDays((current) => (current.includes(dow) ? current.filter((day) => day !== dow) : [...current, dow].sort()));
   };
 
   const assign = () => {
+    if (conflicts.length) return;
     if (missing.length && !confirmUnscheduled) {
       setConfirmUnscheduled(true);
       return;
     }
-    onAssign({
-      days_of_week: days,
-      role: task.value,
-      user_ids: people.map((person) => Number(person.user_id)),
-      timing_mode: timingMode,
-      start_time: timingMode === TASK_TIMING.SPECIFIC ? taskStart : null,
-      remarks: remarks.trim() || null,
-      execution_mode: isGroup && people.length >= 2 ? "shared" : "individual",
-      confirm_unscheduled: missing.length > 0,
-    });
+    onAssign(
+      taskAssignmentPayload({
+        days,
+        task,
+        people,
+        timingMode,
+        taskStart,
+        remarks,
+        entries,
+      }).payload,
+    );
   };
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
+    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth scroll="paper">
       <DialogTitle>{t("weeklySchedule.assignBreaksTasks")}</DialogTitle>
       <DialogContent>
         <Tabs
@@ -403,10 +418,20 @@ export default function AssignTasksDialog({
                 isOptionEqualToValue={(option, value) => option.value === value.value}
                 renderInput={(params) => <TextField {...params} label={t("weeklySchedule.taskOrGroup")} size="small" />}
               />
-              {names.length ? (
-                <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                  {t("weeklySchedule.assigned", { names: names.join(", ") })}
+              <Box sx={{ border: "1px solid #e2e8f0", borderRadius: 1, px: 1, py: 0.75 }}>
+                <Typography sx={{ fontWeight: 800, fontSize: "0.82rem" }}>
+                  {days.length ? days.map((dow) => `${DAY_LABELS[dow]} ${dayButtonLabel(weekStart, dow)}`).join(", ") : t("weeklySchedule.selectDate")}
                 </Typography>
+                <Typography sx={{ fontSize: "0.8rem" }}>{names.join(", ") || t("weeklySchedule.employees")}</Typography>
+                <Typography sx={{ fontSize: "0.8rem" }}>
+                  {`${task?.label || t("weeklySchedule.taskOrGroup")} · ${t(`weeklySchedule.timing.${timingMode}`)}${timingMode === TASK_TIMING.SPECIFIC && taskStart ? ` ${taskStart}` : ""}`}
+                </Typography>
+              </Box>
+              {conflicts.length ? (
+                <Alert severity="error" data-assignment-conflict>
+                  {conflicts.map((hit) => `${hit.name} · ${DAY_LABELS[hit.day]}`).join(", ")}
+                  {` ${t("weeklySchedule.planner.willNotReplace")}`}
+                </Alert>
               ) : null}
               <FormControl size="small" fullWidth>
                 <InputLabel>{t("weeklySchedule.timing")}</InputLabel>

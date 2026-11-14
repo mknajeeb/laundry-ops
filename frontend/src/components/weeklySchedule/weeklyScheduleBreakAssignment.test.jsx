@@ -6,6 +6,8 @@ import {
   breakSummary,
   breakTargets,
   suggestedBreakSlot,
+  taskAssignmentConflicts,
+  taskAssignmentPayload,
   unscheduledAssignmentPairs,
 } from "./weeklyScheduleBreakAssignment";
 
@@ -77,5 +79,35 @@ describe("break and task assignment selection", () => {
     expect(html).toContain("Add Break");
     expect(html).toContain("A scheduled break needs a shift. This employee is not scheduled on this date.");
     expect(html.match(/data-break-target=/g)).toHaveLength(4);
+  });
+
+  it("keeps scheduled employees when only one selected person is unscheduled", () => {
+    const gabriela = { user_id: 56, display_name: "Gabriela" };
+    const yesenia = { user_id: 36, display_name: "Yesenia" };
+    const saturday = [
+      { id: 1, user_id: 56, day_of_week: 6, start_time: "07:00", end_time: "14:00" },
+    ];
+    const { missing, payload } = taskAssignmentPayload({
+      days: [6],
+      task: { value: "agroup_washer_and_floor_cleaning", group: true },
+      people: [gabriela, yesenia],
+      timingMode: "specific_time",
+      taskStart: "10:00",
+      remarks: "",
+      entries: saturday,
+    });
+    expect(missing.map((pair) => pair.name)).toEqual(["Yesenia"]);
+    expect(payload.user_ids).toEqual([56, 36]);
+    expect(payload.confirm_unscheduled).toBe(true);
+    expect(payload.execution_mode).toBe("shared");
+    expect(payload.start_time).toBe("10:00");
+  });
+
+  it("names an existing assignment instead of replacing it", () => {
+    const hits = taskAssignmentConflicts(
+      [{ id: 9, user_id: 56, day_of_week: 6, role: "floor_cleaning" }],
+      { role: "floor_cleaning", people: [ana, { user_id: 56, display_name: "Gabriela" }], days: [6] },
+    );
+    expect(hits).toEqual([{ id: 9, userId: 56, day: 6, name: "Gabriela" }]);
   });
 });

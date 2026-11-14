@@ -220,13 +220,17 @@ def evaluate_task_timing(
     timing_mode: str,
     start_time: str | None,
     members: Sequence[Mapping[str, Any]],
+    allow_unscheduled: bool = False,
 ) -> tuple[list[str], list[str]]:
     """Return ``(errors, warnings)``.
 
-    Errors block a Specific Time that an assigned employee is not working
-    (no shift, or the time falls in their scheduled break). Relative modes
-    stay saved and surface a warning when a shift or break is missing, or
-    when a group does not share the same anchor.
+    Errors block a Specific Time that falls outside a shift the employee
+    already has, or inside that shift's timed break. An employee with no
+    shift is also an error, unless ``allow_unscheduled`` is set by Assign
+    Anyway. That override does not move the time onto a shift, and it does
+    not excuse a scheduled employee whose shift misses the time.
+    Relative modes stay saved and surface a warning when a shift or break
+    is missing, or when a group does not share the same anchor.
     """
     mode = str(timing_mode or TIMING_ANYTIME)
     if mode == TIMING_ANYTIME or not members:
@@ -244,11 +248,13 @@ def evaluate_task_timing(
             name = str(member.get("name") or "Employee")
             shifts = list(member.get("shifts") or [])
             shift = _covering_shift(shifts, point)
-            if shift is None:
+            if shift is None and allow_unscheduled and not shifts:
+                warnings.append(f"{name} is not scheduled on this day, so {when} is not on a shift")
+            elif shift is None:
                 errors.append(f"{name} is not scheduled at {when}")
             elif _during_break(shift, point):
                 errors.append(f"{name} is on a scheduled break at {when}")
-        return errors, []
+        return errors, warnings
 
     anchors: list[tuple[str, str]] = []
     for member in members:
