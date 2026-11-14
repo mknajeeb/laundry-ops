@@ -481,6 +481,8 @@ def _publish_adjustment_snapshot(
     hours = float(row.get("approved_hours") or 0)
     rate = row.get("approved_lbs_per_hour")
     if rate is None or hours <= 0:
+        # Speed-only approvals publish through the employee-day cache.
+        # Do not invent a session, bag, or hour row for the approval table.
         return
     lbs = float(row.get("approved_lbs") or 0)
     biz = row.get("business_date_et")
@@ -566,17 +568,32 @@ def attach_supervisor_adjustments(
         hours = float(row.get("approved_hours") or 0)
         lbs = float(row.get("approved_lbs") or 0)
         orders = int(row.get("approved_orders") or 0)
-        emp["orders_completed"] = int(emp.get("orders_completed") or 0) + orders
-        emp["total_pre_lbs"] = round(float(emp.get("total_pre_lbs") or 0) + lbs, 2)
-        emp["performance_hours"] = round(float(emp.get("performance_hours") or 0) + hours, 4)
-        emp["session_hours"] = emp["performance_hours"]
+        rate = row.get("approved_lbs_per_hour")
+        speed_only = rate is not None and hours <= 0 and lbs <= 0 and orders <= 0
         emp["approved_adjustment_count"] = int(emp.get("approved_adjustment_count") or 0) + 1
         emp["raw_lbs_per_hour"] = row.get("raw_lbs_per_hour")
         emp["corrected_lbs_per_hour"] = row.get("corrected_lbs_per_hour")
-        emp["approved_lbs_per_hour"] = row.get("approved_lbs_per_hour")
-        if hours > 0:
-            emp["lbs_per_hour"] = round(float(emp["total_pre_lbs"]) / float(emp["performance_hours"]), 4)
-            emp["bags_per_hour"] = round(int(emp["orders_completed"]) / float(emp["performance_hours"]), 4)
+        emp["approved_lbs_per_hour"] = rate
+        if speed_only:
+            # The approved speed replaces the published rate. Recorded bags,
+            # pounds, and hours stay the evidence and are not added again.
+            emp["speed_only_adjustment"] = True
+            try:
+                emp["lbs_per_hour"] = float(rate)
+            except (TypeError, ValueError):
+                emp["lbs_per_hour"] = None
+        else:
+            emp["orders_completed"] = int(emp.get("orders_completed") or 0) + orders
+            emp["total_pre_lbs"] = round(float(emp.get("total_pre_lbs") or 0) + lbs, 2)
+            emp["performance_hours"] = round(float(emp.get("performance_hours") or 0) + hours, 4)
+            emp["session_hours"] = emp["performance_hours"]
+            if hours > 0:
+                emp["lbs_per_hour"] = round(
+                    float(emp["total_pre_lbs"]) / float(emp["performance_hours"]), 4
+                )
+                emp["bags_per_hour"] = round(
+                    int(emp["orders_completed"]) / float(emp["performance_hours"]), 4
+                )
         pending = int(emp.get("pending_session_count") or 0)
         approved_sessions = int(emp.get("approved_session_count") or 0)
         if pending == 0 and approved_sessions == 0:

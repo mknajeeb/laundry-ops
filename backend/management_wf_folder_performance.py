@@ -794,6 +794,12 @@ def _public_order_row(order: Mapping[str, Any]) -> dict[str, Any]:
             order.get("customer"),
         ),
         "pre_lbs": pre,
+        "pre_weight_lbs": order.get("pre_weight_lbs"),
+        "credited_weight_lbs": order.get("credited_weight_lbs"),
+        "evidence_pre_weight_lbs": order.get("evidence_pre_weight_lbs"),
+        "credited_weight_source": order.get("credited_weight_source"),
+        "credited_weight_basis": order.get("credited_weight_basis"),
+        "missing_production_credit_weight": bool(order.get("missing_production_credit_weight")),
         "completion_time_et": order.get("completion_time_et")
         or order.get("completion_time")
         or order.get("completion_timestamp"),

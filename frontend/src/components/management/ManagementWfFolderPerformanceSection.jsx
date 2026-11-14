@@ -82,7 +82,7 @@ import {
   perfKpiStripSx,
   perfRowSx,
 } from "./performance/performanceTokens";
-import { fmtCount, fmtDelta, fmtHours, fmtLbs, fmtRate } from "./performance/performanceFormat";
+import { fmtCount, fmtDelta, fmtHours, fmtLbs, fmtRate, recordedDay } from "./performance/performanceFormat";
 import { displayCustomerName } from "../../utils/displayCustomerName";
 import { orderDisplayIdFromRow } from "../../utils/orderDisplayId";
 
@@ -188,46 +188,27 @@ function WfEmployeeDayRow({
   const approved = status === "APPROVED";
   const partial = status === "PARTIALLY_APPROVED";
   const needsApproval = status === "NEEDS_APPROVAL";
+  const recorded = recordedDay(employee);
   const hours = employee.performance_hours ?? employee.session_hours;
-  const recordedBags = employee.all_visible_orders_completed;
-  const recordedLbs = employee.all_visible_total_pre_lbs;
-  const recordedHours = employee.all_visible_performance_hours;
-  const hasRecorded =
-    recordedBags != null || recordedLbs != null || recordedHours != null;
-  const recordedDiffersFromPerf =
-    hasRecorded &&
-    (Number(recordedBags || 0) !== Number(employee.orders_completed || 0) ||
-      Math.abs(Number(recordedLbs || 0) - Number(employee.total_pre_lbs || 0)) > 0.05 ||
-      Math.abs(Number(recordedHours || 0) - Number(hours || 0)) > 0.05);
-
-  const recordedLine =
-    hasRecorded
-      ? `${fmtCount(recordedBags)} bags · ${fmtLbs(recordedLbs, { compact: true })} · ${fmtHours(recordedHours)} recorded`
-      : null;
-  const performanceLine = `${fmtCount(employee.orders_completed)} bags · ${fmtLbs(employee.total_pre_lbs, {
+  const primaryLine = `${fmtCount(recorded.bags)} bags · ${fmtLbs(recorded.pounds, {
     compact: true,
-  })} · ${fmtHours(hours)}${
-    employee.lbs_per_hour != null ? ` · ${fmtRate(employee.lbs_per_hour)} lb/hr` : ""
-  }`;
-
-  let primaryLine;
+  })} · ${fmtHours(recorded.hours)} · ${fmtRate(recorded.rate)} lb/hr`;
   let secondaryLine = null;
   let statusHint = dayStatusLabel(status);
-  if (needsApproval && recordedLine) {
-    // Do not present approved-subset zeros as “did no work.”
-    primaryLine = recordedLine;
-    statusHint = "Needs approval · Not included in Performance";
-  } else if (partial && recordedDiffersFromPerf && recordedLine) {
-    primaryLine = `Performance: ${performanceLine}`;
-    secondaryLine = `Recorded: ${recordedLine.replace(/ recorded$/, "")}`;
-    statusHint = "Partially approved · Performance includes approved sessions only";
-  } else {
-    primaryLine = performanceLine;
+  if (employee.speed_only_adjustment && employee.approved_lbs_per_hour != null) {
+    secondaryLine = `Approved folding speed ${fmtRate(employee.approved_lbs_per_hour)} lb/hr`;
+  } else if (partial) {
+    secondaryLine = `Published: ${fmtCount(employee.orders_completed)} bags · ${fmtLbs(
+      employee.total_pre_lbs,
+      { compact: true }
+    )} · ${fmtHours(hours)} · ${fmtRate(employee.lbs_per_hour)} lb/hr`;
+    statusHint = "Partially approved · Published totals use approved sessions only";
+  } else if (needsApproval) {
+    statusHint = "Needs approval";
   }
 
   const metaParts = [employee.time_range_label, employee.duration_label].filter(Boolean);
   const sessionCount = employee.session_count || (employee.sessions || []).length;
-  const showPerfRate = approved || (partial && employee.lbs_per_hour != null);
 
   return (
     <Box
@@ -261,16 +242,12 @@ function WfEmployeeDayRow({
           ) : null}
         </Box>
         <Box sx={{ flex: 1, minWidth: 8 }} />
-        {showPerfRate ? (
-          <Typography sx={PERF_TYPE.metricPrimary} whiteSpace="nowrap">
-            {fmtRate(employee.lbs_per_hour, 0)}{" "}
-            <Box component="span" sx={PERF_TYPE.metricLabel}>
-              lb/hr
-            </Box>
-          </Typography>
-        ) : (
-          <Typography sx={{ ...PERF_TYPE.metricLabel, whiteSpace: "nowrap" }}>—</Typography>
-        )}
+        <Typography sx={PERF_TYPE.metricPrimary} whiteSpace="nowrap">
+          {fmtRate(recorded.rate, 0)}{" "}
+          <Box component="span" sx={PERF_TYPE.metricLabel}>
+            lb/hr
+          </Box>
+        </Typography>
       </Stack>
       <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.35 }}>
         {metaParts.length ? (
@@ -1367,18 +1344,23 @@ export default function ManagementWfFolderPerformanceSection({
           String(e.employee) === String(employeeFilter)
       );
     }
+    const recordedSort = (row) => recordedDay(row);
     if (sortBy === "lbs_hr") {
-      rows.sort((a, b) => (b.lbs_per_hour || 0) - (a.lbs_per_hour || 0));
+      rows.sort((a, b) => (recordedSort(b).rate || 0) - (recordedSort(a).rate || 0));
     } else if (sortBy === "bags_hr") {
-      rows.sort((a, b) => (b.bags_per_hour || 0) - (a.bags_per_hour || 0));
+      rows.sort((a, b) => {
+        const left = recordedSort(a);
+        const right = recordedSort(b);
+        const leftRate = left.hours ? left.bags / left.hours : 0;
+        const rightRate = right.hours ? right.bags / right.hours : 0;
+        return rightRate - leftRate;
+      });
     } else if (sortBy === "pounds") {
-      rows.sort((a, b) => (b.total_pre_lbs || 0) - (a.total_pre_lbs || 0));
+      rows.sort((a, b) => (recordedSort(b).pounds || 0) - (recordedSort(a).pounds || 0));
     } else if (sortBy === "hours") {
-      rows.sort(
-        (a, b) => (b.performance_hours || b.session_hours || 0) - (a.performance_hours || a.session_hours || 0)
-      );
+      rows.sort((a, b) => (recordedSort(b).hours || 0) - (recordedSort(a).hours || 0));
     } else {
-      rows.sort((a, b) => (b.orders_completed || 0) - (a.orders_completed || 0));
+      rows.sort((a, b) => (recordedSort(b).bags || 0) - (recordedSort(a).bags || 0));
     }
     return rows;
   }, [data?.employees, data?.excluded_employees, sortBy, showExcluded, employeeFilter]);
@@ -1681,7 +1663,7 @@ export default function ManagementWfFolderPerformanceSection({
                   await putManagementFolderAutoApprove({ enabled: next });
                   setPubMessage(
                     next
-                      ? "Auto-approve is on for sessions that close after now. Earlier days stay manual."
+                      ? "Auto-approve is on for employee-days that close after now and meet the combined daily target. Earlier days stay manual."
                       : "Auto-approve is off. Manual approval is unchanged."
                   );
                 } catch (err) {
@@ -1702,6 +1684,7 @@ export default function ManagementWfFolderPerformanceSection({
         dateEt={dateEt}
         busy={actionBusy}
         initial={adjustInitial}
+        employees={[...(data?.employees || []), ...(data?.excluded_employees || [])]}
         onClose={() => setAdjustOpen(false)}
         onSave={async (body) => {
           setActionBusy(true);
@@ -2109,9 +2092,18 @@ export default function ManagementWfFolderPerformanceSection({
               }}
             >
               <Typography sx={{ fontWeight: 800, fontSize: 13, mb: 0.75 }}>
-                Day summary · Approved Performance vs recorded work
+                Combined daily folding
               </Typography>
-              <Typography sx={{ ...PERF_TYPE.meta }}>
+              <Typography sx={{ fontWeight: 800, fontSize: 16 }}>
+                {fmtCount(recordedDay(reviewEmployee).bags)} bags ·{" "}
+                {fmtLbs(recordedDay(reviewEmployee).pounds, { compact: true })} ·{" "}
+                {fmtHours(recordedDay(reviewEmployee).hours)} ·{" "}
+                {fmtRate(recordedDay(reviewEmployee).rate)} lb/hr
+              </Typography>
+              <Typography sx={{ ...PERF_TYPE.meta, mt: 0.35 }}>
+                Total folding bags, pounds, and hours. Speed is total pounds ÷ total hours.
+              </Typography>
+              <Typography sx={{ ...PERF_TYPE.meta, mt: 0.35 }}>
                 Approved sessions{" "}
                 {fmtCount(
                   reviewEmployee?.approved_session_count ?? reviewEmployee?.included_session_count
@@ -2119,29 +2111,18 @@ export default function ManagementWfFolderPerformanceSection({
                 · Pending {fmtCount(reviewEmployee?.pending_session_count || 0)} · Excluded{" "}
                 {fmtCount(reviewEmployee?.excluded_session_count || 0)}
               </Typography>
-              <Typography sx={{ ...PERF_TYPE.meta, mt: 0.35 }}>
-                Performance (approved only): {fmtCount(reviewEmployee?.orders_completed)} bags ·{" "}
-                {fmtLbs(reviewEmployee?.total_pre_lbs, { compact: true })}
-                {reviewEmployee?.day_average_weight_is_override
-                  ? ` (calc ${fmtLbs(reviewEmployee?.calculated_total_pre_lbs, { compact: true })})`
-                  : ""}{" "}
-                · {fmtHours(reviewEmployee?.performance_hours)} ·{" "}
-                {fmtRate(reviewEmployee?.lbs_per_hour)} lb/hr
-              </Typography>
-              {reviewEmployee?.all_visible_orders_completed != null &&
-              (Number(reviewEmployee.all_visible_orders_completed) !==
-                Number(reviewEmployee.orders_completed || 0) ||
-                Math.abs(
-                  Number(reviewEmployee.all_visible_total_pre_lbs || 0) -
-                    Number(reviewEmployee.total_pre_lbs || 0)
-                ) > 0.05) ? (
-                <Typography sx={{ ...PERF_TYPE.meta, mt: 0.5 }}>
-                  Recorded (all visible): {fmtCount(reviewEmployee.all_visible_orders_completed)}{" "}
-                  bags · {fmtLbs(reviewEmployee.all_visible_total_pre_lbs, { compact: true })} ·{" "}
-                  {fmtHours(reviewEmployee.all_visible_performance_hours)} — not included in
-                  Performance until approved
+              {reviewEmployee?.speed_only_adjustment &&
+              reviewEmployee?.approved_lbs_per_hour != null ? (
+                <Typography sx={{ ...PERF_TYPE.meta, mt: 0.5, fontWeight: 700 }}>
+                  Approved folding speed {fmtRate(reviewEmployee.approved_lbs_per_hour)} lb/hr
                 </Typography>
               ) : null}
+              <Typography sx={{ ...PERF_TYPE.meta, mt: 0.35 }}>
+                Published (approved sessions only): {fmtCount(reviewEmployee?.orders_completed)} bags
+                · {fmtLbs(reviewEmployee?.total_pre_lbs, { compact: true })} ·{" "}
+                {fmtHours(reviewEmployee?.performance_hours)} · {fmtRate(reviewEmployee?.lbs_per_hour)}{" "}
+                lb/hr
+              </Typography>
               <Typography
                 sx={{
                   ...PERF_TYPE.meta,
@@ -2156,7 +2137,7 @@ export default function ManagementWfFolderPerformanceSection({
                   const st =
                     reviewEmployee?.day_publication_status || reviewEmployee?.publication_status;
                   if (st === "NEEDS_APPROVAL") {
-                    return "Needs approval · Not included in Performance";
+                    return "Needs approval";
                   }
                   if (st === "PARTIALLY_APPROVED") {
                     return "Partially approved · Performance includes approved sessions only";
@@ -2270,6 +2251,16 @@ export default function ManagementWfFolderPerformanceSection({
         </DialogContent>
         <DialogActions sx={{ flexWrap: "wrap", gap: 0.5 }}>
           <Button onClick={() => setReviewEmployee(null)}>Close</Button>
+          <Button
+            disabled={controlsLocked}
+            onClick={() => {
+              setAdjustInitial(reviewEmployee);
+              setAdjustOpen(true);
+            }}
+            sx={{ textTransform: "none" }}
+          >
+            Adjust performance
+          </Button>
           <Button
             disabled={controlsLocked}
             onClick={() => openEditDay(reviewEmployee)}

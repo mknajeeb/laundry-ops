@@ -11,7 +11,7 @@ A supervisor unapprove or exclude for the current fingerprint wins.
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from backend.business_time import business_now
 from backend.rinse_folding_settings import _get_setting, _set_setting
@@ -109,21 +109,127 @@ def session_evidence_is_complete(session: Mapping[str, Any]) -> tuple[bool, str]
     for order in orders:
         if not isinstance(order, Mapping):
             return False, "incomplete_evidence"
-        if order.get("missing_production_credit_weight"):
-            return False, "incomplete_evidence"
         if order.get("needs_review"):
             return False, "needs_review"
         assignment = str(order.get("session_assignment") or "").lower()
         if assignment in {"needs_review", "unassigned"}:
             return False, "needs_review" if assignment == "needs_review" else "incomplete_evidence"
-        pre = order.get("pre_weight_lbs")
-        if pre is None:
-            pre = order.get("credited_weight_lbs")
-        if pre is None:
-            pre = order.get("evidence_pre_weight_lbs")
-        if pre is None:
-            return False, "incomplete_evidence"
+        usable, why = _order_pre_is_usable(order)
+        if not usable:
+            return False, why
+    evidenced = []
+    for order in orders:
+        if isinstance(order, Mapping):
+            evidenced.append(_order_evidence_lbs(order))
+    if session.get("total_pre_lbs") is not None and all(v is not None for v in evidenced):
+        try:
+            session_lbs = float(session.get("total_pre_lbs") or 0)
+        except (TypeError, ValueError):
+            return False, "inconsistent_evidence"
+        if abs(session_lbs - sum(evidenced)) > 0.05:
+            return False, "inconsistent_evidence"
     return True, "ok"
+
+
+_CANONICAL_PRE_KEYS = (
+    "pre_weight_lbs",
+    "credited_weight_lbs",
+    "evidence_pre_weight_lbs",
+    "pre_lbs",
+)
+
+
+def _numeric_pre_fields(order: Mapping[str, Any]) -> list[tuple[str, float]] | None:
+    found: list[tuple[str, float]] = []
+    for key in _CANONICAL_PRE_KEYS:
+        raw = order.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            found.append((key, float(raw)))
+        except (TypeError, ValueError):
+            return None
+    return found
+
+
+def _order_pre_is_usable(order: Mapping[str, Any]) -> tuple[bool, str]:
+    """Canonical PRE must be present and agree across the fields that carry it.
+
+    ``pre_lbs`` is the public copy of ``authoritative_evidence_pre_lbs``. A lone
+    zero is the missing-weight placeholder, not a recorded PRE. Disagreeing
+    numbers, or a POST source, are inconsistent and stay unapproved.
+    """
+    source = str(
+        order.get("credited_weight_source") or order.get("credit_weight_source") or ""
+    ).upper()
+    if "POST" in source or source in {"AUTHORITATIVE_POST", "OUTPUT"}:
+        return False, "inconsistent_evidence"
+    if order.get("missing_production_credit_weight"):
+        return False, "incomplete_evidence"
+    found = _numeric_pre_fields(order)
+    if found is None:
+        return False, "inconsistent_evidence"
+    if not found:
+        return False, "incomplete_evidence"
+    numbers = [value for _key, value in found]
+    if max(numbers) - min(numbers) > 0.05:
+        return False, "inconsistent_evidence"
+    keys = {key for key, _value in found}
+    if keys == {"pre_lbs"} and numbers[0] == 0.0:
+        return False, "incomplete_evidence"
+    return True, "ok"
+
+
+def _order_evidence_lbs(order: Mapping[str, Any]) -> float | None:
+    found = _numeric_pre_fields(order)
+    if not found:
+        return None
+    return found[-1][1]
+
+
+def combined_weighted_lbs_per_hour(sessions: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """SUM(pounds) / SUM(hours). Never the average of session rates."""
+    lbs = 0.0
+    hours = 0.0
+    bags = 0
+    for session in sessions or []:
+        try:
+            lbs += float(session.get("total_pre_lbs") or 0)
+        except (TypeError, ValueError):
+            pass
+        if session.get("performance_hours") is not None:
+            try:
+                hours += float(session.get("performance_hours") or 0)
+            except (TypeError, ValueError):
+                pass
+        try:
+            bags += int(session.get("orders_completed") or 0)
+        except (TypeError, ValueError):
+            pass
+    rate = round(lbs / hours, 4) if hours > 0 else None
+    return {
+        "orders_completed": bags,
+        "total_pre_lbs": round(lbs, 4),
+        "performance_hours": round(hours, 4),
+        "lbs_per_hour": rate,
+        "aggregate_method": "sum_pounds_over_sum_hours",
+    }
+
+
+def employee_day_predates_activation(
+    sessions: Sequence[Mapping[str, Any]],
+    enabled_at: datetime,
+) -> bool:
+    """True when the employee-day closed before auto-approve was turned on.
+
+    An open session is still in progress, so the day is not historical yet.
+    """
+    if any(str(s.get("role_status") or "").lower() == "open" for s in sessions or []):
+        return False
+    ends = [ended for ended in (_session_end(s) for s in sessions or []) if ended is not None]
+    if not ends:
+        return True
+    return max(ends) < enabled_at
 
 
 def meets_target(session: Mapping[str, Any], target: float) -> bool:
@@ -219,6 +325,8 @@ def consider_session_for_auto_approve(
         return {"session_id": sid, "status": "manual_precedence", "ok": False}
     _lock_approval_row(cursor, organization_id, sid)
     existing = get_approval_row(cursor, organization_id, role_key=ROLE_FOLDER, session_id=sid)
+    if existing and existing.get("excluded_at"):
+        return {"session_id": sid, "status": "excluded", "ok": False}
     if (
         existing
         and existing.get("invalidated_at") is None
@@ -244,13 +352,141 @@ def consider_session_for_auto_approve(
     return result
 
 
+def _session_is_excluded(session: Mapping[str, Any], existing: Mapping[str, Any] | None) -> bool:
+    pub = str(
+        session.get("publication_status")
+        or (session.get("publication") or {}).get("status")
+        or ""
+    ).upper()
+    if pub == "EXCLUDED" or (session.get("publication") or {}).get("excluded"):
+        return True
+    return bool(existing and existing.get("excluded_at"))
+
+
+def _approve_one_session(
+    cursor,
+    organization_id: int,
+    *,
+    selected_date_et: date,
+    session: Mapping[str, Any],
+    target: float,
+) -> dict[str, Any]:
+    """Write one auto-approval. Caller already decided the employee-day qualifies."""
+    sid = str(session.get("session_id") or "").strip()
+    fp = folder_session_fingerprint(session)
+    if manual_decision_blocks_auto(cursor, organization_id, session_id=sid, fingerprint=fp):
+        return {"session_id": sid, "status": "manual_precedence", "ok": False}
+    _lock_approval_row(cursor, organization_id, sid)
+    existing = get_approval_row(cursor, organization_id, role_key=ROLE_FOLDER, session_id=sid)
+    if _session_is_excluded(session, existing):
+        return {"session_id": sid, "status": "excluded", "ok": False}
+    if (
+        existing
+        and existing.get("invalidated_at") is None
+        and str(existing.get("content_fingerprint") or "") == fp
+    ):
+        return {"session_id": sid, "status": "already_approved", "ok": True, "already_approved": True}
+    snap = session_card_to_snapshot(session, business_date_et=selected_date_et)
+    snap["approval_source"] = SOURCE_AUTO
+    snap["applied_target_lbs_per_hour"] = float(target)
+    result = upsert_approved_snapshot(
+        cursor,
+        int(organization_id),
+        role_key=ROLE_FOLDER,
+        snapshot=snap,
+        actor_user_id=None,
+        actor_name="auto-approval",
+        approval_source=SOURCE_AUTO,
+        applied_target_lbs_per_hour=float(target),
+    )
+    result["status"] = "auto_approved" if result.get("ok") else result.get("status")
+    result["applied_target_lbs_per_hour"] = float(target)
+    return result
+
+
+def consider_employee_day_for_auto_approve(
+    cursor,
+    organization_id: int,
+    *,
+    selected_date_et: date,
+    employee_name: str,
+    sessions: Sequence[Mapping[str, Any]],
+    target: float,
+    enabled_at: datetime,
+) -> dict[str, Any]:
+    """Approve an employee-day only from its combined closed-session rate.
+
+    The decision uses SUM(eligible pounds) / SUM(eligible hours). A fast session
+    does not approve the day while another session is open, incomplete, or
+    while the combined rate is below target. Days that closed before activation
+    stay manual.
+    """
+    rows = [s for s in sessions or [] if isinstance(s, Mapping)]
+    base = {"employee": employee_name, "approved": 0, "already_approved": 0, "results": []}
+    if any(str(s.get("role_status") or "").lower() == "open" for s in rows):
+        return {**base, "status": "open", "ok": False, "retry": True}
+    if employee_day_predates_activation(rows, enabled_at):
+        return {**base, "status": "before_enable", "ok": False, "retry": False}
+    countable: list[Mapping[str, Any]] = []
+    for session in rows:
+        if not session.get("include_in_authoritative_aggregate", True):
+            continue
+        status = str(session.get("role_status") or "").lower()
+        if status == "unresolved":
+            return {**base, "status": "unresolved", "ok": False, "retry": False}
+        sid = str(session.get("session_id") or "").strip()
+        existing = get_approval_row(cursor, organization_id, role_key=ROLE_FOLDER, session_id=sid)
+        if _session_is_excluded(session, existing):
+            continue
+        complete, reason = session_evidence_is_complete(session)
+        if not complete:
+            return {**base, "status": reason, "ok": False, "retry": False}
+        countable.append(session)
+    if not countable:
+        return {**base, "status": "excluded", "ok": False, "retry": False}
+    totals = combined_weighted_lbs_per_hour(countable)
+    rate = totals.get("lbs_per_hour")
+    summary = {**base, **totals}
+    if rate is None or float(rate) + 1e-9 < float(target):
+        return {**summary, "status": "below_target", "ok": False, "retry": False}
+    approved = 0
+    already = 0
+    results = []
+    for session in countable:
+        out = _approve_one_session(
+            cursor,
+            organization_id,
+            selected_date_et=selected_date_et,
+            session=session,
+            target=target,
+        )
+        status = str(out.get("status") or "")
+        if status == "auto_approved" and out.get("ok"):
+            approved += 1
+        elif out.get("already_approved"):
+            already += 1
+        results.append(
+            {"session_id": out.get("session_id"), "status": status, "ok": bool(out.get("ok"))}
+        )
+    day_status = "auto_approved" if approved or already else "manual_precedence"
+    return {
+        **summary,
+        "status": day_status,
+        "ok": day_status == "auto_approved",
+        "approved": approved,
+        "already_approved": already,
+        "retry": False,
+        "results": results,
+    }
+
+
 def auto_approve_finalized_folder_day(
     cursor,
     organization_id: int,
     *,
     selected_date_et: date,
 ) -> dict[str, Any]:
-    """Evaluate closed Folder sessions for one finalized ET day. No historical scan."""
+    """Evaluate closed Folder employee-days for one ET day. No historical backfill."""
     org = int(organization_id)
     if not auto_approve_enabled(cursor, org):
         return {"ok": True, "skipped": True, "reason": "disabled", "approved": 0}
@@ -274,30 +510,46 @@ def auto_approve_finalized_folder_day(
         "already_approved": 0,
         "below_target": 0,
         "skipped": 0,
+        "retry": False,
         "results": [],
     }
-    for sess in day.get("sessions") or []:
-        out = consider_session_for_auto_approve(
+    employees = day.get("employees") or []
+    if not employees:
+        employees = [{"employee": "", "sessions": day.get("sessions") or []}]
+    for emp in employees:
+        sessions = emp.get("sessions") or []
+        if not sessions:
+            continue
+        out = consider_employee_day_for_auto_approve(
             cursor,
             org,
             selected_date_et=selected_date_et,
-            session=sess,
+            employee_name=str(emp.get("employee") or ""),
+            sessions=sessions,
             target=target,
             enabled_at=enabled_at,
         )
         status = str(out.get("status") or "")
-        if status == "auto_approved" and out.get("ok"):
-            summary["approved"] += 1
-        elif out.get("already_approved"):
-            summary["already_approved"] += 1
-        elif status == "below_target":
+        if out.get("retry"):
+            summary["retry"] = True
+        summary["approved"] += int(out.get("approved") or 0)
+        summary["already_approved"] += int(out.get("already_approved") or 0)
+        if status == "below_target":
             summary["below_target"] += 1
-        else:
+        elif status not in {"auto_approved"}:
             summary["skipped"] += 1
         summary["results"].append(
-            {"session_id": out.get("session_id"), "status": status, "ok": bool(out.get("ok"))}
+            {
+                "employee": out.get("employee"),
+                "status": status,
+                "ok": bool(out.get("ok")),
+                "lbs_per_hour": out.get("lbs_per_hour"),
+                "approved": out.get("approved"),
+                "sessions": out.get("results") or [],
+            }
         )
-    _mark_queue_processed(cursor, org, selected_date_et)
+    if not summary["retry"]:
+        _mark_queue_processed(cursor, org, selected_date_et)
     return summary
 
 

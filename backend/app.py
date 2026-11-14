@@ -145,6 +145,9 @@ register_notification_routes(app)
 register_rinse_export_routes(app)
 
 start_daily_reset_scheduler(app)
+from backend.folder_auto_approve_scheduler import start_folder_auto_approve_scheduler
+
+start_folder_auto_approve_scheduler(app)
 
 
 def _load_artifact_revision() -> str:
@@ -254,7 +257,7 @@ def internal_run_change_jobs():
     Secure with env CHANGE_JOBS_SECRET and header X-Change-Jobs-Secret on POST.
     Query dry_run=1 to simulate without writes or push.
     """
-    from backend.hr_compliance import run_document_compliance_tick
+    from backend.jobs.run_change_jobs import run_registered_change_jobs
 
     secret = (os.getenv("CHANGE_JOBS_SECRET") or "").strip()
     if not secret:
@@ -264,7 +267,7 @@ def internal_run_change_jobs():
     dry = (request.args.get("dry_run") or "").strip().lower() in ("1", "true", "yes")
     conn = get_db()
     try:
-        out = run_document_compliance_tick(conn, dry_run=dry)
+        out = run_registered_change_jobs(conn, dry_run=dry)
         return jsonify(out)
     finally:
         conn.close()

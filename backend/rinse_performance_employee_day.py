@@ -474,6 +474,11 @@ def recompute_employee_day_metrics(
         if s.get("performance_hours") is not None
     ]
     vis_hours = round(sum(vis_hours_vals), 4) if vis_hours_vals else None
+    recorded_rates = weighted_aggregate_rates(
+        total_orders=vis_orders,
+        total_pre_lbs=vis_lbs,
+        total_session_hours=vis_hours,
+    )
 
     override = None
     if average_weight_override is not None:
@@ -529,6 +534,12 @@ def recompute_employee_day_metrics(
     emp["all_visible_orders_completed"] = vis_orders
     emp["all_visible_total_pre_lbs"] = vis_lbs
     emp["all_visible_performance_hours"] = vis_hours
+    emp["recorded_orders_completed"] = vis_orders
+    emp["recorded_total_pre_lbs"] = vis_lbs
+    emp["recorded_performance_hours"] = vis_hours
+    emp["recorded_lbs_per_hour"] = recorded_rates["lbs_per_hour"]
+    emp["combined_lbs_per_hour"] = recorded_rates["lbs_per_hour"]
+    emp["combined_aggregate_method"] = "sum_pounds_over_sum_hours"
     emp["day_average_weight"] = avg_weight
     emp["day_average_weight_override"] = override if is_override else None
     emp["day_average_weight_is_override"] = is_override
@@ -947,6 +958,8 @@ def approved_contribution_is_rankable(emp: Mapping[str, Any] | None) -> bool:
         return False
     if status == "APPROVED":
         return True
+    if emp.get("speed_only_adjustment") and emp.get("approved_lbs_per_hour") is not None:
+        return True
     approved_sessions = int(emp.get("approved_session_count") or 0)
     approved_adjustments = int(emp.get("approved_adjustment_count") or 0)
     if approved_sessions <= 0 and approved_adjustments <= 0:
@@ -1205,6 +1218,41 @@ def sync_employee_day_publication(
     bags = int(emp.get("orders_completed") or 0)
     rate = emp.get("lbs_per_hour")
     bags_hr = emp.get("bags_per_hour")
+    published_numerator = lbs
+    published_denominator = hours_f
+    if emp.get("speed_only_adjustment") and emp.get("approved_lbs_per_hour") is not None:
+        # Rank the supervisor speed by the recorded hours. Do not add a second
+        # set of bags or hours on top of the sessions.
+        recorded_hours = emp.get("recorded_performance_hours")
+        if recorded_hours is None:
+            recorded_hours = emp.get("all_visible_performance_hours")
+        try:
+            recorded_hours_f = float(recorded_hours) if recorded_hours is not None else 0.0
+        except (TypeError, ValueError):
+            recorded_hours_f = 0.0
+        recorded_lbs = emp.get("recorded_total_pre_lbs")
+        if recorded_lbs is None:
+            recorded_lbs = emp.get("all_visible_total_pre_lbs")
+        recorded_bags = emp.get("recorded_orders_completed")
+        if recorded_bags is None:
+            recorded_bags = emp.get("all_visible_orders_completed")
+        try:
+            rate = float(emp.get("approved_lbs_per_hour"))
+        except (TypeError, ValueError):
+            rate = None
+        if recorded_hours_f > 0 and rate is not None:
+            published_numerator = round(rate * recorded_hours_f, 4)
+            published_denominator = recorded_hours_f
+            hours_f = recorded_hours_f
+            hours = recorded_hours_f
+        try:
+            lbs = float(recorded_lbs or 0)
+        except (TypeError, ValueError):
+            lbs = 0.0
+        try:
+            bags = int(recorded_bags or 0)
+        except (TypeError, ValueError):
+            bags = 0
     sessions_json = json.dumps(_sessions_publication_snapshot(emp.get("sessions") or []))
 
     # Published boards include any employee-day with an approved contribution.
@@ -1249,8 +1297,8 @@ def sync_employee_day_publication(
             lbs,
             hours_f if hours is not None else None,
             float(bags_hr) if bags_hr is not None else None,
-            lbs,
-            hours_f,
+            published_numerator,
+            published_denominator,
             float(rate) if rate is not None else None,
             int(emp.get("included_session_count") or emp.get("approved_session_count") or 0),
             int(emp.get("session_count") or len(emp.get("sessions") or [])),
