@@ -63,10 +63,6 @@ def _ensure_publication_extension_columns(cursor) -> None:
         alters.append(
             "ADD COLUMN excluded_reason VARCHAR(255) NULL AFTER excluded_by"
         )
-    if "approval_source" not in have:
-        alters.append("ADD COLUMN approval_source VARCHAR(16) NULL")
-    if "applied_target_lbs_per_hour" not in have:
-        alters.append("ADD COLUMN applied_target_lbs_per_hour DECIMAL(14,4) NULL")
     for clause in alters:
         try:
             cursor.execute(f"ALTER TABLE {APPROVALS_TABLE} {clause}")

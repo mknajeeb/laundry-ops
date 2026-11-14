@@ -28,85 +28,13 @@ EVENTS_TABLE = "rinse_performance_supervisor_adjustment_events"
 CREDITS_TABLE = "rinse_performance_bag_credits"
 
 
-def ensure_supervisor_adjustment_tables(cursor) -> None:
-    if not table_exists(cursor, ADJUSTMENTS_TABLE):
-        cursor.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {ADJUSTMENTS_TABLE} (
-              id BIGINT AUTO_INCREMENT PRIMARY KEY,
-              organization_id INT NOT NULL,
-              business_date_et DATE NOT NULL,
-              adjustment_key VARCHAR(64) NOT NULL,
-              employee_user_id INT NOT NULL,
-              employee_name VARCHAR(255) NOT NULL,
-              target_session_id VARCHAR(64) NULL,
-              raw_orders INT NULL,
-              raw_lbs DECIMAL(14,4) NULL,
-              raw_hours DECIMAL(14,4) NULL,
-              raw_lbs_per_hour DECIMAL(14,4) NULL,
-              corrected_orders INT NULL,
-              corrected_lbs DECIMAL(14,4) NULL,
-              corrected_hours DECIMAL(14,4) NULL,
-              corrected_lbs_per_hour DECIMAL(14,4) NULL,
-              approved_orders INT NULL,
-              approved_lbs DECIMAL(14,4) NULL,
-              approved_hours DECIMAL(14,4) NULL,
-              approved_lbs_per_hour DECIMAL(14,4) NULL,
-              reason VARCHAR(255) NOT NULL,
-              notes TEXT NULL,
-              publication_status VARCHAR(32) NOT NULL DEFAULT 'NEEDS_APPROVAL',
-              created_by INT NULL,
-              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              updated_by INT NULL,
-              updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
-              UNIQUE KEY uq_perf_sup_adj (organization_id, adjustment_key),
-              KEY idx_perf_sup_adj_day (organization_id, business_date_et, employee_user_id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """
-        )
-    if not table_exists(cursor, EVENTS_TABLE):
-        cursor.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {EVENTS_TABLE} (
-              id BIGINT AUTO_INCREMENT PRIMARY KEY,
-              organization_id INT NOT NULL,
-              adjustment_key VARCHAR(64) NOT NULL,
-              business_date_et DATE NOT NULL,
-              action VARCHAR(32) NOT NULL,
-              actor_user_id INT NULL,
-              actor_name VARCHAR(255) NULL,
-              reason VARCHAR(255) NULL,
-              before_json MEDIUMTEXT NULL,
-              after_json MEDIUMTEXT NULL,
-              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              KEY idx_perf_sup_adj_ev (organization_id, adjustment_key, created_at)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """
-        )
-    if not table_exists(cursor, CREDITS_TABLE):
-        cursor.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {CREDITS_TABLE} (
-              id BIGINT AUTO_INCREMENT PRIMARY KEY,
-              organization_id INT NOT NULL,
-              business_date_et DATE NOT NULL,
-              bag_id VARCHAR(64) NOT NULL,
-              order_instance_id BIGINT NULL,
-              cycle_key VARCHAR(160) NOT NULL,
-              employee_user_id INT NULL,
-              employee_name VARCHAR(255) NOT NULL,
-              session_id VARCHAR(64) NULL,
-              adjustment_key VARCHAR(64) NULL,
-              weight_lbs DECIMAL(14,4) NULL,
-              released_at DATETIME NULL,
-              active_token VARCHAR(8) AS (IF(released_at IS NULL, '1', NULL)) STORED,
-              created_by INT NULL,
-              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE KEY uq_perf_bag_cycle_active (organization_id, cycle_key, active_token),
-              KEY idx_perf_bag_credit_day (organization_id, business_date_et, bag_id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """
-        )
+def ensure_supervisor_adjustment_tables(cursor) -> bool:
+    """True when the migration tables exist. Requests must not create them."""
+    return bool(
+        table_exists(cursor, ADJUSTMENTS_TABLE)
+        and table_exists(cursor, EVENTS_TABLE)
+        and table_exists(cursor, CREDITS_TABLE)
+    )
 
 
 def cycle_key_for_order_instance(order_instance_id: int | None) -> str | None:
@@ -200,7 +128,8 @@ def _row_public(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def get_adjustment(cursor, organization_id: int, adjustment_key: str) -> dict[str, Any] | None:
-    ensure_supervisor_adjustment_tables(cursor)
+    if not ensure_supervisor_adjustment_tables(cursor):
+        return None
     cursor.execute(
         f"""
         SELECT * FROM {ADJUSTMENTS_TABLE}
@@ -216,7 +145,8 @@ def get_adjustment(cursor, organization_id: int, adjustment_key: str) -> dict[st
 def list_adjustments_for_day(
     cursor, organization_id: int, business_date_et: date
 ) -> list[dict[str, Any]]:
-    ensure_supervisor_adjustment_tables(cursor)
+    if not ensure_supervisor_adjustment_tables(cursor):
+        return []
     cursor.execute(
         f"""
         SELECT * FROM {ADJUSTMENTS_TABLE}
@@ -229,7 +159,8 @@ def list_adjustments_for_day(
 
 
 def active_credit_for_cycle(cursor, organization_id: int, cycle_key: str) -> dict[str, Any] | None:
-    ensure_supervisor_adjustment_tables(cursor)
+    if not ensure_supervisor_adjustment_tables(cursor):
+        return None
     cursor.execute(
         f"""
         SELECT * FROM {CREDITS_TABLE}
@@ -274,7 +205,8 @@ def claim_cycle_credit(
     replace_existing: bool = False,
 ) -> dict[str, Any]:
     """One active credit per cycle. Replacing releases the previous holder first."""
-    ensure_supervisor_adjustment_tables(cursor)
+    if not ensure_supervisor_adjustment_tables(cursor):
+        return {"ok": False, "status": "not_provisioned"}
     existing = active_credit_for_cycle(cursor, organization_id, cycle_key)
     if existing:
         same_holder = (
@@ -353,7 +285,8 @@ def create_or_update_adjustment(
     name = str(employee_name or "").strip()
     if not name or employee_user_id is None:
         return {"ok": False, "status": "employee_required"}
-    ensure_supervisor_adjustment_tables(cursor)
+    if not ensure_supervisor_adjustment_tables(cursor):
+        return {"ok": False, "status": "not_provisioned"}
     key = str(adjustment_key or "").strip() or f"ADJ-{int(organization_id)}-{business_date_et.isoformat()}-{int(employee_user_id)}"
     before = get_adjustment(cursor, organization_id, key)
     raw_rate = _rate(raw_lbs, raw_hours)
@@ -493,7 +426,8 @@ def set_adjustment_publication(
     actor_name: str | None,
     reason: str | None = None,
 ) -> dict[str, Any]:
-    ensure_supervisor_adjustment_tables(cursor)
+    if not ensure_supervisor_adjustment_tables(cursor):
+        return {"ok": False, "status": "not_provisioned"}
     before = get_adjustment(cursor, organization_id, adjustment_key)
     if not before:
         return {"ok": False, "status": "not_found"}

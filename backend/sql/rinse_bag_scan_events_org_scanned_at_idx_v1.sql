@@ -3,7 +3,7 @@
 --   WHERE organization_id = ? AND scanned_at_parsed >= ? AND scanned_at_parsed < ?
 --   ORDER BY scanned_at_parsed, scan_index, id
 -- EXPLAIN uses uq_rbse_org_bag_dedupe, type ref, ~180,710 rows,
--- Extra "Using where; Using filesort". The day returned 5,544 rows in 39.5s.
+-- Extra "Using where" plus "Using filesort". The day returned 5,544 rows in 39.5s.
 -- Existing keys start with (organization_id, bag_id, ...), including
 -- idx_rbse_org_bag_time, so none can range-scan the day. This index matches
 -- that predicate. A local table with the same cardinality used the new index

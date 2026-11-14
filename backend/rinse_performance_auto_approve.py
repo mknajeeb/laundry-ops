@@ -21,7 +21,6 @@ from backend.rinse_performance_approvals import (
     ACTION_UNAPPROVE,
     APPROVALS_TABLE,
     EVENTS_TABLE,
-    ensure_rinse_performance_approval_tables,
     folder_session_fingerprint,
     get_approval_row,
     session_is_approvable,
@@ -92,24 +91,9 @@ def put_auto_approve_setting(cursor, organization_id: int, *, enabled: bool) -> 
     return get_auto_approve_setting(cursor, org)
 
 
-def ensure_auto_approve_queue(cursor) -> None:
-    if table_exists(cursor, QUEUE_TABLE):
-        return
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {QUEUE_TABLE} (
-          id BIGINT AUTO_INCREMENT PRIMARY KEY,
-          organization_id INT NOT NULL,
-          business_date_et DATE NOT NULL,
-          shift_session_id INT NULL,
-          segment_id INT NULL,
-          enqueued_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          processed_at DATETIME NULL,
-          UNIQUE KEY uq_perf_auto_q (organization_id, business_date_et, segment_id),
-          KEY idx_perf_auto_q_open (organization_id, processed_at, business_date_et)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
+def ensure_auto_approve_queue(cursor) -> bool:
+    """True when the migration created the queue. Requests must not create it."""
+    return bool(table_exists(cursor, QUEUE_TABLE))
 
 
 def session_evidence_is_complete(session: Mapping[str, Any]) -> tuple[bool, str]:
@@ -361,7 +345,8 @@ def enqueue_folder_segment_close(conn, shift_session_id: int) -> None:
             day = ended.date()
         else:
             day = business_now_wall().date()
-        ensure_auto_approve_queue(cursor)
+        if not ensure_auto_approve_queue(cursor):
+            return
         cursor.execute(
             f"""
             INSERT INTO {QUEUE_TABLE} (
@@ -415,27 +400,5 @@ def process_pending_auto_approve_queue(cursor, *, limit: int = 20) -> dict[str, 
 
 
 def stamp_approval_columns_on_ensure(cursor) -> None:
-    """Idempotent columns. Not invoked against production by this workstream's tests."""
-    ensure_rinse_performance_approval_tables(cursor)
-    if not table_exists(cursor, APPROVALS_TABLE):
-        return
-    cursor.execute(f"SHOW COLUMNS FROM {APPROVALS_TABLE}")
-    have = set()
-    for row in cursor.fetchall() or []:
-        if isinstance(row, dict):
-            have.add(str(row.get("Field") or row.get("field") or "").lower())
-    if "approval_source" not in have:
-        try:
-            cursor.execute(
-                f"ALTER TABLE {APPROVALS_TABLE} ADD COLUMN approval_source VARCHAR(16) NULL"
-            )
-        except Exception:
-            pass
-    if "applied_target_lbs_per_hour" not in have:
-        try:
-            cursor.execute(
-                f"ALTER TABLE {APPROVALS_TABLE} "
-                "ADD COLUMN applied_target_lbs_per_hour DECIMAL(14,4) NULL"
-            )
-        except Exception:
-            pass
+    """Columns come from the SQL migration. Requests must not ALTER production."""
+    return None

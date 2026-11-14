@@ -269,7 +269,7 @@ class TestDayBuildExceptionClasses:
             },
         ]
 
-        def _enrich(_c, _o, _d, incoming):
+        def _enrich(_c, _o, _d, incoming, **_kwargs):
             return [dict(b) for b in incoming]
 
         with (
@@ -304,7 +304,7 @@ class TestDayBuildExceptionClasses:
             ),
             patch(
                 "backend.management_wf_folder_performance.apply_canonical_pre_to_folder_performance_bags",
-                side_effect=lambda _c, _o, _d, b: [dict(x) for x in b],
+                side_effect=lambda _c, _o, _d, b, **_kwargs: [dict(x) for x in b],
             ),
         ):
             day = build_day_folder_performance(

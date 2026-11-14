@@ -1,11 +1,40 @@
 -- Additive Folding Performance auto-approval metadata and supervisor adjustments.
 -- Does not rewrite scans, shift sessions, payroll hours, or historical approvals.
--- Do not apply to production until a separate deploy authorization.
 -- Auto-approval stays off until rinse_folding_auto_approve_at_target is set to 1.
+-- Idempotent: each column and table is skipped when already present.
+-- Application requests do not create these tables.
 
-ALTER TABLE rinse_performance_session_approvals
-  ADD COLUMN approval_source VARCHAR(16) NULL AFTER approved_by,
-  ADD COLUMN applied_target_lbs_per_hour DECIMAL(14,4) NULL AFTER approval_source;
+SET @col_exists := (
+  SELECT COUNT(*)
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'rinse_performance_session_approvals'
+    AND column_name = 'approval_source'
+);
+SET @ddl := IF(
+  @col_exists = 0,
+  'ALTER TABLE rinse_performance_session_approvals ADD COLUMN approval_source VARCHAR(16) NULL AFTER approved_by',
+  'SELECT ''approval_source already present'''
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @col_exists := (
+  SELECT COUNT(*)
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'rinse_performance_session_approvals'
+    AND column_name = 'applied_target_lbs_per_hour'
+);
+SET @ddl := IF(
+  @col_exists = 0,
+  'ALTER TABLE rinse_performance_session_approvals ADD COLUMN applied_target_lbs_per_hour DECIMAL(14,4) NULL AFTER approval_source',
+  'SELECT ''applied_target_lbs_per_hour already present'''
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS rinse_performance_auto_approve_queue (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,

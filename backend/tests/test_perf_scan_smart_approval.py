@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from backend.rinse_performance_approvals import ACTION_INVALIDATE
 from backend.rinse_performance_auto_approve import (
     consider_session_for_auto_approve,
+    enqueue_folder_segment_close,
     meets_target,
     session_evidence_is_complete,
 )
@@ -19,6 +20,7 @@ from backend.rinse_performance_supervisor_adjustments import (
     claim_cycle_credit,
     create_or_update_adjustment,
     cycle_key_for_order_instance,
+    list_adjustments_for_day,
 )
 
 
@@ -410,3 +412,58 @@ def test_pending_only_stays_unranked_and_adjustment_publishes():
     assert cara["approved_lbs_per_hour"] == 70.0
     bea = next(e for e in day["employees"] if e["employee"] == "Bea")
     assert approved_contribution_is_rankable(bea) is False
+
+
+def test_ordinary_reads_do_not_create_feature_tables():
+    class RecordingCursor:
+        def __init__(self):
+            self.sql = []
+
+        def execute(self, sql, params=None):
+            self.sql.append(" ".join(str(sql).split()))
+
+        def fetchall(self):
+            return []
+
+        def fetchone(self):
+            return None
+
+        def close(self):
+            return None
+
+    cursor = RecordingCursor()
+    with patch(
+        "backend.rinse_performance_supervisor_adjustments.table_exists",
+        return_value=False,
+    ):
+        assert list_adjustments_for_day(cursor, 3, DAY) == []
+        created = create_or_update_adjustment(
+            cursor,
+            3,
+            business_date_et=DAY,
+            employee_user_id=7,
+            employee_name="Ada",
+            reason="coverage",
+        )
+    assert created["status"] == "not_provisioned"
+    assert not any("CREATE TABLE" in text or text.startswith("ALTER TABLE") for text in cursor.sql)
+
+    conn = MagicMock()
+    queue_cursor = RecordingCursor()
+    conn.cursor.return_value = queue_cursor
+    with patch(
+        "backend.rinse_performance_auto_approve.table_exists",
+        return_value=False,
+    ), patch(
+        "backend.rinse_performance_auto_approve.auto_approve_enabled",
+        return_value=True,
+    ):
+        queue_cursor.fetchone = lambda: {
+            "segment_id": 4,
+            "role_code": "FOLDER",
+            "category_code": "RINSE_WF",
+            "ended_at": datetime(2026, 11, 12, 18, 0, 0),
+            "organization_id": 3,
+        }
+        enqueue_folder_segment_close(conn, 9)
+    assert not any("CREATE TABLE" in text or "INSERT INTO" in text for text in queue_cursor.sql)

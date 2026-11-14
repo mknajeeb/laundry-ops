@@ -276,7 +276,7 @@ def test_day_build_overlays_canonical_before_aggregation():
         ),
         patch(
             "backend.management_wf_folder_performance.enrich_folder_performance_bags_with_oi_fold_attribution",
-            side_effect=lambda _cur, _org, _day, bags: [
+            side_effect=lambda _cur, _org, _day, bags, **_kwargs: [
                 {
                     **dict(b),
                     "folder_fold_qualified": True,
