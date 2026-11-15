@@ -9,6 +9,7 @@ import {
   CircularProgress,
   FormControlLabel,
   IconButton,
+  Menu,
   MenuItem,
   Paper,
   Select,
@@ -80,6 +81,8 @@ import WeeklyScheduleDayHeader from "../components/weeklySchedule/WeeklySchedule
 import WeeklyScheduleEmployeeCell from "../components/weeklySchedule/WeeklyScheduleEmployeeCell";
 import WeeklyScheduleShiftCard from "../components/weeklySchedule/WeeklyScheduleShiftCard";
 import WeeklyScheduleSummaryBar from "../components/weeklySchedule/WeeklyScheduleSummaryBar";
+import OperationsPlanner, { OPS_LENS, OPS_MODE } from "../components/weeklySchedule/OperationsPlanner";
+import { buildOperationsPrintHtml } from "../components/weeklySchedule/operationsPlannerModel";
 import {
   ENTITY_TAB,
   addableEmployeesForEmployerTab,
@@ -388,6 +391,10 @@ export default function WeeklySchedulePage() {
   const [viewMode, setViewMode] = useState(VIEW_MODE.EMPLOYEE);
   const [plannerSection, setPlannerSection] = useState(PLANNER_SECTION.TIMELINE);
   const [plannerDay, setPlannerDay] = useState(1);
+  const [boardMode, setBoardMode] = useState(OPS_MODE.WEEK);
+  const [boardLens, setBoardLens] = useState(OPS_LENS.EMPLOYEES);
+  const [plannerMenuAnchor, setPlannerMenuAnchor] = useState(null);
+  const [addMenuAnchor, setAddMenuAnchor] = useState(null);
   const [assignSeed, setAssignSeed] = useState(null);
   const [rolesOpen, setRolesOpen] = useState(false);
   const [draggingId, setDraggingId] = useState(null);
@@ -697,9 +704,50 @@ export default function WeeklySchedulePage() {
     () => viewResponsibilities.filter((item) => visibleUserIds.has(Number(item.user_id))),
     [viewResponsibilities, visibleUserIds],
   );
+  const boardEmployees = useMemo(() => {
+    const shown = showExcluded ? tabEmployees : tabEmployees.filter((employee) => !employee.excluded);
+    return withDisplayedTotals(shown, dayEntries);
+  }, [tabEmployees, showExcluded, dayEntries, roleCatalog]);
+  const plannerEntriesByCell = useMemo(() => {
+    const ids = new Set(boardEmployees.map((employee) => Number(employee.user_id)));
+    const map = {};
+    for (const entry of dayEntries) {
+      if (!ids.has(Number(entry.user_id))) continue;
+      const key = `${entry.user_id}:${entry.day_of_week}`;
+      if (!map[key]) map[key] = [];
+      map[key].push(entry);
+    }
+    return map;
+  }, [boardEmployees, dayEntries]);
+  const boardWeekSummary = useMemo(
+    () =>
+      data
+        ? computeWeekSummary(data, {
+            includeExcluded: showExcluded,
+            userIds: boardEmployees.map((employee) => employee.user_id),
+            entries: dayEntries,
+            daysOnly,
+          })
+        : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [data, showExcluded, boardEmployees, dayEntries, daysOnly, roleCatalog],
+  );
   const employeesById = useMemo(
     () => Object.fromEntries((data?.employees || []).map((e) => [e.user_id, e])),
     [data?.employees],
+  );
+  const boardCoverage = useMemo(
+    () =>
+      buildHourlyCoverage(
+        dayEntries.filter((entry) => boardEmployees.some((employee) => Number(employee.user_id) === Number(entry.user_id))),
+        {
+          dayIndices: visibleDayColumns,
+          employeesById,
+          responsibilities: viewResponsibilities,
+        },
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [dayEntries, boardEmployees, visibleDayColumns, employeesById, viewResponsibilities, roleCatalog, roleGroups],
   );
   const hoursSummary = useMemo(
     () =>
@@ -781,6 +829,16 @@ export default function WeeklySchedulePage() {
   }, [coverageRoleOptions, tabEntries]);
   const noRolesSelected = noneSelectedIn(roleSelection, viewRoleCodes);
   const noRolesText = noRolesSelected ? noRolesSelectedText(roleSelection) : "";
+  const togglePlannerRole = useCallback(
+    (role) => {
+      const universe = roleUniverse.length ? roleUniverse : [role];
+      const current = Array.isArray(roleSelection) ? roleSelection : universe;
+      const next = current.includes(role) ? current.filter((code) => code !== role) : [...current, role];
+      if (!next.length || next.length >= universe.length) updateRoleSelection(null);
+      else updateRoleSelection(next);
+    },
+    [roleSelection, roleUniverse, updateRoleSelection],
+  );
 
   /** Tasks for Breaks & tasks: every employee in the tab on the shown days, filtered by task type only. */
   const gridResponsibilities = useMemo(() => {
@@ -1237,9 +1295,20 @@ export default function WeeklySchedulePage() {
   };
 
   const handlePrint = () => {
-    if (printContentRef.current) {
-      openWeeklySchedulePrintWindow(printContentRef.current, { title: t("nav.weeklySchedule") });
-    }
+    const holder = document.createElement("div");
+    holder.innerHTML = buildOperationsPrintHtml({
+      weekLabel: formatWeekRange(weekStart),
+      lens: boardLens,
+      mode: boardMode,
+      dayLabel: DAY_LABELS[plannerDay] || "",
+      employees: boardEmployees,
+      dayColumns: visibleDayColumns,
+      entriesByCell: plannerEntriesByCell,
+      responsibilitiesByCell,
+      employeesById,
+      weekSummary: boardWeekSummary || {},
+    });
+    openWeeklySchedulePrintWindow(holder, { title: t("weeklySchedule.ops.title") });
   };
 
   const handleExport = () => {
@@ -1381,6 +1450,54 @@ export default function WeeklySchedulePage() {
     },
   };
 
+  const plannerMenuItems = [
+    canEdit ? { id: "mapping", label: t("weeklySchedule.userMapping"), to: "/performance/user-mapping" } : null,
+    canEdit ? { id: "roles", label: t("weeklySchedule.rolesTasks"), onClick: () => setRolesOpen(true) } : null,
+    canEdit
+      ? {
+          id: "bulk",
+          label: bulkEmployerSaving ? t("weeklySchedule.moving") : t("weeklySchedule.moveAll"),
+          disabled: bulkEmployerSaving || !data?.entries?.length,
+          onClick: handleBulkMoveToRinseExclusive,
+        }
+      : null,
+    canEdit
+      ? {
+          id: "copy",
+          label: t("weeklySchedule.copyFuture"),
+          disabled: !data?.entries?.length && !data?.daily_responsibilities?.length,
+          onClick: () => setCascadeOpen(true),
+        }
+      : null,
+    {
+      id: "export",
+      label: t("weeklySchedule.exportExcel"),
+      disabled: !canExportSchedule,
+      onClick: handleExport,
+    },
+    {
+      id: "print",
+      label: t("weeklySchedule.print"),
+      disabled: !canExportSchedule,
+      onClick: handlePrint,
+    },
+    excludedCount > 0 && canManageExclusions
+      ? {
+          id: "excluded",
+          label: showExcluded ? `Showing excluded (${excludedCount})` : `Show excluded (${excludedCount})`,
+          onClick: () => setShowExcluded((value) => !value),
+        }
+      : null,
+    costAllowed
+      ? {
+          id: "cost",
+          label: showCost ? "Hide cost" : "Show cost",
+          disabled: costSaving,
+          onClick: handleCostToggle,
+        }
+      : null,
+  ].filter(Boolean);
+
   return (
     <Box
       className="weekly-schedule-print-root"
@@ -1415,678 +1532,109 @@ export default function WeeklySchedulePage() {
           boxShadow: { xs: "none", md: "0 8px 30px rgba(15, 23, 42, 0.06)" },
         }}
       >
-        <Box
-          ref={stickyHeaderRef}
-          className="no-print weekly-schedule-sticky-header"
-          sx={{
-            flexShrink: 0,
-            bgcolor: "#fff",
-            borderBottom: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
-            borderRadius: { md: "12px 12px 0 0" },
-          }}
-        >
-          <Box
-            sx={{
-              px: { xs: 1.25, md: 1.5 },
-              py: { xs: 0.5, md: 0.65 },
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 1,
-              flexWrap: "wrap",
+        {!data ? (
+          <Stack alignItems="center" py={6} className="no-print" sx={{ flex: 1 }}>
+            <CircularProgress size={32} />
+          </Stack>
+        ) : (
+          <OperationsPlanner
+            weekLabel={formatWeekRange(weekStart)}
+            weekStart={weekStart}
+            onPrevWeek={() => changeWeek(-1)}
+            onNextWeek={() => changeWeek(1)}
+            canGoPrev={canGoToPreviousWeek}
+            employerTabs={entityTabs.map((tabKey) => ({
+              key: tabKey,
+              label: entityLabel(tabKey),
+              count: countEmployeesForEmployerTab(data?.employees || [], tabKey, data?.entries || [], organizationSlug),
+            }))}
+            employerTab={employerTab}
+            onEmployerTab={setEmployerTab}
+            hideEmployerTabs={hideEmployerTabs}
+            employees={boardEmployees}
+            dayColumns={visibleDayColumns}
+            entriesByCell={plannerEntriesByCell}
+            responsibilitiesByCell={responsibilitiesByCell}
+            entries={dayEntries.filter((entry) => boardEmployees.some((employee) => Number(employee.user_id) === Number(entry.user_id)))}
+            weekSummary={boardWeekSummary}
+            coverageDays={boardCoverage}
+            focusDay={plannerDay}
+            onFocusDay={setPlannerDay}
+            mode={boardMode}
+            onMode={setBoardMode}
+            lens={boardLens}
+            onLens={setBoardLens}
+            canEdit={canEdit}
+            showBreaks={showBreakMinutes}
+            hideLaborHours={hideLaborHours}
+            showRoleLabels={showRoleLabels}
+            employeesById={employeesById}
+            onEditEntry={openEdit}
+            onCreate={openCreate}
+            onDropEntry={handleDrop}
+            onEditResponsibility={openEditResponsibility}
+            onViewEmployee={openEmployeeView}
+            draggingId={draggingId}
+            onDragStart={(entry) => setDraggingId(entry.id)}
+            onDragEnd={() => {
+              setDraggingId(null);
+              setDropTarget(null);
             }}
+            addableEmployees={addableEmployees}
+            onAddEmployee={setAddMenuAnchor}
+            onAssign={() => {
+              setAssignError("");
+              setAssignSeed(null);
+              setAssignOpen(true);
+            }}
+            menuAnchor={plannerMenuAnchor}
+            onOpenMenu={(event) => setPlannerMenuAnchor(event.currentTarget)}
+            onCloseMenu={() => setPlannerMenuAnchor(null)}
+            menuItems={plannerMenuItems}
           >
-            <Stack direction="row" spacing={1.25} alignItems="baseline" flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
-              <Typography
-                variant="subtitle1"
-                fontWeight={800}
-                sx={{ letterSpacing: "-0.02em", color: VEEWASH_DASHBOARD.primaryBlueDark, lineHeight: 1.2 }}
-              >
-                {t("nav.weeklySchedule")}
-              </Typography>
-              {hideEmployerTabs ? (
-                <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 600, lineHeight: 1.2 }}>
-                  {entityLabel(employerTab)}
-                </Typography>
-              ) : null}
-            </Stack>
-            <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-              <Stack
-                direction="row"
-                spacing={0.25}
-                alignItems="center"
-                sx={{
-                  border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
-                  borderRadius: 999,
-                  bgcolor: VEEWASH_DASHBOARD.primaryBlueLight,
-                  px: 0.25,
-                  py: 0.125,
-                }}
-              >
-                <IconButton
-                  size="small"
-                  onClick={() => changeWeek(-1)}
-                  disabled={!canGoToPreviousWeek}
-                  sx={{
-                    color: VEEWASH_DASHBOARD.primaryBlueDark,
-                    opacity: canGoToPreviousWeek ? 1 : 0.4,
-                  }}
-                >
-                  <ChevronLeftIcon fontSize="small" />
-                </IconButton>
-                <Typography
-                  variant="body2"
-                  sx={{
-                    minWidth: { xs: 160, md: 200 },
-                    textAlign: "center",
-                    fontWeight: 700,
-                    color: VEEWASH_DASHBOARD.primaryBlueDark,
-                    fontSize: "0.8125rem",
-                  }}
-                >
-                  {formatWeekRange(weekStart)}
-                </Typography>
-                <IconButton
-                  size="small"
-                  onClick={() => changeWeek(1)}
-                  sx={{ color: VEEWASH_DASHBOARD.primaryBlueDark }}
-                >
-                  <ChevronRightIcon fontSize="small" />
-                </IconButton>
-              </Stack>
-              <ToggleButtonGroup
-                size="small"
-                exclusive
-                value={viewMode}
-                onChange={(_, value) => {
-                  if (!value) return;
-                  setViewMode(value);
-                }}
-                sx={{
-                  height: 30,
-                  "& .MuiToggleButton-root": {
-                    px: 1,
-                    py: 0.25,
-                    fontWeight: 700,
-                    fontSize: "0.74rem",
-                    textTransform: "none",
-                  },
-                }}
-              >
-                <ToggleButton value={VIEW_MODE.EMPLOYEE}>{t("weeklySchedule.byEmployee")}</ToggleButton>
-                <ToggleButton value={VIEW_MODE.TIME_ROLE}>{t("weeklySchedule.byTimeRole")}</ToggleButton>
-                <ToggleButton value={VIEW_MODE.BREAKS_TASKS}>{t("weeklySchedule.breaksTasks")}</ToggleButton>
-              </ToggleButtonGroup>
-              {canEdit && addableEmployees.length ? (
-                <Select
-                  size="small"
-                  displayEmpty
-                  value=""
-                  onChange={(e) => {
-                    const uid = Number(e.target.value);
-                    if (!uid) return;
-                    openCreate(uid, visibleDayColumns[0] ?? 0);
-                  }}
-                  startAdornment={<PersonAddAlt1OutlinedIcon sx={{ fontSize: 16, mr: 0.5, color: "text.secondary" }} />}
-                  sx={{
-                    minWidth: 168,
-                    fontWeight: 700,
-                    fontSize: "0.78rem",
-                    height: 30,
-                    "& .MuiSelect-select": { py: 0.35 },
-                  }}
-                  renderValue={() => t("weeklySchedule.addEmployee")}
-                >
-                  {addableEmployees.map((emp) => (
-                    <MenuItem key={emp.user_id} value={emp.user_id}>
-                      {emp.display_name || `User #${emp.user_id}`}
-                    </MenuItem>
-                  ))}
-                </Select>
-              ) : null}
-              {canEdit ? (
-                <Button
-                  size="small"
-                  variant="outlined"
-                  component={RouterLink}
-                  to="/performance/user-mapping"
-                  sx={{ fontWeight: 700, py: 0.35 }}
-                >
-                  {t("weeklySchedule.userMapping")}
-                </Button>
-              ) : null}
-              {canEdit ? (
-                <Button
-                  size="small"
-                  variant="contained"
-                  onClick={() => {
-                    setAssignError("");
-                    setAssignSeed(null);
-                    setAssignOpen(true);
-                  }}
-                  sx={{ fontWeight: 800, py: 0.35 }}
-                >
-                  {t("weeklySchedule.assignBreaksTasks")}
-                </Button>
-              ) : null}
-              {canEdit ? (
-                <Button
-                  size="small"
-                  variant="outlined"
-                  onClick={() => setRolesOpen(true)}
-                  sx={{ fontWeight: 700, py: 0.35 }}
-                >
-                  {t("weeklySchedule.rolesTasks")}
-                </Button>
-              ) : null}
-              {canEdit ? (
-                <Button
-                  size="small"
-                  variant="outlined"
-                  disabled={bulkEmployerSaving || !data?.entries?.length}
-                  onClick={handleBulkMoveToRinseExclusive}
-                  sx={{ fontWeight: 700, py: 0.35 }}
-                >
-                  {bulkEmployerSaving ? t("weeklySchedule.moving") : t("weeklySchedule.moveAll")}
-                </Button>
-              ) : null}
-              {canEdit ? (
-                <Button
-                  size="small"
-                  variant="outlined"
-                  disabled={!data?.entries?.length && !data?.daily_responsibilities?.length}
-                  onClick={() => setCascadeOpen(true)}
-                  sx={{ fontWeight: 700, py: 0.35 }}
-                >
-                  {t("weeklySchedule.copyFuture")}
-                </Button>
-              ) : null}
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={<FileDownloadOutlinedIcon />}
-                onClick={handleExport}
-                disabled={!canExportSchedule}
-                sx={{ fontWeight: 700, py: 0.35 }}
-              >
-                {t("weeklySchedule.exportExcel")}
-              </Button>
-              <Button
-                size="small"
-                variant="contained"
-                startIcon={<PrintIcon />}
-                onClick={handlePrint}
-                disabled={!canExportSchedule}
-                sx={{
-                  fontWeight: 700,
-                  py: 0.35,
-                  bgcolor: VEEWASH_DASHBOARD.primaryBlue,
-                  "&:hover": { bgcolor: VEEWASH_DASHBOARD.primaryBlueDark },
-                }}
-              >
-                {t("weeklySchedule.print")}
-              </Button>
-            </Stack>
-          </Box>
-
-              {!hideEmployerTabs ? (
-            <Box sx={{ px: 1.25, pt: 0, pb: 0, borderTop: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}` }}>
-              <Tabs
-                value={employerTab}
-                onChange={(_, value) => setEmployerTab(value)}
-                sx={{
-                  minHeight: 30,
-                  "& .MuiTab-root": {
-                    minHeight: 30,
-                    py: 0.25,
-                    fontWeight: 700,
-                    fontSize: "0.78rem",
-                    textTransform: "none",
-                  },
-                }}
-              >
-                {entityTabs.map((tabKey) => (
-                  <Tab
-                    key={tabKey}
-                    value={tabKey}
-                    label={`${entityLabel(tabKey)} (${countEmployeesForEmployerTab(
-                      data?.employees || [],
-                      tabKey,
-                      data?.entries || [],
-                      organizationSlug,
-                    )})`}
-                  />
-                ))}
-              </Tabs>
-            </Box>
-          ) : null}
-
-          {!loading && data ? (
-            <WeeklyScheduleViewTabs
-              entries={viewMode === VIEW_MODE.BREAKS_TASKS ? breaksScopeEntries : tabEntries}
-              selectedRoles={viewMode === VIEW_MODE.BREAKS_TASKS ? null : roleSelection}
-              onSelectedRolesChange={updateRoleSelection}
-              dayTab={dayViewTab}
-              onDayTabChange={setDayViewTab}
-              hiddenRoles={hiddenScheduleRoles}
-              roleCatalog={roleCatalog}
-              responsibilities={viewMode === VIEW_MODE.BREAKS_TASKS ? breaksScopeResponsibilities : tabResponsibilities}
-              hideRoles={viewMode !== VIEW_MODE.EMPLOYEE}
-              roleUniverse={roleUniverse}
-              dayCountMode={viewMode === VIEW_MODE.BREAKS_TASKS ? "activity" : "employees"}
-            />
-          ) : null}
-
-          {showToolbarChips ? (
-            <Box
-              sx={{
-                px: 1.25,
-                py: 0.35,
-                borderTop: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
-                display: "flex",
-                alignItems: "center",
-                gap: 0.75,
-                flexWrap: "wrap",
-              }}
-            >
-              {excludedCount > 0 && canManageExclusions ? (
-                <Chip
-                  icon={<PersonOffOutlinedIcon />}
-                  label={showExcluded ? `Showing excluded (${excludedCount})` : `Show excluded (${excludedCount})`}
-                  onClick={() => setShowExcluded((v) => !v)}
-                  color={showExcluded ? "warning" : "default"}
-                  variant={showExcluded ? "filled" : "outlined"}
-                  size="small"
-                  sx={{ fontWeight: 700 }}
-                />
-              ) : null}
-              {costAllowed ? (
-                <Chip
-                  icon={<AttachMoneyOutlinedIcon />}
-                  label={showCost ? "Hide cost" : "Show cost"}
-                  onClick={handleCostToggle}
-                  disabled={costSaving}
-                  variant={showCost ? "filled" : "outlined"}
-                  color={showCost ? "primary" : "default"}
-                  size="small"
-                  sx={{ fontWeight: 700 }}
-                />
-              ) : null}
-            </Box>
-          ) : null}
-        </Box>
-
-        <Box
-          sx={{
-            flex: 1,
-            minHeight: 0,
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-            p: { xs: 0.75, md: 0.85 },
-          }}
-        >
-          {excludedCount > 0 && !showExcluded && canManageExclusions ? (
-            <Alert
-              severity="info"
-              className="no-print"
-              sx={{ mb: 1.25, borderRadius: 2, flexShrink: 0 }}
-              action={
-                <Button color="inherit" size="small" onClick={() => setShowExcluded(true)} sx={{ fontWeight: 700 }}>
-                  Show excluded ({excludedCount})
-                </Button>
-              }
-            >
-              {excludedCount} employee{excludedCount === 1 ? "" : "s"} excluded from this week&apos;s schedule. Toggle
-              &quot;Show excluded&quot; to review and include them.
-            </Alert>
-          ) : null}
-          {scheduleTemplate?.enabled ? (
-            <Alert
-              severity={scheduleTemplate.is_source ? "success" : "info"}
-              sx={{ mb: 1.25, borderRadius: 2, flexShrink: 0 }}
-              className="no-print"
-              action={
-                canEdit ? (
-                  <Stack direction="row" spacing={0.5}>
-                    {scheduleTemplate.follows_template ? (
-                      <Button
-                        color="inherit"
-                        size="small"
-                        sx={{ fontWeight: 700 }}
-                        onClick={() => {
-                          setWeekStart(scheduleTemplate.source_week_start);
-                          load(scheduleTemplate.source_week_start);
-                        }}
-                      >
-                        Open template week
-                      </Button>
-                    ) : null}
-                    <Button
-                      color="inherit"
-                      size="small"
-                      sx={{ fontWeight: 700 }}
-                      disabled={templateSaving}
-                      onClick={stopTemplateFromBanner}
-                    >
+            {excludedCount > 0 && !showExcluded && canManageExclusions ? (
+              <Alert severity="info" className="no-print" sx={{ borderRadius: 2 }}>
+                {excludedCount} employee{excludedCount === 1 ? "" : "s"} excluded from this week. Use More to show them.
+              </Alert>
+            ) : null}
+            {scheduleTemplate?.enabled ? (
+              <Alert
+                severity={scheduleTemplate.is_source ? "success" : "info"}
+                className="no-print"
+                sx={{ borderRadius: 2 }}
+                action={
+                  canEdit ? (
+                    <Button color="inherit" size="small" sx={{ fontWeight: 700 }} disabled={templateSaving} onClick={stopTemplateFromBanner}>
                       {templateSaving ? "Stopping…" : "Stop"}
                     </Button>
-                  </Stack>
-                ) : null
-              }
-            >
-              {scheduleTemplate.is_source
-                ? "Propagation on: this week is the ongoing template. Additions, edits, and deletions here are copied to every later week automatically."
-                : scheduleTemplate.follows_template
-                  ? `Propagation on: this week follows the template week of ${formatWeekRange(
-                      scheduleTemplate.source_week_start,
-                    )}. Changes to that week replace this week's planned assignments.`
-                  : `Propagation on from the template week of ${formatWeekRange(scheduleTemplate.source_week_start)} to all later weeks.`}
-            </Alert>
-          ) : null}
-          {data?.carried_forward_from ? (
-            <Alert severity="info" sx={{ mb: 1.25, borderRadius: 2, flexShrink: 0 }} className="no-print">
-              Schedule copied from the week of{" "}
-              {formatWeekRange(normalizeWeekStart(data.carried_forward_from))}. Edit shifts here as needed.
-            </Alert>
-          ) : null}
-          {!loading && data && (viewMode === VIEW_MODE.BREAKS_TASKS || scheduleViewLabel) ? (
-            <Typography
-              variant="caption"
-              className="no-print"
-              sx={{ display: "block", mb: 0.5, px: 0.25, color: "text.secondary", fontWeight: 600 }}
-            >
-              {viewMode === VIEW_MODE.BREAKS_TASKS
-                ? `View: ${entityLabel(employerTab)} · Breaks & tasks`
-                : `View: ${entityLabel(employerTab)} · ${scheduleViewLabel}`}
-              {employerTab === ENTITY_TAB.COMBINED ? " (admin)" : ""}
-            </Typography>
-          ) : null}
-
-          {taskBusy ? (
-            <Alert
-              severity="info"
-              icon={<CircularProgress size={16} />}
-              sx={{ mb: 1.25, flexShrink: 0 }}
-              className="no-print"
-            >
-              {taskBusy}
-            </Alert>
-          ) : taskNotice ? (
-            <Alert
-              severity="success"
-              onClose={() => setTaskNotice("")}
-              sx={{ mb: 1.25, flexShrink: 0 }}
-              className="no-print"
-            >
-              {taskNotice}
-            </Alert>
-          ) : null}
-          {error ? (
-            <Alert severity="error" sx={{ mb: 1.25, flexShrink: 0 }} className="no-print">
-              {error}
-            </Alert>
-          ) : null}
-          {loading ? (
-            <Stack alignItems="center" py={6} className="no-print" sx={{ flex: 1 }}>
-              <CircularProgress size={32} />
-            </Stack>
-          ) : (
-            <>
-              {viewMode === VIEW_MODE.BREAKS_TASKS ? null : (
-              <Box sx={{ flexShrink: 0 }}>
-                <WeeklyScheduleSummaryBar
-                  summary={weekSummary}
-                  showCost={showCost && costAllowed}
-                  showBreaks={showBreakMinutes}
-                  hideLaborHours={hideLaborHours}
-                  compact
-                  noRolesSelected={noRolesSelected}
-                  noRolesText={noRolesText}
-                  onSelectAllRoles={selectAllRoles}
-                />
-              </Box>
-              )}
-
-              <Box
-                sx={{
-                  flex: 1,
-                  minHeight: 0,
-                  overflow: "auto",
-                  WebkitOverflowScrolling: "touch",
-                  width: "100%",
-                  maxWidth: "100%",
-                }}
-                className="weekly-schedule-grid-scroll"
+                  ) : null
+                }
               >
-                {viewMode === VIEW_MODE.BREAKS_TASKS ? (
-                  <BreaksTasksPlanner
-                    weekStart={weekStart}
-                    day={plannerDay}
-                    onDayChange={setPlannerDay}
-                    section={plannerSection}
-                    onSectionChange={setPlannerSection}
-                    employees={breaksRoster}
-                    employeesById={employeesById}
-                    entries={breaksScopeEntries}
-                    responsibilities={plannerResponsibilities}
-                    canEdit={canEdit}
-                    onSaveBreak={handleSaveBreak}
-                    onEditEntry={openEdit}
-                    onEditResponsibility={openEditResponsibility}
-                    onAssign={(seed) => {
-                      setAssignSeed(seed || null);
-                      setAssignError("");
-                      setAssignOpen(true);
-                    }}
-                    onMoveTask={(item) => setTaskMove({ item, day: item.day, userId: item.members?.[0]?.userId })}
-                  />
-                ) : viewMode === VIEW_MODE.TIME_ROLE ? (
-                  <>
-                    <HourlyCoverageControls
-                      roleOptions={coverageRoleOptions}
-                      selectedRoles={roleSelection}
-                      onSelectedRolesChange={updateRoleSelection}
-                      roleUniverse={roleUniverse}
-                      showNames={showCoverageNames}
-                      onShowNamesChange={setShowCoverageNames}
-                      fromHour={coverageRange.fromHour}
-                      toHour={coverageRange.toHour}
-                      hourBounds={coverageHourBounds}
-                      onHourRangeChange={setCoverageRange}
-                    />
-                    {noRolesSelected ? (
-                      <NoRolesNotice text={noRolesText} onSelectAll={selectAllRoles} />
-                    ) : (
-                      <>
-                        <WeeklyScheduleHoursSummary
-                          summary={hoursSummary}
-                          scopeLabel={scheduleViewLabel}
-                          showBreaks={showBreakMinutes && scheduleEndTimeEnabled}
-                        />
-                        <WeeklyScheduleTimeRoleView
-                          weekStart={weekStart}
-                          days={coverageDays}
-                          columns={coverageMatrixColumns}
-                          showNames={showCoverageNames}
-                          endTimeEnabled={scheduleEndTimeEnabled}
-                          canEdit={canEdit}
-                          showBreaks={showBreakMinutes}
-                          onEditEntry={openEdit}
-                          onEditResponsibility={openEditResponsibility}
-                          onAdd={openCreateFromTimeView}
-                        />
-                      </>
-                    )}
-                  </>
-                ) : noRolesSelected ? (
-                  <NoRolesNotice text={noRolesText} onSelectAll={selectAllRoles} />
-                ) : isMobile ? (
-                  <Stack spacing={1.5} className="weekly-schedule-mobile-stack" sx={{ pb: 2 }}>
-                  {(visibleEmployees || []).map((employee) => {
-                    const excluded = Boolean(employee.excluded);
-                    return (
-                      <Paper
-                        key={employee.user_id}
-                        elevation={0}
-                        sx={{
-                          borderRadius: 2.5,
-                          border: "1px solid #e2e8f0",
-                          overflow: "hidden",
-                          bgcolor: "#fff",
-                        }}
-                      >
-                        <WeeklyScheduleEmployeeCell
-                          employee={employee}
-                          excluded={excluded}
-                          canManageExclusions={canManageExclusions}
-                          excludeSaving={excludeSavingUserId === employee.user_id}
-                          onExcludeToggle={handleExcludeToggle}
-                          showCost={showCost}
-                          showRates={showEmployeeRates}
-                          costAllowed={costAllowed}
-                          daysOnly={daysOnly}
-                          showBreaks={showBreakMinutes}
-                          onViewSchedule={openEmployeeView}
-                        />
-                        <Box sx={{ px: 1.25, pb: 1.25, display: "grid", gap: 0.75 }}>
-                          {visibleDayColumns.map((dow) => {
-                            const dayLabel = DAY_LABELS[dow];
-                            const cellKey = `${employee.user_id}:${dow}`;
-                            const cellEntries = entriesByCell[cellKey] || [];
-                            const cellResponsibilities = responsibilitiesByCell[cellKey] || [];
-                            if (!cellEntries.length && !cellResponsibilities.length && excluded) return null;
-                            return (
-                              <ScheduleDayCell
-                                key={cellKey}
-                                employee={employee}
-                                dow={dow}
-                                dayLabel={dayLabel}
-                                cellEntries={cellEntries}
-                                cellResponsibilities={cellResponsibilities}
-                                excluded={excluded}
-                                compact
-                                {...cellProps}
-                              />
-                            );
-                          })}
-                        </Box>
-                      </Paper>
-                    );
-                  })}
-                </Stack>
-              ) : (
-                <Box
-                  sx={{
-                    width: "100%",
-                    minWidth: 0,
-                    pb: 1,
-                  }}
-                  className="weekly-schedule-screen-grid"
-                >
-                  <Box
-                    sx={{
-                      display: "grid",
-                      gridTemplateColumns: `${employeeColWidth} repeat(${visibleDayColumns.length}, ${dayColWidth})`,
-                      minWidth: gridMinWidth,
-                      gap: 0,
-                      border: "1px solid #e2e8f0",
-                      borderRadius: 2.5,
-                      overflow: "visible",
-                      bgcolor: "#fff",
-                    }}
-                  >
-                    <Box
-                      sx={{
-                        px: 1.15,
-                        py: 0.85,
-                        bgcolor: "#f8fafc",
-                        borderBottom: "1px solid #e2e8f0",
-                        position: "sticky",
-                        left: 0,
-                        top: 0,
-                        zIndex: 5,
-                        display: "flex",
-                        alignItems: "flex-end",
-                      }}
-                    >
-                      <Typography
-                        variant="overline"
-                        fontWeight={800}
-                        color="text.secondary"
-                        sx={{ letterSpacing: "0.1em", fontSize: "0.68rem" }}
-                      >
-                        Employee
-                      </Typography>
-                    </Box>
-                    {visibleDayColumns.map((dow) => {
-                      const label = DAY_LABELS[dow];
-                      return (
-                      <Box
-                        key={label}
-                        sx={{
-                          borderBottom: "1px solid #e2e8f0",
-                          borderLeft: "1px solid #e2e8f0",
-                          position: "sticky",
-                          top: 0,
-                          zIndex: 3,
-                          bgcolor: "#f8fafc",
-                        }}
-                      >
-                        <WeeklyScheduleDayHeader
-                          dayLabel={label}
-                          summary={daySummary(filteredDaySummaries[dow] || dayTotals[dow])}
-                          daysOnly={daysOnly}
-                          showBreaks={showBreakMinutes}
-                          compact
-                        />
-                      </Box>
-                    );})}
-
-                    {(visibleEmployees || []).map((employee) => {
-                      const excluded = Boolean(employee.excluded);
-                      return (
-                        <Box key={employee.user_id} sx={{ display: "contents" }}>
-                          <WeeklyScheduleEmployeeCell
-                            employee={employee}
-                            excluded={excluded}
-                            canManageExclusions={canManageExclusions}
-                            excludeSaving={excludeSavingUserId === employee.user_id}
-                            onExcludeToggle={handleExcludeToggle}
-                            showCost={showCost}
-                            showRates={showEmployeeRates}
-                            costAllowed={costAllowed}
-                            daysOnly={daysOnly}
-                            showBreaks={showBreakMinutes}
-                            onViewSchedule={openEmployeeView}
-                          />
-                          {visibleDayColumns.map((dow) => {
-                            const dayLabel = DAY_LABELS[dow];
-                            const cellKey = `${employee.user_id}:${dow}`;
-                            const cellEntries = entriesByCell[cellKey] || [];
-                            return (
-                              <ScheduleDayCell
-                                key={cellKey}
-                                employee={employee}
-                                dow={dow}
-                                dayLabel={dayLabel}
-                                cellEntries={cellEntries}
-                                cellResponsibilities={responsibilitiesByCell[cellKey] || []}
-                                excluded={excluded}
-                                {...cellProps}
-                              />
-                            );
-                          })}
-                        </Box>
-                      );
-                    })}
-                  </Box>
-                </Box>
-              )}
-              </Box>
-            </>
-          )}
-        </Box>
+                {scheduleTemplate.is_source
+                  ? "Propagation on: this week is the ongoing template."
+                  : "Propagation on: later weeks follow the template."}
+              </Alert>
+            ) : null}
+            {error ? <Alert severity="error" className="no-print">{error}</Alert> : null}
+            {taskNotice ? (
+              <Alert severity="success" className="no-print" onClose={() => setTaskNotice("")}>{taskNotice}</Alert>
+            ) : null}
+            {loading ? <CircularProgress size={16} className="no-print" /> : null}
+          </OperationsPlanner>
+        )}
+        <Menu anchorEl={addMenuAnchor} open={Boolean(addMenuAnchor)} onClose={() => setAddMenuAnchor(null)}>
+          {addableEmployees.map((emp) => (
+            <MenuItem
+              key={emp.user_id}
+              onClick={() => {
+                setAddMenuAnchor(null);
+                openCreate(emp.user_id, visibleDayColumns[0] ?? 0);
+              }}
+            >
+              {emp.display_name || `User #${emp.user_id}`}
+            </MenuItem>
+          ))}
+        </Menu>
       </Paper>
 
       {!loading && data ? (
