@@ -438,10 +438,17 @@ def register_supervisor_portal_routes(app, *, require_user, user_org_id, parse_d
         opened, err, code = _guard("view_portal")
         if err:
             return err, code
-        conn, cursor, _me, _org = opened
-        conn.close()
-        del cursor
+        conn, cursor, _me, org = opened
+        from backend.supervisor_portal.store import scoring_target_for
+        from backend.business_time import business_today
+
         rows = role_readiness()
+        today = business_today()
+        for row in rows:
+            target = scoring_target_for(cursor, org, row["role_key"], today)
+            row["target"] = None if target is None else float(target)
+            row["target_unit"] = row.get("unit") if target is not None else None
+        conn.close()
         probe = request.args.get("probe")
         if probe:
             measured = measure_captured(

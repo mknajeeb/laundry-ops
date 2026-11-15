@@ -353,7 +353,7 @@ function RoleReadiness() {
       <Table size="small">
         <TableHead>
           <TableRow>
-            {["Role", "Unit", "Scoring", "Still needed"].map((label) => <TableCell key={label} sx={{ fontWeight: 800 }}>{label}</TableCell>)}
+            {["Role", "Unit", "Target", "Scoring", "Still needed"].map((label) => <TableCell key={label} sx={{ fontWeight: 800 }}>{label}</TableCell>)}
           </TableRow>
         </TableHead>
         <TableBody>
@@ -361,6 +361,7 @@ function RoleReadiness() {
             <TableRow key={role.role_key}>
               <TableCell>{role.label}</TableCell>
               <TableCell>{role.unit || "—"}</TableCell>
+              <TableCell>{role.target != null ? role.target : "—"}</TableCell>
               <TableCell>{role.scoring_ready ? "Ready" : "Not scored"}</TableCell>
               <TableCell>{role.missing || "Approved publisher is in use"}</TableCell>
             </TableRow>
@@ -853,7 +854,10 @@ function TasksView({ date }) {
   if (error) return <Alert severity="error">{error}</Alert>;
   if (!data) return <Typography color="text.secondary">Loading tasks…</Typography>;
   const metrics = data.metrics || {};
-  const rows = (data.shared_assignments || []).filter((row) => {
+  const assignments = data.shared_assignments || [];
+  const outstandingCount = assignments.filter((row) => !["approved", "completed"].includes(String(row.status || ""))).length;
+  const verificationCount = assignments.filter((row) => row.verification_status === "waiting" || row.status === "pending_approval" || row.status_label === "Waiting for Verification").length;
+  const rows = assignments.filter((row) => {
     const status = String(row.status || "");
     if (filter === "overdue") return status === "overdue" || row.status_label === "Overdue";
     if (filter === "verify") return row.verification_status === "waiting" || status === "pending_approval";
@@ -864,8 +868,8 @@ function TasksView({ date }) {
     <Stack spacing={1.5}>
       <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", md: "repeat(4, 1fr)" }, gap: 1 }}>
         <Kpi label="Assigned" value={metrics.total_assigned ?? "—"} active={filter === "all"} onClick={() => setFilter("all")} />
-        <Kpi label="Outstanding" value={metrics.outstanding ?? metrics.pending ?? "—"} active={filter === "outstanding"} onClick={() => setFilter("outstanding")} />
-        <Kpi label="Awaiting verification" value={metrics.pending_verification ?? "—"} active={filter === "verify"} onClick={() => setFilter("verify")} />
+        <Kpi label="Outstanding" value={outstandingCount} active={filter === "outstanding"} onClick={() => setFilter("outstanding")} />
+        <Kpi label="Awaiting verification" value={verificationCount} active={filter === "verify"} onClick={() => setFilter("verify")} />
         <Kpi label="Overdue" value={metrics.overdue ?? "—"} active={filter === "overdue"} onClick={() => setFilter("overdue")} />
       </Box>
       <Box component="form" sx={{ ...cardSx, display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", md: "1fr 1fr auto" } }} onSubmit={async (event) => {
@@ -909,7 +913,7 @@ function TasksView({ date }) {
                   <TableRow key={row.assignment_key || row.role}>
                     <TableCell>
                       <Typography sx={{ fontWeight: 700 }}>{row.role_label || row.role}</Typography>
-                      <Typography sx={{ fontSize: 12, color: "#64748b" }}>{row.shared ? "Shared activity group" : "Individual"}{row.timing_label ? ` · ${row.timing_label}` : ""}</Typography>
+                      <Typography sx={{ fontSize: 12, color: "#64748b" }}>{row.shared ? "Shared" : "Individual"}{row.timing_label ? ` · ${row.timing_label}` : ""}</Typography>
                     </TableCell>
                     <TableCell>{(row.assigned_employees || []).join(", ") || "—"}</TableCell>
                     <TableCell>{row.status_label || row.status}</TableCell>
@@ -965,7 +969,12 @@ function TasksView({ date }) {
                 assignment_group_id: reassign.assignment_group_id,
                 role: reassign.role,
                 business_date: date,
-                assigned_user_ids: (reassign.members || []).map((person) => person.employee_id),
+                assigned_user_ids: [
+                  ...new Set([
+                    ...(reassign.members || []).map((person) => person.employee_id),
+                    Number(replacement),
+                  ]),
+                ],
               });
               setReassign(null);
               load();
