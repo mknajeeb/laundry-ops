@@ -7,9 +7,11 @@ describe("Management Hub destinations", () => {
       "today",
       "rinse_wf",
       "rinse_hd",
-      "performance",
+      "supervisor",
       "labor",
+      "tasks",
       "revenue",
+      "issues",
       "rinse_flow",
       "analysis",
       "bag_search",
@@ -18,6 +20,10 @@ describe("Management Hub destinations", () => {
       "today",
       "rinse_wf",
       "rinse_hd",
+      "supervisor",
+      "tasks",
+      "revenue",
+      "issues",
     ]);
   });
 

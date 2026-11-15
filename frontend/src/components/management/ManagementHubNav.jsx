@@ -8,7 +8,7 @@ export const HUB_DESTINATIONS = [
   { to: "/management", id: "today", label: "Today", enabled: true },
   { to: "/management/rinse-wf", id: "rinse_wf", label: "Rinse WF", enabled: true },
   { to: "/management/rinse-hd", id: "rinse_hd", label: "Rinse HD", enabled: true },
-  { to: "/management/performance", id: "performance", label: "Performance", enabled: true },
+  { to: "/management/supervisor", id: "supervisor", label: "Supervisor", enabled: true },
   { to: "/management/labor", id: "labor", label: "Labor", enabled: false },
   { to: "/management/tasks", id: "tasks", label: "Tasks", enabled: true },
   { to: "/management/revenue", id: "revenue", label: "Revenue", enabled: true },

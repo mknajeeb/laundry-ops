@@ -46,6 +46,15 @@ export default function ManagementPerformancePage() {
           <Typography sx={PERF_TYPE.pageTitle}>Performance</Typography>
           <Button
             component="a"
+            href="/management/supervisor?view=performance"
+            size="small"
+            variant="text"
+            sx={{ textTransform: "none", alignSelf: { xs: "flex-start", sm: "center" } }}
+          >
+            Supervisor portal
+          </Button>
+          <Button
+            component="a"
             href="/rinse/performance"
             size="small"
             variant="text"

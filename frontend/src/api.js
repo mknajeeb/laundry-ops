@@ -3525,6 +3525,60 @@ export const undoDailyOperationsHdProduction = (opsDate, bagId, body) =>
 export const exportDailyOperationsHdProductionUrl = (opsDate) =>
   `${API_BASE}/api/daily-operations/days/${opsDate}/hd-production/export`;
 
+export const getSupervisorDay = (params = {}) =>
+  axios.get(`${API_BASE}/api/supervisor/day`, { params, timeout: 60000 });
+
+export const getSupervisorOverview = (params = {}) =>
+  axios.get(`${API_BASE}/api/supervisor/overview`, { params, timeout: 60000 });
+
+export const createSupervisorAdjustment = (body) =>
+  axios.post(`${API_BASE}/api/supervisor/adjustments`, body);
+
+export const reverseSupervisorAdjustment = (id, body) =>
+  axios.post(`${API_BASE}/api/supervisor/adjustments/${id}/reverse`, body);
+
+export const saveSupervisorTarget = (body) =>
+  axios.post(`${API_BASE}/api/supervisor/targets`, body);
+
+export const getSupervisorQualityWeek = (params = {}) =>
+  axios.get(`${API_BASE}/api/supervisor/quality/week`, { params });
+
+export const getSupervisorQualityTypes = () =>
+  axios.get(`${API_BASE}/api/supervisor/quality/types`);
+
+export const saveSupervisorQualityType = (body) =>
+  axios.post(`${API_BASE}/api/supervisor/quality/types`, body);
+
+export const getSupervisorQualityWeights = () =>
+  axios.get(`${API_BASE}/api/supervisor/quality/weights`);
+
+export const saveSupervisorQualityWeights = (body) =>
+  axios.post(`${API_BASE}/api/supervisor/quality/weights`, body);
+
+export const saveSupervisorQualityAssignment = (body) =>
+  axios.post(`${API_BASE}/api/supervisor/quality/assignments`, body);
+
+export const reverseSupervisorQualityAssignment = (id, body) =>
+  axios.post(`${API_BASE}/api/supervisor/quality/assignments/${id}/reverse`, body);
+
+export const getSupervisorTrainingTemplates = () =>
+  axios.get(`${API_BASE}/api/supervisor/training/templates`);
+
+export const saveSupervisorTrainingTemplate = (body) =>
+  axios.post(`${API_BASE}/api/supervisor/training/templates`, body);
+
+export const getSupervisorTrainingAssignments = (params = {}) =>
+  axios.get(`${API_BASE}/api/supervisor/training/assignments`, { params });
+
+export const saveSupervisorTrainingAssignments = (body) =>
+  axios.post(`${API_BASE}/api/supervisor/training/assignments`, body);
+
+export const updateSupervisorTrainingProgress = (id, body) =>
+  axios.post(`${API_BASE}/api/supervisor/training/assignments/${id}/progress`, body);
+
+export const getSupervisorScoringPolicy = () =>
+  axios.get(`${API_BASE}/api/supervisor/scoring/policy`);
+
 export { API_BASE };
 
 /* Session productivity (ca3eaa8b) */

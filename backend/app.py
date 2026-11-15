@@ -74,6 +74,7 @@ from backend.rinse_dashboard_routes import register_rinse_dashboard_routes
 from backend.management_revenue_routes import register_management_revenue_routes
 from backend.management_revenue_accounts_routes import register_management_revenue_accounts_routes
 from backend.management_issues_routes import register_management_issues_routes
+from backend.supervisor_portal.routes import register_supervisor_portal_routes
 from backend.team_status_routes import register_team_status_routes
 from backend.inventory_routes import register_inventory_routes
 from backend.maintenance_task_list_routes import register_maintenance_task_list_routes
@@ -10922,6 +10923,12 @@ register_management_rinse_hd_routes(
     parse_date_value=parse_date_value,
 )
 register_management_wf_folder_performance_routes(
+    app,
+    require_user=require_user,
+    user_org_id=user_org_id,
+    parse_date_value=parse_date_value,
+)
+register_supervisor_portal_routes(
     app,
     require_user=require_user,
     user_org_id=user_org_id,

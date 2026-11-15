@@ -97,6 +97,7 @@ import ManagementSupplyMasterPage from "./pages/ManagementSupplyMasterPage";
 import ManagementSuppliesDashboardPage from "./pages/ManagementSuppliesDashboardPage";
 import ManagementRinseHdPage from "./pages/ManagementRinseHdPage";
 import ManagementPerformancePage from "./pages/ManagementPerformancePage";
+import SupervisorPortalPage from "./pages/SupervisorPortalPage";
 import ManagementRevenuePage from "./pages/ManagementRevenuePage";
 import ManagementRevenueAccountsPage from "./pages/ManagementRevenueAccountsPage";
 import ManagementIssuesPage from "./pages/ManagementIssuesPage";
@@ -1364,6 +1365,16 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
                     <ManagementRinseHdPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/management/supervisor"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
+                    <SupervisorPortalPage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }
