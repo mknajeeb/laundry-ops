@@ -16,6 +16,7 @@ import {
 import { VEEWASH_BRAND } from "../../theme/veewashBrand";
 import KpiCard from "./KpiCard";
 import { cardSx, fmtInt, fmtRate, metricDigits, vsTone } from "./rinsePerfFormat";
+import { SUPERVISOR_PORTAL_PILOT } from "../../supervisor/pilotAccess";
 
 function RinseOperationsStrip({ date }) {
   const [summary, setSummary] = useState(null);
@@ -85,7 +86,7 @@ export default function RinsePerfOverviewView({ data, metricKey, unit }) {
 
   return (
     <Stack spacing={2}>
-      <RinseOperationsStrip date={data.period?.end_et} />
+      {SUPERVISOR_PORTAL_PILOT ? <RinseOperationsStrip date={data.period?.end_et} /> : null}
       <Grid container spacing={1}>
         <Grid item xs={6} sm={4} md={2}>
           <KpiCard

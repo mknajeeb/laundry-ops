@@ -92,6 +92,9 @@ def register_supervisor_portal_routes(app, *, require_user, user_org_id, parse_d
         if not can(role_set(me), action):
             conn.close()
             return None, jsonify({"error": "Forbidden"}), 403
+        if not read_flags(cursor, org).get("supervisor_portal"):
+            conn.close()
+            return None, jsonify({"error": "Supervisor portal is not enabled"}), 403
         return (conn, cursor, me, org), None, None
 
     def _actor(me: dict) -> dict:
@@ -760,6 +763,8 @@ def register_supervisor_portal_routes(app, *, require_user, user_org_id, parse_d
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
+            if not read_flags(cursor, int(session["organization_id"])).get("supervisor_portal"):
+                return jsonify({"error": "Supervisor portal is not enabled"}), 403
             rows = list_assignments(
                 cursor,
                 int(session["organization_id"]),
@@ -780,6 +785,8 @@ def register_supervisor_portal_routes(app, *, require_user, user_org_id, parse_d
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
+            if not read_flags(cursor, int(session["organization_id"])).get("supervisor_portal"):
+                return jsonify({"error": "Supervisor portal is not enabled"}), 403
             assignment_id = int(body.get("assignment_id") or 0)
             assignment = get_assignment(cursor, int(session["organization_id"]), assignment_id)
             if not assignment or int(assignment.get("trainee_user_id") or 0) != int(session["employee_id"]):

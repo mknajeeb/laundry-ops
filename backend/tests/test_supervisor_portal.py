@@ -762,6 +762,15 @@ def test_manager_corrected_pre_stays_on_its_approval_state():
     assert payload["approved_productivity"]["approved_lbs_per_hour"] == 18.5
 
 
+def test_portal_pilot_stays_off_until_a_flag_is_set():
+    from backend.supervisor_portal.store import read_flags
+
+    source = inspect.getsource(read_flags)
+    assert '"supervisor_portal": False' in source
+    assert '"scoring_active": False' in source
+    assert "flags[\"scoring_active\"] = False" in source
+
+
 def test_migration_is_idempotent_and_non_destructive():
     sql = Path("backend/sql/supervisor_portal_v1.sql").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS supervisor_session_adjustments" in sql

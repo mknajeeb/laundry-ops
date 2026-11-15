@@ -53,6 +53,7 @@ import {
 } from "../opsMobile";
 import OpsLocaleToggle from "../opsMobile/OpsLocaleToggle";
 import { VEEWASH_BRAND, VEEWASH_LOGO_URL } from "../theme/veewashBrand";
+import { SUPERVISOR_PORTAL_PILOT } from "../supervisor/pilotAccess";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 import { applyAttendancePwaManifest } from "../utils/attendancePwaManifest";
 import { saveMtlPinSession } from "../utils/maintenanceTaskListHelpers";
@@ -187,13 +188,15 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
       };
       const clockAt = tiles.findIndex((tile) => tile.id === "clock");
       tiles.splice(clockAt === -1 ? tiles.length : clockAt, 0, reportTile);
-      tiles.splice(clockAt === -1 ? tiles.length : clockAt, 0, {
-        id: "my_training",
-        label: "My Training",
-        color: slug === "veewash" ? VEEWASH_BRAND.primary : "#1d4ed8",
-        iconKey: "checklist",
-        icon: iconForTile({ iconKey: "checklist" }),
-      });
+      if (SUPERVISOR_PORTAL_PILOT) {
+        tiles.splice(clockAt === -1 ? tiles.length : clockAt, 0, {
+          id: "my_training",
+          label: "My Training",
+          color: slug === "veewash" ? VEEWASH_BRAND.primary : "#1d4ed8",
+          iconKey: "checklist",
+          icon: iconForTile({ iconKey: "checklist" }),
+        });
+      }
     }
     return tiles;
   }, [hub, slug, t]);

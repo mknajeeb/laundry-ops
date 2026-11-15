@@ -694,7 +694,7 @@ def get_assignment(cursor, organization_id: int, assignment_id: int) -> dict[str
 def read_flags(cursor, organization_id: int) -> dict[str, bool]:
     """Rollout switches. Scoring stays off even if a row tries to enable it."""
     flags = {
-        "supervisor_portal": True,
+        "supervisor_portal": False,
         "quality_assignments": True,
         "training": True,
         "scoring_active": False,
