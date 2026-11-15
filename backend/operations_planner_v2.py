@@ -219,6 +219,17 @@ def normalize_shift(raw: Mapping[str, Any] | None) -> tuple[dict[str, Any] | Non
 ACTIVITY_LOCKED = frozenset({"in_progress", "pending_approval", "approved", "rejected", "completed"})
 
 
+def commit_or_rollback(work, commit, rollback) -> dict[str, Any]:
+    """Run one schedule save. A failure undoes every write from that save."""
+    try:
+        result = work()
+    except Exception as exc:
+        rollback()
+        return {"ok": False, "rolled_back": True, "error": str(exc)}
+    commit()
+    return {"ok": True, "rolled_back": False, "result": result}
+
+
 def plan_task_links(
     existing: Sequence[Mapping[str, Any]],
     desired: Sequence[Mapping[str, Any]] | None,

@@ -329,7 +329,13 @@ def materialize_plans(conn, cursor, organization_id: int, plans: list[Mapping[st
 
 
 def _sync_cell_tasks(conn, cursor, organization_id: int, *, storage_week: date, user_id: int, day_of_week: int, tasks: list) -> list[str]:
-    """Create or remove responsibility rows. Rows with execution history stay."""
+    """Create or remove responsibility rows. Rows with execution history stay.
+
+    The existing task table is not created from the planner. A missing table
+    stops the save instead of issuing CREATE TABLE.
+    """
+    if not table_exists(cursor, "planned_weekly_schedule_responsibilities"):
+        raise ValueError("the existing task table is not provisioned; the planner will not create it")
     from backend.planned_weekly_schedule_responsibilities import (
         annotate_responsibility_activity,
         create_responsibility,

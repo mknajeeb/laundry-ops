@@ -16,6 +16,7 @@ from backend.db import get_db
 from backend.employee_pin_hub import verify_hub_session_token
 from backend.operations_planner_v2 import (
     approve_weeks,
+    commit_or_rollback,
     employee_module_visible,
     employee_schedule_view,
     employee_visible_snapshot,
@@ -341,9 +342,16 @@ def register_operations_planner_v2_routes(
                     ), 409
                 if body.get("stop_legacy_template"):
                     stop_legacy_template(cursor, org, actor)
-                save_state(cursor, org, result["state"], result.get("audit"), actor)
-                materialize_plans(conn, cursor, org, result.get("cell_plans") or [])
-                conn.commit()
+                outcome = commit_or_rollback(
+                    lambda: (
+                        save_state(cursor, org, result["state"], result.get("audit"), actor),
+                        materialize_plans(conn, cursor, org, result.get("cell_plans") or []),
+                    ),
+                    conn.commit,
+                    conn.rollback,
+                )
+                if not outcome["ok"]:
+                    return jsonify({"ok": False, "code": "rolled_back", "rolled_back": True, "error": outcome["error"]}), 409
             finally:
                 release_lock(cursor, org)
             return jsonify(

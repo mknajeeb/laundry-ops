@@ -197,10 +197,58 @@
 .ops-bar {
   position: absolute;
   top: 4px;
-  height: 30px;
+  height: 32px;
   background: var(--navy);
   color: white;
   overflow: hidden;
+}
+.ops-bar-label {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: 2px;
+  font-size: 12px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.ops-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  padding: 0;
+  border: 0;
+  background: rgba(255, 255, 255, 0.45);
+  cursor: ew-resize;
+  z-index: 2;
+}
+.ops-handle.start { left: 0; }
+.ops-handle.end { right: 0; }
+.ops-segment, .ops-break-chip {
+  position: absolute;
+  left: 0;
+  height: 8px;
+  display: flex;
+  justify-content: space-between;
+  z-index: 3;
+}
+.ops-segment { bottom: 0; background: #7d9cc4; }
+.ops-break-chip { top: 0; background: #e7b15a; }
+.ops-segment button, .ops-break-chip button {
+  width: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: ew-resize;
+}
+.ops-segment em { font-style: normal; font-size: 9px; color: white; pointer-events: none; }
+.ops-dev-shell { display: flex; min-height: 100vh; }
+.ops-dev-nav {
+  width: 180px;
+  flex: 0 0 180px;
+  background: var(--navy);
+  color: white;
+  padding: 16px;
 }
 .ops-preview { font-weight: 600; }
 .ops-hour-card {

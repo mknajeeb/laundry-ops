@@ -8,6 +8,7 @@ from backend.operations_planner_v2 import (
     approve_weeks,
     break_overlap_warnings,
     cell_shift,
+    commit_or_rollback,
     employee_module_visible,
     employee_schedule_view,
     employee_visible_snapshot,
@@ -493,6 +494,43 @@ def test_missing_planner_tables_are_reported_without_create():
         assert exc.missing
     else:
         raise AssertionError("missing tables must stop the request")
+
+
+def test_a_failed_bulk_save_rolls_back_every_cell():
+    written = []
+
+    def work():
+        written.append("first-employee")
+        written.append("second-employee")
+        raise ValueError("second employee failed")
+
+    outcome = commit_or_rollback(work, lambda: written.append("commit"), lambda: written.clear())
+    assert outcome["ok"] is False
+    assert outcome["rolled_back"] is True
+    assert written == []
+
+
+def test_planner_does_not_create_the_task_table():
+    from backend.operations_planner_v2_store import _sync_cell_tasks
+
+    class Recording:
+        def __init__(self):
+            self.sql = []
+
+        def execute(self, sql, *_args, **_kwargs):
+            self.sql.append(str(sql))
+
+        def fetchone(self):
+            return None
+
+    cursor = Recording()
+    try:
+        _sync_cell_tasks(None, cursor, 1, storage_week=ANCHOR, user_id=7, day_of_week=1, tasks=[{"role": "trash"}])
+    except ValueError as exc:
+        assert "will not create it" in str(exc)
+    else:
+        raise AssertionError("missing task table must stop the save")
+    assert not any("CREATE TABLE" in sql.upper() for sql in cursor.sql)
 
 
 def test_a_busy_planner_lock_is_not_treated_as_free():

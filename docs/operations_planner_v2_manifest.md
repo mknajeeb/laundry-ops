@@ -32,7 +32,9 @@ Rollback: leave the tables and keep `ops_planner_org_flags` at 0. Do not drop th
 
 A recurrence edit closes only the pattern that covers the edited week. A later effective-dated pattern stays unless the manager chooses “Replace that later schedule.” Selected dates are the Mondays that start full Monday–Sunday weeks.
 
-Recurring tasks call the existing `create_responsibility` path. A responsibility that already has task activity is not deleted or rewritten. Shared tasks stay one assignment group.
+Recurring tasks call the existing `create_responsibility` path. A responsibility that already has task activity is not deleted or rewritten. Shared tasks stay one assignment group. If the existing task table is missing, the save stops and the planner does not create it.
+
+Full screen sets `data-ops-planner-fullscreen` on the document. The app shell hides the tenant sidebar and restores it when full screen ends. Day-timeline handles resize the shift, a role segment, or a break. Arrow keys on a handle move that edge by 15 minutes. Releasing the handle opens the same scope confirmation as every other save. A failed apply rolls the transaction back before commit.
 
 ## Paystub security
 

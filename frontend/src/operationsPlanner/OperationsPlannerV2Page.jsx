@@ -7,6 +7,7 @@ import {
   DAY_NAMES,
   DAY_ORDER,
   autoScrollDelta,
+  clockMinutes,
   entriesForPeriod,
   hourCoverage,
   minutesToClock,
@@ -135,6 +136,13 @@ export default function OperationsPlannerV2Page() {
     });
   }, [load, week]);
 
+  useEffect(() => {
+    const root = document.documentElement;
+    if (full) root.setAttribute("data-ops-planner-fullscreen", "1");
+    else root.removeAttribute("data-ops-planner-fullscreen");
+    return () => root.removeAttribute("data-ops-planner-fullscreen");
+  }, [full]);
+
   const employees = payload?.employees || [];
   const entries = useMemo(() => (payload?.entries || []).map(entryShift), [payload]);
   const responsibilities = payload?.daily_responsibilities || [];
@@ -247,6 +255,43 @@ export default function OperationsPlannerV2Page() {
     setDragPreview("");
   }
 
+  function resizeEntry(entry, kind, minutes, index = 0) {
+    const clock = minutesToClock(minutes);
+    if (!clock) return;
+    if (kind === "shift-move") {
+      const next = movedShift(entry, { dayOfWeek: entry.day_of_week, startTime: clock });
+      queueChange({
+        action: "move",
+        user_id: Number(entry.user_id),
+        user_ids: [Number(entry.user_id)],
+        from_user_id: Number(entry.user_id),
+        from_day_of_week: Number(entry.day_of_week),
+        day_of_week: Number(entry.day_of_week),
+        previous_shift: entry,
+        shift: next,
+      });
+      return;
+    }
+    const next = {
+      ...entry,
+      role_assignments: (entry.role_assignments || []).map((item) => ({ ...item })),
+      break_slots: (entry.break_slots || []).map((item) => ({ ...item })),
+    };
+    if (kind === "shift-start") next.start_time = clock;
+    if (kind === "shift-end") next.end_time = clock;
+    if (kind === "segment-start" || kind === "segment-end") {
+      next.role_assignments = next.role_assignments.map((item, itemIndex) => (
+        itemIndex === index ? { ...item, [kind === "segment-start" ? "start_time" : "end_time"]: clock } : item
+      ));
+    }
+    if (kind === "break-start" || kind === "break-end") {
+      next.break_slots = next.break_slots.map((item, itemIndex) => (
+        itemIndex === index ? { ...item, [kind === "break-start" ? "start_time" : "end_time"]: clock } : item
+      ));
+    }
+    editShift(entry, next);
+  }
+
   function editShift(shift, next) {
     queueChange({
       action: "upsert",
@@ -324,6 +369,8 @@ export default function OperationsPlannerV2Page() {
                 entries={visibleEntries}
                 preview={dragPreview}
                 day={day}
+                onResize={resizeEntry}
+                onPreview={setDragPreview}
                 onDragStart={(shift) => setDrag({ shift, kind: "timeline" })}
                 onDragOver={(event) => {
                   const minutes = pointerToMinutes(event.clientX, event.currentTarget.getBoundingClientRect());
@@ -543,7 +590,7 @@ function names(employees, userId) {
   return employees.find((employee) => Number(employee.user_id) === Number(userId))?.display_name || `Employee ${userId}`;
 }
 
-function DayTimeline({ employees, entries, day, preview, onDragStart, onDragOver, onDrop }) {
+function DayTimeline({ employees, entries, day, preview, onResize, onPreview, onDragStart, onDragOver, onDrop }) {
   const hours = [];
   for (let hour = 6; hour <= 21; hour += 1) hours.push(hour);
   return (
@@ -563,22 +610,121 @@ function DayTimeline({ employees, entries, day, preview, onDragStart, onDragOver
           <strong>{employee.display_name}</strong>
           <div className="ops-lane">
             {entries.filter((entry) => Number(entry.user_id) === Number(employee.user_id)).map((entry) => (
-              <button
+              <ShiftBar
                 key={`${entry.user_id}-${entry.start_time}`}
-                type="button"
-                className="ops-bar"
-                draggable
-                style={barStyle(entry.start_time, entry.end_time)}
-                onDragStart={() => onDragStart(entry)}
-              >
-                {entry.start_time}–{entry.end_time} {entry.role}
-              </button>
+                entry={entry}
+                onResize={onResize}
+                onPreview={onPreview}
+                onDragStart={onDragStart}
+              />
             ))}
           </div>
         </div>
       ))}
     </div>
   );
+}
+
+function trackPointer(event, onMove, onEnd) {
+  event.preventDefault();
+  event.stopPropagation();
+  const lane = event.currentTarget.closest(".ops-lane")?.getBoundingClientRect();
+  if (!lane) return;
+  const move = (pointer) => {
+    const minutes = pointerToMinutes(pointer.clientX, lane);
+    if (minutes != null) onMove(minutes);
+  };
+  const finish = (pointer) => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", finish);
+    const minutes = pointerToMinutes(pointer.clientX, lane);
+    if (minutes != null) onEnd(minutes);
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", finish);
+}
+
+function ShiftBar({ entry, onResize, onPreview, onDragStart }) {
+  function nudge(kind, delta, index = 0) {
+    const source = kind.startsWith("segment")
+      ? entry.role_assignments?.[index]
+      : kind.startsWith("break")
+        ? entry.break_slots?.[index]
+        : entry;
+    const field = kind.endsWith("end") ? "end_time" : "start_time";
+    const current = clockMinutes(source?.[field] || entry.start_time);
+    if (current == null) return;
+    onResize(entry, kind, current + delta, index);
+  }
+  return (
+    <div className="ops-bar" style={barStyle(entry.start_time, entry.end_time)} draggable onDragStart={() => onDragStart(entry)}>
+      <button
+        type="button"
+        className="ops-handle start"
+        aria-label={`Change shift start for ${entry.start_time}`}
+        onPointerDown={(event) => trackPointer(event, (minutes) => onPreview(`Start ${minutesToClock(minutes)}`), (minutes) => onResize(entry, "shift-start", minutes))}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowLeft") nudge("shift-start", -15);
+          if (event.key === "ArrowRight") nudge("shift-start", 15);
+        }}
+      />
+      <span className="ops-bar-label">{entry.start_time}–{entry.end_time} {entry.role}</span>
+      <button
+        type="button"
+        className="ops-handle end"
+        aria-label={`Change shift end for ${entry.end_time}`}
+        onPointerDown={(event) => trackPointer(event, (minutes) => onPreview(`End ${minutesToClock(minutes)}`), (minutes) => onResize(entry, "shift-end", minutes))}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowLeft") nudge("shift-end", -15);
+          if (event.key === "ArrowRight") nudge("shift-end", 15);
+        }}
+      />
+      {(entry.role_assignments || []).map((segment, index) => (
+        <span key={`${segment.role}-${segment.start_time}`} className="ops-segment" style={pieceStyle(entry, segment)}>
+          <button type="button" aria-label={`Change ${segment.role} start`} onPointerDown={(event) => trackPointer(event, (minutes) => onPreview(`${segment.role} start ${minutesToClock(minutes)}`), (minutes) => onResize(entry, "segment-start", minutes, index))} onKeyDown={(event) => { if (event.key === "ArrowLeft") nudge("segment-start", -15, index); if (event.key === "ArrowRight") nudge("segment-start", 15, index); }} />
+          <em>{segment.role}</em>
+          <button type="button" aria-label={`Change ${segment.role} end`} onPointerDown={(event) => trackPointer(event, (minutes) => onPreview(`${segment.role} end ${minutesToClock(minutes)}`), (minutes) => onResize(entry, "segment-end", minutes, index))} onKeyDown={(event) => { if (event.key === "ArrowLeft") nudge("segment-end", -15, index); if (event.key === "ArrowRight") nudge("segment-end", 15, index); }} />
+        </span>
+      ))}
+      {(entry.break_slots || []).map((slot, index) => (
+        <span key={`${slot.start_time}-${index}`} className="ops-break-chip" style={pieceStyle(entry, slot)}>
+          <button type="button" aria-label={`Change break start ${slot.start_time}`} onPointerDown={(event) => trackPointer(event, (minutes) => onPreview(`Break start ${minutesToClock(minutes)}`), (minutes) => onResize(entry, "break-start", minutes, index))} onKeyDown={(event) => { if (event.key === "ArrowLeft") nudge("break-start", -15, index); if (event.key === "ArrowRight") nudge("break-start", 15, index); }} />
+          <button type="button" aria-label={`Change break end ${slot.end_time}`} onPointerDown={(event) => trackPointer(event, (minutes) => onPreview(`Break end ${minutesToClock(minutes)}`), (minutes) => onResize(entry, "break-end", minutes, index))} onKeyDown={(event) => { if (event.key === "ArrowLeft") nudge("break-end", -15, index); if (event.key === "ArrowRight") nudge("break-end", 15, index); }} />
+        </span>
+      ))}
+    </div>
+  );
+}
+
+export function DevPlannerShell() {
+  const [hidden, setHidden] = useState(false);
+  useEffect(() => {
+    const root = document.documentElement;
+    const sync = () => setHidden(root.getAttribute("data-ops-planner-fullscreen") === "1");
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(root, { attributes: true, attributeFilter: ["data-ops-planner-fullscreen"] });
+    return () => observer.disconnect();
+  }, []);
+  return (
+    <div className="ops-dev-shell">
+      {hidden ? null : <nav className="ops-dev-nav" aria-label="Main menu">Schedule</nav>}
+      <OperationsPlannerV2Page />
+    </div>
+  );
+}
+
+function pieceStyle(shift, piece) {
+  const open = clockMinutes(shift.start_time);
+  let close = clockMinutes(shift.end_time);
+  const begin = clockMinutes(piece.start_time);
+  let finish = clockMinutes(piece.end_time);
+  if (open == null || close == null || begin == null || finish == null || close === open) return { left: "0%", width: "0%" };
+  if (close <= open) close += 24 * 60;
+  return {
+    left: `${Math.max(0, ((begin - open) / (close - open)) * 100)}%`,
+    width: `${Math.max(4, ((finish - begin) / (close - open)) * 100)}%`,
+  };
 }
 
 function barStyle(start, end) {

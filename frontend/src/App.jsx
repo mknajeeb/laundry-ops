@@ -38,7 +38,7 @@ import ScanChronologyPage from "./pages/ScanChronologyPage";
 import OperationsTimelinePage from "./pages/OperationsTimelinePage";
 import ShiftCapacityPlannerPage from "./pages/ShiftCapacityPlannerPage";
 import WeeklySchedulePage from "./pages/WeeklySchedulePage";
-import OperationsPlannerV2Page from "./operationsPlanner/OperationsPlannerV2Page";
+import OperationsPlannerV2Page, { DevPlannerShell } from "./operationsPlanner/OperationsPlannerV2Page";
 import EmployeeSelfServicePage from "./operationsPlanner/EmployeeSelfServicePage";
 import RinsePerformancePage from "./pages/RinsePerformancePage";
 import WeeklyScheduleEmployeeViewPage from "./pages/WeeklyScheduleEmployeeViewPage";
@@ -375,6 +375,7 @@ function AppShell() {
   const [updateReady, setUpdateReady] = useState(false);
   const [activeBatch, setActiveBatch] = useState(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [plannerCoversShell, setPlannerCoversShell] = useState(false);
   const [payrollNavVisible, setPayrollNavVisible] = useState(true);
   const [clockKiosk, setClockKiosk] = useState({
     sharedDevice: false,
@@ -392,6 +393,16 @@ function AppShell() {
   const isWeeklyScheduleRoute =
     normalizedPathname === "/performance/weekly-schedule" ||
     normalizedPathname.startsWith("/performance/weekly-schedule/");
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const sync = () => setPlannerCoversShell(root.getAttribute("data-ops-planner-fullscreen") === "1");
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(root, { attributes: true, attributeFilter: ["data-ops-planner-fullscreen"] });
+    return () => observer.disconnect();
+  }, []);
+  const shellHidden = hideTenantSidebar(pathname) || plannerCoversShell;
 
   /** iOS PWA: keep main content in its own scroller; reset on navigation (fixes mid-page load + header overlap). */
   useLayoutEffect(() => {
@@ -674,7 +685,7 @@ function AppShell() {
   if (import.meta.env.DEV && pathname === "/dev/operations-planner") {
     return (
       <Routes>
-        <Route path="/dev/operations-planner" element={<OperationsPlannerV2Page />} />
+        <Route path="/dev/operations-planner" element={<DevPlannerShell />} />
       </Routes>
     );
   }
@@ -880,7 +891,7 @@ function AppShell() {
 
   return (
     <Box sx={{ flex: 1, minHeight: 0, width: "100%", display: "flex", background: shellBackground }}>
-      {!isMobile && user && !hideTenantSidebar(pathname) && (pathname.startsWith("/platform") && hasPlatformAdminRole(user) ? (
+      {!isMobile && user && !shellHidden && (pathname.startsWith("/platform") && hasPlatformAdminRole(user) ? (
         <PlatformSidebar user={user} onLogout={doLogout} showTenantEntry />
       ) : (
         <Sidebar
@@ -892,7 +903,7 @@ function AppShell() {
         />
       ))}
       <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
-        {isMobile && user && !hideTenantSidebar(pathname) && (
+        {isMobile && user && !shellHidden && (
           <>
             <MobileTenantDrawer
               open={mobileNavOpen}
