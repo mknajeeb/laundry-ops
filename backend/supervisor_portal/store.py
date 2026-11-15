@@ -588,7 +588,7 @@ def list_assignments(cursor, organization_id: int, *, trainee_user_id: int | Non
     if not table_exists(cursor, "supervisor_training_assignments"):
         return []
     sql = """
-        SELECT a.*, v.version_number, v.practical_required, t.title
+        SELECT a.*, v.version_number, v.practical_required, v.instructions, t.title
         FROM supervisor_training_assignments a
         JOIN supervisor_training_versions v ON v.id=a.version_id
         JOIN supervisor_training_templates t ON t.id=v.template_id
@@ -667,9 +667,10 @@ def update_assignment_status(cursor, organization_id: int, assignment_id: int, *
 def get_assignment(cursor, organization_id: int, assignment_id: int) -> dict[str, Any] | None:
     cursor.execute(
         """
-        SELECT a.*, v.practical_required
+        SELECT a.*, v.practical_required, v.instructions, t.title
         FROM supervisor_training_assignments a
         JOIN supervisor_training_versions v ON v.id=a.version_id
+        JOIN supervisor_training_templates t ON t.id=v.template_id
         WHERE a.organization_id=%s AND a.id=%s
         LIMIT 1
         """,

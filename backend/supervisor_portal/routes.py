@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from flask import jsonify, request
 
@@ -144,6 +144,91 @@ def register_supervisor_portal_routes(app, *, require_user, user_org_id, parse_d
         payload["flags"] = read_flags(cursor, org)
         return payload
 
+    def _quality_for_window(cursor, org: int, start: date, end: date) -> dict:
+        incidents = []
+        seen = set()
+        monday = week_start(start)
+        while monday <= end:
+            for row in list_incidents(cursor, org, monday):
+                key = row.get("id") or row.get("incident_key")
+                if key in seen:
+                    continue
+                seen.add(key)
+                incidents.append(row)
+            monday += timedelta(days=7)
+        return {"period_start": start.isoformat(), "period_end": end.isoformat(), **incident_totals(incidents)}
+
+    def _load_period(org: int, selected: date, period: str) -> dict:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        from backend.supervisor_portal.period import aggregate_period, iter_dates, period_bounds
+
+        start, end = period_bounds(selected, period)
+        dates = iter_dates(start, end)
+        key = str(period or "day").strip().lower()
+        if key not in {"week", "month"}:
+            conn = get_db()
+            cursor = conn.cursor(dictionary=True)
+            try:
+                payload = _portal_day(cursor, org, selected)
+            finally:
+                conn.close()
+            payload["period"] = "day"
+            payload["period_start"] = selected.isoformat()
+            payload["period_end"] = selected.isoformat()
+            return payload
+
+        def _one(day: date) -> dict:
+            conn = get_db()
+            cursor = conn.cursor(dictionary=True)
+            try:
+                built = _portal_day(cursor, org, day)
+                built["employees"] = [
+                    {field: value for field, value in employee.items() if field != "sessions"}
+                    for employee in built.get("employees") or []
+                ]
+                recon = dict(built.get("reconciliation") or {})
+                recon["bags"] = []
+                built["reconciliation"] = recon
+                return built
+            except Exception as exc:
+                return {"date_et": day.isoformat(), "error": str(exc)}
+            finally:
+                conn.close()
+
+        built_days = []
+        workers = min(3, len(dates))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_one, day) for day in dates]
+            for future in as_completed(futures):
+                built_days.append(future.result())
+        built_days.sort(key=lambda row: str(row.get("date_et") or ""))
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            quality = _quality_for_window(cursor, org, start, end)
+            flags = read_flags(cursor, org)
+            due = training_due_count(cursor, org, end)
+        finally:
+            conn.close()
+        combined = aggregate_period(built_days, quality=quality)
+        combined.update(
+            {
+                "period": key,
+                "date_et": selected.isoformat(),
+                "period_start": start.isoformat(),
+                "period_end": end.isoformat(),
+                "timezone": "America/New_York",
+                "scoring": draft_policy(),
+                "flags": flags,
+                "training_due": due,
+                "below_target": [row["employee"] for row in combined["employees"] if row.get("below_target")],
+                "pending_session_count": sum(int(day.get("pending_session_count") or 0) for day in built_days if not day.get("error")),
+                "folding_role": {"role_key": "FOLDER", "label": "Folding", "measurable": True},
+            }
+        )
+        return combined
+
     @app.route("/api/supervisor/day", methods=["GET"])
     def supervisor_day():
         opened, err, code = _guard("view_portal")
@@ -154,16 +239,19 @@ def register_supervisor_portal_routes(app, *, require_user, user_org_id, parse_d
             selected, date_err = _date_arg()
             if date_err:
                 return date_err
-            payload = _portal_day(cursor, org, selected)
-            payload["access"] = {
+            period = (request.args.get("period") or "day").strip().lower()
+            access = {
                 "configure": can(role_set(me), "configure_targets"),
                 "adjust": can(role_set(me), "adjust_session"),
             }
+        finally:
+            conn.close()
+        try:
+            payload = _load_period(org, selected, period)
+            payload["access"] = access
             return jsonify(payload)
         except MigrationRequired as exc:
             return jsonify({"error": str(exc), "migration": MIGRATION}), 503
-        finally:
-            conn.close()
 
     @app.route("/api/supervisor/overview", methods=["GET"])
     def supervisor_overview():
@@ -554,13 +642,14 @@ def register_supervisor_portal_routes(app, *, require_user, user_org_id, parse_d
             supervisor = can(role_set(me), "verify_training")
             if actor_id != trainee_id and not supervisor:
                 return jsonify({"error": "Forbidden"}), 403
-            set_progress(
-                cursor,
-                assignment_id,
-                int(body["item_id"]),
-                done=bool(body.get("done", True)),
-                actor_id=actor_id,
-            )
+            if body.get("item_id"):
+                set_progress(
+                    cursor,
+                    assignment_id,
+                    int(body["item_id"]),
+                    done=bool(body.get("done", True)),
+                    actor_id=actor_id,
+                )
             items = assignment_items(cursor, assignment_id)
             ready = checklist_ready(
                 [{"id": item["id"], "required": bool(item.get("required_step"))} for item in items],
@@ -591,6 +680,122 @@ def register_supervisor_portal_routes(app, *, require_user, user_org_id, parse_d
             conn.commit()
             return jsonify({"ok": True, "status": status, "checklist_complete": ready, "items": items})
         except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        finally:
+            conn.close()
+
+    def _pin_session():
+        body = request.get_json(silent=True) or {}
+        token = body.get("hub_token") or request.headers.get("X-Pin-Hub-Token") or ""
+        from backend.employee_pin_hub import verify_hub_session_token
+
+        try:
+            return verify_hub_session_token(str(token)), body, None
+        except ValueError as exc:
+            return None, body, (jsonify({"error": str(exc)}), 401)
+
+    def _pin_assignment_payload(cursor, assignment: dict) -> dict:
+        items = assignment_items(cursor, int(assignment["id"]))
+        ready = checklist_ready(
+            [{"id": item["id"], "required": bool(item.get("required_step"))} for item in items],
+            {item["id"]: bool(item.get("done")) for item in items},
+        )
+        public = {
+            "id": assignment.get("id"),
+            "title": assignment.get("title"),
+            "status": assignment.get("status"),
+            "instructions": assignment.get("instructions"),
+            "practical_required": bool(assignment.get("practical_required")),
+            "competency_result": assignment.get("competency_result"),
+            "due_on": assignment.get("due_on").isoformat() if hasattr(assignment.get("due_on"), "isoformat") else assignment.get("due_on"),
+            "checklist_complete": ready,
+            "items": [
+                {
+                    "id": item.get("id"),
+                    "label": item.get("label") or item.get("instruction"),
+                    "instruction": item.get("instruction"),
+                    "required": bool(item.get("required_step")),
+                    "done": bool(item.get("done")),
+                }
+                for item in items
+            ],
+        }
+        return public
+
+    @app.route("/api/public/attendance/pin-training", methods=["POST"])
+    def pin_training_list():
+        session, _body, err = _pin_session()
+        if err:
+            return err
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            rows = list_assignments(
+                cursor,
+                int(session["organization_id"]),
+                trainee_user_id=int(session["employee_id"]),
+                mine_only=True,
+            )
+            return jsonify({"assignments": [_pin_assignment_payload(cursor, row) for row in rows]})
+        except MigrationRequired as exc:
+            return jsonify({"error": str(exc), "migration": MIGRATION}), 503
+        finally:
+            conn.close()
+
+    @app.route("/api/public/attendance/pin-training/progress", methods=["POST"])
+    def pin_training_progress():
+        session, body, err = _pin_session()
+        if err:
+            return err
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            assignment_id = int(body.get("assignment_id") or 0)
+            assignment = get_assignment(cursor, int(session["organization_id"]), assignment_id)
+            if not assignment or int(assignment.get("trainee_user_id") or 0) != int(session["employee_id"]):
+                return jsonify({"error": "Assignment not found"}), 404
+            actor_id = int(session["employee_id"])
+            if body.get("item_id"):
+                set_progress(
+                    cursor,
+                    assignment_id,
+                    int(body["item_id"]),
+                    done=bool(body.get("done", True)),
+                    actor_id=actor_id,
+                )
+            items = assignment_items(cursor, assignment_id)
+            ready = checklist_ready(
+                [{"id": item["id"], "required": bool(item.get("required_step"))} for item in items],
+                {item["id"]: bool(item.get("done")) for item in items},
+            )
+            requested = str(body.get("status") or "")
+            status = assignment.get("status")
+            if requested:
+                status = next_status(
+                    str(assignment.get("status") or "assigned"),
+                    requested,
+                    checklist_complete=ready,
+                    practical_required=bool(assignment.get("practical_required")),
+                    competency_result=assignment.get("competency_result"),
+                    actor_is_trainee=True,
+                    actor_is_supervisor=False,
+                    actor_is_subject=True,
+                )
+                update_assignment_status(
+                    cursor,
+                    int(session["organization_id"]),
+                    assignment_id,
+                    status=status,
+                    competency_result=None,
+                    actor_id=actor_id,
+                    notes=None,
+                )
+            conn.commit()
+            fresh = get_assignment(cursor, int(session["organization_id"]), assignment_id) or assignment
+            return jsonify({"ok": True, "assignment": _pin_assignment_payload(cursor, fresh)})
+        except MigrationRequired as exc:
+            return jsonify({"error": str(exc), "migration": MIGRATION}), 503
+        except (ValueError, TypeError) as exc:
             return jsonify({"error": str(exc)}), 400
         finally:
             conn.close()

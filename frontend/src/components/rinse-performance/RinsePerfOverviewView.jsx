@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import { Box, Grid, Paper, Stack, Typography } from "@mui/material";
+import { getSupervisorRinseSummary } from "../../api";
 import {
   CartesianGrid,
   Line,
@@ -14,6 +16,38 @@ import {
 import { VEEWASH_BRAND } from "../../theme/veewashBrand";
 import KpiCard from "./KpiCard";
 import { cardSx, fmtInt, fmtRate, metricDigits, vsTone } from "./rinsePerfFormat";
+
+function RinseOperationsStrip({ date }) {
+  const [summary, setSummary] = useState(null);
+  useEffect(() => {
+    if (!date) return undefined;
+    let cancel = false;
+    getSupervisorRinseSummary({ date: String(date).slice(0, 10) })
+      .then((res) => {
+        if (!cancel) setSummary(res.data);
+      })
+      .catch(() => {
+        if (!cancel) setSummary(null);
+      });
+    return () => {
+      cancel = true;
+    };
+  }, [date]);
+  if (!summary?.volume) return null;
+  const speed = summary.approved_productivity || {};
+  const quality = summary.quality || {};
+  return (
+    <Paper sx={cardSx({ p: 1.5 })}>
+      <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+        Operations · {summary.date_et} Eastern
+      </Typography>
+      <Typography variant="body2" color="text.secondary">
+        {fmtInt(summary.volume.completed_bags)} completed bags · {fmtInt(summary.volume.approved_bags)} approved · {fmtRate(speed.approved_hours, 1)} approved hours · {fmtRate(speed.approved_lbs_per_hour, 1)} lb/hr
+        {quality.incident_count != null ? ` · ${fmtInt(quality.incident_count)} quality incidents` : ""}
+      </Typography>
+    </Paper>
+  );
+}
 
 function TrendTooltip({ active, payload, label, unit }) {
   if (!active || !payload?.length) return null;
@@ -51,6 +85,7 @@ export default function RinsePerfOverviewView({ data, metricKey, unit }) {
 
   return (
     <Stack spacing={2}>
+      <RinseOperationsStrip date={data.period?.end_et} />
       <Grid container spacing={1}>
         <Grid item xs={6} sm={4} md={2}>
           <KpiCard

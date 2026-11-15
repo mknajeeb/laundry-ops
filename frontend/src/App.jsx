@@ -69,6 +69,7 @@ import MaintenanceTaskListPinPage from "./pages/MaintenanceTaskListPinPage";
 import CleaningTasksPinPage from "./pages/CleaningTasksPinPage";
 import CleaningTaskReviewPinPage from "./pages/CleaningTaskReviewPinPage";
 import LostFoundReportPinPage from "./pages/LostFoundReportPinPage";
+import PinTrainingPage from "./pages/PinTrainingPage";
 import LostFoundReconcilePinPage from "./pages/LostFoundReconcilePinPage";
 import LostFoundDesktopPage from "./pages/LostFoundDesktopPage";
 import LostFoundReportAuthPage from "./pages/LostFoundReportAuthPage";
@@ -271,7 +272,9 @@ function isDevPreviewRoute(path) {
     p === "/dev/activity-responsibility-preview" ||
     p.startsWith("/dev/activity-responsibility-preview/") ||
     p === "/dev/breaks-tasks-preview" ||
-    p.startsWith("/dev/breaks-tasks-preview/")
+    p.startsWith("/dev/breaks-tasks-preview/") ||
+    p === "/dev/supervisor-preview" ||
+    p.startsWith("/dev/supervisor-preview/")
   );
 }
 
@@ -795,6 +798,7 @@ function AppShell() {
         <Route path="/dev/task-dashboard-phase3-preview" element={<TaskDashboardPhase3PreviewPage />} />
         <Route path="/dev/activity-responsibility-preview" element={<ActivityResponsibilityPreviewPage />} />
         <Route path="/dev/breaks-tasks-preview" element={<BreaksTasksPlannerPreviewPage />} />
+        <Route path="/dev/supervisor-preview" element={<SupervisorPortalPage />} />
       </Routes>
     );
   }
@@ -808,6 +812,7 @@ function AppShell() {
         <Route path="/attendance/maintenance/:orgSlug" element={<MaintenanceTaskListPinPage />} />
         <Route path="/attendance/maintenance" element={<MaintenanceTaskListPinPage />} />
         <Route path="/attendance/lost-found/reconcile/:orgSlug" element={<LostFoundReconcilePinPage />} />
+        <Route path="/attendance/training/:orgSlug" element={<PinTrainingPage />} />
         <Route path="/attendance/lost-found/:orgSlug" element={<LostFoundReportPinPage />} />
         <Route path="/attendance/cleaning-tasks/review/:orgSlug" element={<CleaningTaskReviewPinPage />} />
         <Route path="/attendance/cleaning-tasks/review" element={<CleaningTaskReviewPinPage />} />

@@ -17,7 +17,12 @@ import {
 } from "@mui/material";
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import {
+  approveManagementTaskDashboard,
   createSupervisorAdjustment,
+  createWeeklyScheduleResponsibility,
+  excuseManagementParticipant,
+  getManagementTaskAssignees,
+  getManagementTaskCatalog,
   getManagementTaskDashboard,
   getSupervisorDay,
   getSupervisorOverview,
@@ -27,6 +32,7 @@ import {
   getSupervisorTrainingAssignments,
   getSupervisorTrainingTemplates,
   reverseSupervisorAdjustment,
+  rejectManagementTaskDashboard,
   reverseSupervisorQualityAssignment,
   saveSupervisorQualityAssignment,
   saveSupervisorQualityType,
@@ -34,6 +40,7 @@ import {
   saveSupervisorTarget,
   saveSupervisorTrainingAssignments,
   saveSupervisorTrainingTemplate,
+  updateSupervisorTrainingProgress,
 } from "../api";
 import { CATEGORIES, etToday, formatNumber, formatRate, reconciliationCheck } from "../supervisor/supervisorFormat";
 
@@ -56,6 +63,32 @@ const cardSx = {
 
 function errorText(err, fallback) {
   return err?.response?.data?.error || err?.message || fallback;
+}
+
+function configuredWeight(weights, issueType, date) {
+  const published = (weights?.versions || []).filter((row) => row.status === "published" && String(row.effective_from || "") <= date);
+  const current = published[published.length - 1];
+  if (!current) return "Not published yet";
+  const value = current.weights?.[issueType];
+  return value == null ? "This type has no weight in the published version" : String(value);
+}
+
+function scheduleSlot(iso) {
+  const [year, month, day] = String(iso).split("-").map(Number);
+  const stamp = new Date(Date.UTC(year, month - 1, day));
+  const dow = stamp.getUTCDay();
+  const monday = new Date(stamp);
+  monday.setUTCDate(stamp.getUTCDate() - ((dow + 6) % 7));
+  return { week_start: monday.toISOString().slice(0, 10), day_of_week: dow };
+}
+
+function activityIds(row) {
+  const ids = [];
+  for (const contribution of row.contributions || []) {
+    const id = contribution.activity?.id || contribution.activity_id;
+    if (id) ids.push(id);
+  }
+  return [...new Set(ids)];
 }
 
 function Kpi({ label, value, hint, onClick, active }) {
@@ -204,13 +237,15 @@ function PerformanceView({ date }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [category, setCategory] = useState("all");
+  const [period, setPeriod] = useState("day");
   const [selected, setSelected] = useState(null);
   const load = useCallback(() => {
     setError("");
-    return getSupervisorDay({ date })
+    setData(null);
+    return getSupervisorDay({ date, period })
       .then((res) => setData(res.data))
       .catch((err) => setError(errorText(err, "Could not load performance")));
-  }, [date]);
+  }, [date, period]);
   useEffect(() => {
     load();
   }, [load]);
@@ -220,11 +255,20 @@ function PerformanceView({ date }) {
     return rows.filter((bag) => bag.primary_category === category);
   }, [data, category]);
   if (error) return <Alert severity="error">{error}</Alert>;
-  if (!data) return <Typography color="text.secondary">Loading performance…</Typography>;
+  if (!data) return <Typography color="text.secondary">Loading {period === "day" ? "the day" : `the ${period}`}…</Typography>;
   const check = reconciliationCheck(data.reconciliation);
   const counts = data.reconciliation.categories || {};
+  const range = data.period_start && data.period_end && data.period !== "day" ? `${data.period_start} to ${data.period_end}` : date;
   return (
     <Stack spacing={1.5}>
+      <Stack direction="row" spacing={0.75}>
+        {[["day", "Day"], ["week", "Week"], ["month", "Month"]].map(([id, label]) => (
+          <Button key={id} size="small" variant={period === id ? "contained" : "outlined"} onClick={() => setPeriod(id)} sx={{ textTransform: "none", bgcolor: period === id ? NAVY : "#fff", color: period === id ? "#fff" : NAVY }}>
+            {label}
+          </Button>
+        ))}
+        <Typography sx={{ alignSelf: "center", fontSize: 13, color: "#64748b" }}>{range} · Eastern</Typography>
+      </Stack>
       <Alert severity={check.holds ? "success" : "warning"}>
         {check.completed} completed bags, {check.accounted} accounted, {check.unaccounted} unaccounted.
         {data.achievement_target_source === "auto_approval_benchmark"
@@ -247,10 +291,41 @@ function PerformanceView({ date }) {
         </Typography>
         {category === "all" ? (
           <EmployeeTable employees={data.employees || []} onOpen={setSelected} />
-        ) : (
+        ) : bags.length ? (
           <BagTable bags={bags} />
+        ) : (
+          <Typography color="text.secondary">Bag rows are listed on a single day. This {period} shows the category totals above.</Typography>
         )}
       </Box>
+      {(data.trend || []).length > 1 ? (
+        <Box sx={cardSx}>
+          <Typography sx={{ fontWeight: 800, color: NAVY, mb: 1 }}>Team trend</Typography>
+          <Typography sx={{ fontSize: 12, color: "#64748b", mb: 1 }}>Each point is that day’s pounds divided by that day’s eligible hours. The employee rate above is the period total, not an average of these daily rates.</Typography>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                {["Date", "Pounds", "Hours", "Rate"].map((label) => <TableCell key={label} sx={{ fontWeight: 800 }}>{label}</TableCell>)}
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {data.trend.map((row) => (
+                <TableRow key={row.date}>
+                  <TableCell>{row.date}</TableCell>
+                  <TableCell>{formatNumber(row.pounds)}</TableCell>
+                  <TableCell>{formatNumber(row.hours)}</TableCell>
+                  <TableCell>{formatRate(row.rate)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Box>
+      ) : null}
+      {(data.day_errors || []).length ? (
+        <Alert severity="warning">{data.day_errors.length} day(s) could not be loaded and were left out of the totals.</Alert>
+      ) : null}
+      <Typography sx={{ fontSize: 13, color: "#64748b" }}>
+        Sorting, weighing, washing, drying, and Hang Dry are not measurable for target scoring. Folding is the only role with an approved pounds-per-hour series.
+      </Typography>
       <Typography sx={{ fontSize: 13 }}>
         <a href="/management/performance">Hang Dry performance and bag moves stay on the existing performance screen.</a>
       </Typography>
@@ -270,7 +345,7 @@ function EmployeeTable({ employees, onOpen }) {
     <Table size="small">
       <TableHead>
         <TableRow>
-          {["Employee", "Bags", "Pounds", "Eligible hours", "Rate", "Target", "Status"].map((label) => (
+          {["Employee", "Bags", "Pounds", "Eligible hours", "Rate", "Target", "Quality pts", "Status"].map((label) => (
             <TableCell key={label} sx={{ fontWeight: 800 }}>{label}</TableCell>
           ))}
         </TableRow>
@@ -284,6 +359,7 @@ function EmployeeTable({ employees, onOpen }) {
             <TableCell>{formatNumber(employee.eligible_hours)}</TableCell>
             <TableCell>{formatRate(employee.reported_rate)}</TableCell>
             <TableCell>{employee.achievement_percent != null ? `${employee.achievement_percent}%` : "—"}</TableCell>
+            <TableCell>{employee.quality_points ?? "—"}</TableCell>
             <TableCell>{employee.excluded ? "Excluded" : employee.below_target ? "Below target" : "On track"}</TableCell>
           </TableRow>
         ))}
@@ -449,7 +525,17 @@ function QualityView({ date }) {
   const [types, setTypes] = useState([]);
   const [weights, setWeights] = useState(null);
   const [error, setError] = useState("");
-  const [form, setForm] = useState({ employee_name: "", issue_type: "missing_item", quantity: 1, reference: "", notes: "", severity: "" });
+  const [form, setForm] = useState({
+    employees: "",
+    role_key: "FOLDER",
+    issue_type: "missing_item",
+    quantity: 1,
+    reference: "",
+    notes: "",
+    severity: "",
+    training_version_id: "",
+    training_user_id: "",
+  });
   const load = useCallback(() => {
     return Promise.all([getSupervisorQualityWeek({ date }), getSupervisorQualityTypes(), getSupervisorQualityWeights()])
       .then(([week, typeRes, weightRes]) => {
@@ -472,6 +558,10 @@ function QualityView({ date }) {
       <Box component="form" sx={{ ...cardSx, display: "grid", gap: 1 }} onSubmit={async (event) => {
         event.preventDefault();
         try {
+          const employees = form.employees.split("\n").map((name) => name.trim()).filter(Boolean).map((employee_name) => ({
+            employee_name,
+            role_key: form.role_key,
+          }));
           await saveSupervisorQualityAssignment({
             week: date,
             issue_type: form.issue_type,
@@ -479,31 +569,51 @@ function QualityView({ date }) {
             reference: form.reference,
             notes: form.notes,
             severity: form.severity || null,
-            employees: [{ employee_name: form.employee_name, role_key: "GENERAL" }],
+            role_key: form.role_key,
+            employees,
           });
-          setForm({ ...form, employee_name: "", reference: "", notes: "" });
+          if (form.training_version_id && form.training_user_id) {
+            await saveSupervisorTrainingAssignments({
+              version_id: Number(form.training_version_id),
+              trainee_user_id: Number(form.training_user_id),
+              reason: "corrective",
+              assigned_on: date,
+              due_on: date,
+            });
+          }
+          setForm({ ...form, employees: "", reference: "", notes: "", training_user_id: "" });
           load();
         } catch (err) {
           setError(errorText(err, "Could not assign the issue"));
         }
       }}>
         <Typography sx={{ fontWeight: 800, color: NAVY }}>Assign a confirmed issue</Typography>
-        <Typography sx={{ fontSize: 13, color: "#64748b" }}>Responsibility is decided outside the app. The same reference counts as one incident.</Typography>
+        <Typography sx={{ fontSize: 13, color: "#64748b" }}>
+          Week of {data.week_start}. Investigation stays outside the app. One reference is one incident, even when several people are named.
+        </Typography>
         {types.length === 0 ? (
           <Button onClick={() => saveSupervisorQualityType({ install_starter: true }).then(load)} sx={{ textTransform: "none", justifySelf: "start" }}>
             Install starter categories
           </Button>
         ) : null}
-        <TextField size="small" label="Employee" value={form.employee_name} onChange={(event) => setForm({ ...form, employee_name: event.target.value })} required />
+        <TextField size="small" label="Employees, one name per line" multiline minRows={2} value={form.employees} onChange={(event) => setForm({ ...form, employees: event.target.value })} required />
+        <TextField select size="small" label="Role" value={form.role_key} onChange={(event) => setForm({ ...form, role_key: event.target.value })}>
+          {["FOLDER", "SORT", "WEIGH", "WASH", "DRY", "HD_OPERATOR", "HD_FOLDER", "GENERAL"].map((role) => (
+            <MenuItem key={role} value={role}>{role}</MenuItem>
+          ))}
+        </TextField>
         <TextField select size="small" label="Issue type" value={form.issue_type} onChange={(event) => setForm({ ...form, issue_type: event.target.value })}>
           {(types.length ? types : [{ code: "missing_item", label: "Missing item" }]).map((row) => (
             <MenuItem key={row.code} value={row.code}>{row.label}</MenuItem>
           ))}
         </TextField>
+        <Typography sx={{ fontSize: 13, color: "#64748b" }}>Configured weight: {configuredWeight(weights, form.issue_type, date)}</Typography>
         <TextField size="small" label="Quantity" type="number" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} />
         <TextField size="small" label="Severity (optional)" value={form.severity} onChange={(event) => setForm({ ...form, severity: event.target.value })} />
         <TextField size="small" label="Order or Rinse issue reference" value={form.reference} onChange={(event) => setForm({ ...form, reference: event.target.value })} required />
         <TextField size="small" label="Notes" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} />
+        <TextField size="small" label="Corrective training module version id (optional)" value={form.training_version_id} onChange={(event) => setForm({ ...form, training_version_id: event.target.value })} />
+        <TextField size="small" label="Corrective training user id (optional)" value={form.training_user_id} onChange={(event) => setForm({ ...form, training_user_id: event.target.value })} />
         <Button type="submit" variant="contained" sx={{ bgcolor: NAVY, textTransform: "none", justifySelf: "start" }}>Save assignment</Button>
       </Box>
       <Box sx={cardSx}>
@@ -643,8 +753,15 @@ function TrainingView({ date }) {
                   <TableCell>{row.trainee_user_id}</TableCell>
                   <TableCell>{row.reason}</TableCell>
                   <TableCell>{row.due_on || "—"}</TableCell>
-                  <TableCell>{row.status}</TableCell>
-                  <TableCell />
+                  <TableCell>{row.status}{row.competency_result ? ` · ${row.competency_result}` : ""}</TableCell>
+                  <TableCell>
+                    {row.status === "awaiting_verification" ? (
+                      <Stack direction="row" spacing={0.5}>
+                        <Button size="small" onClick={() => updateSupervisorTrainingProgress(row.id, { status: "completed", competency_result: "pass" }).then(load)}>Approve</Button>
+                        <Button size="small" color="warning" onClick={() => updateSupervisorTrainingProgress(row.id, { status: "failed", competency_result: "retrain" }).then(load)}>Retrain</Button>
+                      </Stack>
+                    ) : null}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -657,56 +774,158 @@ function TrainingView({ date }) {
 
 function TasksView({ date }) {
   const [data, setData] = useState(null);
+  const [catalog, setCatalog] = useState([]);
+  const [people, setPeople] = useState([]);
   const [error, setError] = useState("");
-  useEffect(() => {
-    let cancel = false;
-    getManagementTaskDashboard({ date })
-      .then((res) => {
-        if (!cancel) setData(res.data);
+  const [filter, setFilter] = useState("outstanding");
+  const [assign, setAssign] = useState({ user_id: "", role: "" });
+  const [rejecting, setRejecting] = useState(null);
+  const [reason, setReason] = useState("");
+  const [reassign, setReassign] = useState(null);
+  const [replacement, setReplacement] = useState("");
+  const load = useCallback(() => {
+    setError("");
+    return Promise.all([getManagementTaskDashboard({ date }), getManagementTaskCatalog(), getManagementTaskAssignees()])
+      .then(([dash, cat, assignees]) => {
+        setData(dash.data);
+        setCatalog((cat.data.tasks || []).filter((task) => task.active !== 0 && task.active !== false));
+        setPeople(assignees.data.assignees || []);
       })
-      .catch((err) => {
-        if (!cancel) setError(errorText(err, "Could not load tasks"));
-      });
-    return () => {
-      cancel = true;
-    };
+      .catch((err) => setError(errorText(err, "Could not load tasks")));
   }, [date]);
+  useEffect(() => { load(); }, [load]);
   if (error) return <Alert severity="error">{error}</Alert>;
   if (!data) return <Typography color="text.secondary">Loading tasks…</Typography>;
   const metrics = data.metrics || {};
-  const waiting = (data.shared_assignments || []).filter((row) =>
-    ["waiting", "partial", "pending_verification"].includes(String(row.verification_status || row.status || ""))
-    || String(row.status || "").toLowerCase().includes("verif")
-  );
+  const rows = (data.shared_assignments || []).filter((row) => {
+    const status = String(row.status || "");
+    if (filter === "overdue") return status === "overdue" || row.status_label === "Overdue";
+    if (filter === "verify") return row.verification_status === "waiting" || status === "pending_approval";
+    if (filter === "outstanding") return !["approved", "completed"].includes(status);
+    return true;
+  });
   return (
     <Stack spacing={1.5}>
       <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", md: "repeat(4, 1fr)" }, gap: 1 }}>
-        <Kpi label="Assigned" value={metrics.total_assigned ?? "—"} />
-        <Kpi label="In progress" value={metrics.in_progress ?? "—"} />
-        <Kpi label="Awaiting verification" value={metrics.pending_verification ?? "—"} />
-        <Kpi label="Overdue" value={metrics.overdue ?? "—"} />
+        <Kpi label="Assigned" value={metrics.total_assigned ?? "—"} active={filter === "all"} onClick={() => setFilter("all")} />
+        <Kpi label="Outstanding" value={metrics.outstanding ?? metrics.pending ?? "—"} active={filter === "outstanding"} onClick={() => setFilter("outstanding")} />
+        <Kpi label="Awaiting verification" value={metrics.pending_verification ?? "—"} active={filter === "verify"} onClick={() => setFilter("verify")} />
+        <Kpi label="Overdue" value={metrics.overdue ?? "—"} active={filter === "overdue"} onClick={() => setFilter("overdue")} />
+      </Box>
+      <Box component="form" sx={{ ...cardSx, display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", md: "1fr 1fr auto" } }} onSubmit={async (event) => {
+        event.preventDefault();
+        const slot = scheduleSlot(date);
+        try {
+          await createWeeklyScheduleResponsibility({
+            week_start: slot.week_start,
+            day_of_week: slot.day_of_week,
+            user_ids: [Number(assign.user_id)],
+            role: assign.role,
+            timing_mode: "anytime",
+          });
+          setAssign({ user_id: "", role: "" });
+          load();
+        } catch (err) {
+          setError(errorText(err, "Could not assign the task"));
+        }
+      }}>
+        <TextField select size="small" label="Employee" value={assign.user_id} onChange={(event) => setAssign({ ...assign, user_id: event.target.value })} required>
+          {people.map((person) => <MenuItem key={person.id} value={person.id}>{person.name}</MenuItem>)}
+        </TextField>
+        <TextField select size="small" label="Task" value={assign.role} onChange={(event) => setAssign({ ...assign, role: event.target.value })} required>
+          {catalog.map((task) => <MenuItem key={task.code} value={task.code}>{task.name || task.code}</MenuItem>)}
+        </TextField>
+        <Button type="submit" variant="contained" sx={{ bgcolor: NAVY, textTransform: "none" }}>Assign</Button>
       </Box>
       <Box sx={cardSx}>
-        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-          <Typography sx={{ fontWeight: 800, color: NAVY }}>Needs a supervisor</Typography>
-          <Button href="/management/tasks" sx={{ textTransform: "none" }}>Open task dashboard</Button>
-        </Stack>
-        <Typography sx={{ fontSize: 13, color: "#64748b", mb: 1 }}>
-          Shared activity groups, timers, and verification still live in the task dashboard. This list is the same queue.
-        </Typography>
-        {waiting.length === 0 ? <Typography color="text.secondary">No tasks are waiting for verification.</Typography> : (
+        <Typography sx={{ fontWeight: 800, color: NAVY, mb: 1 }}>Employee responsibility</Typography>
+        {rows.length === 0 ? <Typography color="text.secondary">Nothing in this list.</Typography> : (
           <Table size="small">
+            <TableHead>
+              <TableRow>
+                {["Task", "People", "Status", ""].map((label) => <TableCell key={label} sx={{ fontWeight: 800 }}>{label}</TableCell>)}
+              </TableRow>
+            </TableHead>
             <TableBody>
-              {waiting.slice(0, 20).map((row) => (
-                <TableRow key={row.assignment_key || row.responsibility_id || row.role}>
-                  <TableCell>{row.task_name || row.role_label || row.role}</TableCell>
-                  <TableCell>{row.status}</TableCell>
-                </TableRow>
-              ))}
+              {rows.map((row) => {
+                const ids = activityIds(row);
+                return (
+                  <TableRow key={row.assignment_key || row.role}>
+                    <TableCell>
+                      <Typography sx={{ fontWeight: 700 }}>{row.role_label || row.role}</Typography>
+                      <Typography sx={{ fontSize: 12, color: "#64748b" }}>{row.shared ? "Shared activity group" : "Individual"}{row.timing_label ? ` · ${row.timing_label}` : ""}</Typography>
+                    </TableCell>
+                    <TableCell>{(row.assigned_employees || []).join(", ") || "—"}</TableCell>
+                    <TableCell>{row.status_label || row.status}</TableCell>
+                    <TableCell>
+                      <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap" }}>
+                        {ids.length ? (
+                          <Button size="small" onClick={() => approveManagementTaskDashboard({ activity_ids: ids }).then(load).catch((err) => setError(errorText(err, "Could not verify")))}>Verify</Button>
+                        ) : null}
+                        {ids.length ? (
+                          <Button size="small" onClick={() => { setRejecting(row); setReason(""); }}>Reject</Button>
+                        ) : null}
+                        <Button size="small" onClick={() => { setReassign(row); setReplacement(""); }}>Reassign</Button>
+                      </Stack>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         )}
       </Box>
+      <Drawer anchor="right" open={Boolean(rejecting)} onClose={() => setRejecting(null)}>
+        {rejecting ? (
+          <Box component="form" sx={{ width: { xs: "100vw", sm: 380 }, p: 2, display: "grid", gap: 1 }} onSubmit={async (event) => {
+            event.preventDefault();
+            const id = activityIds(rejecting)[0];
+            try {
+              await rejectManagementTaskDashboard({ activity_id: id, reason });
+              setRejecting(null);
+              load();
+            } catch (err) {
+              setError(errorText(err, "Could not reject the task"));
+            }
+          }}>
+            <Typography sx={{ fontWeight: 800, color: NAVY }}>Reject {rejecting.role_label || rejecting.role}</Typography>
+            <TextField size="small" label="Reason" value={reason} onChange={(event) => setReason(event.target.value)} required />
+            <Button type="submit" variant="contained" sx={{ bgcolor: NAVY, textTransform: "none" }}>Reject</Button>
+          </Box>
+        ) : null}
+      </Drawer>
+      <Drawer anchor="right" open={Boolean(reassign)} onClose={() => setReassign(null)}>
+        {reassign ? (
+          <Box component="form" sx={{ width: { xs: "100vw", sm: 380 }, p: 2, display: "grid", gap: 1 }} onSubmit={async (event) => {
+            event.preventDefault();
+            const member = (reassign.contributions || [])[0] || {};
+            try {
+              await excuseManagementParticipant({
+                action: "reassign",
+                reason,
+                replacement_user_id: Number(replacement),
+                employee_user_id: member.employee_id,
+                shared_session_id: reassign.shared_session_id,
+                assignment_group_id: reassign.assignment_group_id,
+                role: reassign.role,
+                business_date: date,
+                assigned_user_ids: (reassign.members || []).map((person) => person.employee_id),
+              });
+              setReassign(null);
+              load();
+            } catch (err) {
+              setError(errorText(err, "Could not reassign the task"));
+            }
+          }}>
+            <Typography sx={{ fontWeight: 800, color: NAVY }}>Reassign {reassign.role_label || reassign.role}</Typography>
+            <TextField select size="small" label="Replacement" value={replacement} onChange={(event) => setReplacement(event.target.value)} required>
+              {people.map((person) => <MenuItem key={person.id} value={person.id}>{person.name}</MenuItem>)}
+            </TextField>
+            <TextField size="small" label="Reason" value={reason} onChange={(event) => setReason(event.target.value)} required />
+            <Button type="submit" variant="contained" sx={{ bgcolor: NAVY, textTransform: "none" }}>Reassign</Button>
+          </Box>
+        ) : null}
+      </Drawer>
     </Stack>
   );
 }

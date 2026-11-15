@@ -3579,6 +3579,15 @@ export const updateSupervisorTrainingProgress = (id, body) =>
 export const getSupervisorScoringPolicy = () =>
   axios.get(`${API_BASE}/api/supervisor/scoring/policy`);
 
+export const getSupervisorRinseSummary = (params = {}) =>
+  axios.get(`${API_BASE}/api/supervisor/rinse-summary`, { params, timeout: 60000 });
+
+export const getPinTraining = (hubToken) =>
+  axios.post(`${API_BASE}/api/public/attendance/pin-training`, { hub_token: hubToken }, { timeout: 30000 });
+
+export const savePinTrainingProgress = (body) =>
+  axios.post(`${API_BASE}/api/public/attendance/pin-training/progress`, body, { timeout: 30000 });
+
 export { API_BASE };
 
 /* Session productivity (ca3eaa8b) */

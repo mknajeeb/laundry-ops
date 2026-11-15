@@ -9,10 +9,11 @@ from pathlib import Path
 from backend.rinse_performance_auto_approve import consider_employee_day_for_auto_approve
 from backend.rinse_performance_roles import FOLDER_DEFAULT_BENCHMARK
 from backend.supervisor_portal.adjustments import reported_employee_day, reported_session, validate_adjustment
+from backend.supervisor_portal.period import aggregate_period
 from backend.supervisor_portal.permissions import can, strip_rinse_summary
 from backend.supervisor_portal.quality import incident_totals, normalize_incident, points_for
 from backend.supervisor_portal.reconciliation import classify_completed_bags
-from backend.supervisor_portal.roles import primary_role_on
+from backend.supervisor_portal.roles import ROLE_CATALOG, primary_role_on
 from backend.supervisor_portal.scoring import draft_policy, preview_score, refuse_activation
 from backend.supervisor_portal.service import assemble_supervisor_day, team_comparison
 from backend.supervisor_portal.training import checklist_ready, next_status, normalize_template
@@ -359,6 +360,63 @@ def test_assemble_day_keeps_the_reconciliation_invariant():
     assert payload["auto_approve"]["independent_of_scoring_target"] is True
     assert payload["achievement_target_source"] == "auto_approval_benchmark"
     assert payload["employees"][0]["score"]["overall"] is None
+
+
+def test_period_rate_uses_totals_not_averaged_daily_rates():
+    days = [
+        {
+            "date_et": "2026-11-10",
+            "reconciliation": {"total_completed": 2, "total_accounted": 2, "unaccounted": 0, "categories": {"approved": 2}},
+            "approved_productivity": {"approved_hours": 2, "approved_pounds": 100},
+            "achievement_target_lbs_per_hour": 40,
+            "employees": [{"employee": "Ada", "user_id": 7, "bags": 2, "pounds": 100, "eligible_hours": 2}],
+        },
+        {
+            "date_et": "2026-11-11",
+            "reconciliation": {"total_completed": 1, "total_accounted": 1, "unaccounted": 0, "categories": {"approved": 1}},
+            "approved_productivity": {"approved_hours": 1, "approved_pounds": 60},
+            "achievement_target_lbs_per_hour": 40,
+            "employees": [{"employee": "Ada", "user_id": 7, "bags": 1, "pounds": 60, "eligible_hours": 1}],
+        },
+    ]
+    combined = aggregate_period(days, quality={"employee_points": {"u:7": 4}, "incident_count": 1})
+    ada = combined["employees"][0]
+    assert ada["pounds"] == 160
+    assert ada["eligible_hours"] == 3
+    assert ada["reported_rate"] == round(160 / 3, 4)
+    assert round((50 + 60) / 2, 4) != ada["reported_rate"]
+    assert ada["quality_points"] == 4
+    assert combined["reconciliation"]["total_completed"] == 3
+    assert combined["reconciliation"]["bags"] == []
+    assert combined["trend"][0]["rate"] == 50
+    assert combined["trend"][1]["rate"] == 60
+
+
+def test_only_folding_is_ready_for_target_scoring():
+    measurable = [row["role_key"] for row in ROLE_CATALOG if row["measurable"]]
+    assert measurable == ["FOLDER"]
+    for key in ("SORT", "WEIGH", "WASH", "DRY", "HD_OPERATOR", "HD_FOLDER"):
+        row = next(item for item in ROLE_CATALOG if item["role_key"] == key)
+        assert row["measurable"] is False
+        assert row["reason"]
+
+
+def test_employee_cannot_verify_training():
+    try:
+        next_status(
+            "awaiting_verification",
+            "completed",
+            checklist_complete=True,
+            practical_required=True,
+            competency_result="pass",
+            actor_is_trainee=True,
+            actor_is_supervisor=False,
+            actor_is_subject=True,
+        )
+    except ValueError as exc:
+        assert "cannot verify" in str(exc)
+    else:
+        raise AssertionError("employee verification was allowed")
 
 
 def test_migration_is_idempotent_and_non_destructive():

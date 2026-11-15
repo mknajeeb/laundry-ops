@@ -187,6 +187,13 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
       };
       const clockAt = tiles.findIndex((tile) => tile.id === "clock");
       tiles.splice(clockAt === -1 ? tiles.length : clockAt, 0, reportTile);
+      tiles.splice(clockAt === -1 ? tiles.length : clockAt, 0, {
+        id: "my_training",
+        label: "My Training",
+        color: slug === "veewash" ? VEEWASH_BRAND.primary : "#1d4ed8",
+        iconKey: "checklist",
+        icon: iconForTile({ iconKey: "checklist" }),
+      });
     }
     return tiles;
   }, [hub, slug, t]);
@@ -443,6 +450,11 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
       if (featureId === "lost_found_report") {
         if (hub?.is_system === true) return;
         navigate(`/attendance/lost-found/${encodeURIComponent(slug)}`);
+        return;
+      }
+      if (featureId === "my_training") {
+        if (hub?.is_system === true) return;
+        navigate(`/attendance/training/${encodeURIComponent(slug)}`);
         return;
       }
       if (featureId === "cleaning_tasks") {

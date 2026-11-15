@@ -57,6 +57,7 @@ export default defineConfig(({ mode }) => {
             path.startsWith('/attendance/maintenance') ||
             path.startsWith('/attendance/cleaning-tasks') ||
             path.startsWith('/attendance/lost-found') ||
+            path.startsWith('/attendance/training') ||
             /^\/attendance\/[a-z0-9-]+$/i.test(path)
           ) {
             return '/index.html'
