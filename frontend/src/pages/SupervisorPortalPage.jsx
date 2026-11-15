@@ -27,6 +27,7 @@ import {
   getSupervisorDay,
   getSupervisorOverview,
   getSupervisorQualityTypes,
+  getSupervisorRoles,
   getSupervisorQualityWeek,
   getSupervisorQualityWeights,
   getSupervisorTrainingAssignments,
@@ -323,9 +324,7 @@ function PerformanceView({ date }) {
       {(data.day_errors || []).length ? (
         <Alert severity="warning">{data.day_errors.length} day(s) could not be loaded and were left out of the totals.</Alert>
       ) : null}
-      <Typography sx={{ fontSize: 13, color: "#64748b" }}>
-        Sorting, weighing, washing, drying, and Hang Dry are not measurable for target scoring. Folding is the only role with an approved pounds-per-hour series.
-      </Typography>
+      <RoleReadiness />
       <Typography sx={{ fontSize: 13 }}>
         <a href="/management/performance">Hang Dry performance and bag moves stay on the existing performance screen.</a>
       </Typography>
@@ -336,6 +335,39 @@ function PerformanceView({ date }) {
         ) : null}
       </Drawer>
     </Stack>
+  );
+}
+
+function RoleReadiness() {
+  const [roles, setRoles] = useState([]);
+  useEffect(() => {
+    getSupervisorRoles().then((res) => setRoles(res.data.roles || [])).catch(() => setRoles([]));
+  }, []);
+  if (!roles.length) return null;
+  return (
+    <Box sx={cardSx}>
+      <Typography sx={{ fontWeight: 800, color: NAVY, mb: 0.5 }}>Roles</Typography>
+      <Typography sx={{ fontSize: 13, color: "#64748b", mb: 1 }}>
+        Folding is the only role scored against a target. Other roles stay visible and wait for an eligible interval plus an output count.
+      </Typography>
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            {["Role", "Unit", "Scoring", "Still needed"].map((label) => <TableCell key={label} sx={{ fontWeight: 800 }}>{label}</TableCell>)}
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {roles.map((role) => (
+            <TableRow key={role.role_key}>
+              <TableCell>{role.label}</TableCell>
+              <TableCell>{role.unit || "—"}</TableCell>
+              <TableCell>{role.scoring_ready ? "Ready" : "Not scored"}</TableCell>
+              <TableCell>{role.missing || "Approved publisher is in use"}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </Box>
   );
 }
 
@@ -438,7 +470,13 @@ function EmployeeDrawer({ employee, date, onChanged, onClose }) {
         Calculated {formatRate(employee.calculated_rate)} · Reported {formatRate(employee.reported_rate)} · {employee.rate_basis}
       </Typography>
       <Typography sx={{ fontSize: 13, mb: 1 }}>
-        Score status: {employee.score?.status}. {employee.score?.reason}
+        Score stays {employee.score?.activated ? "on" : "off"}. {employee.score?.reason}
+        {employee.score?.components?.productivity?.achievement != null
+          ? ` Productivity achievement ${Math.round(employee.score.components.productivity.achievement * 100)}% of target.`
+          : ""}
+        {employee.score?.components?.quality?.points != null
+          ? ` Quality points ${employee.score.components.quality.points}.`
+          : ""}
       </Typography>
       {(employee.sessions || []).map((row) => (
         <Box key={row.session_id} sx={{ ...cardSx, mb: 1 }}>
@@ -525,8 +563,10 @@ function QualityView({ date }) {
   const [types, setTypes] = useState([]);
   const [weights, setWeights] = useState(null);
   const [error, setError] = useState("");
+  const [people, setPeople] = useState([]);
+  const [modules, setModules] = useState([]);
   const [form, setForm] = useState({
-    employees: "",
+    employee_ids: [],
     role_key: "FOLDER",
     issue_type: "missing_item",
     quantity: 1,
@@ -534,14 +574,22 @@ function QualityView({ date }) {
     notes: "",
     severity: "",
     training_version_id: "",
-    training_user_id: "",
+    assign_training: false,
   });
   const load = useCallback(() => {
-    return Promise.all([getSupervisorQualityWeek({ date }), getSupervisorQualityTypes(), getSupervisorQualityWeights()])
-      .then(([week, typeRes, weightRes]) => {
+    return Promise.all([
+      getSupervisorQualityWeek({ date }),
+      getSupervisorQualityTypes(),
+      getSupervisorQualityWeights(),
+      getManagementTaskAssignees(),
+      getSupervisorTrainingTemplates(),
+    ])
+      .then(([week, typeRes, weightRes, peopleRes, templateRes]) => {
         setData(week.data);
         setTypes(typeRes.data.types || []);
         setWeights(weightRes.data);
+        setPeople(peopleRes.data.assignees || []);
+        setModules(templateRes.data.templates || []);
       })
       .catch((err) => setError(errorText(err, "Could not load quality")));
   }, [date]);
@@ -558,10 +606,10 @@ function QualityView({ date }) {
       <Box component="form" sx={{ ...cardSx, display: "grid", gap: 1 }} onSubmit={async (event) => {
         event.preventDefault();
         try {
-          const employees = form.employees.split("\n").map((name) => name.trim()).filter(Boolean).map((employee_name) => ({
-            employee_name,
-            role_key: form.role_key,
-          }));
+          const employees = form.employee_ids.map((id) => {
+            const person = people.find((row) => String(row.id) === String(id));
+            return { user_id: Number(id), employee_name: person?.name || "", role_key: form.role_key };
+          });
           await saveSupervisorQualityAssignment({
             week: date,
             issue_type: form.issue_type,
@@ -572,16 +620,16 @@ function QualityView({ date }) {
             role_key: form.role_key,
             employees,
           });
-          if (form.training_version_id && form.training_user_id) {
-            await saveSupervisorTrainingAssignments({
+          if (form.assign_training && form.training_version_id) {
+            await Promise.all(form.employee_ids.map((id) => saveSupervisorTrainingAssignments({
               version_id: Number(form.training_version_id),
-              trainee_user_id: Number(form.training_user_id),
+              trainee_user_id: Number(id),
               reason: "corrective",
               assigned_on: date,
               due_on: date,
-            });
+            })));
           }
-          setForm({ ...form, employees: "", reference: "", notes: "", training_user_id: "" });
+          setForm({ ...form, employee_ids: [], reference: "", notes: "", assign_training: false });
           load();
         } catch (err) {
           setError(errorText(err, "Could not assign the issue"));
@@ -596,7 +644,9 @@ function QualityView({ date }) {
             Install starter categories
           </Button>
         ) : null}
-        <TextField size="small" label="Employees, one name per line" multiline minRows={2} value={form.employees} onChange={(event) => setForm({ ...form, employees: event.target.value })} required />
+        <TextField select size="small" label="Employees" value={form.employee_ids} required SelectProps={{ multiple: true }} onChange={(event) => setForm({ ...form, employee_ids: event.target.value })}>
+          {people.map((person) => <MenuItem key={person.id} value={person.id}>{person.name}</MenuItem>)}
+        </TextField>
         <TextField select size="small" label="Role" value={form.role_key} onChange={(event) => setForm({ ...form, role_key: event.target.value })}>
           {["FOLDER", "SORT", "WEIGH", "WASH", "DRY", "HD_OPERATOR", "HD_FOLDER", "GENERAL"].map((role) => (
             <MenuItem key={role} value={role}>{role}</MenuItem>
@@ -612,8 +662,10 @@ function QualityView({ date }) {
         <TextField size="small" label="Severity (optional)" value={form.severity} onChange={(event) => setForm({ ...form, severity: event.target.value })} />
         <TextField size="small" label="Order or Rinse issue reference" value={form.reference} onChange={(event) => setForm({ ...form, reference: event.target.value })} required />
         <TextField size="small" label="Notes" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} />
-        <TextField size="small" label="Corrective training module version id (optional)" value={form.training_version_id} onChange={(event) => setForm({ ...form, training_version_id: event.target.value })} />
-        <TextField size="small" label="Corrective training user id (optional)" value={form.training_user_id} onChange={(event) => setForm({ ...form, training_user_id: event.target.value })} />
+        <TextField select size="small" label="Corrective training" value={form.training_version_id} onChange={(event) => setForm({ ...form, training_version_id: event.target.value, assign_training: Boolean(event.target.value) })}>
+          <MenuItem value="">No training</MenuItem>
+          {modules.map((row) => <MenuItem key={row.version_id} value={String(row.version_id)}>{row.title} v{row.version_number}</MenuItem>)}
+        </TextField>
         <Button type="submit" variant="contained" sx={{ bgcolor: NAVY, textTransform: "none", justifySelf: "start" }}>Save assignment</Button>
       </Box>
       <Box sx={cardSx}>
@@ -677,13 +729,15 @@ function TrainingView({ date }) {
   const [error, setError] = useState("");
   const [title, setTitle] = useState("");
   const [items, setItems] = useState("Orientation\nPractical fold");
+  const [people, setPeople] = useState([]);
   const [trainee, setTrainee] = useState("");
   const [versionId, setVersionId] = useState("");
   const load = useCallback(() => {
-    return Promise.all([getSupervisorTrainingTemplates(), getSupervisorTrainingAssignments()])
-      .then(([templateRes, assignmentRes]) => {
+    return Promise.all([getSupervisorTrainingTemplates(), getSupervisorTrainingAssignments(), getManagementTaskAssignees()])
+      .then(([templateRes, assignmentRes, peopleRes]) => {
         setTemplates(templateRes.data.templates || []);
         setAssignments(assignmentRes.data.assignments || []);
+        setPeople(peopleRes.data.assignees || []);
         setVersionId((current) => current || String(templateRes.data.templates?.[0]?.version_id || ""));
       })
       .catch((err) => setError(errorText(err, "Could not load training")));
@@ -735,7 +789,9 @@ function TrainingView({ date }) {
             <MenuItem key={row.version_id} value={String(row.version_id)}>{row.title} v{row.version_number}</MenuItem>
           ))}
         </TextField>
-        <TextField size="small" label="Trainee user id" value={trainee} onChange={(event) => setTrainee(event.target.value)} />
+        <TextField select size="small" label="Employee" value={trainee} onChange={(event) => setTrainee(event.target.value)} required>
+          {people.map((person) => <MenuItem key={person.id} value={String(person.id)}>{person.name}</MenuItem>)}
+        </TextField>
         <Button type="submit" variant="contained" sx={{ bgcolor: NAVY, textTransform: "none", justifySelf: "start" }}>Assign</Button>
       </Box>
       <Box sx={cardSx}>
@@ -750,7 +806,7 @@ function TrainingView({ date }) {
               {assignments.map((row) => (
                 <TableRow key={row.id}>
                   <TableCell>{row.title} v{row.version_number}</TableCell>
-                  <TableCell>{row.trainee_user_id}</TableCell>
+                  <TableCell>{people.find((person) => person.id === row.trainee_user_id)?.name || row.trainee_user_id}</TableCell>
                   <TableCell>{row.reason}</TableCell>
                   <TableCell>{row.due_on || "—"}</TableCell>
                   <TableCell>{row.status}{row.competency_result ? ` · ${row.competency_result}` : ""}</TableCell>

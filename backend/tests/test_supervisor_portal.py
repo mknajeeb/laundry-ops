@@ -392,6 +392,32 @@ def test_period_rate_uses_totals_not_averaged_daily_rates():
     assert combined["trend"][1]["rate"] == 60
 
 
+def test_quality_assignment_requires_an_account_id():
+    try:
+        normalize_incident(
+            {"issue_type": "damage", "reference": "R1", "employees": [{"employee_name": "Ada"}]},
+            week=date(2026, 11, 14),
+        )
+    except ValueError as exc:
+        assert "account id" in str(exc)
+    else:
+        raise AssertionError("name-only assignment was accepted")
+
+
+def test_captured_role_rate_does_not_invent_hours():
+    from backend.supervisor_portal.role_measurement import measure_captured
+
+    missing = measure_captured("SORT", {"output_quantity": 40})
+    assert missing["rate"] is None
+    assert missing["scoring_ready"] is False
+    captured = measure_captured("SORT", {"eligible_hours": 2, "output_quantity": 40})
+    assert captured["rate"] == 20
+    assert captured["scoring_ready"] is False
+    folding = measure_captured("FOLDER", {"eligible_hours": 2, "output_quantity": 80})
+    assert folding["rate"] == 40
+    assert folding["scoring_ready"] is True
+
+
 def test_only_folding_is_ready_for_target_scoring():
     measurable = [row["role_key"] for row in ROLE_CATALOG if row["measurable"]]
     assert measurable == ["FOLDER"]

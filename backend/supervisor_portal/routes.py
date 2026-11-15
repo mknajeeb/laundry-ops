@@ -84,14 +84,14 @@ def register_supervisor_portal_routes(app, *, require_user, user_org_id, parse_d
                 if err_resp:
                     return None, err_resp, err_code
                 if not user_org_id(me):
-                    return None, (jsonify({"error": "Organization required"}), 400)
+                    return None, jsonify({"error": "Organization required"}), 400
             finally:
                 conn.close()
-            return None, (jsonify({"error": "Unauthorized"}), 401)
+            return None, jsonify({"error": "Unauthorized"}), 401
         conn, cursor, me, org = opened
         if not can(role_set(me), action):
             conn.close()
-            return None, (jsonify({"error": "Forbidden"}), 403)
+            return None, jsonify({"error": "Forbidden"}), 403
         return (conn, cursor, me, org), None, None
 
     def _actor(me: dict) -> dict:
@@ -430,6 +430,29 @@ def register_supervisor_portal_routes(app, *, require_user, user_org_id, parse_d
             return jsonify({"error": str(exc)}), 400
         finally:
             conn.close()
+
+    @app.route("/api/supervisor/roles", methods=["GET"])
+    def supervisor_roles():
+        from backend.supervisor_portal.role_measurement import measure_captured, role_readiness
+
+        opened, err, code = _guard("view_portal")
+        if err:
+            return err, code
+        conn, cursor, _me, _org = opened
+        conn.close()
+        del cursor
+        rows = role_readiness()
+        probe = request.args.get("probe")
+        if probe:
+            measured = measure_captured(
+                probe,
+                {
+                    "eligible_hours": request.args.get("eligible_hours"),
+                    "output_quantity": request.args.get("output_quantity"),
+                },
+            )
+            return jsonify({"roles": rows, "probe": measured, "scoring_active": False})
+        return jsonify({"roles": rows, "scoring_active": False})
 
     @app.route("/api/supervisor/quality/types", methods=["GET", "POST"])
     def supervisor_quality_types():

@@ -64,9 +64,9 @@ def normalize_incident(body: Mapping[str, Any], *, week: date) -> dict[str, Any]
             continue
         uid = employee.get("user_id") or employee.get("employee_user_id")
         name = str(employee.get("employee_name") or employee.get("name") or "").strip()
-        if uid is None and not name:
-            continue
-        key = f"u:{uid}" if uid is not None else f"n:{name.casefold()}"
+        if uid is None:
+            raise ValueError("Each assigned employee needs an account id")
+        key = f"u:{uid}"
         if key in seen:
             continue
         seen.add(key)

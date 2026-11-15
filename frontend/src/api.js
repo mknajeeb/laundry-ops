@@ -3579,6 +3579,9 @@ export const updateSupervisorTrainingProgress = (id, body) =>
 export const getSupervisorScoringPolicy = () =>
   axios.get(`${API_BASE}/api/supervisor/scoring/policy`);
 
+export const getSupervisorRoles = () =>
+  axios.get(`${API_BASE}/api/supervisor/roles`);
+
 export const getSupervisorRinseSummary = (params = {}) =>
   axios.get(`${API_BASE}/api/supervisor/rinse-summary`, { params, timeout: 60000 });
 

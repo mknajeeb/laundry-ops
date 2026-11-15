@@ -449,6 +449,18 @@ def set_primary_role(cursor, organization_id: int, body: Mapping[str, Any], *, a
 def save_training_template(cursor, organization_id: int, template: Mapping[str, Any], *, actor_id: int | None) -> dict[str, Any]:
     _require(cursor, "supervisor_training_templates", "supervisor_training_versions", "supervisor_training_items")
     template_id = template.get("template_id")
+    if not template_id:
+        cursor.execute(
+            """
+            SELECT id FROM supervisor_training_templates
+            WHERE organization_id=%s AND title=%s
+            ORDER BY id DESC LIMIT 1
+            """,
+            (int(organization_id), template["title"]),
+        )
+        existing = cursor.fetchone()
+        if isinstance(existing, Mapping) and existing.get("id"):
+            template_id = int(existing["id"])
     if template_id:
         cursor.execute(
             """
@@ -556,7 +568,7 @@ def create_assignments(cursor, organization_id: int, body: Mapping[str, Any], *,
     if body.get("trainee_user_id"):
         trainees = list(trainees) + [body.get("trainee_user_id")]
     reason = str(body.get("reason") or "onboarding").strip().lower()
-    if reason not in {"onboarding", "new_role", "sop_update", "issue_based"}:
+    if reason not in {"onboarding", "new_role", "sop_update", "issue_based", "corrective"}:
         raise ValueError("Assignment reason is not recognized")
     assigned_on = date.fromisoformat(str(body.get("assigned_on"))[:10]) if body.get("assigned_on") else date.today()
     due_on = date.fromisoformat(str(body.get("due_on"))[:10]) if body.get("due_on") else None

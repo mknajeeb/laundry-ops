@@ -41,8 +41,9 @@ export default defineConfig(({ mode }) => {
   const root = path.resolve(__dirname, '..')
   const env = loadEnv(mode, root, '')
   const backend =
+    process.env.VITE_DEV_API_PROXY ||
     env.VITE_DEV_API_PROXY ||
-    `http://127.0.0.1:${env.PORT || '8000'}`
+    `http://127.0.0.1:${process.env.PORT || env.PORT || '8000'}`
 
   const proxy = Object.fromEntries(
     API_PREFIXES.map((p) => {
