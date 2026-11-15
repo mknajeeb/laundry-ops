@@ -38,6 +38,8 @@ import ScanChronologyPage from "./pages/ScanChronologyPage";
 import OperationsTimelinePage from "./pages/OperationsTimelinePage";
 import ShiftCapacityPlannerPage from "./pages/ShiftCapacityPlannerPage";
 import WeeklySchedulePage from "./pages/WeeklySchedulePage";
+import OperationsPlannerV2Page from "./operationsPlanner/OperationsPlannerV2Page";
+import EmployeeSelfServicePage from "./operationsPlanner/EmployeeSelfServicePage";
 import RinsePerformancePage from "./pages/RinsePerformancePage";
 import WeeklyScheduleEmployeeViewPage from "./pages/WeeklyScheduleEmployeeViewPage";
 import PerformanceSettingsPage from "./pages/PerformanceSettingsPage";
@@ -684,6 +686,9 @@ function AppShell() {
       <Routes>
         <Route path="/pin/:orgSlug" element={<EmployeePinHubPage onLoggedIn={setUser} />} />
         <Route path="/pin" element={<EmployeePinHubPage onLoggedIn={setUser} />} />
+        <Route path="/pin/me/schedule" element={<EmployeeSelfServicePage section="schedule" />} />
+        <Route path="/pin/me/hours" element={<EmployeeSelfServicePage section="hours" />} />
+        <Route path="/pin/me/paystubs" element={<EmployeeSelfServicePage section="paystubs" />} />
         <Route path="*" element={<Navigate to="/pin" replace />} />
       </Routes>
     );
@@ -1146,6 +1151,16 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "OPS", "RINSE"]}>
                     <WeeklySchedulePage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/performance/operations-planner"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
+                    <OperationsPlannerV2Page />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }

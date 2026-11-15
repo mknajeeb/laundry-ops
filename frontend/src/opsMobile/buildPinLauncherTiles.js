@@ -49,6 +49,21 @@ export const PIN_LAUNCHER_META = {
     color: "#1d4ed8",
     iconKey: "team",
   },
+  my_schedule: {
+    label: "My Schedule",
+    color: "#0f2744",
+    iconKey: "tasks",
+  },
+  my_hours: {
+    label: "My Worked Hours",
+    color: "#0f2744",
+    iconKey: "clock",
+  },
+  my_paystubs: {
+    label: "My Paystubs",
+    color: "#0f2744",
+    iconKey: "tasks",
+  },
   cleaning_tasks: {
     label: "Tasks",
     color: "#047857",
@@ -72,6 +87,9 @@ export const PIN_HOME_FEATURE_ORDER = [
   "revenue_cost",
   "checklist",
   "inventory",
+  "my_schedule",
+  "my_hours",
+  "my_paystubs",
 ];
 
 export const CLOCK_DISABLED_HELPER = "Use the shared attendance tablet.";

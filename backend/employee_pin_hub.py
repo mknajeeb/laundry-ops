@@ -84,6 +84,21 @@ PIN_HUB_FEATURE_DEFS = (
         "label": "Team Status",
         "path": "/team-status",
     },
+    {
+        "id": "my_schedule",
+        "label": "My Schedule",
+        "path": "/pin/me/schedule",
+    },
+    {
+        "id": "my_hours",
+        "label": "My Worked Hours",
+        "path": "/pin/me/hours",
+    },
+    {
+        "id": "my_paystubs",
+        "label": "My Paystubs",
+        "path": "/pin/me/paystubs",
+    },
 )
 
 
@@ -454,6 +469,14 @@ def _user_may_use_feature(
 
     if feature_id in ("cleaning_tasks", "cleaning_task_review"):
         return True
+
+    if feature_id in ("my_schedule", "my_hours", "my_paystubs"):
+        from backend.operations_planner_v2_store import employee_pin_feature_allowed
+
+        try:
+            return employee_pin_feature_allowed(conn, org_id, int(matched["id"]), feature_id)
+        except Exception:
+            return False
 
     return False
 

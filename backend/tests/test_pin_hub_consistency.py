@@ -27,10 +27,15 @@ def test_feature_defs_include_revenue_and_inventory_labels():
     ids = [d["id"] for d in PIN_HUB_FEATURE_DEFS]
     assert ids == [
         "switch_role",
+        "cleaning_tasks",
+        "cleaning_task_review",
         "revenue_cost",
         "checklist",
         "inventory",
         "team_status",
+        "my_schedule",
+        "my_hours",
+        "my_paystubs",
     ]
     by_id = {d["id"]: d for d in PIN_HUB_FEATURE_DEFS}
     assert by_id["revenue_cost"]["label"] == "Revenue / Cash"

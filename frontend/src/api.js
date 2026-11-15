@@ -88,7 +88,8 @@ axios.interceptors.request.use((config) => {
     url.includes("/api/public/attendance/pin-cleaning-tasks") ||
     url.includes("/api/public/attendance/pin-lost-found") ||
     url.includes("/api/public/attendance/pin-maintenance-tasks") ||
-    url.includes("/api/public/attendance/pin-hub")
+    url.includes("/api/public/attendance/pin-hub") ||
+    url.includes("/api/public/attendance/pin-planner/")
   ) {
     return config;
   }

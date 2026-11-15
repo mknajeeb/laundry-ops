@@ -109,6 +109,13 @@ export const TENANT_NAV_ITEMS = [
     moduleKey: "scoreboard",
   },
   {
+    to: "/performance/operations-planner",
+    label: "Operations Planner",
+    labelKey: "nav.operationsPlanner",
+    roles: ["ADMIN", "OPS"],
+    moduleKey: "scoreboard",
+  },
+  {
     to: "/performance/settings",
     labelKey: "nav.performanceSettings",
     roles: ["ADMIN", "OPS"],
