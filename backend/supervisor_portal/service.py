@@ -94,6 +94,43 @@ def _achievement(actual: float | None, target: float | None) -> float | None:
     return round((actual / target) * 100.0, 1)
 
 
+def _session_status(session: Mapping[str, Any]) -> str:
+    publication = session.get("publication") if isinstance(session.get("publication"), Mapping) else {}
+    return str(session.get("publication_status") or publication.get("status") or "UNAPPROVED").upper()
+
+
+def _session_bags(session: Mapping[str, Any]) -> int:
+    raw = session.get("orders_completed")
+    if raw is not None and raw != "":
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0
+    return sum(1 for row in (session.get("orders") or []) if isinstance(row, Mapping))
+
+
+def _sum_measured(reports: Sequence[Mapping[str, Any]]) -> tuple[float, float]:
+    pounds = round(sum(float(row.get("reported_lbs") or 0) for row in reports), 4)
+    hours = round(
+        sum(float(row.get("eligible_hours") or 0) for row in reports if row.get("eligible_hours")),
+        4,
+    )
+    return pounds, hours
+
+
+def _per_hour(numerator: float, hours: float) -> float | None:
+    if hours <= 0:
+        return None
+    return round(numerator / hours, 4)
+
+
+MEASUREMENT_NOTE = (
+    "Approved bags, pounds, hours, and speed include only approved folding sessions. "
+    "Pending work is shown separately and is not part of the approved speed. "
+    "Excluded, outside-session, unmapped, and missing-scan bags stay in their own counts."
+)
+
+
 def assemble_supervisor_day(
     *,
     selected_date: date,
@@ -114,25 +151,40 @@ def assemble_supervisor_day(
     employees_out = []
     approved_hours = 0.0
     approved_pounds = 0.0
+    approved_session_bags = 0
+    pending_hours = 0.0
+    pending_pounds = 0.0
+    pending_session_bags = 0
     pending_sessions = 0
     for employee in day.get("employees") or []:
         if not isinstance(employee, Mapping):
             continue
-        session_reports = []
+        approved_reports = []
+        pending_reports = []
         sessions_public = []
+        employee_approved_bags = 0
+        employee_pending_bags = 0
         for session in employee.get("sessions") or []:
             if not isinstance(session, Mapping):
                 continue
             report = reported_session(session, adj)
-            session_reports.append(report)
-            status = str(session.get("publication_status") or "UNAPPROVED").upper()
+            status = _session_status(session)
+            bags = _session_bags(session)
             if status == "APPROVED" and not report["excluded"]:
+                approved_reports.append(report)
+                employee_approved_bags += bags
                 if report.get("eligible_hours"):
                     approved_hours += float(report["eligible_hours"])
                 if report.get("reported_lbs"):
                     approved_pounds += float(report["reported_lbs"])
             elif status != "EXCLUDED" and not report["excluded"]:
+                pending_reports.append(report)
+                employee_pending_bags += bags
                 pending_sessions += 1
+                if report.get("eligible_hours"):
+                    pending_hours += float(report["eligible_hours"])
+                if report.get("reported_lbs"):
+                    pending_pounds += float(report["reported_lbs"])
             publication = session.get("publication") if isinstance(session.get("publication"), Mapping) else {}
             sessions_public.append(
                 {
@@ -142,9 +194,10 @@ def assemble_supervisor_day(
                     "end_time": session.get("end_time"),
                     "role_status": session.get("role_status"),
                     "publication_status": status,
+                    "counts_toward_approved": status == "APPROVED" and not report["excluded"],
                     "approval_source": publication.get("approval_source"),
                     "is_rate_override": bool(publication.get("is_rate_override")),
-                    "orders_completed": session.get("orders_completed"),
+                    "orders_completed": bags,
                     "original_role": "FOLDER",
                     **{key: report[key] for key in (
                         "original_hours",
@@ -161,10 +214,23 @@ def assemble_supervisor_day(
                     "adjustments": report["adjustments"],
                 }
             )
-        day_report = reported_employee_day(employee, session_reports, adj)
+        # A day-level manual rate applies to approved folding only. Pending-only
+        # employees keep a blank approved rate instead of inheriting that override.
+        rate_adjustments = adj if approved_reports else [
+            row for row in adj if str(row.get("kind")) != "day_manual_rate"
+        ]
+        day_report = reported_employee_day(employee, approved_reports, rate_adjustments)
+        approved_session_bags += employee_approved_bags
+        pending_session_bags += employee_pending_bags
+        pending_measured_lbs, pending_measured_hours = _sum_measured(pending_reports)
         rate = day_report.get("reported_rate")
+        approved_measured_hours = float(day_report.get("reported_hours") or 0)
+        approved_measured_lbs = float(day_report.get("reported_lbs") or 0)
+        measured_rate = _per_hour(approved_measured_lbs, approved_measured_hours)
         achievement = _achievement(rate, achievement_target)
-        excluded = bool(sessions_public) and all(row.get("excluded") or row.get("publication_status") == "EXCLUDED" for row in sessions_public)
+        excluded = bool(sessions_public) and all(
+            row.get("excluded") or row.get("publication_status") == "EXCLUDED" for row in sessions_public
+        )
         uid = employee.get("user_id")
         points = None
         if quality_points_by_employee:
@@ -175,22 +241,29 @@ def assemble_supervisor_day(
         score = preview_score(
             actual=rate,
             target=achievement_target,
-            measurable=True,
+            measurable=approved_measured_hours > 0,
             quality_points=points,
-            volume=day_report.get("reported_lbs"),
+            volume=approved_measured_lbs,
             training_ratio=None,
         )
         employees_out.append(
             {
                 "employee": employee.get("employee"),
                 "user_id": uid,
-                "bags": employee.get("orders_completed"),
+                "bags": employee_approved_bags,
                 "pounds": day_report.get("reported_lbs"),
-                "recorded_hours": employee.get("session_hours") or employee.get("performance_hours"),
+                "recorded_hours": approved_measured_hours if approved_measured_hours else None,
                 "eligible_hours": day_report.get("reported_hours"),
-                "calculated_rate": day_report.get("original_rate"),
+                "bags_per_hour": _per_hour(employee_approved_bags, approved_measured_hours),
+                "calculated_rate": measured_rate,
                 "reported_rate": rate,
-                "rate_basis": day_report.get("precedence"),
+                "rate_basis": day_report.get("precedence") if approved_reports else "no_approved_time",
+                "measurement_basis": "approved_sessions",
+                "pending_bags": employee_pending_bags,
+                "pending_pounds": pending_measured_lbs,
+                "pending_hours": pending_measured_hours,
+                "pending_lbs_per_hour": _per_hour(pending_measured_lbs, pending_measured_hours),
+                "pending_bags_per_hour": _per_hour(employee_pending_bags, pending_measured_hours),
                 "target": achievement_target,
                 "target_source": target_source,
                 "achievement_percent": achievement,
@@ -212,7 +285,11 @@ def assemble_supervisor_day(
             for row in employees_out
         ]
     )
-    approved_speed = round(approved_pounds / approved_hours, 4) if approved_hours > 0 else None
+    approved_hours = round(approved_hours, 4)
+    approved_pounds = round(approved_pounds, 4)
+    pending_hours = round(pending_hours, 4)
+    pending_pounds = round(pending_pounds, 4)
+    approved_speed = _per_hour(approved_pounds, approved_hours)
     below = [row["employee"] for row in employees_out if row["below_target"]]
     categories = reconciliation["categories"]
     return {
@@ -228,14 +305,23 @@ def assemble_supervisor_day(
         "achievement_target_lbs_per_hour": achievement_target,
         "achievement_target_source": target_source,
         "reconciliation": reconciliation,
+        "measurement_note": MEASUREMENT_NOTE,
         "approved_productivity": {
             "approved_bags": categories.get("approved", 0),
+            "approved_session_bags": approved_session_bags,
             "pending_bags": categories.get("pending", 0),
+            "pending_session_bags": pending_session_bags,
             "excluded_bags": categories.get("excluded", 0),
-            "approved_hours": round(approved_hours, 4),
-            "approved_pounds": round(approved_pounds, 4),
+            "approved_hours": approved_hours,
+            "approved_pounds": approved_pounds,
             "approved_lbs_per_hour": approved_speed,
+            "approved_bags_per_hour": _per_hour(approved_session_bags, approved_hours),
+            "pending_hours": pending_hours,
+            "pending_pounds": pending_pounds,
+            "pending_lbs_per_hour": _per_hour(pending_pounds, pending_hours),
+            "pending_bags_per_hour": _per_hour(pending_session_bags, pending_hours),
             "target_lbs_per_hour": threshold,
+            "pending_is_excluded_from_approved_rate": True,
         },
         "volume": {
             "completed_bags": reconciliation["total_completed"],

@@ -116,6 +116,10 @@ def strip_rinse_summary(payload: dict) -> dict:
             "approved_lbs_per_hour": (payload.get("approved_productivity") or {}).get(
                 "approved_lbs_per_hour"
             ),
+            "approved_pounds": (payload.get("approved_productivity") or {}).get("approved_pounds"),
+            "pending_hours": (payload.get("approved_productivity") or {}).get("pending_hours"),
+            "pending_pounds": (payload.get("approved_productivity") or {}).get("pending_pounds"),
+            "pending_is_excluded_from_approved_rate": True,
             "target_lbs_per_hour": (payload.get("approved_productivity") or {}).get(
                 "target_lbs_per_hour"
             ),

@@ -43,7 +43,7 @@ import {
   saveSupervisorTrainingTemplate,
   updateSupervisorTrainingProgress,
 } from "../api";
-import { CATEGORIES, etToday, formatNumber, formatRate, reconciliationCheck } from "../supervisor/supervisorFormat";
+import { CATEGORIES, etToday, formatBagsRate, formatNumber, formatRate, reconciliationCheck } from "../supervisor/supervisorFormat";
 
 const NAVY = "#16192b";
 const VIEWS = [
@@ -206,7 +206,12 @@ function OverviewView({ date, onOpen }) {
         <Kpi label="Completed bags" value={formatNumber(data.volume?.completed_bags)} hint={check.holds ? "Fully accounted" : `${check.unaccounted} unaccounted`} onClick={() => onOpen("performance")} />
         <Kpi label="Approved speed" value={formatRate(data.approved_productivity?.approved_lbs_per_hour)} hint={`${formatNumber(data.approved_productivity?.approved_hours)} approved hours`} onClick={() => onOpen("performance")} />
         <Kpi label="Below target" value={data.below_target?.length || 0} onClick={() => onOpen("performance")} />
-        <Kpi label="Pending sessions" value={data.pending_session_count || 0} onClick={() => onOpen("performance")} />
+        <Kpi
+          label="Pending folding"
+          value={formatNumber(data.approved_productivity?.pending_pounds)}
+          hint={`${formatNumber(data.approved_productivity?.pending_bags)} bags · ${formatNumber(data.approved_productivity?.pending_hours)} hours · not in the approved speed`}
+          onClick={() => onOpen("performance")}
+        />
         <Kpi label="Quality incidents" value={data.quality?.incident_count ?? "—"} hint={data.quality?.week_start ? `Week of ${data.quality.week_start}` : ""} onClick={() => onOpen("quality")} />
         <Kpi label="Training overdue" value={data.training_due ?? "—"} onClick={() => onOpen("training")} />
         <Kpi label="Tasks to verify" value={data.tasks?.pending_verification ?? "—"} onClick={() => onOpen("tasks")} />
@@ -272,19 +277,26 @@ function PerformanceView({ date }) {
       </Stack>
       <Alert severity={check.holds ? "success" : "warning"}>
         {check.completed} completed bags, {check.accounted} accounted, {check.unaccounted} unaccounted.
+        {data.period !== "day" ? " Each business date keeps its own bag count, including a bag that was completed on more than one date." : ""}
         {data.achievement_target_source === "auto_approval_benchmark"
           ? " Achievement is using the auto-approval threshold until a separate scoring target is published."
           : " Achievement uses the published scoring target. Auto-approval is unchanged."}
+      </Alert>
+      <Alert severity="info">
+        {data.measurement_note || "Approved speed uses approved folding only. Pending pounds and hours are listed separately and are not included in that speed."}
       </Alert>
       <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", md: "repeat(4, 1fr)" }, gap: 1 }}>
         <Kpi label="Completed" value={check.completed} active={category === "all"} onClick={() => setCategory("all")} />
         {CATEGORIES.map(([key, label]) => (
           <Kpi key={key} label={label} value={counts[key] || 0} active={category === key} onClick={() => setCategory(key)} />
         ))}
-        <Kpi label="Approved hours" value={formatNumber(data.approved_productivity?.approved_hours)} />
-        <Kpi label="Approved team speed" value={formatRate(data.approved_productivity?.approved_lbs_per_hour)} />
-        <Kpi label="Team average" value={formatRate(data.team?.average_lbs_per_hour)} hint={data.team?.comparison_reliable ? "Median shown separately" : "Too little data for a firm median"} />
-        <Kpi label="Team median" value={formatRate(data.team?.median_lbs_per_hour)} />
+        <Kpi label="Approved pounds" value={formatNumber(data.approved_productivity?.approved_pounds)} hint="Approved sessions only" />
+        <Kpi label="Approved hours" value={formatNumber(data.approved_productivity?.approved_hours)} hint="Approved sessions only" />
+        <Kpi label="Approved team speed" value={formatRate(data.approved_productivity?.approved_lbs_per_hour)} hint={formatBagsRate(data.approved_productivity?.approved_bags_per_hour)} />
+        <Kpi label="Pending pounds" value={formatNumber(data.approved_productivity?.pending_pounds)} hint="Not included in approved speed" />
+        <Kpi label="Pending hours" value={formatNumber(data.approved_productivity?.pending_hours)} hint="Not included in approved speed" />
+        <Kpi label="Team average" value={formatRate(data.team?.average_lbs_per_hour)} hint={data.team?.comparison_reliable ? "Approved pounds ÷ approved hours. Median is separate." : "Too little approved time for a firm median"} />
+        <Kpi label="Team median" value={formatRate(data.team?.median_lbs_per_hour)} hint="Median of approved employee rates" />
       </Box>
       <Box sx={cardSx}>
         <Typography sx={{ fontWeight: 800, color: NAVY, mb: 1 }}>
@@ -301,11 +313,12 @@ function PerformanceView({ date }) {
       {(data.trend || []).length > 1 ? (
         <Box sx={cardSx}>
           <Typography sx={{ fontWeight: 800, color: NAVY, mb: 1 }}>Team trend</Typography>
-          <Typography sx={{ fontSize: 12, color: "#64748b", mb: 1 }}>Each point is that day’s pounds divided by that day’s eligible hours. The employee rate above is the period total, not an average of these daily rates.</Typography>
-          <Table size="small">
+          <Typography sx={{ fontSize: 12, color: "#64748b", mb: 1 }}>Each point is that day’s approved pounds divided by that day’s approved hours. Pending work is beside it and is not in the rate. The employee rate above is the period total, not an average of these daily rates.</Typography>
+          <Box sx={{ overflowX: "auto" }}>
+          <Table size="small" sx={{ minWidth: 640 }}>
             <TableHead>
               <TableRow>
-                {["Date", "Pounds", "Hours", "Rate"].map((label) => <TableCell key={label} sx={{ fontWeight: 800 }}>{label}</TableCell>)}
+                {["Date", "Approved pounds", "Approved hours", "Approved rate", "Pending pounds", "Pending hours"].map((label) => <TableCell key={label} sx={{ fontWeight: 800 }}>{label}</TableCell>)}
               </TableRow>
             </TableHead>
             <TableBody>
@@ -315,10 +328,13 @@ function PerformanceView({ date }) {
                   <TableCell>{formatNumber(row.pounds)}</TableCell>
                   <TableCell>{formatNumber(row.hours)}</TableCell>
                   <TableCell>{formatRate(row.rate)}</TableCell>
+                  <TableCell>{formatNumber(row.pending_pounds)}</TableCell>
+                  <TableCell>{formatNumber(row.pending_hours)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
+          </Box>
         </Box>
       ) : null}
       {(data.day_errors || []).length ? (
@@ -372,32 +388,44 @@ function RoleReadiness() {
   );
 }
 
+function approvalStatus(employee) {
+  const pending = Number(employee.pending_bags || 0) > 0 || Number(employee.pending_hours || 0) > 0 || Number(employee.pending_pounds || 0) > 0;
+  if (employee.excluded) return "Excluded";
+  if (employee.reported_rate == null) return pending ? "Waiting for approval" : "No approved folding";
+  if (employee.below_target) return pending ? "Below target · more pending" : "Below target";
+  return pending ? "On track · more pending" : "On track";
+}
+
 function EmployeeTable({ employees, onOpen }) {
-  if (!employees.length) return <Typography color="text.secondary">No folding employees for this day.</Typography>;
+  if (!employees.length) return <Typography color="text.secondary">No folding employees in this view.</Typography>;
   return (
-    <Table size="small">
-      <TableHead>
-        <TableRow>
-          {["Employee", "Bags", "Pounds", "Eligible hours", "Rate", "Target", "Quality pts", "Status"].map((label) => (
-            <TableCell key={label} sx={{ fontWeight: 800 }}>{label}</TableCell>
-          ))}
-        </TableRow>
-      </TableHead>
-      <TableBody>
-        {employees.map((employee) => (
-          <TableRow key={`${employee.user_id}-${employee.employee}`} hover onClick={() => onOpen(employee)} sx={{ cursor: "pointer" }}>
-            <TableCell>{employee.employee}</TableCell>
-            <TableCell>{formatNumber(employee.bags)}</TableCell>
-            <TableCell>{formatNumber(employee.pounds)}</TableCell>
-            <TableCell>{formatNumber(employee.eligible_hours)}</TableCell>
-            <TableCell>{formatRate(employee.reported_rate)}</TableCell>
-            <TableCell>{employee.achievement_percent != null ? `${employee.achievement_percent}%` : "—"}</TableCell>
-            <TableCell>{employee.quality_points ?? "—"}</TableCell>
-            <TableCell>{employee.excluded ? "Excluded" : employee.below_target ? "Below target" : "On track"}</TableCell>
+    <Box sx={{ overflowX: "auto" }}>
+      <Table size="small" sx={{ minWidth: 980 }}>
+        <TableHead>
+          <TableRow>
+            {["Employee", "Approved bags", "Approved pounds", "Approved hours", "Approved speed", "Pending bags", "Pending pounds", "Pending hours", "Vs target", "Status"].map((label) => (
+              <TableCell key={label} sx={{ fontWeight: 800 }}>{label}</TableCell>
+            ))}
           </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+        </TableHead>
+        <TableBody>
+          {employees.map((employee) => (
+            <TableRow key={`${employee.user_id}-${employee.employee}`} hover onClick={() => onOpen(employee)} sx={{ cursor: "pointer" }}>
+              <TableCell>{employee.employee}</TableCell>
+              <TableCell>{formatNumber(employee.bags)}</TableCell>
+              <TableCell>{formatNumber(employee.pounds)}</TableCell>
+              <TableCell>{formatNumber(employee.eligible_hours)}</TableCell>
+              <TableCell>{formatRate(employee.reported_rate)}</TableCell>
+              <TableCell>{formatNumber(employee.pending_bags)}</TableCell>
+              <TableCell>{formatNumber(employee.pending_pounds)}</TableCell>
+              <TableCell>{formatNumber(employee.pending_hours)}</TableCell>
+              <TableCell>{employee.achievement_percent != null ? `${employee.achievement_percent}%` : "—"}</TableCell>
+              <TableCell>{approvalStatus(employee)}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </Box>
   );
 }
 
@@ -468,7 +496,10 @@ function EmployeeDrawer({ employee, date, onChanged, onClose }) {
     <Box sx={{ width: { xs: "100vw", sm: 440 }, p: 2 }}>
       <Typography sx={{ fontSize: 18, fontWeight: 800, color: NAVY }}>{employee.employee}</Typography>
       <Typography sx={{ color: "#64748b", mb: 1 }}>
-        Calculated {formatRate(employee.calculated_rate)} · Reported {formatRate(employee.reported_rate)} · {employee.rate_basis}
+        Approved speed {formatRate(employee.reported_rate)} · {formatNumber(employee.bags)} bags · {formatNumber(employee.pounds)} lb · {formatNumber(employee.eligible_hours)} h
+      </Typography>
+      <Typography sx={{ fontSize: 13, mb: 1 }}>
+        Pending, not in the approved speed: {formatNumber(employee.pending_bags)} bags · {formatNumber(employee.pending_pounds)} lb · {formatNumber(employee.pending_hours)} h
       </Typography>
       <Typography sx={{ fontSize: 13, mb: 1 }}>
         Score stays {employee.score?.activated ? "on" : "off"}. {employee.score?.reason}
@@ -486,7 +517,8 @@ function EmployeeDrawer({ employee, date, onChanged, onClose }) {
             Recorded {formatNumber(row.original_hours)} h · Eligible {formatNumber(row.eligible_hours)} h · {formatNumber(row.reported_lbs)} lb · {formatRate(row.reported_rate)}
           </Typography>
           <Typography sx={{ fontSize: 13 }}>
-            {row.publication_status} · {row.approval_source || row.reported_basis}
+            {row.counts_toward_approved ? "Approved — included in the speed" : row.publication_status === "EXCLUDED" || row.excluded ? "Excluded — not in the speed" : "Pending — not in the approved speed"}
+            {" · "}{row.approval_source || row.reported_basis}
             {row.reallocated_role_key ? ` · ${formatNumber(row.eligible_hours)} h still in folding; ${row.reallocated_role_key} output ${row.destination_output_lbs} lb` : ""}
           </Typography>
           {(row.adjustments || []).map((adjustment) => (

@@ -44,3 +44,8 @@ export function formatNumber(value) {
   if (value == null || Number.isNaN(Number(value))) return "—";
   return Number(value).toLocaleString("en-US", { maximumFractionDigits: 1 });
 }
+
+export function formatBagsRate(value) {
+  if (value == null || Number.isNaN(Number(value))) return "—";
+  return `${Number(value).toFixed(1)} bags/hr`;
+}
