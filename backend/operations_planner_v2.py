@@ -747,6 +747,31 @@ def paystub_decision(
     return "ok"
 
 
+def paystub_code_hash(code: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(str(code or "").strip().encode("utf-8")).hexdigest()
+
+
+def verify_personal_paystub_code(
+    *,
+    supplied: str,
+    stored_hash: str | None,
+    employee_id: int,
+    stored_employee_id: int,
+    used: bool,
+    expired: bool,
+) -> tuple[bool, str]:
+    """A paystub step-up is a single-use code for one employee, not a date of birth."""
+    if not stored_hash:
+        return False, "second_factor_unavailable"
+    if int(employee_id) != int(stored_employee_id) or used or expired:
+        return False, "verification_failed"
+    if paystub_code_hash(supplied) != stored_hash:
+        return False, "verification_failed"
+    return True, "ok"
+
+
 def verify_step_up_factors(
     *,
     pin_ok: bool,

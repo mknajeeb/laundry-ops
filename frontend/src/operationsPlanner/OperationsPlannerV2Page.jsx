@@ -19,7 +19,7 @@ import {
   shiftHours,
   taskRollup,
 } from "./plannerModel";
-import { printDocumentHtml, scheduleCardSvg, scheduleCsv } from "./scheduleExport";
+import { printDocumentHtml, scheduleCardSvg, scheduleCsv, schedulePdf } from "./scheduleExport";
 
 const LENSES = [
   ["employees", "Employees"],
@@ -108,7 +108,7 @@ export default function OperationsPlannerV2Page() {
   const [pickedEmployees, setPickedEmployees] = useState([]);
 
   const load = useCallback(async (weekStart) => {
-    if (new URLSearchParams(window.location.search).get("preview") === "1" || window.location.pathname === "/dev/operations-planner") {
+    if (new URLSearchParams(window.location.search).get("preview") === "1") {
       setFlags({ manager_pilot: true, employee_pilot: false, paystub_access: false });
       setPayload(previewPayload());
       if (!weekStart) setWeek("2026-11-09");
@@ -235,6 +235,14 @@ export default function OperationsPlannerV2Page() {
   function onDrop(event, userId, dayOfWeek) {
     event.preventDefault();
     if (!drag?.shift) return;
+    if (drag.kind && !["move", "timeline"].includes(drag.kind)) {
+      const lane = event.currentTarget.querySelector?.(".ops-lane")?.getBoundingClientRect() || event.currentTarget.getBoundingClientRect();
+      const minutes = pointerToMinutes(event.clientX, lane);
+      if (minutes != null) resizeEntry(drag.shift, drag.kind, minutes, drag.index || 0);
+      setDrag(null);
+      setDragPreview("");
+      return;
+    }
     const copy = event.altKey || drag.copy;
     const lane = event.currentTarget.getBoundingClientRect();
     const minutes = pointerToMinutes(event.clientX, lane);
@@ -322,7 +330,7 @@ export default function OperationsPlannerV2Page() {
         </div>
         <button type="button" onClick={() => setFull((value) => !value)}>{full ? "Exit full screen" : "Expand"}</button>
       </header>
-      {!flags?.manager_pilot ? (
+      {flags && !flags.manager_pilot ? (
         <div className="ops-toolbar">
           <span>The manager pilot is off.</span>
           <button type="button" className="primary" onClick={() => saveFlags({ manager_pilot: true }).catch((err) => setError(err.response?.data?.error || err.message))}>
@@ -346,7 +354,8 @@ export default function OperationsPlannerV2Page() {
           <button type="button" onClick={() => api("/operations-planner/v2/weeks/approve", { method: "POST", data: { weeks: [week] } }).then(() => load(week))}>Approve week</button>
           <button type="button" onClick={() => api("/operations-planner/v2/weeks/publish", { method: "POST", data: { weeks: [week] } }).then(() => load(week))}>Publish week</button>
           <button type="button" onClick={() => copyCard(scheduleCardSvg({ title: `Schedule · ${period}`, subtitle: planner.status || "draft", rows: exportRows }))}>Copy image</button>
-          <button type="button" onClick={() => download(`schedule-${week}.csv`, scheduleCsv(exportRows), "text/csv")}>CSV</button>
+          <button type="button" onClick={() => download(`schedule-${week || "week"}.csv`, scheduleCsv(exportRows), "text/csv")}>CSV</button>
+          <button type="button" onClick={() => download(`schedule-${week || "week"}.pdf`, schedulePdf({ title: `Schedule · ${period}`, subtitle: planner.status || "draft", rows: exportRows }), "application/pdf")}>PDF</button>
           <button type="button" onClick={() => {
             const html = printDocumentHtml({ title: `${lens} · ${period}`, subtitle: week, sections: [{ heading: lens, rows: exportRows }] });
             const popup = window.open("", "_blank");
@@ -358,6 +367,7 @@ export default function OperationsPlannerV2Page() {
           }}>Print</button>
         </div>
       )}
+      {flags === null && !error ? <p className="ops-note">Loading the schedule…</p> : null}
       {error ? <p className="ops-note ops-warn">{error}</p> : null}
       {notice ? <p className="ops-note">{notice}</p> : null}
       {payload ? (
@@ -371,7 +381,7 @@ export default function OperationsPlannerV2Page() {
                 day={day}
                 onResize={resizeEntry}
                 onPreview={setDragPreview}
-                onDragStart={(shift) => setDrag({ shift, kind: "timeline" })}
+                onDragStart={(shift, kind = "timeline", index = 0) => setDrag({ shift, kind, index })}
                 onDragOver={(event) => {
                   const minutes = pointerToMinutes(event.clientX, event.currentTarget.getBoundingClientRect());
                   if (minutes != null && drag?.shift) setDragPreview(`${minutesToClock(minutes)} · ${drag.shift.role}`);
@@ -657,7 +667,7 @@ function ShiftBar({ entry, onResize, onPreview, onDragStart }) {
     onResize(entry, kind, current + delta, index);
   }
   return (
-    <div className="ops-bar" style={barStyle(entry.start_time, entry.end_time)} draggable onDragStart={() => onDragStart(entry)}>
+    <div className={`ops-bar role-${entry.role || "fold"}`} style={barStyle(entry.start_time, entry.end_time)} draggable onDragStart={() => onDragStart(entry, "timeline")}>
       <button
         type="button"
         className="ops-handle start"
@@ -673,6 +683,12 @@ function ShiftBar({ entry, onResize, onPreview, onDragStart }) {
         type="button"
         className="ops-handle end"
         aria-label={`Change shift end for ${entry.end_time}`}
+        draggable
+        onDragStart={(event) => {
+          event.stopPropagation();
+          event.dataTransfer?.setData("text/plain", "shift-end");
+          onDragStart(entry, "shift-end");
+        }}
         onPointerDown={(event) => trackPointer(event, (minutes) => onPreview(`End ${minutesToClock(minutes)}`), (minutes) => onResize(entry, "shift-end", minutes))}
         onKeyDown={(event) => {
           if (event.key === "ArrowLeft") nudge("shift-end", -15);
@@ -808,6 +824,7 @@ function RoleBoard({ entries, employees, settings, onAssign, onHeadcount }) {
               onAssign(JSON.parse(raw), role);
             }}
           >
+            <div className="ops-role-head">
             <strong>{role}</strong>
             <label>
               Required
@@ -818,6 +835,7 @@ function RoleBoard({ entries, employees, settings, onAssign, onHeadcount }) {
                 onBlur={(event) => onHeadcount(role, { required_headcount: event.target.value })}
               />
             </label>
+            </div>
             <div className="ops-hours">
               {hours.map((hour) => {
                 const required = setting.hourly_headcount?.[String(hour)] ?? setting.required_headcount;

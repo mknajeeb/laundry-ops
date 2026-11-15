@@ -48,6 +48,9 @@
   padding: 12px 18px;
 }
 .ops-toolbar {
+  position: sticky;
+  top: 58px;
+  z-index: 2;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -166,10 +169,44 @@
 .ops-editor, .ops-hours, .ops-break-grid {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 8px 10px;
   align-items: end;
+  padding: 10px 12px;
 }
+.ops-editor p {
+  flex: 1 0 100%;
+  margin: 0;
+  font-size: 12px;
+  color: #5c6b7a;
+}
+.ops-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #5c6b7a;
+}
+.ops-editor input:not([type="checkbox"]):not([type="time"]),
+.ops-editor select {
+  width: 8.5rem;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.ops-editor input[type="time"] { width: 7.4rem; }
 .ops-break-grid, .ops-hours { align-items: stretch; }
+.ops-break-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(150px, 1fr));
+  gap: 8px;
+}
+.ops-break-grid .hour-cell {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: white;
+  min-height: 72px;
+}
 .ops-timeline-hours,
 .ops-timeline-row {
   display: grid;
@@ -202,6 +239,9 @@
   color: white;
   overflow: hidden;
 }
+.ops-bar.role-wash { background: #1d4e89; }
+.ops-bar.role-fold { background: #16385f; }
+.ops-bar.role-dry { background: #245c73; }
 .ops-bar-label {
   position: absolute;
   left: 10px;
@@ -260,6 +300,23 @@
   font-size: 12px;
 }
 .ops-hour-card input { width: 64px; }
+.ops-role-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0 8px;
+}
+.ops-role-head strong { font-size: 15px; }
+.ops-role-head label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #5c6b7a;
+}
+.ops-role-head input { width: 4.5rem; }
 .hour-cell {
   min-height: 36px;
   border-left: 1px solid var(--line);

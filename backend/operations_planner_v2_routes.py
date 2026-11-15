@@ -24,6 +24,7 @@ from backend.operations_planner_v2 import (
     plan_change,
     publish_weeks,
     role_visible_to_rinse,
+    verify_personal_paystub_code,
     verify_step_up_factors,
 )
 from backend.operations_planner_v2_store import (
@@ -94,7 +95,7 @@ def _error_response(exc, *, rolled_back: bool = False):
                 {
                     "code": "migration_required",
                     "missing": exc.missing,
-                    "version": "operations_planner_v2.1",
+                    "version": "operations_planner_v2.2",
                     "error": "Apply backend/sql/operations_planner_v2.sql. Opening the planner does not create tables.",
                 }
             ),
@@ -130,12 +131,15 @@ def _worked_hours(conn, organization_id: int, user_id: int, start: date, end: da
         if int(record.get("user_id") or 0) != int(user_id):
             continue
         approved = record.get("payroll_hours_approved")
-        if approved not in (None, "", 0, "0"):
-            hours = float(approved)
+        recorded = record.get("approved_hours")
+        if approved in (True, 1, "1") and recorded not in (None, ""):
+            hours = float(recorded)
             source = "approved"
+        elif record.get("net_work_seconds") not in (None, ""):
+            hours = round(float(record.get("net_work_seconds") or 0) / 3600.0, 4)
+            source = "attendance"
         else:
-            seconds = record.get("net_work_seconds")
-            hours = round(float(seconds or 0) / 3600.0, 4)
+            hours = round(float(recorded or 0), 4)
             source = "attendance"
         total += hours
         explicit = record.get("overtime_hours")
@@ -562,6 +566,12 @@ def register_operations_planner_v2_routes(
             employee_id = int(identity["employee_id"])
             flags = load_flags(cursor, org)
             access = load_access(cursor, org, employee_id)
+            if not flags["paystub_access"]:
+                return _no_store(jsonify({
+                    "ok": False,
+                    "code": "module_disabled",
+                    "error": "Paystub access stays off until a separate security review.",
+                })), 403
             category = worker_category_for_user(conn, employee_id)
             body = request.get_json(silent=True) or {}
             dob = parse_schedule_date(body.get("date_of_birth"))
@@ -584,13 +594,49 @@ def register_operations_planner_v2_routes(
                     on_file = parse_schedule_date(on_file)
             matched = resolve_user_by_attendance_pin(conn, org, str(body.get("pin") or ""), lambda _c, _u: [])
             pin_ok = bool(matched) and int(matched["id"]) == employee_id
-            ok, reason = verify_step_up_factors(pin_ok=pin_ok, dob_supplied=dob if isinstance(dob, date) else None, dob_on_file=on_file if isinstance(on_file, date) else None)
+            supplied_code = str(body.get("personal_code") or "").strip()
+            if body.get("date_of_birth") and not supplied_code:
+                ok, reason = False, "dob_not_accepted"
+                code_on_file = False
+            else:
+                stored = {}
+                try:
+                    cursor.execute(
+                        """
+                        SELECT user_id, code_hash, expires_at, used_at
+                        FROM ops_planner_paystub_codes
+                        WHERE organization_id=%s AND user_id=%s
+                        ORDER BY id DESC LIMIT 1
+                        """,
+                        (org, employee_id),
+                    )
+                    stored = cursor.fetchone() or {}
+                except Exception:
+                    stored = {}
+                if not isinstance(stored, dict):
+                    stored = {}
+                expires = stored.get("expires_at")
+                expired = bool(expires and hasattr(expires, "timestamp") and expires.timestamp() < __import__("time").time())
+                ok, reason = verify_personal_paystub_code(
+                    supplied=supplied_code,
+                    stored_hash=stored.get("code_hash"),
+                    employee_id=employee_id,
+                    stored_employee_id=int(stored.get("user_id") or 0),
+                    used=stored.get("used_at") is not None,
+                    expired=expired,
+                )
+                ok = bool(ok and pin_ok)
+                if not pin_ok and reason == "ok":
+                    ok, reason = False, "verification_failed"
+                code_on_file = bool(stored.get("code_hash"))
+            if not flags["paystub_access"]:
+                ok, reason = False, "module_disabled"
             decision = paystub_decision(
                 module_enabled=flags["paystub_access"],
                 employee_enabled=access["paystub_enabled"],
                 worker_category=category,
                 step_up_ok=ok,
-                second_factor_on_file=isinstance(on_file, date),
+                second_factor_on_file=code_on_file if flags["paystub_access"] else False,
                 document_available=True,
             )
             if decision != "ok" or not ok:

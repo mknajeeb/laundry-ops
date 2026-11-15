@@ -1,5 +1,5 @@
 -- Operations Planner v2.1. Explicit, idempotent, non-destructive.
--- Version: operations_planner_v2.1
+-- Version: operations_planner_v2.2
 --
 -- Apply this file yourself. Application startup, page loads, and PIN login
 -- do not create or alter these tables.
@@ -95,6 +95,16 @@ CREATE TABLE IF NOT EXISTS ops_planner_role_hours (
   hour_of_day TINYINT NOT NULL,
   required_headcount INT NOT NULL,
   PRIMARY KEY (organization_id, role_key, hour_of_day)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ops_planner_paystub_codes (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  organization_id INT NOT NULL,
+  user_id INT NOT NULL,
+  code_hash CHAR(64) NOT NULL,
+  expires_at TIMESTAMP NOT NULL,
+  used_at TIMESTAMP NULL DEFAULT NULL,
+  INDEX idx_paystub_code_user (organization_id, user_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS ops_planner_links (

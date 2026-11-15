@@ -144,7 +144,7 @@ export default function EmployeeSelfServicePage({ section }) {
           <section className="ops-board">
             {!stepUp ? (
               <form onSubmit={verify}>
-                <p>Re-enter your PIN and the date of birth on your HR profile. This check stays in this tab and is not reused for the next person.</p>
+                <p>Paystubs stay off until a separate review. A PIN and date of birth are not accepted on a shared device. A one-time code is issued to the employee, and it works for that employee only.</p>
                 <input value={pin} onChange={(event) => setPin(event.target.value)} inputMode="numeric" autoComplete="off" placeholder="PIN" />
                 <input value={dob} onChange={(event) => setDob(event.target.value)} type="date" />
                 <button type="submit">Continue</button>

@@ -25,8 +25,9 @@ ACCESS = "ops_planner_employee_access"
 ROLES = "ops_planner_role_settings"
 HOURS = "ops_planner_role_hours"
 LINKS = "ops_planner_links"
-PLANNER_TABLES = (FLAGS, PATTERNS, EXCEPTIONS, WEEKS, AUDIT, ACCESS, ROLES, HOURS, LINKS)
-SCHEMA_VERSION = "operations_planner_v2.1"
+CODES = "ops_planner_paystub_codes"
+PLANNER_TABLES = (FLAGS, PATTERNS, EXCEPTIONS, WEEKS, AUDIT, ACCESS, ROLES, HOURS, CODES, LINKS)
+SCHEMA_VERSION = "operations_planner_v2.2"
 
 
 class PlannerSchemaNotApplied(RuntimeError):
@@ -544,6 +545,7 @@ def acquire_lock(cursor, organization_id: int) -> bool:
 def release_lock(cursor, organization_id: int) -> None:
     try:
         cursor.execute("SELECT RELEASE_LOCK(%s)", (f"ops_planner_{int(organization_id)}",))
+        cursor.fetchone()
     except Exception:
         return
 

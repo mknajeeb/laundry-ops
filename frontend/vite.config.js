@@ -30,6 +30,7 @@ const API_PREFIXES = [
   'folder_shift',
   'geofence',
   'attendance',
+  'operations-planner',
   'maintenance',
   'inventory',
 ]

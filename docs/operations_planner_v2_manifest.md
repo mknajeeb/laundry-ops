@@ -22,7 +22,7 @@ Branch: `feature/operations-planner-v2` in worktree `/Users/kamisb./laundry_app-
 
 ## Migration
 
-Version `operations_planner_v2.1` in `backend/sql/operations_planner_v2.sql`.
+Version `operations_planner_v2.2` in `backend/sql/operations_planner_v2.sql`. The new table is `ops_planner_paystub_codes`.
 
 Apply that file explicitly. Startup, opening the planner, and PIN login do not create or alter tables. If the tables are missing, manager and employee planner routes return `migration_required` and the PIN tiles stay off.
 
@@ -38,7 +38,7 @@ Full screen sets `data-ops-planner-fullscreen` on the document. The app shell hi
 
 ## Paystub security
 
-PIN plus date of birth is not adequate for paystubs on a shared device. Date of birth is widely known, and the PIN is a short kiosk secret. The settings API refuses to turn `paystub_access` on (`paystub_security_hold`). Leave it off until paystubs require an individual factor that is not stored in the kiosk session: the employee’s own Washpro login, or a one-time code delivered to a personal device, still bound to that employee, short-lived, memory-only, `Cache-Control: no-store`, W-2 only, and only documents `generate_paystub_html` will already render.
+PIN plus date of birth is not adequate for paystubs on a shared device. The step-up compares a single-use code hash with the employee on the hub token. A code for another employee, a used code, or an expired code fails. A date of birth by itself is rejected. The settings API still refuses to turn `paystub_access` on, and the step-up route returns `module_disabled` while that flag is off. Documents stay W-2 only, `Cache-Control: no-store`, and only what `generate_paystub_html` already renders.
 
 ## Shared files touched
 

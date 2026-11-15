@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { printDocumentHtml, scheduleCardSvg, scheduleCsv } from "./scheduleExport";
+import { printDocumentHtml, scheduleCardSvg, scheduleCsv, schedulePdf } from "./scheduleExport";
 
 describe("schedule export", () => {
   it("builds a standalone card without application chrome", () => {
@@ -25,5 +25,9 @@ describe("schedule export", () => {
     expect(scheduleCsv([{ employee: "Amina Cole", day: "Monday", start: "08:00", end: "16:00", role: "fold", breaks: "", tasks: "" }])).toContain(
       "Amina Cole",
     );
+    const pdf = schedulePdf({ title: "Schedule", subtitle: "Nov 9", rows: [{ employee: "Amina Cole", day: "Monday", start: "08:00", end: "16:00", role: "fold" }] });
+    expect(pdf.startsWith("%PDF-1.4")).toBe(true);
+    expect(pdf).toContain("Amina Cole");
+    expect(pdf.trimEnd().endsWith("%%EOF")).toBe(true);
   });
 });
