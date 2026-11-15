@@ -33,6 +33,8 @@ from backend.operations_planner_v2_store import (
     load_role_settings,
     load_state,
     materialize_plans,
+    PaystubSecurityHold,
+    PlannerSchemaNotApplied,
     release_lock,
     save_access,
     save_flags,
@@ -40,6 +42,7 @@ from backend.operations_planner_v2_store import (
     save_state,
     stop_legacy_template,
 )
+from backend.ta_helpers import table_has_column
 from backend.weekly_schedule_week import current_schedule_monday, parse_schedule_date
 
 PAYSTUB_SALT = "ops-planner-paystub-v2"
@@ -81,6 +84,24 @@ def _hub_identity() -> tuple[dict | None, tuple | None]:
 
 def _step_serializer():
     return URLSafeTimedSerializer(current_app.config["SECRET_KEY"], salt=PAYSTUB_SALT)
+
+
+def _error_response(exc, *, rolled_back: bool = False):
+    if isinstance(exc, PlannerSchemaNotApplied):
+        return (
+            jsonify(
+                {
+                    "code": "migration_required",
+                    "missing": exc.missing,
+                    "version": "operations_planner_v2.1",
+                    "error": "Apply backend/sql/operations_planner_v2.sql. Opening the planner does not create tables.",
+                }
+            ),
+            503,
+        )
+    if isinstance(exc, PaystubSecurityHold):
+        return jsonify({"code": "paystub_security_hold", "error": str(exc)}), 409
+    return jsonify({"error": str(exc), "rolled_back": rolled_back}), 500
 
 
 def _no_store(response):
@@ -172,7 +193,9 @@ def register_operations_planner_v2_routes(
             return denied
         try:
             flags = load_flags(cursor, user_org_id(me))
-            return jsonify({"flags": flags, "can_configure": True})
+            return jsonify({"flags": flags, "can_configure": True, "paystub_security_hold": True})
+        except Exception as exc:
+            return _error_response(exc)
         finally:
             cursor.close()
             conn.close()
@@ -193,7 +216,7 @@ def register_operations_planner_v2_routes(
             return jsonify({"flags": flags})
         except Exception as exc:
             conn.rollback()
-            return jsonify({"error": str(exc)}), 500
+            return _error_response(exc, rolled_back=True)
         finally:
             cursor.close()
             conn.close()
@@ -240,15 +263,31 @@ def register_operations_planner_v2_routes(
             }
             return jsonify(payload)
         except Exception as exc:
-            return jsonify({"error": str(exc)}), 500
+            return _error_response(exc)
         finally:
             cursor.close()
             conn.close()
 
-    def _command(body: dict, org: int) -> dict:
+    def _termination(cursor, user_id: int):
+        if not table_has_column(cursor, "users", "termination_date"):
+            return None
+        cursor.execute("SELECT termination_date FROM users WHERE id=%s", (int(user_id),))
+        row = cursor.fetchone() or {}
+        raw = row.get("termination_date") if isinstance(row, dict) else None
+        if raw is None or raw == "":
+            return None
+        return raw.isoformat() if hasattr(raw, "isoformat") else str(raw)[:10]
+
+    def _command(body: dict, org: int, cursor) -> dict:
         command = dict(body)
         command["today"] = business_today()
         command.setdefault("anchor", body.get("week_start"))
+        ids = command.get("user_ids") or ([command.get("user_id")] if command.get("user_id") else [])
+        if not command.get("employment_end") and len(ids) == 1:
+            try:
+                command["employment_end"] = _termination(cursor, int(ids[0]))
+            except (TypeError, ValueError):
+                command["employment_end"] = None
         return command
 
     @app.route("/operations-planner/v2/preview", methods=["POST"])
@@ -261,11 +300,13 @@ def register_operations_planner_v2_routes(
             flags = load_flags(cursor, org)
             if not flags["manager_pilot"]:
                 return jsonify({"error": "Operations Planner pilot is off", "code": "manager_pilot_disabled"}), 403
-            result = plan_change(load_state(cursor, org), _command(request.get_json(silent=True) or {}, org))
+            result = plan_change(load_state(cursor, org), _command(request.get_json(silent=True) or {}, org, cursor))
             result.pop("state", None)
             result["legacy_template"] = legacy_template_enabled(cursor, org)
             code = 200 if result.get("ok") else 409
             return jsonify(result), code
+        except Exception as exc:
+            return _error_response(exc)
         finally:
             cursor.close()
             conn.close()
@@ -285,7 +326,7 @@ def register_operations_planner_v2_routes(
             if not acquire_lock(cursor, org):
                 return jsonify({"error": "Another manager is saving this schedule", "code": "busy"}), 409
             try:
-                result = plan_change(load_state(cursor, org), _command(body, org))
+                result = plan_change(load_state(cursor, org), _command(body, org, cursor))
                 if not result.get("ok"):
                     result.pop("state", None)
                     return jsonify(result), 409
@@ -317,7 +358,7 @@ def register_operations_planner_v2_routes(
             )
         except Exception as exc:
             conn.rollback()
-            return jsonify({"error": str(exc)}), 500
+            return _error_response(exc, rolled_back=True)
         finally:
             cursor.close()
             conn.close()
@@ -370,7 +411,7 @@ def register_operations_planner_v2_routes(
             return jsonify({"ok": True, "weeks": result.get("weeks")})
         except Exception as exc:
             conn.rollback()
-            return jsonify({"error": str(exc)}), 500
+            return _error_response(exc, rolled_back=True)
         finally:
             cursor.close()
             conn.close()
@@ -401,7 +442,7 @@ def register_operations_planner_v2_routes(
             return jsonify({"user_id": user_id, "access": access})
         except Exception as exc:
             conn.rollback()
-            return jsonify({"error": str(exc)}), 500
+            return _error_response(exc, rolled_back=True)
         finally:
             cursor.close()
             conn.close()
@@ -420,7 +461,7 @@ def register_operations_planner_v2_routes(
             return jsonify({"ok": True, "roles": load_role_settings(cursor, user_org_id(me))})
         except Exception as exc:
             conn.rollback()
-            return jsonify({"error": str(exc)}), 500
+            return _error_response(exc, rolled_back=True)
         finally:
             cursor.close()
             conn.close()
@@ -462,6 +503,9 @@ def register_operations_planner_v2_routes(
                     }
                 )
             )
+        except Exception as exc:
+            response, code = _error_response(exc)
+            return _no_store(response), code
         finally:
             cursor.close()
             conn.close()
@@ -489,7 +533,8 @@ def register_operations_planner_v2_routes(
             payload["scheduled_hours_note"] = "Scheduled hours are a plan. These figures are recorded attendance."
             return _no_store(jsonify(payload))
         except Exception as exc:
-            return _no_store(jsonify({"error": str(exc)})), 500
+            response, code = _error_response(exc)
+            return _no_store(response), code
         finally:
             cursor.close()
             conn.close()
@@ -624,7 +669,8 @@ def register_operations_planner_v2_routes(
                 )
             return _no_store(jsonify({"visible": True, "documents": [row for row in documents if row["batch_id"] and row["line_id"]]}))
         except Exception as exc:
-            return _no_store(jsonify({"error": str(exc)})), 500
+            response, code = _error_response(exc)
+            return _no_store(response), code
         finally:
             cursor.close()
             conn.close()
@@ -662,7 +708,8 @@ def register_operations_planner_v2_routes(
         except ValueError:
             return _no_store(jsonify({"error": "Paystub not found"})), 404
         except Exception as exc:
-            return _no_store(jsonify({"error": str(exc)})), 500
+            response, code = _error_response(exc)
+            return _no_store(response), code
         finally:
             cursor.close()
             conn.close()

@@ -1,6 +1,19 @@
--- Operations Planner v2. Idempotent and non-destructive.
--- Runtime code also creates these tables; apply this file for a reviewed migration.
--- It does not alter planned_weekly_schedule_entries, attendance, or payroll.
+-- Operations Planner v2.1. Explicit, idempotent, non-destructive.
+-- Version: operations_planner_v2.1
+--
+-- Apply this file yourself. Application startup, page loads, and PIN login
+-- do not create or alter these tables.
+--
+-- Order: this file only. It does not depend on another planner migration.
+-- Compatibility: additive. It does not alter planned_weekly_schedule_entries,
+-- attendance, payroll, users, or responsibility/task tables.
+-- Existing weekly-schedule rows keep working when these tables are absent.
+-- The planner API returns migration_required until every table below exists.
+--
+-- Rollback: leave the tables in place and keep ops_planner_org_flags at 0.
+-- Do not drop them to undo a schedule: they hold patterns, exceptions, and
+-- published snapshots. Dropping them deletes planner history and does not
+-- restore attendance or payroll, which this migration never changes.
 
 SET NAMES utf8mb4;
 
@@ -74,6 +87,14 @@ CREATE TABLE IF NOT EXISTS ops_planner_role_settings (
   show_on_rinse_dashboard TINYINT(1) NOT NULL DEFAULT 0,
   required_headcount INT NULL,
   PRIMARY KEY (organization_id, role_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ops_planner_role_hours (
+  organization_id INT NOT NULL,
+  role_key VARCHAR(64) NOT NULL,
+  hour_of_day TINYINT NOT NULL,
+  required_headcount INT NOT NULL,
+  PRIMARY KEY (organization_id, role_key, hour_of_day)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS ops_planner_links (

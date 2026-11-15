@@ -1,8 +1,9 @@
 """Persistence for Operations Planner v2.
 
-Tables are created if missing. Nothing here deletes historical attendance,
-punches, payroll, or an existing planned shift that the recurrence plan did
-not name.
+Schema is applied only by backend/sql/operations_planner_v2.sql.
+Opening the planner, starting the app, or signing in with a PIN does not
+create or alter tables. Historical attendance, punches, payroll, and task
+completion rows are not rewritten from here.
 """
 
 from __future__ import annotations
@@ -11,8 +12,8 @@ import json
 from datetime import date, datetime
 from typing import Any, Mapping
 
-from backend.operations_planner_v2 import empty_state, plan_entry_write
-from backend.ta_helpers import invalidate_schema_cache, table_exists
+from backend.operations_planner_v2 import empty_state, plan_entry_write, plan_task_links
+from backend.ta_helpers import table_exists
 from backend.weekly_schedule_week import parse_schedule_date, storage_week_for_dow
 
 FLAGS = "ops_planner_org_flags"
@@ -22,116 +23,27 @@ WEEKS = "ops_planner_weeks"
 AUDIT = "ops_planner_audit"
 ACCESS = "ops_planner_employee_access"
 ROLES = "ops_planner_role_settings"
+HOURS = "ops_planner_role_hours"
 LINKS = "ops_planner_links"
+PLANNER_TABLES = (FLAGS, PATTERNS, EXCEPTIONS, WEEKS, AUDIT, ACCESS, ROLES, HOURS, LINKS)
+SCHEMA_VERSION = "operations_planner_v2.1"
 
 
-def ensure_tables(cursor) -> None:
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {FLAGS} (
-          organization_id INT NOT NULL PRIMARY KEY,
-          manager_pilot TINYINT(1) NOT NULL DEFAULT 0,
-          employee_pilot TINYINT(1) NOT NULL DEFAULT 0,
-          paystub_access TINYINT(1) NOT NULL DEFAULT 0,
-          updated_at TIMESTAMP NULL DEFAULT NULL
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {PATTERNS} (
-          id INT NOT NULL PRIMARY KEY,
-          organization_id INT NOT NULL,
-          user_id INT NOT NULL,
-          day_of_week TINYINT NOT NULL,
-          effective_from DATE NOT NULL,
-          effective_until DATE NULL,
-          shift_json TEXT NOT NULL,
-          INDEX idx_opp_org_user (organization_id, user_id, day_of_week)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {EXCEPTIONS} (
-          id INT NOT NULL PRIMARY KEY,
-          organization_id INT NOT NULL,
-          user_id INT NOT NULL,
-          week_monday DATE NOT NULL,
-          day_of_week TINYINT NOT NULL,
-          kind VARCHAR(16) NOT NULL,
-          shift_json TEXT NULL,
-          UNIQUE KEY uq_ope_cell (organization_id, user_id, week_monday, day_of_week)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {WEEKS} (
-          organization_id INT NOT NULL,
-          week_monday DATE NOT NULL,
-          status VARCHAR(16) NOT NULL DEFAULT 'draft',
-          revision INT NOT NULL DEFAULT 1,
-          published_snapshot LONGTEXT NULL,
-          published_revision INT NULL,
-          approved_by INT NULL,
-          approved_at TIMESTAMP NULL DEFAULT NULL,
-          published_by INT NULL,
-          published_at TIMESTAMP NULL DEFAULT NULL,
-          PRIMARY KEY (organization_id, week_monday)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {AUDIT} (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          organization_id INT NOT NULL,
-          actor_id INT NULL,
-          detail_json TEXT NOT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          INDEX idx_opa_org (organization_id, id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {ACCESS} (
-          organization_id INT NOT NULL,
-          user_id INT NOT NULL,
-          schedule_enabled TINYINT(1) NOT NULL DEFAULT 0,
-          hours_enabled TINYINT(1) NOT NULL DEFAULT 0,
-          paystub_enabled TINYINT(1) NOT NULL DEFAULT 0,
-          updated_by INT NULL,
-          updated_at TIMESTAMP NULL DEFAULT NULL,
-          PRIMARY KEY (organization_id, user_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {ROLES} (
-          organization_id INT NOT NULL,
-          role_key VARCHAR(64) NOT NULL,
-          show_on_rinse_dashboard TINYINT(1) NOT NULL DEFAULT 0,
-          required_headcount INT NULL,
-          PRIMARY KEY (organization_id, role_key)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {LINKS} (
-          organization_id INT NOT NULL,
-          week_monday DATE NOT NULL,
-          user_id INT NOT NULL,
-          day_of_week TINYINT NOT NULL,
-          entry_id INT NULL,
-          PRIMARY KEY (organization_id, week_monday, user_id, day_of_week)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    invalidate_schema_cache()
+class PlannerSchemaNotApplied(RuntimeError):
+    def __init__(self, missing: list[str]):
+        self.missing = missing
+        super().__init__("operations planner migration has not been applied")
+
+
+def schema_status(cursor) -> dict[str, Any]:
+    missing = [name for name in PLANNER_TABLES if not table_exists(cursor, name)]
+    return {"ready": not missing, "missing": missing, "version": SCHEMA_VERSION}
+
+
+def require_schema(cursor) -> None:
+    status = schema_status(cursor)
+    if not status["ready"]:
+        raise PlannerSchemaNotApplied(status["missing"])
 
 
 def _date(raw: Any) -> date | None:
@@ -156,7 +68,7 @@ def _loads(raw: Any) -> Any:
 
 
 def load_flags(cursor, organization_id: int) -> dict[str, bool]:
-    ensure_tables(cursor)
+    require_schema(cursor)
     cursor.execute(
         f"""
         SELECT manager_pilot, employee_pilot, paystub_access
@@ -174,11 +86,19 @@ def load_flags(cursor, organization_id: int) -> dict[str, bool]:
     }
 
 
+class PaystubSecurityHold(RuntimeError):
+    """PIN plus date of birth is not enough to open paystubs on a shared device."""
+
+
 def save_flags(cursor, organization_id: int, flags: Mapping[str, Any]) -> dict[str, bool]:
     current = load_flags(cursor, organization_id)
     for key in ("manager_pilot", "employee_pilot", "paystub_access"):
         if key in flags:
             current[key] = bool(flags.get(key))
+    if current["paystub_access"]:
+        raise PaystubSecurityHold(
+            "Paystub access stays off. A shared-device PIN and date of birth are not an adequate identity check for payroll documents."
+        )
     cursor.execute(
         f"""
         INSERT INTO {FLAGS} (organization_id, manager_pilot, employee_pilot, paystub_access, updated_at)
@@ -200,7 +120,7 @@ def save_flags(cursor, organization_id: int, flags: Mapping[str, Any]) -> dict[s
 
 
 def load_state(cursor, organization_id: int) -> dict[str, Any]:
-    ensure_tables(cursor)
+    require_schema(cursor)
     state = empty_state()
     org = int(organization_id)
     cursor.execute(
@@ -355,10 +275,9 @@ def _entry_rows(cursor, organization_id: int, storage_week: date, user_id: int, 
 
 def materialize_plans(conn, cursor, organization_id: int, plans: list[Mapping[str, Any]]) -> None:
     """Write planned entries for the cells a confirmed change named."""
-    from backend.planned_weekly_schedule import create_entry, delete_entry, ensure_planned_weekly_schedule_table, update_entry
+    from backend.planned_weekly_schedule import create_entry, delete_entry, update_entry
 
-    ensure_planned_weekly_schedule_table(cursor)
-    ensure_tables(cursor)
+    require_schema(cursor)
     for plan in plans:
         monday = parse_schedule_date(plan.get("week_monday"))
         if monday is None:
@@ -396,6 +315,64 @@ def materialize_plans(conn, cursor, organization_id: int, plans: list[Mapping[st
             """,
             (int(organization_id), monday, user_id, day, entry_id),
         )
+        shift = plan.get("shift") or {}
+        if isinstance(shift, Mapping) and shift.get("tasks") is not None:
+            _sync_cell_tasks(
+                conn,
+                cursor,
+                organization_id,
+                storage_week=storage,
+                user_id=user_id,
+                day_of_week=day,
+                tasks=shift.get("tasks") or [],
+            )
+
+
+def _sync_cell_tasks(conn, cursor, organization_id: int, *, storage_week: date, user_id: int, day_of_week: int, tasks: list) -> list[str]:
+    """Create or remove responsibility rows. Rows with execution history stay."""
+    from backend.planned_weekly_schedule_responsibilities import (
+        annotate_responsibility_activity,
+        create_responsibility,
+        delete_responsibility,
+        list_week_responsibilities,
+    )
+
+    existing = [
+        item
+        for item in list_week_responsibilities(cursor, organization_id, week_start=storage_week)
+        if int(item.get("user_id") or 0) == int(user_id) and int(item.get("day_of_week") or -1) == int(day_of_week)
+    ]
+    existing = annotate_responsibility_activity(cursor, organization_id, existing)
+    decision = plan_task_links(existing, tasks)
+    warnings: list[str] = []
+    for row in decision["preserved_history"]:
+        warnings.append(f"{row.get('role')} keeps its completion history")
+    for row in decision["remove"]:
+        delete_responsibility(cursor, organization_id, int(row["id"]))
+    for spec in decision["add"]:
+        members = [int(uid) for uid in (spec.get("user_ids") or [])] or [int(user_id)]
+        if int(user_id) not in members:
+            members.append(int(user_id))
+        _created, err = create_responsibility(
+            conn,
+            cursor,
+            organization_id,
+            week_start=storage_week,
+            data={
+                "user_ids": members,
+                "day_of_week": int(day_of_week),
+                "role": spec.get("role"),
+                "remarks": spec.get("remarks") or "",
+                "timing_mode": spec.get("timing_mode") or "anytime",
+                "start_time": spec.get("start_time"),
+                "execution_mode": spec.get("execution_mode") or "individual",
+            },
+        )
+        if err and "already has that task" in str(err):
+            continue
+        if err:
+            raise ValueError(err)
+    return warnings
 
 
 def legacy_template_enabled(cursor, organization_id: int) -> bool:
@@ -428,7 +405,7 @@ def stop_legacy_template(cursor, organization_id: int, actor_id: int | None) -> 
 
 
 def load_access(cursor, organization_id: int, user_id: int) -> dict[str, bool]:
-    ensure_tables(cursor)
+    require_schema(cursor)
     cursor.execute(
         f"""
         SELECT schedule_enabled, hours_enabled, paystub_enabled
@@ -476,7 +453,7 @@ def save_access(cursor, organization_id: int, user_id: int, access: Mapping[str,
 
 
 def load_role_settings(cursor, organization_id: int) -> list[dict[str, Any]]:
-    ensure_tables(cursor)
+    require_schema(cursor)
     cursor.execute(
         f"""
         SELECT role_key, show_on_rinse_dashboard, required_headcount
@@ -492,15 +469,31 @@ def load_role_settings(cursor, organization_id: int) -> list[dict[str, Any]]:
                     "role": row.get("role_key"),
                     "show_on_rinse_dashboard": bool(row.get("show_on_rinse_dashboard")),
                     "required_headcount": row.get("required_headcount"),
+                    "hourly_headcount": {},
                 }
             )
+    cursor.execute(
+        f"""
+        SELECT role_key, hour_of_day, required_headcount
+        FROM {HOURS} WHERE organization_id=%s
+        """,
+        (int(organization_id),),
+    )
+    by_role = {row["role"]: row for row in rows}
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        target = by_role.get(row.get("role_key"))
+        if target is None:
+            continue
+        target["hourly_headcount"][str(int(row.get("hour_of_day") or 0))] = row.get("required_headcount")
     return rows
 
 
 def save_role_setting(cursor, organization_id: int, role: str, body: Mapping[str, Any]) -> None:
-    ensure_tables(cursor)
+    require_schema(cursor)
     current = {row["role"]: row for row in load_role_settings(cursor, organization_id)}
-    prior = current.get(role) or {"show_on_rinse_dashboard": False, "required_headcount": None}
+    prior = current.get(role) or {"show_on_rinse_dashboard": False, "required_headcount": None, "hourly_headcount": {}}
     show = body.get("show_on_rinse_dashboard", prior["show_on_rinse_dashboard"])
     headcount = body.get("required_headcount", prior["required_headcount"])
     if headcount in ("", None):
@@ -517,6 +510,21 @@ def save_role_setting(cursor, organization_id: int, role: str, body: Mapping[str
         """,
         (int(organization_id), role, 1 if show else 0, headcount),
     )
+    if "hourly_headcount" in body and isinstance(body.get("hourly_headcount"), Mapping):
+        cursor.execute(
+            f"DELETE FROM {HOURS} WHERE organization_id=%s AND role_key=%s",
+            (int(organization_id), role),
+        )
+        for hour, needed in body["hourly_headcount"].items():
+            if needed in ("", None):
+                continue
+            cursor.execute(
+                f"""
+                INSERT INTO {HOURS} (organization_id, role_key, hour_of_day, required_headcount)
+                VALUES (%s,%s,%s,%s)
+                """,
+                (int(organization_id), role, int(hour), int(needed)),
+            )
 
 
 def acquire_lock(cursor, organization_id: int) -> bool:

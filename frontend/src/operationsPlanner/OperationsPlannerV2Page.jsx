@@ -9,7 +9,10 @@ import {
   autoScrollDelta,
   entriesForPeriod,
   hourCoverage,
+  minutesToClock,
   movedShift,
+  pointerToMinutes,
+  roleCoverage,
   overlappingBreakCount,
   periodLabel,
   shiftHours,
@@ -79,7 +82,6 @@ function entryShift(entry) {
     break_minutes: Number(entry.break_minutes || 0),
     break_slots: entry.break_slots || [],
     role_assignments: entry.role_assignments || entry.assignments || [],
-    tasks: entry.tasks || [],
   };
 }
 
@@ -99,9 +101,18 @@ export default function OperationsPlannerV2Page() {
   const [exceptionChoice, setExceptionChoice] = useState(null);
   const [stopTemplate, setStopTemplate] = useState(false);
   const [selectedWeeks, setSelectedWeeks] = useState("");
+  const [laterChoice, setLaterChoice] = useState(null);
   const [drag, setDrag] = useState(null);
+  const [dragPreview, setDragPreview] = useState("");
+  const [pickedEmployees, setPickedEmployees] = useState([]);
 
   const load = useCallback(async (weekStart) => {
+    if (new URLSearchParams(window.location.search).get("preview") === "1" || window.location.pathname === "/dev/operations-planner") {
+      setFlags({ manager_pilot: true, employee_pilot: false, paystub_access: false });
+      setPayload(previewPayload());
+      if (!weekStart) setWeek("2026-11-09");
+      return;
+    }
     const status = await api("/operations-planner/v2/status");
     setFlags(status.data.flags);
     if (!status.data.flags?.manager_pilot) {
@@ -114,7 +125,14 @@ export default function OperationsPlannerV2Page() {
   }, []);
 
   useEffect(() => {
-    load(week).catch((err) => setError(err.response?.data?.error || err.message));
+    load(week).catch((err) => {
+      const data = err.response?.data;
+      if (data?.code === "migration_required") {
+        setError(`The planner migration has not been applied (${(data.missing || []).join(", ")}). Apply backend/sql/operations_planner_v2.sql. This page does not create tables.`);
+        return;
+      }
+      setError(data?.error || err.message);
+    });
   }, [load, week]);
 
   const employees = payload?.employees || [];
@@ -157,6 +175,7 @@ export default function OperationsPlannerV2Page() {
     setScope("this_week");
     setPublishedChoice(null);
     setExceptionChoice(null);
+    setLaterChoice(null);
     setStopTemplate(false);
     setPending({ command });
     setError("");
@@ -171,6 +190,7 @@ export default function OperationsPlannerV2Page() {
       selected_weeks: selectedWeeks.split(",").map((item) => item.trim()).filter(Boolean),
       include_published: publishedChoice,
       replace_exceptions: exceptionChoice,
+      replace_later_patterns: laterChoice,
       stop_legacy_template: stopTemplate,
     };
     const response = await api(path, { method: "POST", data: body, validateStatus: () => true });
@@ -198,22 +218,43 @@ export default function OperationsPlannerV2Page() {
     await load(week);
   }
 
+  function targetsFor(userId) {
+    const ids = pickedEmployees.map(Number).filter(Boolean);
+    if (!ids.includes(Number(userId))) ids.unshift(Number(userId));
+    return ids;
+  }
+
   function onDrop(event, userId, dayOfWeek) {
     event.preventDefault();
-    if (!drag) return;
-    const copy = event.altKey;
-    const next = movedShift(drag.shift, { dayOfWeek });
+    if (!drag?.shift) return;
+    const copy = event.altKey || drag.copy;
+    const lane = event.currentTarget.getBoundingClientRect();
+    const minutes = pointerToMinutes(event.clientX, lane);
+    const startTime = drag.kind === "timeline" && minutes != null ? minutesToClock(minutes) : drag.shift.start_time;
+    const next = movedShift(drag.shift, { dayOfWeek, startTime });
+    const userIds = copy ? targetsFor(userId) : [Number(userId)];
     queueChange({
       action: copy ? "copy" : "move",
-      user_id: userId,
-      user_ids: [userId],
+      user_id: Number(userId),
+      user_ids: userIds,
       from_user_id: drag.shift.user_id,
       from_day_of_week: drag.shift.day_of_week,
       day_of_week: dayOfWeek,
       previous_shift: drag.shift,
-      shift: { ...next, user_id: userId },
+      shift: { ...next, user_id: Number(userId) },
     });
     setDrag(null);
+    setDragPreview("");
+  }
+
+  function editShift(shift, next) {
+    queueChange({
+      action: "upsert",
+      user_id: Number(shift.user_id),
+      user_ids: targetsFor(shift.user_id),
+      day_of_week: Number(next.day_of_week ?? shift.day_of_week),
+      shift: { ...shift, ...next, user_id: Number(shift.user_id) },
+    });
   }
 
   function onDragOver(event) {
@@ -277,7 +318,21 @@ export default function OperationsPlannerV2Page() {
       {payload ? (
         <div className="ops-main">
           <section className="ops-board" onDragOver={onDragOver}>
-            {lens === "employees" ? (
+            {lens === "employees" && mode === "day" ? (
+              <DayTimeline
+                employees={employees}
+                entries={visibleEntries}
+                preview={dragPreview}
+                day={day}
+                onDragStart={(shift) => setDrag({ shift, kind: "timeline" })}
+                onDragOver={(event) => {
+                  const minutes = pointerToMinutes(event.clientX, event.currentTarget.getBoundingClientRect());
+                  if (minutes != null && drag?.shift) setDragPreview(`${minutesToClock(minutes)} · ${drag.shift.role}`);
+                }}
+                onDrop={onDrop}
+              />
+            ) : null}
+            {lens === "employees" && mode !== "day" ? (
               <table className="ops-grid">
                 <thead>
                   <tr>
@@ -299,7 +354,7 @@ export default function OperationsPlannerV2Page() {
                                 type="button"
                                 className="ops-shift"
                                 draggable
-                                onDragStart={() => setDrag({ shift: entry })}
+                                onDragStart={() => setDrag({ shift: entry, kind: "move" })}
                                 title={`${entry.role}, ${figures.net} net hours. Drag to move. Hold Alt to copy.`}
                               >
                                 {entry.start_time}–{entry.end_time}
@@ -314,20 +369,47 @@ export default function OperationsPlannerV2Page() {
                 </tbody>
               </table>
             ) : null}
+            {lens === "employees" ? (
+              <TimeEditor employees={employees} day={day} picked={pickedEmployees} onToggle={setPickedEmployees} onEdit={editShift} />
+            ) : null}
             {lens === "roles" ? (
-              <RoleBoard entries={visibleEntries} employees={employees} />
+              <RoleBoard
+                entries={visibleEntries}
+                employees={employees}
+                settings={planner.role_settings || []}
+                onAssign={(entry, role) => editShift(entry, {
+                  role,
+                  role_assignments: (entry.role_assignments || []).map((item, index) => (index === 0 ? { ...item, role } : item)),
+                })}
+                onHeadcount={(role, body) => {
+                  api(`/operations-planner/v2/roles/${encodeURIComponent(role)}`, { method: "PUT", data: body })
+                    .then(() => load(week))
+                    .catch((err) => setError(err.response?.data?.error || err.message));
+                }}
+              />
             ) : null}
             {lens === "breaks" ? (
-              <BreakBoard entries={visibleEntries} employees={employees} />
+              <BreakBoard
+                entries={visibleEntries}
+                employees={employees}
+                onMove={(entry, startTime) => {
+                  const slot = (entry.break_slots || [])[0];
+                  if (!slot) return;
+                  const duration = (Number(slot.end_time.slice(0, 2)) * 60 + Number(slot.end_time.slice(3, 5))) - (Number(slot.start_time.slice(0, 2)) * 60 + Number(slot.start_time.slice(3, 5)));
+                  const end = minutesToClock((Number(startTime.slice(0, 2)) * 60 + Number(startTime.slice(3, 5))) + Math.max(15, duration));
+                  editShift(entry, { break_slots: [{ ...slot, start_time: startTime, end_time: end }] });
+                }}
+                onCopyPattern={(source) => editShift(source, { break_slots: source.break_slots || [] })}
+              />
             ) : null}
             {lens === "tasks" ? (
-              <TaskBoard tasks={visibleTasks} employees={employees} />
+              <TaskBoard tasks={visibleTasks} employees={employees} entries={visibleEntries} day={day} onEdit={editShift} />
             ) : null}
           </section>
           <aside className="ops-side">
             <h2>{period}</h2>
             <p>{employees.length} employees · {visibleEntries.length} shifts · {hours.toFixed(1)} net hours</p>
-            <p>Tasks: {tasks.counts.total} groups ({tasks.counts.completed} completed, {tasks.counts.awaiting} awaiting verification). People rows: {tasks.people.total}.</p>
+            <p>Tasks: {tasks.counts.total} groups. Employee rows: {tasks.people.completed} completed, {tasks.people.inProgress} in progress, {tasks.people.awaiting} awaiting verification, {tasks.people.pending} pending.</p>
             {breakHot ? <p className="ops-warn">More than three timed breaks overlap in this {mode}.</p> : <p>Break overlap is within the limit of three.</p>}
             <p>Status: {planner.status || "draft"}. Employees see the last published revision{planner.published_revision ? ` ${planner.published_revision}` : ""}.</p>
             <AccessEditor employees={employees} onSaved={() => load(week)} onError={setError} />
@@ -362,7 +444,10 @@ export default function OperationsPlannerV2Page() {
               </label>
             ))}
             {scope === "selected_weeks" ? (
-              <input value={selectedWeeks} onChange={(event) => setSelectedWeeks(event.target.value)} placeholder="Mondays, comma separated" />
+              <label>
+                Full Monday–Sunday weeks. Enter the Monday that starts each week, including weeks that are not next to each other.
+                <input value={selectedWeeks} onChange={(event) => setSelectedWeeks(event.target.value)} placeholder="2026-11-16, 2026-12-07" />
+              </label>
             ) : null}
             <p>Affected: {(preview?.dates || [week]).join(", ")}</p>
             {preview?.shift ? <p>{preview.shift.start_time}–{preview.shift.end_time} · {(preview.shift.roles || []).join(", ")} · {preview.shift.net_hours} net hours</p> : null}
@@ -371,6 +456,13 @@ export default function OperationsPlannerV2Page() {
                 <legend>Approved or published weeks: {preview.approved_or_published_weeks.join(", ")}</legend>
                 <button type="button" className={publishedChoice === true ? "active" : ""} onClick={() => setPublishedChoice(true)}>Update them and require a new approval</button>
                 <button type="button" className={publishedChoice === false ? "active" : ""} onClick={() => setPublishedChoice(false)}>Leave them unchanged</button>
+              </fieldset>
+            ) : null}
+            {preview?.later_pattern_weeks?.length ? (
+              <fieldset>
+                <legend>A later schedule already starts on {preview.later_pattern_weeks.join(", ")}</legend>
+                <button type="button" className={laterChoice === false ? "active" : ""} onClick={() => setLaterChoice(false)}>Keep that later schedule</button>
+                <button type="button" className={laterChoice === true ? "active" : ""} onClick={() => setLaterChoice(true)}>Replace that later schedule</button>
               </fieldset>
             ) : null}
             {preview?.exception_weeks?.length ? (
@@ -436,7 +528,8 @@ function AccessEditor({ employees, onSaved, onError }) {
           <option key={employee.user_id} value={employee.user_id}>{employee.display_name}</option>
         ))}
       </select>
-      {access ? ["schedule_enabled", "hours_enabled", "paystub_enabled"].map((key) => (
+      <p>Paystubs stay off. A PIN and date of birth are not enough on a shared device.</p>
+      {access ? ["schedule_enabled", "hours_enabled"].map((key) => (
         <label key={key} style={{ display: "block", fontSize: 13 }}>
           <input type="checkbox" checked={Boolean(access[key])} onChange={(event) => update(key, event.target.checked)} />
           {" "}{key.replace("_enabled", "")}
@@ -450,16 +543,36 @@ function names(employees, userId) {
   return employees.find((employee) => Number(employee.user_id) === Number(userId))?.display_name || `Employee ${userId}`;
 }
 
-function RoleBoard({ entries, employees }) {
-  const roles = [...new Set(entries.flatMap((entry) => (entry.role_assignments || []).map((item) => item.role).concat(entry.role)))];
+function DayTimeline({ employees, entries, day, preview, onDragStart, onDragOver, onDrop }) {
+  const hours = [];
+  for (let hour = 6; hour <= 21; hour += 1) hours.push(hour);
   return (
-    <div>
-      {roles.map((role) => (
-        <div key={role} className="lane">
-          <strong>{role}</strong>
-          <div>
-            {entries.filter((entry) => entry.role === role || (entry.role_assignments || []).some((item) => item.role === role)).map((entry) => (
-              <div key={`${role}-${entry.user_id}-${entry.start_time}`}>{names(employees, entry.user_id)} {entry.start_time}–{entry.end_time}</div>
+    <div className="ops-timeline">
+      <div className="ops-timeline-hours"><span /><div>{hours.map((hour) => <span key={hour}>{hour}</span>)}</div></div>
+      {preview ? <p className="ops-preview">{preview}</p> : null}
+      {employees.map((employee) => (
+        <div
+          key={employee.user_id}
+          className="ops-timeline-row"
+          onDragOver={(event) => {
+            event.preventDefault();
+            onDragOver(event);
+          }}
+          onDrop={(event) => onDrop(event, Number(employee.user_id), day)}
+        >
+          <strong>{employee.display_name}</strong>
+          <div className="ops-lane">
+            {entries.filter((entry) => Number(entry.user_id) === Number(employee.user_id)).map((entry) => (
+              <button
+                key={`${entry.user_id}-${entry.start_time}`}
+                type="button"
+                className="ops-bar"
+                draggable
+                style={barStyle(entry.start_time, entry.end_time)}
+                onDragStart={() => onDragStart(entry)}
+              >
+                {entry.start_time}–{entry.end_time} {entry.role}
+              </button>
             ))}
           </div>
         </div>
@@ -468,18 +581,132 @@ function RoleBoard({ entries, employees }) {
   );
 }
 
-function BreakBoard({ entries, employees }) {
+function barStyle(start, end) {
+  const open = 6 * 60;
+  const span = 16 * 60;
+  const begin = ((Number(start.slice(0, 2)) * 60 + Number(start.slice(3, 5))) - open) / span;
+  const finish = ((Number(end.slice(0, 2)) * 60 + Number(end.slice(3, 5))) - open) / span;
+  return { left: `${Math.max(0, begin) * 100}%`, width: `${Math.max(2, (finish - begin) * 100)}%` };
+}
+
+function TimeEditor({ employees, day, picked, onToggle, onEdit }) {
+  const [userId, setUserId] = useState(employees[0] ? String(employees[0].user_id) : "");
+  const [start, setStart] = useState("08:00");
+  const [end, setEnd] = useState("16:00");
+  const [role, setRole] = useState("fold");
+  const [breakStart, setBreakStart] = useState("12:00");
+  const [breakEnd, setBreakEnd] = useState("12:30");
+  return (
+    <form
+      className="ops-editor"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onEdit(
+          { user_id: Number(userId), day_of_week: day, start_time: start, end_time: end, role, break_slots: [], role_assignments: [] },
+          {
+            start_time: start,
+            end_time: end,
+            role,
+            role_assignments: [{ role, start_time: start, end_time: end }],
+            break_slots: [{ start_time: breakStart, end_time: breakEnd, timed: true }],
+          },
+        );
+      }}
+    >
+      <p>Keyboard edit. Saving asks which weeks to update. Check extra employees to apply the same times.</p>
+      <select value={userId} onChange={(event) => setUserId(event.target.value)}>
+        {employees.map((employee) => <option key={employee.user_id} value={employee.user_id}>{employee.display_name}</option>)}
+      </select>
+      <label>Start <input type="time" step="900" value={start} onChange={(event) => setStart(event.target.value)} /></label>
+      <label>End <input type="time" step="900" value={end} onChange={(event) => setEnd(event.target.value)} /></label>
+      <label>Role <input value={role} onChange={(event) => setRole(event.target.value)} /></label>
+      <label>Break <input type="time" step="900" value={breakStart} onChange={(event) => setBreakStart(event.target.value)} /></label>
+      <label>Until <input type="time" step="900" value={breakEnd} onChange={(event) => setBreakEnd(event.target.value)} /></label>
+      {employees.map((employee) => (
+        <label key={employee.user_id}>
+          <input
+            type="checkbox"
+            checked={picked.map(String).includes(String(employee.user_id))}
+            onChange={(event) => {
+              const id = String(employee.user_id);
+              onToggle(event.target.checked ? [...picked, id] : picked.filter((item) => item !== id));
+            }}
+          />
+          {employee.display_name}
+        </label>
+      ))}
+      <button type="submit" className="primary">Save times</button>
+    </form>
+  );
+}
+
+function RoleBoard({ entries, employees, settings, onAssign, onHeadcount }) {
+  const roles = [...new Set([
+    ...settings.map((row) => row.role),
+    ...entries.flatMap((entry) => (entry.role_assignments || []).map((item) => item.role).concat(entry.role)),
+  ].filter(Boolean))];
   const hours = [];
   for (let hour = 6; hour <= 21; hour += 1) hours.push(hour);
   return (
-    <div style={{ display: "grid", gridTemplateColumns: `repeat(${hours.length}, minmax(72px, 1fr))` }}>
-      {hours.map((hour) => {
-        const cell = hourCoverage(entries, hour);
+    <div>
+      {roles.map((role) => {
+        const setting = settings.find((row) => row.role === role) || {};
         return (
-          <div key={hour} className="hour-cell">
-            <strong>{hour}:00</strong>
-            <div>{cell.available.length} available / {cell.scheduled.length} scheduled</div>
-            {cell.onBreak.map((entry) => <div key={entry.user_id}>{names(employees, entry.user_id)} on break</div>)}
+          <div
+            key={role}
+            className="lane"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              const raw = event.dataTransfer.getData("text/plain");
+              if (!raw) return;
+              onAssign(JSON.parse(raw), role);
+            }}
+          >
+            <strong>{role}</strong>
+            <label>
+              Required
+              <input
+                type="number"
+                min="0"
+                defaultValue={setting.required_headcount ?? ""}
+                onBlur={(event) => onHeadcount(role, { required_headcount: event.target.value })}
+              />
+            </label>
+            <div className="ops-hours">
+              {hours.map((hour) => {
+                const required = setting.hourly_headcount?.[String(hour)] ?? setting.required_headcount;
+                const cell = roleCoverage(entries, role, hour, required);
+                return (
+                  <div key={hour} className="ops-hour-card">
+                    <strong>{hour}:00</strong>
+                    <div>Required {cell.required ?? "—"}</div>
+                    <div>Scheduled {cell.scheduled.length}</div>
+                    <div>Active {cell.available.length}</div>
+                    <div>On break {cell.onBreak.length}</div>
+                    <div>{cell.shortage ? `Short ${cell.shortage}` : cell.surplus ? `Extra ${cell.surplus}` : "Covered"}</div>
+                    <input
+                      aria-label={`${role} required at ${hour}`}
+                      type="number"
+                      min="0"
+                      defaultValue={setting.hourly_headcount?.[String(hour)] ?? ""}
+                      onBlur={(event) => onHeadcount(role, {
+                        hourly_headcount: { ...(setting.hourly_headcount || {}), [hour]: event.target.value },
+                      })}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+            {entries.filter((entry) => entry.role === role || (entry.role_assignments || []).some((item) => item.role === role)).map((entry) => (
+              <button
+                key={`${role}-${entry.user_id}-${entry.start_time}`}
+                type="button"
+                draggable
+                onDragStart={(event) => event.dataTransfer.setData("text/plain", JSON.stringify(entry))}
+              >
+                {names(employees, entry.user_id)} {entry.start_time}–{entry.end_time}
+              </button>
+            ))}
           </div>
         );
       })}
@@ -487,7 +714,56 @@ function BreakBoard({ entries, employees }) {
   );
 }
 
-function TaskBoard({ tasks, employees }) {
+function BreakBoard({ entries, employees, onMove, onCopyPattern }) {
+  const hours = [];
+  for (let hour = 6; hour <= 21; hour += 1) hours.push(hour);
+  const overlap = overlappingBreakCount(entries);
+  return (
+    <div>
+      {overlap > BREAK_OVERLAP_CAP ? <p className="ops-warn">{overlap} people have a timed break at the same time. The limit is {BREAK_OVERLAP_CAP}.</p> : <p>Timed breaks overlap by {overlap}. Active coverage excludes people on a timed break.</p>}
+      <div className="ops-break-grid">
+        {hours.map((hour) => {
+          const cell = hourCoverage(entries, hour);
+          return (
+            <div
+              key={hour}
+              className="hour-cell"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                const raw = event.dataTransfer.getData("text/plain");
+                if (!raw) return;
+                onMove(JSON.parse(raw), `${String(hour).padStart(2, "0")}:00`);
+              }}
+            >
+              <strong>{hour}:00</strong>
+              <div>{cell.available.length} active · {cell.scheduled.length} scheduled · {cell.onBreak.length} on break</div>
+              {cell.onBreak.map((entry) => (
+                <button
+                  key={entry.user_id}
+                  type="button"
+                  draggable
+                  onDragStart={(event) => event.dataTransfer.setData("text/plain", JSON.stringify(entry))}
+                >
+                  {names(employees, entry.user_id)}
+                </button>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+      {entries.filter((entry) => (entry.break_slots || []).length).map((entry) => (
+        <button key={`copy-${entry.user_id}-${entry.day_of_week}`} type="button" onClick={() => onCopyPattern(entry)}>
+          Apply {names(employees, entry.user_id)} break to checked employees
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function TaskBoard({ tasks, employees, entries, day, onEdit }) {
+  const [userId, setUserId] = useState(employees[0] ? String(employees[0].user_id) : "");
+  const [role, setRole] = useState("");
+  const [shared, setShared] = useState(false);
   const byPerson = new Map();
   for (const task of tasks) {
     const key = Number(task.user_id);
@@ -496,11 +772,46 @@ function TaskBoard({ tasks, employees }) {
   }
   return (
     <div>
-      {[...byPerson.entries()].map(([userId, rows]) => {
+      <form
+        className="ops-editor"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const entry = entries.find((item) => String(item.user_id) === String(userId) && Number(item.day_of_week) === Number(day));
+          if (!entry || !role.trim()) return;
+          const members = shared ? employees.map((employee) => Number(employee.user_id)) : [Number(userId)];
+          const current = tasks
+            .filter((task) => String(task.user_id) === String(userId) && Number(task.day_of_week) === Number(day))
+            .map((task) => ({
+              role: task.role,
+              name: task.role,
+              shared: Boolean(task.assignment_group_id),
+              user_ids: task.user_ids || [Number(task.user_id)],
+              execution_mode: task.assignment_group_id ? "shared" : "individual",
+            }));
+          onEdit(entry, {
+            tasks: [...current.filter((task) => task.role !== role.trim()), {
+              role: role.trim(),
+              name: role.trim(),
+              shared,
+              user_ids: members,
+              execution_mode: shared ? "shared" : "individual",
+            }],
+          });
+        }}
+      >
+        <p>Assign an existing task role. Completed work stays on the employee record. A shared task uses one activity group.</p>
+        <select value={userId} onChange={(event) => setUserId(event.target.value)}>
+          {employees.map((employee) => <option key={employee.user_id} value={employee.user_id}>{employee.display_name}</option>)}
+        </select>
+        <input value={role} onChange={(event) => setRole(event.target.value)} placeholder="Existing task role code" />
+        <label><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /> Shared activity group</label>
+        <button type="submit">Assign task</button>
+      </form>
+      {[...byPerson.entries()].map(([personId, rows]) => {
         const rollup = taskRollup(rows);
         return (
-          <div key={userId} className="lane">
-            <strong>{names(employees, userId)}</strong>
+          <div key={personId} className="lane">
+            <strong>{names(employees, personId)}</strong>
             <div>
               <div>{rollup.people.completed} completed · {rollup.people.inProgress} in progress · {rollup.people.pending} pending · {rollup.people.awaiting} awaiting verification · {rollup.people.verified} verified</div>
               {rows.map((row) => (
@@ -512,4 +823,35 @@ function TaskBoard({ tasks, employees }) {
       })}
     </div>
   );
+}
+
+function previewPayload() {
+  return {
+    week_label: "Nov 9–15, 2026",
+    employees: [
+      { user_id: 7, display_name: "Amina Cole" },
+      { user_id: 8, display_name: "Luis Ortega" },
+      { user_id: 9, display_name: "Priya Shah" },
+    ],
+    entries: [
+      { id: 1, user_id: 7, day_of_week: 1, start_time: "08:00", end_time: "16:00", role: "wash", break_slots: [{ start_time: "12:00", end_time: "12:30", timed: true }], role_assignments: [{ role: "wash", start_time: "08:00", end_time: "12:00" }, { role: "fold", start_time: "12:30", end_time: "16:00" }] },
+      { id: 2, user_id: 8, day_of_week: 1, start_time: "09:00", end_time: "17:00", role: "fold", break_slots: [{ start_time: "12:00", end_time: "12:30", timed: true }], role_assignments: [{ role: "fold", start_time: "09:00", end_time: "17:00" }] },
+      { id: 3, user_id: 9, day_of_week: 1, start_time: "10:00", end_time: "18:00", role: "fold", break_slots: [{ start_time: "13:00", end_time: "13:30", timed: true }], role_assignments: [{ role: "fold", start_time: "10:00", end_time: "18:00" }] },
+    ],
+    daily_responsibilities: [
+      { id: 11, user_id: 7, day_of_week: 1, role: "floor_reset", status: "completed", assignment_group_id: "g1" },
+      { id: 12, user_id: 8, day_of_week: 1, role: "floor_reset", status: "in_progress", assignment_group_id: "g1" },
+      { id: 13, user_id: 9, day_of_week: 1, role: "trash", status: "pending" },
+    ],
+    planner: {
+      week_monday: "2026-11-09",
+      status: "draft",
+      revision: 3,
+      flags: { manager_pilot: true },
+      role_settings: [
+        { role: "wash", required_headcount: 1, hourly_headcount: { 8: 1, 12: 1 }, show_on_rinse_dashboard: false, visible_to_rinse: false },
+        { role: "fold", required_headcount: 2, hourly_headcount: { 12: 2 }, show_on_rinse_dashboard: true, visible_to_rinse: true },
+      ],
+    },
+  };
 }

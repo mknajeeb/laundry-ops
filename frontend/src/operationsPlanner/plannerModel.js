@@ -21,6 +21,28 @@ export function spanMinutes(start, end) {
   return (finish <= begin ? finish + 24 * 60 : finish) - begin;
 }
 
+export const SNAP_MINUTES = 15;
+
+export function snapMinutes(total, step = SNAP_MINUTES) {
+  if (!Number.isFinite(total)) return null;
+  const snapped = Math.round(total / step) * step;
+  return Math.max(0, Math.min(24 * 60, snapped));
+}
+
+export function minutesToClock(total) {
+  const snapped = snapMinutes(total);
+  if (snapped == null) return "";
+  const wrapped = snapped % (24 * 60);
+  return `${String(Math.floor(wrapped / 60)).padStart(2, "0")}:${String(wrapped % 60).padStart(2, "0")}`;
+}
+
+export function pointerToMinutes(clientX, rect, startHour = 6, endHour = 22) {
+  if (!rect?.width) return null;
+  const span = (endHour - startHour) * 60;
+  const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+  return snapMinutes(startHour * 60 + ratio * span);
+}
+
 export function addMinutes(start, minutes) {
   const begin = clockMinutes(start);
   if (begin == null) return start;
@@ -94,6 +116,47 @@ export function hourCoverage(entries, hour) {
   };
 }
 
+function intervalOverlaps(startText, endText, begin, end) {
+  const start = clockMinutes(startText);
+  let finish = clockMinutes(endText);
+  if (start == null || finish == null) return false;
+  if (finish <= start) finish += 24 * 60;
+  return start < end && begin < finish;
+}
+
+/** Required, scheduled, active, and on-break counts for one role during one hour. */
+export function roleCoverage(entries, role, hour, required) {
+  const begin = hour * 60;
+  const end = begin + 60;
+  const scheduled = [];
+  const onBreak = [];
+  for (const entry of entries || []) {
+    const segments = (entry.role_assignments || []).filter((item) => item.role === role);
+    const covers = segments.length
+      ? segments.some((item) => intervalOverlaps(item.start_time, item.end_time, begin, end))
+      : entry.role === role && intervalOverlaps(entry.start_time, entry.end_time, begin, end);
+    if (!covers) continue;
+    scheduled.push(entry);
+    const breaking = (entry.break_slots || []).some(
+      (slot) => slot?.timed !== false && intervalOverlaps(slot.start_time, slot.end_time, begin, end),
+    );
+    if (breaking) onBreak.push(entry);
+  }
+  const breakIds = new Set(onBreak.map((entry) => entry.user_id));
+  const available = scheduled.filter((entry) => !breakIds.has(entry.user_id));
+  const need = required == null || required === "" ? null : Number(required);
+  return {
+    hour,
+    role,
+    scheduled,
+    onBreak,
+    available,
+    required: Number.isFinite(need) ? need : null,
+    shortage: Number.isFinite(need) ? Math.max(0, need - available.length) : 0,
+    surplus: Number.isFinite(need) ? Math.max(0, available.length - need) : 0,
+  };
+}
+
 export function overlappingBreakCount(entries) {
   const pieces = [];
   for (const entry of entries || []) {
@@ -139,7 +202,7 @@ export function taskRollup(responsibilities) {
   const counts = { pending: 0, inProgress: 0, awaiting: 0, verified: 0, completed: 0, total: 0 };
   const people = { pending: 0, inProgress: 0, awaiting: 0, verified: 0, completed: 0, total: 0 };
   for (const members of groups.values()) {
-    const buckets = members.map((member) => taskBucket(member.status));
+    const buckets = members.map((member) => taskBucket(member.activity_status || member.status));
     let bucket = "pending";
     if (buckets.includes("inProgress")) bucket = "inProgress";
     else if (buckets.includes("awaiting")) bucket = "awaiting";

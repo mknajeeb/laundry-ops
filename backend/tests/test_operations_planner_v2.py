@@ -17,6 +17,8 @@ from backend.operations_planner_v2 import (
     paystub_decision,
     plan_change,
     plan_entry_write,
+    plan_task_links,
+    span_minutes,
     publish_weeks,
     role_visible_to_rinse,
     shift_hours,
@@ -49,7 +51,6 @@ def _shift(**overrides):
             if default_span
             else [{"role": role, "start_time": start, "end_time": end}]
         ),
-        "tasks": [{"name": "Floor reset", "shared": False, "category": "cleaning"}],
     }
     payload.update(overrides)
     return payload
@@ -389,3 +390,119 @@ def test_employee_schedule_view_drops_coworkers():
     assert removed["ok"] is True
     assert cell_shift(removed["state"], 7, 1, ANCHOR)["start_time"] == "08:00"
     assert cell_shift(removed["state"], 7, 1, NEXT) is None
+
+
+def test_later_effective_pattern_is_kept_unless_the_manager_replaces_it():
+    first = _apply(empty_state())
+    later = ANCHOR + timedelta(days=28)
+    second = _apply(
+        first["state"],
+        anchor=later,
+        today=later,
+        shift=_shift(start_time="10:00", end_time="18:00"),
+        replace_later_patterns=False,
+    )
+    asked = _apply(second["state"], shift=_shift(start_time="09:00", end_time="17:00"))
+    assert asked["code"] == "confirmation_required"
+    assert "later_patterns" in asked["questions"]
+    kept = _apply(
+        second["state"],
+        shift=_shift(start_time="09:00", end_time="17:00"),
+        replace_later_patterns=False,
+    )
+    assert cell_shift(kept["state"], 7, 1, ANCHOR)["start_time"] == "09:00"
+    assert cell_shift(kept["state"], 7, 1, later)["start_time"] == "10:00"
+    replaced = _apply(
+        second["state"],
+        shift=_shift(start_time="07:00", end_time="15:00"),
+        replace_later_patterns=True,
+    )
+    assert cell_shift(replaced["state"], 7, 1, later)["start_time"] == "07:00"
+
+
+def test_selected_weeks_are_full_weeks_and_skip_the_gap():
+    base = _apply(empty_state())
+    gap = ANCHOR + timedelta(days=14)
+    far = ANCHOR + timedelta(days=21)
+    picked = _apply(
+        base["state"],
+        scope="selected_weeks",
+        selected_weeks=[NEXT.isoformat(), far.isoformat()],
+        shift=_shift(start_time="09:00", end_time="15:00"),
+    )
+    assert picked["ok"] is True
+    assert picked["preview"]["week_meaning"].startswith("Each date is the Monday")
+    assert cell_shift(picked["state"], 7, 1, NEXT)["start_time"] == "09:00"
+    assert cell_shift(picked["state"], 7, 1, gap)["start_time"] == "08:00"
+    assert cell_shift(picked["state"], 7, 1, far)["start_time"] == "09:00"
+
+
+def test_cross_year_week_and_dst_wall_clock():
+    anchor = date(2026, 12, 28)
+    result = _apply(empty_state(), anchor=anchor, today=date(2026, 12, 30), scope="this_week")
+    assert result["write_weeks"] == ["2026-12-28"]
+    assert cell_shift(result["state"], 7, 1, anchor)["start_time"] == "08:00"
+    assert span_minutes("01:30", "04:30") == 180
+
+
+def test_employment_end_does_not_schedule_later_weeks():
+    result = _apply(empty_state(), employment_end="2026-11-20")
+    assert "2026-11-23" not in result["write_weeks"]
+    assert cell_shift(result["state"], 7, 1, date(2026, 11, 23)) is None
+    assert cell_shift(result["state"], 7, 1, date(2026, 11, 16))["start_time"] == "08:00"
+
+
+def test_planning_does_not_mutate_the_supplied_state():
+    state = empty_state()
+    snapshot = {"patterns": list(state["patterns"]), "exceptions": list(state["exceptions"])}
+    _apply(state)
+    assert state["patterns"] == snapshot["patterns"]
+    assert state["exceptions"] == snapshot["exceptions"]
+
+
+def test_task_completion_history_is_not_part_of_a_schedule_edit():
+    existing = [
+        {"id": 1, "role": "floor_reset", "activity_status": "completed", "assignment_group_id": "g1"},
+        {"id": 2, "role": "trash", "activity_status": "", "assignment_group_id": "g2"},
+    ]
+    plan = plan_task_links(existing, [{"role": "trash", "name": "Trash"}])
+    assert [row["id"] for row in plan["preserved_history"]] == [1]
+    assert plan["remove"] == []
+    assert plan_task_links(existing, None)["unchanged"] is True
+    kept = plan_task_links(existing, [{"role": "trash"}, {"role": "floor_reset"}])
+    assert kept["add"] == []
+    assert {row["id"] for row in kept["keep"]} == {1, 2}
+
+
+def test_missing_planner_tables_are_reported_without_create():
+    from backend.operations_planner_v2_store import PlannerSchemaNotApplied, require_schema, schema_status
+
+    class MissingCursor:
+        def execute(self, *_args, **_kwargs):
+            return None
+
+        def fetchone(self):
+            return None
+
+    status = schema_status(MissingCursor())
+    assert status["ready"] is False
+    assert "ops_planner_role_hours" in status["missing"]
+    try:
+        require_schema(MissingCursor())
+    except PlannerSchemaNotApplied as exc:
+        assert exc.missing
+    else:
+        raise AssertionError("missing tables must stop the request")
+
+
+def test_a_busy_planner_lock_is_not_treated_as_free():
+    from backend.operations_planner_v2_store import acquire_lock
+
+    class Busy:
+        def execute(self, *_args, **_kwargs):
+            return None
+
+        def fetchone(self):
+            return {"locked": 0}
+
+    assert acquire_lock(Busy(), 4) is False

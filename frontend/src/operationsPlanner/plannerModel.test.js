@@ -3,7 +3,10 @@ import {
   autoScrollDelta,
   entriesForPeriod,
   hourCoverage,
+  minutesToClock,
   movedShift,
+  roleCoverage,
+  snapMinutes,
   overlappingBreakCount,
   placePopover,
   shiftHours,
@@ -54,6 +57,21 @@ describe("planner period and coverage", () => {
     expect(rollup.groups).toBe(2);
     expect(rollup.counts.total).toBe(2);
     expect(rollup.people.total).toBe(3);
+  });
+
+  it("snaps timeline edits and subtracts a break from role coverage", () => {
+    expect(snapMinutes(12 * 60 + 7)).toBe(12 * 60);
+    expect(minutesToClock(12 * 60 + 7)).toBe("12:00");
+    const noon = roleCoverage(
+      [fold, { ...fold, user_id: 2, role_assignments: [{ role: "fold", start_time: "08:00", end_time: "16:00" }], break_slots: [] }],
+      "fold",
+      12,
+      2,
+    );
+    expect(noon.scheduled).toHaveLength(2);
+    expect(noon.available).toHaveLength(1);
+    expect(noon.onBreak).toHaveLength(1);
+    expect(noon.shortage).toBe(1);
   });
 
   it("keeps popovers inside the viewport and scrolls near the edges", () => {

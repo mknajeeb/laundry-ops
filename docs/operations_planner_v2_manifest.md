@@ -22,9 +22,21 @@ Branch: `feature/operations-planner-v2` in worktree `/Users/kamisb./laundry_app-
 
 ## Migration
 
-`backend/sql/operations_planner_v2.sql` creates new tables only. It does not alter schedule, attendance, or payroll tables.
-The same statements run on first manager use of the planner. A PIN login does not create them.
-Rollback of the app code leaves the new tables in place. They are unused when the flags are off. Do not drop them to roll back; they hold the only copy of patterns and publication snapshots.
+Version `operations_planner_v2.1` in `backend/sql/operations_planner_v2.sql`.
+
+Apply that file explicitly. Startup, opening the planner, and PIN login do not create or alter tables. If the tables are missing, manager and employee planner routes return `migration_required` and the PIN tiles stay off.
+
+Order: this file only. It does not alter schedule, attendance, payroll, users, or task tables.
+Compatibility: the existing weekly schedule keeps working when these tables are absent.
+Rollback: leave the tables and keep `ops_planner_org_flags` at 0. Do not drop them to undo the app; they hold patterns, exceptions, and published snapshots. Dropping them does not restore attendance or payroll.
+
+A recurrence edit closes only the pattern that covers the edited week. A later effective-dated pattern stays unless the manager chooses “Replace that later schedule.” Selected dates are the Mondays that start full Monday–Sunday weeks.
+
+Recurring tasks call the existing `create_responsibility` path. A responsibility that already has task activity is not deleted or rewritten. Shared tasks stay one assignment group.
+
+## Paystub security
+
+PIN plus date of birth is not adequate for paystubs on a shared device. Date of birth is widely known, and the PIN is a short kiosk secret. The settings API refuses to turn `paystub_access` on (`paystub_security_hold`). Leave it off until paystubs require an individual factor that is not stored in the kiosk session: the employee’s own Washpro login, or a one-time code delivered to a personal device, still bound to that employee, short-lived, memory-only, `Cache-Control: no-store`, W-2 only, and only documents `generate_paystub_html` will already render.
 
 ## Shared files touched
 

@@ -645,6 +645,7 @@ function AppShell() {
 
   if (
     authLoading &&
+    pathname !== "/dev/operations-planner" &&
     !isLoginRoute(pathname) &&
     !isPublicPinSurface(pathname) &&
     !isPartnerRosterRoute(pathname) &&
@@ -667,6 +668,14 @@ function AppShell() {
         to={`${normalizedPathname}${location.search || ""}${location.hash || ""}`}
         replace
       />
+    );
+  }
+
+  if (import.meta.env.DEV && pathname === "/dev/operations-planner") {
+    return (
+      <Routes>
+        <Route path="/dev/operations-planner" element={<OperationsPlannerV2Page />} />
+      </Routes>
     );
   }
 

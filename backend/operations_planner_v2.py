@@ -180,14 +180,26 @@ def normalize_shift(raw: Mapping[str, Any] | None) -> tuple[dict[str, Any] | Non
     role = str(raw.get("role") or (assignments[0]["role"] if assignments else "")).strip()
     if not role:
         return None, "a role is required"
-    tasks = []
-    for item in raw.get("tasks") or []:
-        if isinstance(item, Mapping) and str(item.get("name") or item.get("role") or "").strip():
+    tasks = None
+    if "tasks" in raw:
+        tasks = []
+        for item in raw.get("tasks") or []:
+            if not isinstance(item, Mapping):
+                return None, "each task must be an object"
+            task_role = str(item.get("role") or "").strip()
+            name = str(item.get("name") or task_role).strip()
+            if not task_role:
+                return None, "each task needs the existing task role code"
             tasks.append(
                 {
-                    "name": str(item.get("name") or item.get("role")).strip(),
-                    "shared": bool(item.get("shared") or item.get("assignment_group_id")),
-                    "category": str(item.get("category") or item.get("role") or "").strip(),
+                    "role": task_role,
+                    "name": name,
+                    "shared": bool(item.get("shared") or item.get("execution_mode") == "shared"),
+                    "user_ids": [int(uid) for uid in (item.get("user_ids") or []) if str(uid).isdigit() or isinstance(uid, int)],
+                    "remarks": str(item.get("remarks") or ""),
+                    "timing_mode": str(item.get("timing_mode") or "anytime"),
+                    "start_time": _hhmm(item.get("start_time")) if item.get("start_time") else None,
+                    "execution_mode": "shared" if item.get("shared") or item.get("execution_mode") == "shared" else "individual",
                 }
             )
     return (
@@ -202,6 +214,47 @@ def normalize_shift(raw: Mapping[str, Any] | None) -> tuple[dict[str, Any] | Non
         },
         None,
     )
+
+
+ACTIVITY_LOCKED = frozenset({"in_progress", "pending_approval", "approved", "rejected", "completed"})
+
+
+def plan_task_links(
+    existing: Sequence[Mapping[str, Any]],
+    desired: Sequence[Mapping[str, Any]] | None,
+) -> dict[str, list[Any]]:
+    """Decide which existing responsibility rows to add, keep, or remove.
+
+    A row with task-execution activity is never removed or rewritten.
+    ``desired is None`` means this edit does not touch task assignments.
+    """
+    if desired is None:
+        return {"add": [], "keep": list(existing), "remove": [], "preserved_history": [], "unchanged": True}
+    by_role: dict[str, Mapping[str, Any]] = {}
+    for row in existing:
+        role = str(row.get("role") or "")
+        if role and role not in by_role:
+            by_role[role] = row
+    wanted: list[Mapping[str, Any]] = []
+    seen: set[str] = set()
+    for item in desired:
+        role = str(item.get("role") or "")
+        if not role or role in seen:
+            continue
+        seen.add(role)
+        wanted.append(item)
+    add = [item for item in wanted if item["role"] not in by_role]
+    keep = [by_role[item["role"]] for item in wanted if item["role"] in by_role]
+    remove: list[Mapping[str, Any]] = []
+    preserved: list[Mapping[str, Any]] = []
+    for role, row in by_role.items():
+        if role in seen:
+            continue
+        if str(row.get("activity_status") or "") in ACTIVITY_LOCKED:
+            preserved.append(row)
+        else:
+            remove.append(row)
+    return {"add": add, "keep": keep, "remove": remove, "preserved_history": preserved, "unchanged": False}
 
 
 def shift_hours(shift: Mapping[str, Any] | None) -> dict[str, float]:
@@ -374,7 +427,59 @@ def _pattern_start(scope: str, anchor: date) -> date | None:
     return None
 
 
-def _retire_patterns(
+def _same_cell(pattern: Mapping[str, Any], user_id: int, day_of_week: int) -> bool:
+    return int(pattern.get("user_id") or 0) == int(user_id) and int(pattern.get("day_of_week") or -1) == int(day_of_week)
+
+
+def _pattern_is_open(pattern: Mapping[str, Any]) -> bool:
+    begin = pattern.get("effective_from")
+    end = pattern.get("effective_until")
+    return isinstance(begin, date) and (end is None or (isinstance(end, date) and end > begin))
+
+
+def later_pattern_starts(
+    patterns: Sequence[Mapping[str, Any]],
+    *,
+    user_id: int,
+    day_of_week: int,
+    start: date,
+) -> list[date]:
+    """Patterns that already begin after ``start`` stay in force unless the manager replaces them."""
+    found = [
+        pattern["effective_from"]
+        for pattern in patterns
+        if _same_cell(pattern, user_id, day_of_week)
+        and _pattern_is_open(pattern)
+        and pattern["effective_from"] > start
+    ]
+    return sorted(set(found))
+
+
+def _close_covering_patterns(
+    patterns: Sequence[Mapping[str, Any]],
+    *,
+    user_id: int,
+    day_of_week: int,
+    start: date,
+) -> list[dict[str, Any]]:
+    """End the pattern that covers ``start``. Leave later effective dates alone."""
+    closed: list[dict[str, Any]] = []
+    for pattern in patterns:
+        row = dict(pattern)
+        begin = row.get("effective_from")
+        end = row.get("effective_until")
+        if (
+            _same_cell(row, user_id, day_of_week)
+            and isinstance(begin, date)
+            and begin < start
+            and (end is None or (isinstance(end, date) and end > start))
+        ):
+            row["effective_until"] = start
+        closed.append(row)
+    return closed
+
+
+def _retire_later_patterns(
     patterns: Sequence[Mapping[str, Any]],
     *,
     user_id: int,
@@ -384,13 +489,9 @@ def _retire_patterns(
     retired: list[dict[str, Any]] = []
     for pattern in patterns:
         row = dict(pattern)
-        if int(row.get("user_id") or 0) == int(user_id) and int(row.get("day_of_week") or -1) == int(day_of_week):
-            begin = row.get("effective_from")
-            end = row.get("effective_until")
-            if isinstance(begin, date) and begin >= start:
-                row["effective_until"] = begin
-            elif isinstance(begin, date) and (end is None or (isinstance(end, date) and end > start)):
-                row["effective_until"] = start
+        begin = row.get("effective_from")
+        if _same_cell(row, user_id, day_of_week) and isinstance(begin, date) and begin >= start and _pattern_is_open(row):
+            row["effective_until"] = begin
         retired.append(row)
     return retired
 
@@ -729,6 +830,23 @@ def plan_change(state: Mapping[str, Any], command: Mapping[str, Any]) -> dict[st
 
     locked: list[str] = []
     exception_weeks: list[str] = []
+    later_starts: list[date] = []
+    pattern_start_probe = _pattern_start(scope, anchor)
+    if pattern_start_probe is not None:
+        for user_id in targets:
+            for day in days:
+                later_starts.extend(
+                    later_pattern_starts(
+                        draft["patterns"], user_id=user_id, day_of_week=day, start=pattern_start_probe
+                    )
+                )
+        if action == "move":
+            later_starts.extend(
+                later_pattern_starts(
+                    draft["patterns"], user_id=from_user, day_of_week=source_day, start=pattern_start_probe
+                )
+            )
+    later_starts = sorted(set(later_starts))
     for week in weeks:
         status = _week_status(draft, week)
         if status["status"] in LOCKED_STATUSES:
@@ -746,11 +864,14 @@ def plan_change(state: Mapping[str, Any], command: Mapping[str, Any]) -> dict[st
 
     include_published = command.get("include_published")
     replace_exceptions = command.get("replace_exceptions")
+    replace_later = command.get("replace_later_patterns")
     questions: list[str] = []
     if locked and include_published is None:
         questions.append("published")
     if exception_weeks and replace_exceptions is None:
         questions.append("exceptions")
+    if later_starts and replace_later is None:
+        questions.append("later_patterns")
     preview_people = []
     for user_id in targets:
         preview_people.append(
@@ -773,6 +894,8 @@ def plan_change(state: Mapping[str, Any], command: Mapping[str, Any]) -> dict[st
         "employees": preview_people,
         "approved_or_published_weeks": locked,
         "exception_weeks": exception_weeks,
+        "later_pattern_weeks": [_iso(day) for day in later_starts],
+        "week_meaning": "Each date is the Monday that starts a Monday–Sunday week.",
         "shift": _describe_shift(shift),
     }
     if questions:
@@ -795,6 +918,12 @@ def plan_change(state: Mapping[str, Any], command: Mapping[str, Any]) -> dict[st
     frozen_weeks = sorted(set(frozen_weeks))
     if not write_weeks and not frozen_weeks:
         return {"ok": False, "code": "nothing_to_apply", "error": "no editable weeks were selected", "preview": preview}
+
+    employment_end = parse_schedule_date(command.get("employment_end"))
+    if employment_end is not None:
+        last_week = employment_end - timedelta(days=employment_end.weekday())
+        write_weeks = [week for week in write_weeks if week <= last_week]
+        frozen_weeks = [week for week in frozen_weeks if week <= last_week]
 
     pattern_start = _pattern_start(scope, anchor)
     cell_plans: list[dict[str, Any]] = []
@@ -823,23 +952,38 @@ def plan_change(state: Mapping[str, Any], command: Mapping[str, Any]) -> dict[st
     if pattern_start is not None and action in ("upsert", "move", "copy", "delete"):
         for user_id in targets:
             for day in days:
-                draft["patterns"] = _retire_patterns(
+                if replace_later is True:
+                    draft["patterns"] = _retire_later_patterns(
+                        draft["patterns"], user_id=user_id, day_of_week=day, start=pattern_start
+                    )
+                draft["patterns"] = _close_covering_patterns(
                     draft["patterns"], user_id=user_id, day_of_week=day, start=pattern_start
                 )
                 if action != "delete" and shift is not None:
+                    following = later_pattern_starts(
+                        draft["patterns"], user_id=user_id, day_of_week=day, start=pattern_start
+                    )
+                    until = following[0] if following and replace_later is not True else None
+                    if employment_end is not None:
+                        cap = employment_end - timedelta(days=employment_end.weekday()) + timedelta(days=7)
+                        until = cap if until is None or cap < until else until
                     draft["patterns"].append(
                         {
                             "id": next_pattern,
                             "user_id": int(user_id),
                             "day_of_week": int(day),
                             "effective_from": pattern_start,
-                            "effective_until": None,
+                            "effective_until": until,
                             "shift": deepcopy(shift),
                         }
                     )
                     next_pattern += 1
         if action == "move" and (from_user != targets[0] or source_day != days[0]):
-            draft["patterns"] = _retire_patterns(
+            if replace_later is True:
+                draft["patterns"] = _retire_later_patterns(
+                    draft["patterns"], user_id=from_user, day_of_week=source_day, start=pattern_start
+                )
+            draft["patterns"] = _close_covering_patterns(
                 draft["patterns"], user_id=from_user, day_of_week=source_day, start=pattern_start
             )
 
