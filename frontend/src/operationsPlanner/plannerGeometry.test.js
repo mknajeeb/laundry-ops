@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import week from "./fixtures/veewash-2027-01-04.json";
-import { barBox, displaySegments, placeBreak, relocateShift, resizeBreak, resizeEdge, resizeSegment, roleColor, storedRoleSegments, timelineAxis, visibleBreaks, visualPieces } from "./plannerGeometry";
+import { barBox, displaySegments, draftOperations, placeBreak, relocateShift, resizeBreak, resizeEdge, resizeSegment, roleColor, splitHalves, storedRoleSegments, timelineAxis, visibleBreaks, visualPieces } from "./plannerGeometry";
 
 describe("planner geometry", () => {
   it("starts the axis at the earliest shift instead of clipping 02:00 to 06:00", () => {
@@ -128,5 +128,27 @@ describe("planner geometry", () => {
       assignments: [{ role: "fold", start_time: "08:00", end_time: "16:00", full_shift: true }],
     });
     expect(plain).toEqual([]);
+  });
+
+  it("splits one shift into two halves with their own segments and breaks", () => {
+    const jennifer = week.entries.find((entry) => entry.id === 5136);
+    const halves = splitHalves(jennifer);
+    expect(halves.first.id).toBe(5136);
+    expect(halves.first.end_time).toBe("09:00");
+    expect(halves.first.role_assignments.map((segment) => segment.role)).toEqual(["weigher", "fold"]);
+    expect(halves.first.role_assignments[1].end_time).toBe("09:00");
+    expect(halves.first.break_minutes).toBe(30);
+    expect(halves.second.id).toBeUndefined();
+    expect(halves.second.start_time).toBe("09:00");
+    expect(halves.second.role).toBe("fold");
+    expect(halves.second.break_minutes).toBe(0);
+    expect(halves.second.role_assignments).toEqual([{ role: "fold", start_time: "09:00", end_time: "13:00" }]);
+    const saved = [jennifer];
+    const draft = [{ ...halves.first }, { ...halves.second, id: "draft-1" }];
+    const operations = draftOperations(saved, draft);
+    expect(operations.map((item) => item.op)).toEqual(["update", "create"]);
+    expect(operations[0].id).toBe(5136);
+    const removed = draftOperations(saved, []);
+    expect(removed).toEqual([{ op: "delete", id: 5136, user_id: jennifer.user_id, day_of_week: jennifer.day_of_week }]);
   });
 });

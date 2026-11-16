@@ -608,11 +608,110 @@ def _drop_exception(
     ]
 
 
+def plan_shift_set(operations: Sequence[Mapping[str, Any]] | None) -> dict[str, Any]:
+    """Name every half of a save. Never collapse two shifts into one row.
+
+    ``update`` and ``delete`` name a persistent id. ``create`` is a new row.
+    Rows that are not named are left untouched, including an existing overlap.
+    """
+    if not operations:
+        return {"ok": False, "code": "nothing_to_apply", "error": "nothing to save"}
+    def _day(raw: Mapping[str, Any], shift: Mapping[str, Any] | None = None) -> int:
+        source = raw if raw.get("day_of_week") is not None else (shift or {})
+        try:
+            return int(source.get("day_of_week"))
+        except (TypeError, ValueError):
+            return -1
+
+    decisions: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for raw in operations:
+        if not isinstance(raw, Mapping):
+            return {"ok": False, "code": "invalid_shift", "error": "each change must name a shift"}
+        op = str(raw.get("op") or "").strip()
+        if op == "create":
+            shift = raw.get("shift")
+            if not isinstance(shift, Mapping):
+                return {"ok": False, "code": "invalid_shift", "error": "a new shift is required"}
+            normalized, err = normalize_shift(shift)
+            if err or normalized is None:
+                return {"ok": False, "code": "invalid_shift", "error": err or "a new shift is required"}
+            decisions.append(
+                {
+                    "action": "create",
+                    "user_id": int(raw.get("user_id") or shift.get("user_id") or 0),
+                    "day_of_week": _day(raw, shift),
+                    "shift": {**dict(shift), **normalized},
+                }
+            )
+            continue
+        if op not in ("update", "delete"):
+            return {"ok": False, "code": "invalid_action", "error": "a shift change must add, change, or remove"}
+        try:
+            entry_id = int(raw.get("id"))
+        except (TypeError, ValueError):
+            return {"ok": False, "code": "invalid_shift", "error": "a saved shift needs its id"}
+        if entry_id <= 0:
+            return {"ok": False, "code": "invalid_shift", "error": "a saved shift needs its id"}
+        if entry_id in seen:
+            return {"ok": False, "code": "invalid_shift", "error": "the same shift was listed twice"}
+        seen.add(entry_id)
+        if op == "delete":
+            decisions.append(
+                {
+                    "action": "delete",
+                    "entry_id": entry_id,
+                    "user_id": int(raw.get("user_id") or 0),
+                    "day_of_week": _day(raw),
+                }
+            )
+            continue
+        shift = raw.get("shift")
+        if not isinstance(shift, Mapping):
+            return {"ok": False, "code": "invalid_shift", "error": "the changed shift is required"}
+        normalized, err = normalize_shift(shift)
+        if err or normalized is None:
+            return {"ok": False, "code": "invalid_shift", "error": err or "the changed shift is required"}
+        decisions.append(
+            {
+                "action": "update",
+                "entry_id": entry_id,
+                    "user_id": int(raw.get("user_id") or shift.get("user_id") or 0),
+                    "day_of_week": _day(raw, shift),
+                    "shift": {**dict(shift), **normalized},
+                }
+            )
+    if any(item["user_id"] <= 0 or item["day_of_week"] < 0 or item["day_of_week"] > 6 for item in decisions):
+        return {"ok": False, "code": "invalid_shift", "error": "each change needs an employee and a day"}
+    return {"ok": True, "decisions": decisions}
+
+
+def shift_set_confirmation(state: Mapping[str, Any], monday: date, include_published: Any) -> dict[str, Any]:
+    """A published week stays unchanged until the manager confirms it."""
+    status = _week_status(state, monday)
+    if status["status"] in LOCKED_STATUSES and include_published is None:
+        return {
+            "ok": False,
+            "code": "confirmation_required",
+            "questions": ["published"],
+            "error": "confirm the weeks this change should update",
+            "status": status,
+        }
+    if status["status"] in LOCKED_STATUSES and include_published is False:
+        return {
+            "ok": False,
+            "code": "nothing_to_apply",
+            "error": "the published week was left unchanged",
+            "status": status,
+        }
+    return {"ok": True, "status": status}
+
+
 def plan_entry_write(
     existing: Sequence[Mapping[str, Any]],
     new_shift: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    """One planned shift per employee per day. Never insert a second copy."""
+    """One unnamed shift replaces the only row. A second stored shift is not overwritten."""
     rows = [row for row in existing if isinstance(row, Mapping)]
     if len(rows) > 1:
         return {

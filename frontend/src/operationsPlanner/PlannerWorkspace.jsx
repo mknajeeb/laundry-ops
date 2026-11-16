@@ -442,7 +442,7 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, canUndo, onClose, on
         <div className="footer-row">
           <button type="button" className="btn" onClick={onUndo} disabled={!canUndo}>Undo</button>
           <button type="button" className="btn" onClick={onDiscard} disabled={!dirty}>Discard</button>
-          <button type="button" className="btn primary" onClick={() => onReview(entry)}>Review save</button>
+          <button type="button" className="btn primary" onClick={() => onReview()}>Review save</button>
         </div>
       </footer>
     </aside>
@@ -593,6 +593,14 @@ export default function PlannerWorkspace({
 
   return (
     <div className="stage">
+      {dirty && !showDrawer ? (
+        <div className="draft-bar">
+          <p className="state dirty"><i />Unsaved changes</p>
+          <button type="button" className="btn" onClick={onUndo} disabled={!canUndo}>Undo</button>
+          <button type="button" className="btn" onClick={onDiscard}>Discard</button>
+          <button type="button" className="btn primary" onClick={() => onReview()}>Review save</button>
+        </div>
+      ) : null}
       {mode === "week" && selected && lens !== "tasks" ? (
         <div className="inspect">
           <strong>{personName(employees, selected.user_id)}</strong>

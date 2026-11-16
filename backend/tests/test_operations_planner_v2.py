@@ -242,6 +242,39 @@ def test_move_cannot_resize_and_does_not_duplicate():
     assert len(plans) == len(moved["cell_plans"])
 
 
+def test_a_shift_set_keeps_both_halves_and_refuses_a_lost_id():
+    from backend.operations_planner_v2 import plan_shift_set
+
+    planned = plan_shift_set(
+        [
+            {
+                "op": "update",
+                "id": 5136,
+                "user_id": 19,
+                "day_of_week": 1,
+                "shift": _shift(start_time="05:00", end_time="09:00", role="weigher,fold"),
+            },
+            {
+                "op": "create",
+                "user_id": 19,
+                "day_of_week": 1,
+                "shift": _shift(start_time="09:00", end_time="13:00", role="fold"),
+            },
+        ]
+    )
+    assert planned["ok"] is True
+    assert [item["action"] for item in planned["decisions"]] == ["update", "create"]
+    assert planned["decisions"][0]["entry_id"] == 5136
+    assert "entry_id" not in planned["decisions"][1]
+    missing = plan_shift_set(
+        [{"op": "update", "id": 0, "user_id": 19, "day_of_week": 1, "shift": _shift()}]
+    )
+    assert missing["ok"] is False
+    deleted = plan_shift_set([{"op": "delete", "id": 5216, "user_id": 38, "day_of_week": 3}])
+    assert deleted["ok"] is True
+    assert deleted["decisions"] == [{"action": "delete", "entry_id": 5216, "user_id": 38, "day_of_week": 3}]
+
+
 def test_duplicate_entry_is_an_update_not_a_second_insert():
     decision = plan_entry_write([{"id": 4}], _shift())
     assert decision == {"ok": True, "action": "update", "entry_id": 4}

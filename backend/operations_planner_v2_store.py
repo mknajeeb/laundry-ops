@@ -324,6 +324,105 @@ def planner_shift_assignments(shift: Mapping[str, Any]) -> list[dict[str, Any]]:
     return ordered
 
 
+def _shift_row(cursor, organization_id: int, entry_id: int) -> dict[str, Any] | None:
+    cursor.execute(
+        """
+        SELECT id, user_id, day_of_week, role, start_time, end_time, break_minutes, break_slots
+        FROM planned_weekly_schedule_entries
+        WHERE organization_id=%s AND id=%s
+        """,
+        (int(organization_id), int(entry_id)),
+    )
+    row = cursor.fetchone()
+    return dict(row) if isinstance(row, dict) else None
+
+
+def _same_clock(stored: Any, expected: Any) -> bool:
+    return _clock_text(stored) == _clock_text(expected)
+
+
+def materialize_shift_set(
+    conn,
+    cursor,
+    organization_id: int,
+    monday: date,
+    operations: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Write every named half, or raise so the caller rolls the whole save back.
+
+    An update changes only that id. A create inserts a new id. A delete removes
+    only that id. Any other shift for the same employee and day stays as stored.
+    """
+    from backend.operations_planner_v2 import plan_shift_set
+    from backend.planned_weekly_schedule import create_entry, delete_entry, update_entry
+
+    planned = plan_shift_set(operations)
+    if not planned.get("ok"):
+        raise ValueError(planned.get("error") or "could not save the shifts")
+    created: list[int] = []
+    updated: list[int] = []
+    deleted: list[int] = []
+    for decision in planned["decisions"]:
+        action = decision["action"]
+        if action == "delete":
+            entry_id = int(decision["entry_id"])
+            before = _shift_row(cursor, organization_id, entry_id)
+            if before is None:
+                raise ValueError(f"shift {entry_id} was not saved")
+            if not delete_entry(cursor, organization_id, entry_id):
+                raise ValueError(f"shift {entry_id} was not saved")
+            if _shift_row(cursor, organization_id, entry_id) is not None:
+                raise ValueError(f"shift {entry_id} was not saved")
+            deleted.append(entry_id)
+            continue
+        shift = dict(decision.get("shift") or {})
+        user_id = int(decision["user_id"])
+        day = int(decision["day_of_week"])
+        shift["user_id"] = user_id
+        shift["day_of_week"] = day
+        if "assignments" not in shift and "role_assignments" in shift:
+            shift["assignments"] = planner_shift_assignments(shift)
+        if action == "update":
+            entry_id = int(decision["entry_id"])
+            if _shift_row(cursor, organization_id, entry_id) is None:
+                raise ValueError(f"shift {entry_id} was not saved")
+            saved, err = update_entry(conn, cursor, organization_id, entry_id, shift)
+            if err or not saved:
+                raise ValueError(err or f"shift {entry_id} was not saved")
+            row = _shift_row(cursor, organization_id, entry_id)
+            if (
+                row is None
+                or not _same_clock(row.get("start_time"), shift.get("start_time"))
+                or not _same_clock(row.get("end_time"), shift.get("end_time"))
+            ):
+                raise ValueError(f"shift {entry_id} was not saved")
+            updated.append(entry_id)
+            continue
+        storage = storage_week_for_dow(monday, day)
+        saved, err = create_entry(conn, cursor, organization_id, week_start=storage, data=shift)
+        if err or not saved or not saved.get("id"):
+            raise ValueError(err or "the new shift was not saved")
+        entry_id = int(saved["id"])
+        row = _shift_row(cursor, organization_id, entry_id)
+        if (
+            row is None
+            or int(row.get("user_id") or 0) != user_id
+            or int(row.get("day_of_week") or -1) != day
+            or not _same_clock(row.get("start_time"), shift.get("start_time"))
+            or not _same_clock(row.get("end_time"), shift.get("end_time"))
+        ):
+            raise ValueError("the new shift was not saved")
+        created.append(entry_id)
+    expected_creates = sum(1 for item in planned["decisions"] if item["action"] == "create")
+    expected_updates = sum(1 for item in planned["decisions"] if item["action"] == "update")
+    expected_deletes = sum(1 for item in planned["decisions"] if item["action"] == "delete")
+    if (len(created), len(updated), len(deleted)) != (expected_creates, expected_updates, expected_deletes):
+        raise ValueError("a split half was not saved")
+    if len(set(created)) != len(created):
+        raise ValueError("a split half was not saved")
+    return {"created_ids": created, "updated_ids": updated, "deleted_ids": deleted}
+
+
 def materialize_plans(conn, cursor, organization_id: int, plans: list[Mapping[str, Any]]) -> None:
     """Write planned entries for the cells a confirmed change named."""
     from backend.planned_weekly_schedule import create_entry, delete_entry, update_entry

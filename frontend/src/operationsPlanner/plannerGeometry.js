@@ -26,6 +26,113 @@ export function shiftKey(entry) {
   return String(entry?.id ?? `${entry?.user_id}-${entry?.day_of_week}-${entry?.start_time}`);
 }
 
+function persistentId(entry) {
+  const id = Number(entry?.id);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+function stamp(entry) {
+  return JSON.stringify({
+    user_id: Number(entry?.user_id),
+    day_of_week: Number(entry?.day_of_week),
+    start_time: String(entry?.start_time || "").slice(0, 5),
+    end_time: String(entry?.end_time || "").slice(0, 5),
+    role: entry?.role || "",
+    break_minutes: Number(entry?.break_minutes || 0),
+    break_slots: asList(entry?.break_slots),
+    role_assignments: storedRoleSegments(entry),
+  });
+}
+
+/** Additions, changes, and removals between the saved week and the draft. */
+export function draftOperations(before, after) {
+  const prior = new Map((before || []).map((entry) => [shiftKey(entry), entry]));
+  const next = new Map((after || []).map((entry) => [shiftKey(entry), entry]));
+  const operations = [];
+  for (const [key, entry] of next) {
+    const id = persistentId(entry);
+    const saved = prior.get(key);
+    if (!saved || !id) {
+      operations.push({ op: "create", user_id: Number(entry.user_id), day_of_week: Number(entry.day_of_week), shift: entry });
+    } else if (stamp(saved) !== stamp(entry)) {
+      operations.push({ op: "update", id, user_id: Number(entry.user_id), day_of_week: Number(entry.day_of_week), shift: entry });
+    }
+  }
+  for (const [key, entry] of prior) {
+    if (next.has(key)) continue;
+    const id = persistentId(entry);
+    if (id) operations.push({ op: "delete", id, user_id: Number(entry.user_id), day_of_week: Number(entry.day_of_week) });
+  }
+  return operations;
+}
+
+function clipSegments(entry, from, to) {
+  return storedRoleSegments(entry).flatMap((segment) => {
+    let start = clockMinutes(segment.start_time);
+    let end = clockMinutes(segment.end_time);
+    if (start == null || end == null) return [];
+    if (end <= start) end += 24 * 60;
+    const left = Math.max(start, from);
+    const right = Math.min(end, to);
+    if (right - left < 1) return [];
+    return [{
+      role: segment.role,
+      start_time: minutesToClock(left % (24 * 60)),
+      end_time: minutesToClock(right % (24 * 60)),
+    }];
+  });
+}
+
+function slotsInside(entry, from, to) {
+  return asList(entry?.break_slots).filter((slot) => {
+    const start = clockMinutes(slot?.start_time);
+    let end = clockMinutes(slot?.end_time);
+    if (start == null || end == null) return false;
+    if (end <= start) end += 24 * 60;
+    return start >= from && end <= to;
+  });
+}
+
+/** Two independent halves. The caller gives the second half its own draft id. */
+export function splitHalves(entry) {
+  const start = clockMinutes(entry?.start_time);
+  let end = clockMinutes(entry?.end_time);
+  if (start == null || end == null) return null;
+  if (end <= start) end += 24 * 60;
+  if (end - start < 30) return null;
+  const midTotal = Math.round((start + (end - start) / 2) / 15) * 15;
+  if (midTotal <= start || midTotal >= end) return null;
+  const mid = minutesToClock(midTotal % (24 * 60));
+  const timed = asList(entry?.break_slots).some((slot) => slot?.start_time && slot?.end_time && slot?.timed !== false);
+  const firstSegments = clipSegments(entry, start, midTotal);
+  const secondSegments = clipSegments(entry, midTotal, end);
+  const roleFor = (segments) => {
+    const roles = [];
+    for (const segment of segments) {
+      if (segment.role && !roles.includes(segment.role)) roles.push(segment.role);
+    }
+    return roles.length ? roles.join(",") : (entry.role || "");
+  };
+  const first = {
+    ...entry,
+    end_time: mid,
+    role: roleFor(firstSegments),
+    role_assignments: firstSegments,
+    break_slots: slotsInside(entry, start, midTotal),
+    break_minutes: timed ? 0 : Number(entry?.break_minutes || 0),
+  };
+  const second = {
+    ...entry,
+    start_time: mid,
+    role: roleFor(secondSegments),
+    role_assignments: secondSegments,
+    break_slots: slotsInside(entry, midTotal, end),
+    break_minutes: 0,
+  };
+  delete second.id;
+  return { first, second };
+}
+
 /** Axis includes early-morning shifts. The old lane started at 06:00 and clipped them. */
 export function timelineAxis(entries) {
   let min = 6 * 60;

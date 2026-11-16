@@ -23,6 +23,7 @@ from backend.operations_planner_v2 import (
     paystub_decision,
     plan_change,
     publish_weeks,
+    shift_set_confirmation,
     role_visible_to_rinse,
     verify_personal_paystub_code,
     verify_step_up_factors,
@@ -37,6 +38,7 @@ from backend.operations_planner_v2_store import (
     load_staffing_requirements,
     load_state,
     materialize_plans,
+    materialize_shift_set,
     PaystubSecurityHold,
     PlannerSchemaNotApplied,
     release_lock,
@@ -310,7 +312,34 @@ def register_operations_planner_v2_routes(
             flags = load_flags(cursor, org)
             if not flags["manager_pilot"]:
                 return jsonify({"error": "Operations Planner pilot is off", "code": "manager_pilot_disabled"}), 403
-            result = plan_change(load_state(cursor, org), _command(request.get_json(silent=True) or {}, org, cursor))
+            body = request.get_json(silent=True) or {}
+            if str(body.get("action") or "") == "apply_shift_set":
+                monday = _monday_arg(body.get("week_start") or body.get("anchor"))
+                if monday is None:
+                    return jsonify({"ok": False, "error": "week_start is required"}), 400
+                operations = body.get("operations") or []
+                return jsonify(
+                    {
+                        "ok": True,
+                        "preview": {
+                            "dates": [monday.isoformat()],
+                            "operations": [
+                                {
+                                    "op": item.get("op"),
+                                    "id": item.get("id"),
+                                    "user_id": item.get("user_id"),
+                                    "day_of_week": item.get("day_of_week"),
+                                    "start_time": (item.get("shift") or {}).get("start_time"),
+                                    "end_time": (item.get("shift") or {}).get("end_time"),
+                                    "role": (item.get("shift") or {}).get("role"),
+                                }
+                                for item in operations
+                                if isinstance(item, dict)
+                            ],
+                        },
+                    }
+                )
+            result = plan_change(load_state(cursor, org), _command(body, org, cursor))
             result.pop("state", None)
             result["legacy_template"] = legacy_template_enabled(cursor, org)
             code = 200 if result.get("ok") else 409
@@ -336,6 +365,42 @@ def register_operations_planner_v2_routes(
             if not acquire_lock(cursor, org):
                 return jsonify({"error": "Another manager is saving this schedule", "code": "busy"}), 409
             try:
+                if str(body.get("action") or "") == "apply_shift_set":
+                    monday = _monday_arg(body.get("week_start") or body.get("anchor"))
+                    if monday is None:
+                        return jsonify({"ok": False, "error": "week_start is required"}), 400
+                    if str(body.get("scope") or "this_week") != "this_week":
+                        return jsonify(
+                            {
+                                "ok": False,
+                                "code": "invalid_action",
+                                "error": "Saving more than one shift applies to this week. Choose this week.",
+                            }
+                        ), 409
+                    state = load_state(cursor, org)
+                    gate = shift_set_confirmation(state, monday, body.get("include_published"))
+                    if not gate.get("ok"):
+                        gate["preview"] = {"dates": [monday.isoformat()], "approved_or_published_weeks": [monday.isoformat()] if gate.get("code") == "confirmation_required" else []}
+                        return jsonify(gate), 409
+                    status = gate["status"]
+
+                    def _write_shift_set():
+                        written = materialize_shift_set(conn, cursor, org, monday, body.get("operations") or [])
+                        if status["status"] in ("approved", "published"):
+                            weeks = state.setdefault("weeks", {})
+                            weeks[monday.isoformat()] = {
+                                **status,
+                                "status": "draft",
+                                "revision": int(status["revision"]) + 1,
+                            }
+                            save_state(cursor, org, state, {"action": "apply_shift_set", "week": monday.isoformat()}, actor)
+                        return written
+
+                    outcome = commit_or_rollback(_write_shift_set, conn.commit, conn.rollback)
+                    if not outcome["ok"]:
+                        return jsonify({"ok": False, "code": "rolled_back", "rolled_back": True, "error": outcome["error"]}), 409
+                    result = outcome.get("result") or {}
+                    return jsonify({"ok": True, **result, "republish_required": [monday.isoformat()] if status["status"] in ("approved", "published") else []})
                 result = plan_change(load_state(cursor, org), _command(body, org, cursor))
                 if not result.get("ok"):
                     result.pop("state", None)

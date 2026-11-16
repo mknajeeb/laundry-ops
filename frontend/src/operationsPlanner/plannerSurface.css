@@ -313,6 +313,9 @@
 .ops-v2 .state.dirty { color: var(--amber); }
 .ops-v2 .state.dirty i { background: #e0a100; }
 .ops-v2 .footer-row { display: flex; gap: 6px; align-items: center; }
+.ops-v2 .draft-bar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: #fff8e8; border-bottom: 1px solid #ead7a2; }
+.ops-v2 .draft-bar .state { flex: 1; }
+.ops-v2 .review-list { margin: 8px 0 12px; padding-left: 18px; font-size: 13px; }
 .ops-v2 .btn.primary, .ops-planner.ops-v2 .btn.primary {
   margin-left: auto; background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 640;
 }

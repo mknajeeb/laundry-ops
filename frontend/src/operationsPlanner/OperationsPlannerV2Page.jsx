@@ -23,7 +23,7 @@ import {
 } from "./plannerModel";
 import { printDocumentHtml, scheduleCardSvg, scheduleCsv, schedulePdf } from "./scheduleExport";
 import PlannerWorkspace from "./PlannerWorkspace";
-import { asList, shiftKey, storedRoleSegments } from "./plannerGeometry";
+import { asList, draftOperations, shiftKey, splitHalves, storedRoleSegments } from "./plannerGeometry";
 
 const LENSES = [
   ["employees", "Employees"],
@@ -254,14 +254,13 @@ export default function OperationsPlannerV2Page() {
     });
   }
 
-  function reviewShift(entry) {
-    queueChange({
-      action: "upsert",
-      user_id: Number(entry.user_id),
-      user_ids: [Number(entry.user_id)],
-      day_of_week: Number(entry.day_of_week),
-      shift: entry,
-    });
+  function reviewDraft() {
+    const operations = draftOperations(loadedEntries, entries);
+    if (!operations.length) {
+      setError("Nothing in this draft is different from the saved week.");
+      return;
+    }
+    queueChange({ action: "apply_shift_set", operations });
   }
 
   function addShift(userId) {
@@ -291,16 +290,17 @@ export default function OperationsPlannerV2Page() {
   }
 
   function splitShift(entry) {
-    const begin = Number(String(entry.start_time).slice(0, 2)) * 60 + Number(String(entry.start_time).slice(3, 5));
-    let end = Number(String(entry.end_time).slice(0, 2)) * 60 + Number(String(entry.end_time).slice(3, 5));
-    if (end <= begin) end += 24 * 60;
-    const midTotal = Math.round((begin + (end - begin) / 2) / 15) * 15;
-    const mid = `${String(Math.floor((midTotal % (24 * 60)) / 60)).padStart(2, "0")}:${String(midTotal % 60).padStart(2, "0")}`;
-    const id = `draft-${Date.now()}`;
-    const first = { ...entry, end_time: mid };
-    const second = { ...entry, id, start_time: mid, break_slots: [] };
-    applyDraft(entries.flatMap((item) => (shiftKey(item) === shiftKey(entry) ? [first, second] : [item])), "Split the shift in the draft. Not saved.");
-    setSelectedKey(shiftKey(first));
+    const halves = splitHalves(entry);
+    if (!halves) {
+      setNotice("This shift is too short to split.");
+      return;
+    }
+    const second = { ...halves.second, id: `draft-${Date.now()}` };
+    applyDraft(
+      entries.flatMap((item) => (shiftKey(item) === shiftKey(entry) ? [halves.first, second] : [item])),
+      "Split the shift in the draft. Both halves are saved together.",
+    );
+    setSelectedKey(shiftKey(halves.first));
   }
 
   function removeShift(entry) {
@@ -578,7 +578,7 @@ export default function OperationsPlannerV2Page() {
           onCommit={applyDraft}
           onUndo={undoDraft}
           onDiscard={discardDraft}
-          onReview={reviewShift}
+          onReview={reviewDraft}
           onReviewBundle={reviewBundle}
           onAdd={addShift}
           onDuplicate={duplicateShift}
@@ -606,10 +606,29 @@ export default function OperationsPlannerV2Page() {
                 ? `${(pending.command.requirements || []).length} staffing interval${(pending.command.requirements || []).length === 1 ? "" : "s"}. Hours without an interval stay unconfigured.`
                 : pending.command.action === "assign_tasks"
                   ? `${(pending.command.tasks || []).length} new assignment${(pending.command.tasks || []).length === 1 ? "" : "s"}. Completed records are not rewritten.`
-                  : `${pending.command.action} · employee ${pending.command.user_id} · ${DAY_NAMES[pending.command.day_of_week] || ""}`}
+                  : pending.command.action === "apply_shift_set"
+                    ? "Every addition, change, and removal below is saved together. If one half fails, nothing is written."
+                    : `${pending.command.action} · employee ${pending.command.user_id} · ${DAY_NAMES[pending.command.day_of_week] || ""}`}
             </p>
+            {pending.command.action === "apply_shift_set" ? (
+              <ul className="review-list">
+                {(pending.command.operations || []).map((op, index) => {
+                  const person = employees.find((employee) => Number(employee.user_id) === Number(op.user_id));
+                  const shift = op.shift || {};
+                  const label = op.op === "create" ? "Add" : op.op === "delete" ? "Remove" : "Change";
+                  const when = op.op === "delete"
+                    ? "saved shift"
+                    : `${String(shift.start_time || "").slice(0, 5)}–${String(shift.end_time || "").slice(0, 5)} · ${shift.role || "no role"}`;
+                  return (
+                    <li key={`${op.op}-${op.id || index}`}>
+                      {label} · {person?.display_name || `Employee ${op.user_id}`} · {DAY_NAMES[op.day_of_week] || ""} · {when}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : null}
             {snapshot ? <p>Confirm is off for this snapshot. Cancel restores the loaded week, including fields this edit did not change.</p> : null}
-            {["this_week", "this_and_future", "future_only", "selected_weeks"].map((value) => (
+            {pending.command.action === "apply_shift_set" ? <p>Saved on this week.</p> : ["this_week", "this_and_future", "future_only", "selected_weeks"].map((value) => (
               <label key={value} style={{ display: "block", marginBottom: 6 }}>
                 <input type="radio" name="scope" checked={scope === value} onChange={() => setScope(value)} /> {value.replaceAll("_", " ")}
               </label>
@@ -651,7 +670,7 @@ export default function OperationsPlannerV2Page() {
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
               <button type="button" disabled={snapshot} onClick={() => { if (!snapshot) send("/operations-planner/v2/preview"); }}>Review</button>
               <button type="submit" className="primary" disabled={snapshot}>Confirm</button>
-              <button type="button" onClick={() => discardDraft()}>Cancel</button>
+              <button type="button" onClick={() => setPending(null)}>Cancel</button>
             </div>
           </form>
         </div>
