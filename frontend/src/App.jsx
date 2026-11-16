@@ -397,6 +397,8 @@ function AppShell() {
   const isWeeklyScheduleRoute =
     normalizedPathname === "/performance/weekly-schedule" ||
     normalizedPathname.startsWith("/performance/weekly-schedule/");
+  const isPlannerRoute = normalizedPathname === "/performance/operations-planner";
+  const fillsMain = isWeeklyScheduleRoute || isPlannerRoute;
 
   useEffect(() => {
     const root = document.documentElement;
@@ -984,18 +986,18 @@ function AppShell() {
         )}
         <Box
           ref={mainScrollRef}
-          className={`app-main-scroll${isWeeklyScheduleRoute ? " app-main-scroll--schedule" : ""}`}
+          className={`app-main-scroll${fillsMain ? " app-main-scroll--schedule" : ""}`}
           sx={{
-            p: { xs: 0, md: 1 },
+            p: isPlannerRoute ? 0 : { xs: 0, md: 1 },
             flex: 1,
             minWidth: 0,
             minHeight: 0,
-            overflowY: isWeeklyScheduleRoute ? "hidden" : "auto",
+            overflowY: fillsMain ? "hidden" : "auto",
             overflowX: "hidden",
             WebkitOverflowScrolling: "touch",
             overscrollBehaviorY: "contain",
-            pb: { xs: "env(safe-area-inset-bottom, 0px)", md: 1 },
-            ...(isWeeklyScheduleRoute
+            pb: isPlannerRoute ? 0 : { xs: "env(safe-area-inset-bottom, 0px)", md: 1 },
+            ...(fillsMain
               ? {
                   display: "flex",
                   flexDirection: "column",

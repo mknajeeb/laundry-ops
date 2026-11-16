@@ -58,6 +58,35 @@ export function pieceBox(shift, piece) {
   };
 }
 
+/**
+ * Display pieces only. A gap between stored segments keeps the shift's own role
+ * string, including a combined label. It is not assigned to the first role.
+ */
+export function visualPieces(entry) {
+  const start = clockMinutes(entry?.start_time);
+  let end = clockMinutes(entry?.end_time);
+  if (start == null || end == null) return [];
+  if (end <= start) end += 24 * 60;
+  const label = String(entry?.role || "").trim();
+  const assigned = asList(entry?.role_assignments).map((segment) => {
+    const segStart = clockMinutes(segment.start_time);
+    let segEnd = clockMinutes(segment.end_time);
+    if (segStart == null || segEnd == null) return null;
+    if (segEnd <= segStart) segEnd += 24 * 60;
+    return { role: segment.role || label, start: segStart, end: segEnd, allocated: true };
+  }).filter(Boolean).sort((a, b) => a.start - b.start);
+  if (!assigned.length) return [{ role: label, start, end, allocated: false }];
+  const pieces = [];
+  let cursor = start;
+  for (const segment of assigned) {
+    if (segment.start > cursor + 1) pieces.push({ role: label, start: cursor, end: segment.start, allocated: false });
+    pieces.push(segment);
+    cursor = Math.max(cursor, segment.end);
+  }
+  if (end > cursor + 1) pieces.push({ role: label, start: cursor, end, allocated: false });
+  return pieces;
+}
+
 /** Stored segments only. A missing list stays missing; the display label is not written back. */
 export function storedSegments(entry) {
   return asList(entry?.role_assignments).map((segment) => ({
@@ -193,15 +222,20 @@ export function placeBreak(entry, start, end) {
 
 export const ROLE_COLOR = {
   wash: "#1d4e89",
-  fold: "#0f6e56",
+  fold: "#0e7c66",
   sort: "#8a5a12",
   weigher: "#5b4b8a",
   attendant: "#9a3412",
-  hd_operator: "#1e3a5f",
+  hd_operator: "#3730a3",
   hd_folder: "#3f6212",
   dry: "#0e7490",
+  "wash,attendant": "#0f4c5c",
+  "fold,attendant": "#3e4c59",
 };
 
 export function roleColor(role) {
-  return ROLE_COLOR[String(role || "").split(",")[0].trim()] || "#16385f";
+  const key = String(role || "").trim();
+  if (ROLE_COLOR[key]) return ROLE_COLOR[key];
+  if (key.includes(",")) return "#3e4c59";
+  return "#334155";
 }

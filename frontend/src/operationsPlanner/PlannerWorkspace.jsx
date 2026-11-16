@@ -1,320 +1,451 @@
-import { useEffect, useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   BREAK_OVERLAP_CAP,
   DAY_NAMES,
   DAY_ORDER,
   breakAccounting,
+  clockMinutes,
   minutesToClock,
   overlappingBreakCount,
   pointerToMinutes,
-  requirementFor,
-  roleCoverage,
-  shiftHours,
+  spanMinutes,
 } from "./plannerModel";
 import {
   asList,
-  barBox,
-  displaySegments,
-  pieceBox,
   placeBreak,
   relocateShift,
-  resizeBreak,
   resizeEdge,
   resizeSegment,
   roleColor,
   shiftKey,
+  storedSegments,
   timelineAxis,
   visibleBreaks,
+  visualPieces,
 } from "./plannerGeometry";
+
+const SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function personName(employees, userId) {
   return employees.find((employee) => Number(employee.user_id) === Number(userId))?.display_name || `Employee ${userId}`;
 }
 
-function clockOf(value) {
-  const [hour, minute] = String(value || "00:00").slice(0, 5).split(":").map(Number);
-  return hour * 60 + minute;
+function initials(name) {
+  const parts = String(name || "").trim().split(/\s+/);
+  return ((parts[0]?.[0] || "") + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
 }
 
-function HourRuler({ axis }) {
-  const hours = [];
-  for (let minute = axis.startMin; minute < axis.endMin; minute += 60) hours.push(minute / 60);
-  return (
-    <div className="ops-ws-ruler" aria-hidden="true">
-      {hours.map((hour) => (
-        <span key={hour} className={hour % 2 ? "tick" : ""} style={{ left: `${((hour * 60 - axis.startMin) / axis.span) * 100}%` }}>
-          {hour % 2 ? "" : String(hour).padStart(2, "0")}
-        </span>
-      ))}
-    </div>
-  );
+function nice(role) {
+  return String(role || "No role").replaceAll("_", " ");
 }
 
-function shiftDetail(entry) {
+function hm(value) {
+  return String(value || "").slice(0, 5);
+}
+
+function shiftRange(entry) {
+  const start = clockMinutes(entry.start_time);
+  let end = clockMinutes(entry.end_time);
+  if (start == null || end == null) return null;
+  if (end <= start) end += 24 * 60;
+  return { start, end };
+}
+
+function overlaps(a, b) {
+  if (!a || !b || shiftKey(a) === shiftKey(b)) return false;
+  if (Number(a.user_id) !== Number(b.user_id) || Number(a.day_of_week) !== Number(b.day_of_week)) return false;
+  const left = shiftRange(a);
+  const right = shiftRange(b);
+  if (!left || !right) return false;
+  return left.start < right.end && right.start < left.end;
+}
+
+function pack(items) {
+  const sorted = [...items].sort((a, b) => a.start - b.start || a.end - b.end);
+  const ends = [];
+  const placed = sorted.map((item) => {
+    let lane = ends.findIndex((end) => item.start >= end);
+    if (lane < 0) {
+      lane = ends.length;
+      ends.push(item.end);
+    } else ends[lane] = item.end;
+    return { ...item, lane };
+  });
+  return { placed, lanes: Math.max(1, ends.length) };
+}
+
+function dayStamp(weekStart, dow) {
+  if (!weekStart) return "";
+  const [year, month, day] = String(weekStart).split("-").map(Number);
+  if (!year) return "";
+  const offset = Number(dow) === 0 ? 6 : Number(dow) - 1;
+  const date = new Date(Date.UTC(year, month - 1, day + offset));
+  return date.getUTCDate();
+}
+
+function leftOf(minute, axis) {
+  return ((minute - axis.startMin) / axis.span) * 100;
+}
+
+function widthOf(start, end, axis) {
+  return Math.max(((end - start) / axis.span) * 100, 0.6);
+}
+
+function guideImage(axis) {
+  return [6, 10, 14, 18].map((hour) => {
+    const at = ((hour * 60 - axis.startMin) / axis.span) * 100;
+    if (at <= 0 || at >= 100) return "";
+    return `linear-gradient(to right, transparent calc(${at}% - .5px), #eef0f3 calc(${at}% - .5px), #eef0f3 calc(${at}% + .5px), transparent calc(${at}% + .5px))`;
+  }).filter(Boolean).join(",");
+}
+
+function ticks(axis) {
+  const marks = [];
+  for (let minute = axis.startMin; minute <= Math.min(axis.endMin, 18 * 60); minute += 240) marks.push(minute);
+  return marks;
+}
+
+function untimed(entry) {
+  return visibleBreaks(entry).some((slot) => slot.unscheduled);
+}
+
+function pieceLabel(role) {
+  const full = nice(role);
+  return { full, short: full.length <= 4 ? full : "" };
+}
+
+function trackPointer(event, axis, apply) {
+  event.preventDefault();
+  event.stopPropagation();
+  const lane = event.currentTarget.closest(".cell")?.getBoundingClientRect();
+  if (!lane) return;
+  const read = (pointer) => pointerToMinutes(pointer.clientX, lane, axis.startMin / 60, axis.endMin / 60);
+  const move = (pointer) => {
+    const minutes = read(pointer);
+    if (minutes != null) apply(minutes, false);
+  };
+  const finish = (pointer) => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", finish);
+    const minutes = read(pointer);
+    if (minutes != null) apply(minutes, true);
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", finish);
+}
+
+function changeStart(entry, minutes) {
+  const segments = storedSegments(entry);
+  const clock = minutesToClock(minutes);
+  if (!segments.length || hm(segments[0].start_time) === hm(entry.start_time)) return resizeEdge(entry, "start", minutes);
+  return { ...entry, start_time: clock };
+}
+
+function changeEnd(entry, minutes) {
+  const segments = storedSegments(entry);
+  const clock = minutesToClock(minutes);
+  const last = segments[segments.length - 1];
+  if (!segments.length || !last || hm(last.end_time) === hm(entry.end_time)) return resizeEdge(entry, "end", minutes);
+  return { ...entry, end_time: clock };
+}
+
+function moveSplit(entry, pieces, index, minutes) {
+  const clock = minutesToClock(minutes);
+  const left = pieces[index];
+  const right = pieces[index + 1];
+  if (!clock || !left || !right) return entry;
+  const segments = storedSegments(entry);
+  const next = segments.map((segment) => ({ ...segment }));
+  if (left.allocated) {
+    const match = next.findIndex((segment) => segment.role === left.role && hm(segment.end_time) === minutesToClock(left.end));
+    if (match >= 0) next[match] = { ...next[match], end_time: clock };
+  }
+  if (right.allocated) {
+    const match = next.findIndex((segment) => segment.role === right.role && hm(segment.start_time) === minutesToClock(right.start));
+    if (match >= 0) next[match] = { ...next[match], start_time: clock };
+  }
+  const updated = { ...entry, role_assignments: next };
+  if (left.allocated && hm(segments[0]?.start_time) === hm(entry.start_time) && index === 0) return resizeSegment(updated, 0, "end", minutes);
+  return updated;
+}
+
+function coverageBands(role, dow, placed, requirements, axis) {
+  const reqs = (requirements || []).filter((item) => {
+    const key = String(item.role || item.role_key || "");
+    if (key !== String(role)) return false;
+    return item.day_of_week == null || item.day_of_week === "" || Number(item.day_of_week) === Number(dow);
+  });
+  if (!reqs.length) return [];
+  const bands = [];
+  for (let minute = axis.startMin; minute < axis.endMin; minute += 30) {
+    const matching = reqs.filter((item) => {
+      const start = clockMinutes(item.start_time);
+      let end = clockMinutes(item.end_time);
+      if (start == null || end == null) return false;
+      if (end <= start) end += 24 * 60;
+      return minute < end && minute + 30 > start;
+    });
+    if (!matching.length) continue;
+    const style = { left: `${leftOf(minute, axis)}%`, width: `${widthOf(minute, minute + 30, axis)}%` };
+    if (matching.length > 1) {
+      bands.push({ key: minute, kind: "conflict", style, title: "Overlapping requirements are not resolved" });
+      continue;
+    }
+    const required = Number(matching[0].required_headcount);
+    if (!Number.isFinite(required)) continue;
+    const scheduled = placed.filter((item) => item.start < minute + 30 && item.end > minute).length;
+    if (scheduled < required) bands.push({ key: minute, kind: "short", style, title: `${scheduled} scheduled, ${required} required` });
+    else if (scheduled > required) bands.push({ key: minute, kind: "extra", style, title: `${scheduled} scheduled, ${required} required` });
+  }
+  return bands;
+}
+
+function ShiftFace({ entry, axis, lane, bar, stacked, selected, peer, showGrips, onSelect, onCommit, onHover }) {
+  const range = shiftRange(entry);
+  if (!range) return null;
+  const pieces = visualPieces(entry);
+  const split = pieces.length > 1 || pieces.some((piece) => piece.allocated);
+  const labelRole = entry.role || pieces[0]?.role || "No role";
+  const breakText = untimed(entry) ? `. ${entry.break_minutes} minute break with no clock time` : "";
+  const label = `${nice(labelRole)}. ${hm(entry.start_time)} to ${hm(entry.end_time)}${breakText}`;
   const timed = visibleBreaks(entry).filter((slot) => slot.start_time);
-  const unscheduled = visibleBreaks(entry).find((slot) => slot.unscheduled);
-  const segments = displaySegments(entry);
-  const roleText = segments.some((segment) => segment.allocated)
-    ? segments.map((segment) => `${segment.role} ${segment.start_time}–${segment.end_time}`).join(", ")
-    : (entry.role || "No role segments");
-  const breakText = unscheduled
-    ? `Unscheduled break ${unscheduled.minutes} min`
-    : timed.map((slot) => `Break ${slot.start_time}–${slot.end_time}`).join(", ");
-  return `${String(entry.start_time).slice(0, 5)}–${String(entry.end_time).slice(0, 5)} · ${roleText}${breakText ? ` · ${breakText}` : ""}`;
-}
-
-function shiftCaption(entry, employees) {
-  return `${personName(employees, entry.user_id)} · ${shiftDetail(entry)}`;
-}
-
-function ShiftBar({ entry, axis, employees, onSelect, onCommit, onlyRole, compact }) {
-  const [live, setLive] = useState(null);
-  const shown = live || entry;
-  const segments = displaySegments(shown)
-    .map((segment, index) => ({ ...segment, index }))
-    .filter((segment) => !onlyRole || segment.role === onlyRole);
-  const breaks = visibleBreaks(shown).filter((slot) => slot.start_time);
-  const unscheduled = visibleBreaks(shown).find((slot) => slot.unscheduled);
-  if (onlyRole && !segments.length) return null;
-  const box = barBox(segments[0].start_time, segments[segments.length - 1].end_time, axis);
-  const label = shiftCaption(shown, employees);
-
-  function track(event, applyMove, applyEnd) {
-    event.preventDefault();
-    event.stopPropagation();
-    const lane = event.currentTarget.closest(".ops-ws-track")?.getBoundingClientRect();
-    if (!lane) return;
-    const move = (pointer) => {
-      const minutes = pointerToMinutes(pointer.clientX, lane, axis.startMin / 60, axis.endMin / 60);
-      if (minutes != null) applyMove(minutes);
-    };
-    const finish = (pointer) => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", finish);
-      const minutes = pointerToMinutes(pointer.clientX, lane, axis.startMin / 60, axis.endMin / 60);
-      setLive(null);
-      if (minutes != null) applyEnd(minutes);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", finish);
-  }
-
-  function beginMove(event) {
-    if (event.button !== 0) return;
-    const origin = event.clientX;
-    const lane = event.currentTarget.closest(".ops-ws-track")?.getBoundingClientRect();
-    if (!lane) return;
-    let moved = false;
-    let latest = entry.start_time;
-    const move = (pointer) => {
-      if (Math.abs(pointer.clientX - origin) > 4) moved = true;
-      const delta = ((pointer.clientX - origin) / lane.width) * axis.span;
-      latest = minutesToClock(clockOf(entry.start_time) + delta);
-      if (!latest) return;
-      setLive(relocateShift(entry, latest, entry.day_of_week));
-    };
-    const finish = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", finish);
-      setLive(null);
-      if (!moved) onSelect(entry);
-      else onCommit(relocateShift(entry, latest, entry.day_of_week), `Proposed ${personName(employees, entry.user_id)} at ${latest}. Not saved.`);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", finish);
-  }
-
   return (
-    <div className="ops-ws-bar" style={box} data-shift-key={shiftKey(entry)}>
-      <button type="button" className="ops-ws-body" aria-label={`Edit shift ${label}`} onPointerDown={beginMove}>
-        {segments.map((segment) => (
-          <span key={`${segment.role}-${segment.start_time}`} className={`ops-ws-segment${segment.allocated ? "" : " unallocated"}`} style={{ ...pieceBox(shown, segment), background: roleColor(segment.role) }}>
-            <em>{segment.allocated ? segment.role : `${String(segment.start_time).slice(0, 5)}–${String(segment.end_time).slice(0, 5)}`}</em>
-          </span>
-        ))}
-        {unscheduled && !compact ? <span className="ops-ws-unscheduled">Unscheduled break {unscheduled.minutes} min</span> : null}
-        {breaks.map((slot, index) => (
-          <span
-            key={`${slot.start_time}-${index}`}
-            className="ops-ws-break placed"
-            style={pieceBox(shown, slot)}
-            title={`Break ${slot.start_time}–${slot.end_time}`}
-          />
-        ))}
-      </button>
-      <button
-        type="button"
-        className="ops-ws-handle start"
-        aria-label={`Change shift start for ${shown.start_time}`}
-        onPointerDown={(event) => track(
-          event,
-          (minutes) => setLive(resizeEdge(entry, "start", minutes)),
-          (minutes) => onCommit(resizeEdge(entry, "start", minutes), "Proposed a new shift start. Not saved."),
-        )}
-      />
-      <button
-        type="button"
-        className="ops-ws-handle end"
-        aria-label={`Change shift end for ${shown.end_time}`}
-        onPointerDown={(event) => track(
-          event,
-          (minutes) => setLive(resizeEdge(entry, "end", minutes)),
-          (minutes) => onCommit(resizeEdge(entry, "end", minutes), "Proposed a new shift end. Not saved."),
-        )}
-      />
-      {segments.map((segment, index) => (
-        segment.allocated ? (
-          <span key={`seg-${segment.role}-${index}`} className="ops-ws-seg-handles" style={pieceBox(shown, segment)}>
-            <button type="button" aria-label={`Change ${segment.role} start`} onPointerDown={(event) => track(event, (minutes) => setLive(resizeSegment(entry, segment.index, "start", minutes)), (minutes) => onCommit(resizeSegment(entry, segment.index, "start", minutes), "Proposed a role-segment change. Not saved."))} />
-            <button type="button" aria-label={`Change ${segment.role} end`} onPointerDown={(event) => track(event, (minutes) => setLive(resizeSegment(entry, segment.index, "end", minutes)), (minutes) => onCommit(resizeSegment(entry, segment.index, "end", minutes), "Proposed a role-segment change. Not saved."))} />
-          </span>
-        ) : null
-      ))}
-      {breaks.map((slot, index) => (
-        <span key={`brk-${slot.start_time}-${index}`} className="ops-ws-break-handles" style={pieceBox(shown, slot)}>
-          <button type="button" aria-label={`Change break start ${slot.start_time}`} onPointerDown={(event) => track(event, (minutes) => setLive(resizeBreak(entry, index, "start", minutes)), (minutes) => onCommit(resizeBreak(entry, index, "start", minutes), "Proposed a break change. Not saved."))} />
-          <button type="button" aria-label={`Change break end ${slot.end_time}`} onPointerDown={(event) => track(event, (minutes) => setLive(resizeBreak(entry, index, "end", minutes)), (minutes) => onCommit(resizeBreak(entry, index, "end", minutes), "Proposed a break change. Not saved."))} />
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function Lane({ entries, axis, employees, onSelect, onCommit, onlyRole, compact }) {
-  return (
-    <div className="ops-ws-lane" style={{ "--hours": String((axis.span || 60) / 60) }}>
-      {entries.map((entry) => {
-        const unscheduled = visibleBreaks(entry).some((slot) => slot.unscheduled);
+    <div
+      role="button"
+      tabIndex={0}
+      className={`shift${selected ? " is-on" : ""}${peer ? " is-peer" : ""}${stacked ? " is-stacked" : ""}${untimed(entry) ? " has-break" : ""}`}
+      data-shift-key={shiftKey(entry)}
+      aria-label={label}
+      style={{
+        left: `${leftOf(range.start, axis)}%`,
+        width: `${widthOf(range.start, range.end, axis)}%`,
+        top: 4 + lane * (bar + 3),
+        height: bar,
+      }}
+      onClick={() => onSelect(entry)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") onSelect(entry);
+      }}
+      onMouseEnter={(event) => onHover(entry, event.currentTarget.getBoundingClientRect())}
+      onMouseLeave={() => onHover(null)}
+    >
+      {split ? pieces.map((piece) => {
+        const text = pieceLabel(piece.role);
+        const span = range.end - range.start;
         return (
-          <div className="ops-ws-shift" key={shiftKey(entry)}>
-            <div className="ops-ws-track">
-              <ShiftBar entry={entry} axis={axis} employees={employees} onlyRole={onlyRole} compact={compact} onSelect={onSelect} onCommit={onCommit} />
-            </div>
-            <button type="button" className={`ops-ws-caption${unscheduled ? " unscheduled" : ""}`} title={shiftCaption(entry, employees)} onClick={() => onSelect(entry)}>
-              {shiftDetail(entry)}
-            </button>
-          </div>
+          <span
+            key={`${piece.role}-${piece.start}`}
+            className={`piece${String(piece.role).includes(",") ? " is-combined" : ""}`}
+            data-full={text.full}
+            data-short={text.short}
+            style={{
+              left: `${((piece.start - range.start) / span) * 100}%`,
+              width: `${((piece.end - piece.start) / span) * 100}%`,
+              background: roleColor(piece.role),
+            }}
+          >
+            {text.full}
+          </span>
         );
+      }) : (
+        <span className={`txt${String(entry.role || "").includes(",") ? " is-combined" : ""}`} data-full={`${hm(entry.start_time)}–${hm(entry.end_time)}`} data-short="" style={{ background: roleColor(entry.role) }}>
+          {hm(entry.start_time)}–{hm(entry.end_time)}
+        </span>
+      )}
+      {timed.map((slot) => {
+        const start = clockMinutes(slot.start_time);
+        let end = clockMinutes(slot.end_time);
+        if (start == null || end == null) return null;
+        if (end <= start) end += 24 * 60;
+        const span = range.end - range.start;
+        return <i key={`${slot.start_time}-${slot.end_time}`} className="timed-break" style={{ left: `${((start - range.start) / span) * 100}%`, width: `${((end - start) / span) * 100}%` }} />;
       })}
-      {!entries.length ? <span className="ops-ws-empty">No shift</span> : null}
+      {showGrips ? (
+        <>
+          <button type="button" className="grip start" aria-label="Drag to change the start" onPointerDown={(event) => trackPointer(event, axis, (minutes, done) => { if (done) onCommit(changeStart(entry, minutes), "Proposed a new shift start. Not saved."); })} />
+          {pieces.slice(0, -1).map((piece, index) => (
+            <button
+              key={`split-${piece.start}`}
+              type="button"
+              className="grip split"
+              aria-label="Drag to move the role split"
+              style={{ left: `${((piece.end - range.start) / (range.end - range.start)) * 100}%` }}
+              onPointerDown={(event) => trackPointer(event, axis, (minutes, done) => { if (done) onCommit(moveSplit(entry, pieces, index, minutes), "Proposed a role-segment change. Not saved."); })}
+            />
+          ))}
+          <button type="button" className="grip end" aria-label="Drag to change the end" onPointerDown={(event) => trackPointer(event, axis, (minutes, done) => { if (done) onCommit(changeEnd(entry, minutes), "Proposed a new shift end. Not saved."); })} />
+        </>
+      ) : null}
     </div>
   );
 }
 
-function CoverageRail({ entries, role, requirements, day, setting, axis }) {
-  const hours = [];
-  for (let minute = axis.startMin; minute < axis.endMin; minute += 60) hours.push(minute / 60);
-  return (
-    <div className="ops-ws-rail" aria-label={`${role} coverage`}>
-      {hours.map((hour) => {
-        const required = requirementFor(requirements, role, day, hour, setting);
-        const cell = roleCoverage(entries, role, hour, required);
-        const tone = required == null ? "idle" : cell.shortage ? "short" : cell.surplus ? "extra" : "ok";
-        const title = required == null
-          ? `${hour}:00 not configured`
-          : `${hour}:00 need ${required}, active ${cell.available.length}`;
-        return <span key={hour} className={tone} title={title} />;
-      })}
-    </div>
-  );
-}
-
-function ShiftDrawer({ entry, employees, onClose, onCommit, onReview, onRemove, onDuplicate, onSplit }) {
-  const timed = visibleBreaks(entry || {}).find((slot) => slot.start_time);
-  const unscheduled = visibleBreaks(entry || {}).find((slot) => slot.unscheduled);
-  const [breakStart, setBreakStart] = useState(timed?.start_time || "");
-  const [breakEnd, setBreakEnd] = useState(timed?.end_time || "");
-  useEffect(() => {
-    setBreakStart(timed?.start_time || "");
-    setBreakEnd(timed?.end_time || "");
-  }, [entry?.id, timed?.start_time, timed?.end_time, unscheduled?.minutes]);
-  if (!entry) return null;
-  function patch(next, label) {
-    onCommit(next, label);
-  }
-  function updateBreak(start, end) {
-    setBreakStart(start);
-    setBreakEnd(end);
-    if (start && end) patch(placeBreak(entry, start, end), "Proposed a break time. Not saved.");
-  }
-  function updateRole(value) {
-    patch({ ...entry, role: value }, "Proposed a role label change. Not saved.");
-  }
-  return (
-    <aside className="ops-ws-drawer" aria-label="Shift details">
-      <header>
-        <strong>{personName(employees, entry.user_id)}</strong>
-        <button type="button" onClick={onClose}>Close</button>
-      </header>
-      <p>{DAY_NAMES[entry.day_of_week]} · stays on this screen until you review a save</p>
-      <label>Start
-        <input aria-label="Shift start time" type="time" step="900" value={String(entry.start_time).slice(0, 5)} onChange={(event) => patch(relocateShift(entry, event.target.value, entry.day_of_week), "Proposed a new start. Not saved.")} />
-      </label>
-      <label>End
-        <input aria-label="Shift end time" type="time" step="900" value={String(entry.end_time).slice(0, 5)} onChange={(event) => patch({ ...entry, end_time: event.target.value }, "Proposed a new end. Not saved.")} />
-      </label>
-      <label>Role
-        <input aria-label="Shift role" value={entry.role || ""} onChange={(event) => updateRole(event.target.value)} />
-      </label>
-      <p>{asList(entry.role_assignments).length ? "Timed segments keep their own roles. This label changes only when you edit it." : "No timed role segments are stored. The role above is the saved label."}</p>
-      <label>Break start
-        <input aria-label="Break start time" type="time" step="900" value={breakStart} onChange={(event) => updateBreak(event.target.value, breakEnd)} />
-      </label>
-      <label>Break end
-        <input aria-label="Break end time" type="time" step="900" value={breakEnd} onChange={(event) => updateBreak(breakStart, event.target.value)} />
-      </label>
-      {unscheduled ? <p>Unscheduled break · {unscheduled.minutes} min. It counts in break hours. It is not on the timeline and does not change coverage until both times are set.</p> : null}
-      <div className="ops-ws-drawer-actions">
-        <button type="button" onClick={() => onDuplicate(entry)}>Duplicate</button>
-        <button type="button" onClick={() => onSplit(entry)}>Split</button>
-        <button type="button" onClick={() => onRemove(entry)}>Remove</button>
-        <button type="button" className="primary" onClick={() => onReview(entry)}>Review save</button>
-      </div>
-      <p>Review save asks which weeks to update. It does not publish.</p>
-    </aside>
-  );
-}
-
-function RequirementEditor({ role, day, requirements, onChange }) {
-  const mine = requirements.filter((item) => item.role === role);
-  const [form, setForm] = useState({ day: String(day), start: "05:00", end: "13:00", count: "" });
+function RequirementEditor({ role, day, requirements, axis, onChange }) {
+  const mine = (requirements || []).filter((item) => String(item.role || item.role_key || "") === String(role));
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({
+    day: String(day),
+    start: minutesToClock(axis.startMin) || "05:00",
+    end: minutesToClock(Math.min(axis.endMin, 21 * 60)) || "13:00",
+    count: "",
+  });
   function add() {
     if (form.count === "") return;
-    onChange([...requirements, {
+    const next = {
       role,
       day_of_week: form.day === "all" ? null : Number(form.day),
       start_time: form.start,
       end_time: form.end,
       required_headcount: Number(form.count),
-    }], `Proposed ${role} staffing. Not saved.`);
-  }
-  function remove(index) {
-    let seen = -1;
-    onChange(requirements.filter((item) => {
-      if (item.role !== role) return true;
-      seen += 1;
-      return seen !== index;
-    }), `Removed a ${role} staffing interval from the draft. Not saved.`);
+    };
+    const clash = mine.some((item) => {
+      const sameDay = (item.day_of_week == null && next.day_of_week == null) || Number(item.day_of_week) === Number(next.day_of_week) || item.day_of_week == null || next.day_of_week == null;
+      if (!sameDay) return false;
+      const start = clockMinutes(item.start_time);
+      const end = clockMinutes(item.end_time);
+      const nextStart = clockMinutes(next.start_time);
+      const nextEnd = clockMinutes(next.end_time);
+      return start != null && end != null && nextStart < end && start < nextEnd;
+    });
+    if (clash) return;
+    onChange([...(requirements || []), next], `Proposed ${role} staffing. Not saved.`);
+    setForm({ ...form, count: "" });
   }
   return (
-    <div className="ops-ws-req">
-      {mine.length ? mine.map((item, index) => (
-        <span key={`${item.day_of_week}-${item.start_time}-${item.end_time}-${index}`}>
-          {item.day_of_week == null ? "Every day" : DAY_NAMES[item.day_of_week]} {String(item.start_time).slice(0, 5)}–{String(item.end_time).slice(0, 5)} need {item.required_headcount}
-          <button type="button" onClick={() => remove(index)}>Remove</button>
+    <label className="need">
+      <span>Need</span>
+      <input
+        inputMode="numeric"
+        placeholder={mine.length ? "" : "—"}
+        aria-label={`Required headcount for ${nice(role)}. ${mine.length ? "Requirement saved" : "Not set"}`}
+        value={form.count}
+        onFocus={() => setOpen(true)}
+        onChange={(event) => setForm({ ...form, count: event.target.value.replace(/[^\d]/g, "") })}
+      />
+      <em>{mine.length ? "" : "Not set"}</em>
+      {open ? (
+        <span className="intervals">
+          {mine.length ? mine.map((item, index) => (
+            <span key={`${item.start_time}-${item.end_time}-${index}`}>
+              {item.day_of_week == null ? "Every day" : SHORT[item.day_of_week]} {hm(item.start_time)}–{hm(item.end_time)} need {item.required_headcount}
+            </span>
+          )) : null}
+          <select aria-label={`${role} requirement day`} value={form.day} onChange={(event) => setForm({ ...form, day: event.target.value })}>
+            <option value="all">Every day</option>
+            {DAY_ORDER.map((value) => <option key={value} value={value}>{SHORT[value]}</option>)}
+          </select>
+          <input aria-label={`${role} requirement start`} type="time" step="900" value={form.start} onChange={(event) => setForm({ ...form, start: event.target.value })} />
+          <input aria-label={`${role} requirement end`} type="time" step="900" value={form.end} onChange={(event) => setForm({ ...form, end: event.target.value })} />
+          <button type="button" onClick={add}>Set interval</button>
         </span>
-      )) : <span className="missing">Not configured</span>}
-      <label>Day
-        <select aria-label={`${role} requirement day`} value={form.day} onChange={(event) => setForm({ ...form, day: event.target.value })}>
-          <option value="all">Every day</option>
-          {DAY_ORDER.map((value) => <option key={value} value={value}>{DAY_NAMES[value]}</option>)}
-        </select>
-      </label>
-      <label>From <input aria-label={`${role} requirement start`} type="time" step="900" value={form.start} onChange={(event) => setForm({ ...form, start: event.target.value })} /></label>
-      <label>To <input aria-label={`${role} requirement end`} type="time" step="900" value={form.end} onChange={(event) => setForm({ ...form, end: event.target.value })} /></label>
-      <label>Need <input aria-label={`${role} required headcount`} type="number" min="0" value={form.count} onChange={(event) => setForm({ ...form, count: event.target.value })} /></label>
-      <button type="button" onClick={add}>Set requirement</button>
-    </div>
+      ) : null}
+    </label>
+  );
+}
+
+function Drawer({ entry, employees, tasks, dayLabel, dirty, canUndo, onClose, onCommit, onReview, onUndo, onDiscard, onAdd, onDuplicate, onSplit, onRemove }) {
+  const timed = visibleBreaks(entry || {}).filter((slot) => slot.start_time);
+  const unscheduled = visibleBreaks(entry || {}).find((slot) => slot.unscheduled);
+  const [breakStart, setBreakStart] = useState(timed[0]?.start_time || "");
+  const [breakEnd, setBreakEnd] = useState(timed[0]?.end_time || "");
+  useLayoutEffect(() => {
+    setBreakStart(timed[0]?.start_time || "");
+    setBreakEnd(timed[0]?.end_time || "");
+  }, [entry?.id, timed[0]?.start_time, timed[0]?.end_time, unscheduled?.minutes]);
+  if (!entry) return null;
+  const person = personName(employees, entry.user_id);
+  const pieces = visualPieces(entry);
+  const range = shiftRange(entry);
+  const hours = range ? (range.end - range.start) / 60 : 0;
+  const stored = storedSegments(entry);
+  const allocated = stored.reduce((sum, segment) => sum + ((spanMinutes(segment.start_time, segment.end_time) || 0) / 60), 0);
+  const kept = Math.max(0, hours - (stored.length ? allocated : hours));
+  const mine = (tasks || []).filter((task) => Number(task.user_id) === Number(entry.user_id) && Number(task.day_of_week) === Number(entry.day_of_week));
+  function patch(next, label) {
+    onCommit({ ...entry, ...next, id: entry.id }, label);
+  }
+  return (
+    <aside className="drawer" aria-label="Shift details">
+      <header>
+        <span className="avatar">{initials(person)}</span>
+        <div>
+          <h2>{person}</h2>
+          <p>{dayLabel} · {entry.role || "No role"}</p>
+        </div>
+        <button type="button" className="close" aria-label="Close" onClick={onClose}>×</button>
+      </header>
+      <div className="body">
+        <div className="facts">
+          <div><b>{hours.toFixed(1)}h</b><span>Shift on the timeline</span></div>
+          <div><b>{(stored.length ? allocated : hours).toFixed(1)}h</b><span>{stored.length ? "Allocated to roles" : "No role split"}</span></div>
+          <div><b>{((unscheduled?.minutes || 0) / 60).toFixed(1)}h</b><span>{unscheduled ? "Break, not on the bar" : "No break"}</span></div>
+        </div>
+        <div className="sec">
+          <h3>Shift hours</h3>
+          <div className="hours">
+            <input aria-label="Start" type="time" step="900" value={hm(entry.start_time)} onChange={(event) => patch(relocateShift(entry, event.target.value, entry.day_of_week), "Proposed a new start. Not saved.")} />
+            <span className="to">to</span>
+            <input aria-label="End" type="time" step="900" value={hm(entry.end_time)} onChange={(event) => patch({ end_time: event.target.value }, "Proposed a new end. Not saved.")} />
+            <span className="dur">{hours.toFixed(1)}h</span>
+          </div>
+          <div className="mini" aria-hidden="true">
+            {pieces.map((piece) => (
+              <span key={`${piece.role}-${piece.start}`} className={String(piece.role).includes(",") ? "is-combined" : ""} style={{ width: `${range ? ((piece.end - piece.start) / (range.end - range.start)) * 100 : 0}%`, background: roleColor(piece.role) }} />
+            ))}
+          </div>
+          <div className="key"><span><i />Start and end</span><span><i className="split" />Role split</span></div>
+        </div>
+        <div className="sec">
+          <h3>Role time</h3>
+          <input className="role-field" aria-label="Shift role" value={entry.role || ""} onChange={(event) => patch({ role: event.target.value }, "Proposed a role label change. Not saved.")} />
+          <ul className="segs">
+            {pieces.map((piece) => {
+              const span = ((piece.end - piece.start) / 60).toFixed(1);
+              const note = String(piece.role).includes(",") && !piece.allocated ? " · combined role" : "";
+              return (
+                <li key={`${piece.role}-${piece.start}`}>
+                  <span className="swatch" style={{ background: roleColor(piece.role) }} />
+                  <b>{nice(piece.role)}</b>
+                  <em>{minutesToClock(piece.start)}–{minutesToClock(piece.end)} · {span}h{note}</em>
+                </li>
+              );
+            })}
+          </ul>
+          {kept > 0.05 ? <p className="quiet">{kept.toFixed(1)}h stays on the combined role. It is not assigned to {nice(String(entry.role).split(",")[0])}.</p> : null}
+        </div>
+        <div className="sec">
+          <h3>Break</h3>
+          {unscheduled ? (
+            <div className="note"><div><strong>{unscheduled.minutes} min · no clock time</strong>Marked by the gold line. It does not shorten the {hours.toFixed(1)}h bar.</div></div>
+          ) : timed.length ? timed.map((slot) => <p key={`${slot.start_time}-${slot.end_time}`} className="quiet">Timed break {slot.start_time}–{slot.end_time}. It is on the bar.</p>) : <p className="quiet">No break on this shift.</p>}
+          <div className="break-times">
+            <input aria-label="Break start time" type="time" step="900" value={breakStart} onChange={(event) => { setBreakStart(event.target.value); if (event.target.value && breakEnd) onCommit(placeBreak(entry, event.target.value, breakEnd), "Proposed a break time. Not saved."); }} />
+            <input aria-label="Break end time" type="time" step="900" value={breakEnd} onChange={(event) => { setBreakEnd(event.target.value); if (breakStart && event.target.value) onCommit(placeBreak(entry, breakStart, event.target.value), "Proposed a break time. Not saved."); }} />
+          </div>
+        </div>
+        <div className="sec">
+          <h3>Tasks</h3>
+          {mine.length ? mine.map((task) => (
+            <p key={task.id || task.role} className="quiet">{task.role} · {task.draft ? "Draft assignment · not saved" : (task.activity_status || task.status || "pending")}</p>
+          )) : <p className="quiet">No task assigned on this shift.</p>}
+        </div>
+        <div className="actions">
+          <button type="button" className="btn" onClick={() => onAdd(Number(entry.user_id))}>Add</button>
+          <button type="button" className="btn" onClick={() => onDuplicate(entry)}>Duplicate</button>
+          <button type="button" className="btn" onClick={() => onSplit(entry)}>Split</button>
+          <button type="button" className="btn danger" onClick={() => onRemove(entry)}>Remove</button>
+        </div>
+      </div>
+      <footer>
+        <p className={`state${dirty ? " dirty" : ""}`}><i />{dirty ? "Unsaved changes" : "No unsaved changes"}</p>
+        <p className="hint">Undo and Discard stay off until a field changes. Review save is required before anything is written.</p>
+        <div className="footer-row">
+          <button type="button" className="btn" onClick={onUndo} disabled={!canUndo}>Undo</button>
+          <button type="button" className="btn" onClick={onDiscard} disabled={!dirty}>Discard</button>
+          <button type="button" className="btn primary" onClick={() => onReview(entry)}>Review save</button>
+        </div>
+      </footer>
+    </aside>
   );
 }
 
@@ -322,6 +453,7 @@ export default function PlannerWorkspace({
   lens,
   mode,
   day,
+  weekStart,
   employees,
   entries,
   tasks,
@@ -340,44 +472,19 @@ export default function PlannerWorkspace({
   onSplit,
   onRemove,
   onReviewBundle,
+  onOpenDay,
 }) {
-  const [roster, setRoster] = useState("scheduled");
-  const [addFor, setAddFor] = useState("");
+  const boardRef = useRef(null);
+  const [roster, setRoster] = useState("all");
+  const [tip, setTip] = useState(null);
   const [taskUser, setTaskUser] = useState(employees[0] ? String(employees[0].user_id) : "");
   const [taskRole, setTaskRole] = useState("floor_reset");
   const [taskShared, setTaskShared] = useState(false);
-  const visible = entries.filter((entry) => mode !== "day" || Number(entry.day_of_week) === Number(day));
-  const axis = useMemo(() => timelineAxis(visible), [visible]);
+  const axis = useMemo(() => timelineAxis(entries), [entries]);
   const days = mode === "day" ? [day] : DAY_ORDER;
-  const totals = visible.reduce((sum, entry) => {
-    const hours = shiftHours(entry);
-    return { gross: sum.gross + hours.gross, net: sum.net + hours.net };
-  }, { gross: 0, net: 0 });
-  const breaks = breakAccounting(visible);
-  const overlap = overlappingBreakCount(visible);
-  const settings = planner.role_settings || [];
-  const staffing = requirements || [];
-  const gaps = [];
-  const extras = [];
-  const roleNames = [...new Set([
-    ...staffing.map((item) => item.role),
-    ...settings.map((setting) => setting.role),
-    ...visible.flatMap((entry) => displaySegments(entry).map((segment) => segment.role)),
-  ])].filter((role) => role && role !== "No role segments");
-  for (const role of roleNames) {
-    const setting = settings.find((item) => item.role === role) || {};
-    for (const value of days) {
-      const dayEntries = entries.filter((entry) => Number(entry.day_of_week) === Number(value));
-      for (let hour = 0; hour < 24; hour += 1) {
-        const required = requirementFor(staffing, role, value, hour, setting);
-        if (required == null) continue;
-        const cell = roleCoverage(dayEntries, role, hour, required);
-        const when = `${mode === "day" ? "" : `${DAY_NAMES[value].slice(0, 3)} `}${String(hour).padStart(2, "0")}:00`;
-        if (cell.shortage) gaps.push(`${role} ${when} short ${cell.shortage}`);
-        if (cell.surplus) extras.push(`${role} ${when} extra ${cell.surplus}`);
-      }
-    }
-  }
+  const guides = guideImage(axis);
+  const selected = entries.find((entry) => shiftKey(entry) === selectedKey) || null;
+  const peers = entries.filter((entry) => overlaps(entry, selected));
   const scheduledIds = new Set(entries.map((entry) => Number(entry.user_id)));
   const rosterEmployees = employees.filter((employee) => {
     const scheduled = scheduledIds.has(Number(employee.user_id));
@@ -385,220 +492,274 @@ export default function PlannerWorkspace({
     if (roster === "unscheduled") return !scheduled;
     return true;
   });
-  const addTarget = rosterEmployees.some((employee) => String(employee.user_id) === addFor)
-    ? addFor
-    : String(rosterEmployees[0]?.user_id || "");
-  const people = new Set(visible.map((entry) => entry.user_id)).size;
-  const selected = entries.find((entry) => shiftKey(entry) === selectedKey) || null;
+  const addTarget = selected ? Number(selected.user_id) : Number(rosterEmployees[0]?.user_id || employees[0]?.user_id || 0);
+  const breaks = breakAccounting(entries);
+  const overlap = overlappingBreakCount(entries.filter((entry) => mode !== "day" || Number(entry.day_of_week) === Number(day)));
+  const showDrawer = mode === "day" && (lens === "employees" || lens === "breaks") && selected && Number(selected.day_of_week) === Number(day);
 
   function commit(next, label) {
     onCommit(entries.map((entry) => (shiftKey(entry) === shiftKey(next) ? { ...entry, ...next } : entry)), label);
     onSelect(shiftKey(next));
   }
 
-  return (
-    <div className="ops-ws">
-      <div className="ops-summary" aria-label="Schedule summary">
-        <span>{people} scheduled employees</span>
-        <span>{visible.length} shifts</span>
-        <span>Gross {totals.gross.toFixed(1)}</span>
-        <span>Timed break {breaks.timedHours.toFixed(1)}</span>
-        <span>Unscheduled break {breaks.unscheduledHours.toFixed(1)}</span>
-        <span>Net {totals.net.toFixed(1)}</span>
-        <span>{staffing.length ? `${gaps.length} understaffed hours` : "No staffing requirements configured"}</span>
-        <span>{staffing.length ? `${extras.length} overstaffed hours` : "Unconfigured hours are not treated as zero"}</span>
-        <span className={overlap > BREAK_OVERLAP_CAP ? "ops-warn" : ""}>
-          {breaks.overlapKnown
-            ? `Timed overlap ${overlap}`
-            : `Timed overlap ${overlap} · incomplete, ${breaks.unscheduledCount} breaks have no clock time`}
-        </span>
-        <span>{planner.snapshot ? "snapshot · not saved" : `${planner.status || "draft"} · rev ${planner.revision || 1}${planner.published_revision ? ` · published ${planner.published_revision}` : " · not published"}`}</span>
-        <span role="group" aria-label="Employee roster">
-          {[["scheduled", "Scheduled"], ["unscheduled", "Unscheduled"], ["all", "All"]].map(([id, label]) => (
-            <button key={id} type="button" className={roster === id ? "active" : ""} onClick={() => setRoster(id)}>{label}</button>
-          ))}
-        </span>
-        <label>Add for
-          <select aria-label="Add shift for" value={addTarget} onChange={(event) => setAddFor(event.target.value)}>
-            {rosterEmployees.map((employee) => <option key={employee.user_id} value={employee.user_id}>{employee.display_name}</option>)}
-          </select>
-        </label>
-        <button type="button" onClick={() => onAdd(Number(addTarget))}>Add shift</button>
-        <button type="button" onClick={onUndo} disabled={!canUndo}>Undo</button>
-        <button type="button" onClick={onDiscard} disabled={!dirty}>Discard</button>
-      </div>
-      {gaps.length ? <p className="ops-ws-gap">{gaps.slice(0, 4).join(" · ")}</p> : null}
-      <div className="ops-ws-stage">
-        {lens === "employees" || lens === "breaks" ? (
-          <div className={`ops-ws-board ${mode} ${lens}`} style={{ "--days": String(days.length) }}>
-            {lens === "breaks" ? (
-              <p className="ops-ws-note">
-                {overlap > BREAK_OVERLAP_CAP
-                  ? `${overlap} people have a timed break at the same time. The limit is ${BREAK_OVERLAP_CAP}.`
-                  : breaks.overlapKnown
-                    ? `Timed break overlap is ${overlap}. Every stored break has a clock time.`
-                    : `Timed break overlap is ${overlap}. ${breaks.unscheduledCount} breaks have no clock time, so overlap cannot be fully determined. Those minutes stay in the labor total and are not placed on the timeline.`}
-              </p>
-            ) : null}
-            <div className="ops-ws-scroll">
-              <div className="ops-ws-head">
-                <div className="ops-ws-name">Employee</div>
-                {days.map((value) => (
-                  <div key={value} className="ops-ws-dayhead">
-                    <strong>{DAY_NAMES[value]}</strong>
-                    <HourRuler axis={axis} />
-                  </div>
+  useLayoutEffect(() => {
+    const nodes = boardRef.current?.querySelectorAll(".piece, .shift > .txt") || [];
+    nodes.forEach((node) => {
+      const full = node.dataset.full || "";
+      const short = node.dataset.short || "";
+      node.textContent = full;
+      if (node.scrollWidth > node.clientWidth + 1) {
+        node.textContent = short && short.length <= 4 ? short : "";
+        if (short && node.scrollWidth > node.clientWidth + 1) node.textContent = "";
+      }
+    });
+  });
+
+  function hover(entry, rect) {
+    if (!entry || !rect) {
+      setTip(null);
+      return;
+    }
+    const person = personName(employees, entry.user_id);
+    const extra = untimed(entry) ? ` · ${entry.break_minutes} min break, no clock time` : "";
+    setTip({
+      name: person,
+      detail: `${SHORT[entry.day_of_week]} ${hm(entry.start_time)}–${hm(entry.end_time)} · ${nice(entry.role || "No role")}${extra}`,
+      left: Math.min(rect.left, window.innerWidth - 250),
+      top: Math.max(8, rect.top - 58),
+    });
+  }
+
+  const head = days.map((value) => (
+    <div key={value} className={`dayhead${value === 6 || value === 0 ? " is-end" : ""}${mode === "day" ? " is-on" : ""}`}>
+      <strong>{SHORT[value]} {dayStamp(weekStart, value)}</strong>
+      <div className="axis">{ticks(axis).map((minute) => <b key={minute} style={{ left: `${leftOf(minute, axis)}%` }}>{String(minute / 60).padStart(2, "0")}</b>)}</div>
+    </div>
+  ));
+
+  const employeeRows = rosterEmployees.map((employee) => {
+    const open = !scheduledIds.has(Number(employee.user_id));
+    const picked = entries.some((entry) => Number(entry.user_id) === Number(employee.user_id) && shiftKey(entry) === selectedKey);
+    const byDay = days.map((value) => {
+      const shifts = entries.filter((entry) => Number(entry.user_id) === Number(employee.user_id) && Number(entry.day_of_week) === Number(value) && (lens !== "breaks" || untimed(entry) || visibleBreaks(entry).some((slot) => slot.start_time)));
+      return pack(shifts.map((entry) => ({ ...shiftRange(entry), entry })).filter((item) => item.start != null));
+    });
+    const lanes = Math.max(1, ...byDay.map((column) => (column.placed.length ? column.lanes : 1)));
+    const bar = mode === "day" ? 26 : 18;
+    const height = 6 + lanes * bar + (lanes - 1) * 3;
+    return (
+      <div className={`person${open ? " is-open" : ""}${picked ? " is-pick" : ""}`} key={employee.user_id}>
+        <div className="who"><span className="avatar">{initials(employee.display_name)}</span><span className="nm">{String(employee.display_name || "").replace(/\s+/g, " ")}</span></div>
+        {byDay.map((column, index) => {
+          const value = days[index];
+          const stacked = column.lanes > 1 && column.placed.length > 1;
+          return (
+            <div key={value} className={`cell${value === 6 || value === 0 ? " is-end" : ""}`} style={{ "--guides": guides }}>
+              <div className="guides" />
+              <div className="track" style={{ height }}>
+                {column.placed.map((item) => (
+                  <ShiftFace
+                    key={shiftKey(item.entry)}
+                    entry={item.entry}
+                    axis={axis}
+                    lane={item.lane}
+                    bar={bar}
+                    stacked={stacked}
+                    selected={shiftKey(item.entry) === selectedKey}
+                    peer={peers.some((entry) => shiftKey(entry) === shiftKey(item.entry))}
+                    showGrips={mode === "day" && shiftKey(item.entry) === selectedKey}
+                    onSelect={(entry) => onSelect(shiftKey(entry))}
+                    onCommit={commit}
+                    onHover={hover}
+                  />
                 ))}
               </div>
-              {rosterEmployees.map((employee) => (
-                <div className="ops-ws-row" key={employee.user_id}>
-                  <div className="ops-ws-name">{employee.display_name}</div>
-                  {days.map((value) => (
-                    <Lane
-                      key={value}
-                      axis={axis}
-                      employees={employees}
-                      entries={entries.filter((entry) => Number(entry.user_id) === Number(employee.user_id) && Number(entry.day_of_week) === Number(value))}
-                      compact={mode === "week"}
-                      onSelect={(entry) => onSelect(shiftKey(entry))}
-                      onCommit={commit}
-                    />
-                  ))}
-                </div>
-              ))}
-              {!rosterEmployees.length ? <p className="ops-ws-blank">{roster === "unscheduled" ? "Every eligible employee has a shift." : "No employees are on this schedule."}</p> : null}
             </div>
+          );
+        })}
+      </div>
+    );
+  });
+
+  const roleBuckets = new Map();
+  entries.forEach((entry) => {
+    visualPieces(entry).forEach((piece) => {
+      if (!piece.role) return;
+      if (!roleBuckets.has(piece.role)) roleBuckets.set(piece.role, []);
+      roleBuckets.get(piece.role).push({ ...piece, entry });
+    });
+  });
+  const roles = [...roleBuckets.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+
+  return (
+    <div className="stage">
+      {mode === "week" && selected && lens !== "tasks" ? (
+        <div className="inspect">
+          <strong>{personName(employees, selected.user_id)}</strong>
+          <span className="when">{SHORT[selected.day_of_week]} {dayStamp(weekStart, selected.day_of_week)} · {nice(selected.role || "No role")} · {hm(selected.start_time)}–{hm(selected.end_time)}</span>
+          <div className="picks">
+            <button type="button" aria-pressed="true" onClick={() => onSelect(shiftKey(selected))}>{nice(selected.role || "shift")} {hm(selected.start_time)}–{hm(selected.end_time)}</button>
+            {peers.map((entry) => (
+              <button key={shiftKey(entry)} type="button" aria-pressed="false" onClick={() => onSelect(shiftKey(entry))}>{nice(entry.role || "shift")} {hm(entry.start_time)}–{hm(entry.end_time)}</button>
+            ))}
           </div>
-        ) : null}
-        {lens === "roles" ? (
-          <div className={`ops-ws-board roles ${mode}`} style={{ "--days": String(days.length) }}>
-            <p className="ops-ws-note">A stored role such as wash,attendant stays in its own lane until timed segments exist. An hour with no requirement is not short. A saved 0 means nobody is required.</p>
-            {staffing.length ? <button type="button" onClick={() => onReviewBundle("requirements")}>Review staffing save</button> : null}
-            <div className="ops-ws-scroll">
-              {roleNames.map((role) => {
-                const setting = settings.find((item) => item.role === role) || {};
-                const roleEntries = visible.filter((entry) => displaySegments(entry).some((segment) => segment.role === role));
-                const timedLane = roleEntries.some((entry) => displaySegments(entry).some((segment) => segment.role === role && segment.allocated));
-                return (
-                  <section
-                    key={role}
-                    className="ops-ws-role"
-                    onDragOver={(event) => event.preventDefault()}
-                    onDrop={(event) => {
-                      const key = event.dataTransfer.getData("text/plain");
-                      const source = entries.find((entry) => shiftKey(entry) === key);
-                      if (!source) return;
-                      commit({ ...source, role }, `Proposed ${personName(employees, source.user_id)} label ${role}. Not saved.`);
-                    }}
-                  >
-                    <header>
-                      <strong style={{ color: roleColor(role) }}>{role}</strong>
-                      <span>{timedLane ? "Timed segments" : "No timed role segments"}</span>
-                      <span>{roleEntries.length} shifts</span>
-                      <RequirementEditor
-                        role={role}
-                        day={day}
-                        requirements={staffing}
-                        onChange={(next, label) => onCommit({ requirements: next }, label)}
-                      />
-                    </header>
-                    <div className="ops-ws-head">
-                      <div className="ops-ws-name">Role</div>
-                      {days.map((value) => (
-                        <div key={value} className="ops-ws-dayhead">
-                          <strong>{DAY_NAMES[value]}</strong>
-                          <HourRuler axis={axis} />
-                        </div>
-                      ))}
-                    </div>
-                    <div className="ops-ws-row">
-                      <div className="ops-ws-name">{role}</div>
-                      {days.map((value) => {
-                        const dayEntries = entries.filter((entry) => Number(entry.day_of_week) === Number(value) && displaySegments(entry).some((segment) => segment.role === role));
+          <button type="button" className="open-day" onClick={() => onOpenDay(selected.day_of_week)}>Open {SHORT[selected.day_of_week]}</button>
+        </div>
+      ) : null}
+      {lens === "breaks" ? (
+        <div className="inspect">
+          <span className="when">
+            {overlap > BREAK_OVERLAP_CAP
+              ? `${overlap} people have a timed break at the same time. The limit is ${BREAK_OVERLAP_CAP}.`
+              : breaks.overlapKnown
+                ? `Timed break overlap is ${overlap}. Every stored break has a clock time.`
+                : `Timed break overlap is ${overlap}. ${breaks.unscheduledCount} breaks have no clock time, so overlap cannot be fully determined.`}
+          </span>
+        </div>
+      ) : null}
+      <div className="workspace">
+        <div className="board" ref={boardRef}>
+          {lens === "employees" || lens === "breaks" ? (
+            <div className={`sheet${mode === "day" ? " day-layout" : ""}`} style={{ "--cols": String(days.length) }}>
+              <div className="head">
+                <div className="who">
+                  <select aria-label="Employee roster" value={roster} onChange={(event) => setRoster(event.target.value)}>
+                    <option value="all">All</option>
+                    <option value="scheduled">Scheduled</option>
+                    <option value="unscheduled">Unscheduled</option>
+                  </select>
+                  <button type="button" onClick={() => onAdd(addTarget)}>Add</button>
+                </div>
+                {head}
+              </div>
+              {employeeRows}
+              {!rosterEmployees.length ? <div className="empty"><div><h2>{roster === "unscheduled" ? "Every eligible employee has a shift" : "No employees"}</h2><p>The roster is the same eligible list Weekly Schedule uses.</p></div></div> : null}
+            </div>
+          ) : null}
+          {lens === "roles" ? (
+            <div className="sheet" style={{ "--cols": String(days.length) }}>
+              <div className="head">
+                <div className="who">Role {requirements?.length ? <button type="button" className="staff-review" onClick={() => onReviewBundle("requirements")}>Review staffing</button> : null}</div>
+                {head}
+              </div>
+              <div className="roles-body">
+                {roles.map(([role, items]) => {
+                  const columns = days.map((value) => pack(items.filter((item) => Number(item.entry.day_of_week) === Number(value))));
+                  const laneCount = Math.max(...columns.map((column) => (column.placed.length ? column.lanes : 1)));
+                  return (
+                    <section key={role} className="role" style={{ "--w": Math.max(1, laneCount), "--min": `${Math.max(58, 22 + laneCount * 24)}px` }}>
+                      <div className="role-id">
+                        <span className="swatch" style={{ background: roleColor(role) }} />
+                        <strong>{nice(role)}</strong>
+                        <div className="meta">{items.length} scheduled</div>
+                        <RequirementEditor role={role} day={day} requirements={requirements} axis={axis} onChange={(next, label) => onCommit({ requirements: next }, label)} />
+                      </div>
+                      {columns.map((column, index) => {
+                        const value = days[index];
+                        const bands = coverageBands(role, value, column.placed, requirements, axis);
                         return (
-                          <div key={value}>
-                            <Lane
-                              axis={axis}
-                              employees={employees}
-                              entries={dayEntries}
-                              onlyRole={role}
-                              compact={mode === "week"}
-                              onSelect={(entry) => onSelect(shiftKey(entry))}
-                              onCommit={commit}
-                            />
-                            <CoverageRail entries={dayEntries} role={role} requirements={staffing} day={value} setting={setting} axis={axis} />
+                          <div key={value} className={`cell${value === 6 || value === 0 ? " is-end" : ""}`} style={{ "--guides": guides }}>
+                            <div className="count" title={column.placed.length ? `${column.placed.length} scheduled` : ""}>{column.placed.length || ""}</div>
+                            <div className="guides" />
+                            {bands.map((band) => <i key={band.key} className={`band ${band.kind}`} style={band.style} title={band.title} />)}
+                            <div className="track">
+                              {column.placed.map((item) => (
+                                <button
+                                  key={`${shiftKey(item.entry)}-${item.start}`}
+                                  type="button"
+                                  className={`shift${untimed(item.entry) ? " has-break" : ""}${String(role).includes(",") ? " is-combined" : ""}`}
+                                  title={`${personName(employees, item.entry.user_id)} · ${nice(role)} · ${hm(item.entry.start_time)}–${hm(item.entry.end_time)}`}
+                                  style={{ left: `${leftOf(item.start, axis)}%`, width: `${widthOf(item.start, item.end, axis)}%`, top: 2 + item.lane * 24, height: 22, background: roleColor(role) }}
+                                  onClick={() => onSelect(shiftKey(item.entry))}
+                                >
+                                  <span className="txt" data-full={personName(employees, item.entry.user_id)} data-short="">{personName(employees, item.entry.user_id)}</span>
+                                </button>
+                              ))}
+                            </div>
                           </div>
                         );
                       })}
-                    </div>
-                  </section>
-                );
-              })}
-            </div>
-          </div>
-        ) : null}
-        {lens === "tasks" ? (
-          <div className="ops-ws-tasks">
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (!taskRole.trim() || !taskUser) return;
-                onCommit({
-                  tasks: [...tasks, {
-                    id: `draft-task-${Date.now()}`,
-                    draft: true,
-                    user_id: Number(taskUser),
-                    day_of_week: day,
-                    role: taskRole.trim(),
-                    shared: taskShared,
-                    assignment_group_id: taskShared ? `draft-group-${Date.now()}` : null,
-                    status: "draft",
-                  }],
-                }, "Proposed a task assignment. Not saved.");
-              }}
-            >
-              <p>{tasks.some((task) => !task.draft) ? "Completed and verified records stay stored." : "No task responsibilities are stored for this week."} A new assignment stays in this draft until you review a save. Saving adds a row. It does not rewrite a completed record.</p>
-              <button type="button" onClick={() => onReviewBundle("tasks")} disabled={!tasks.some((task) => task.draft)}>Review task save</button>
-              <select aria-label="Task employee" value={taskUser} onChange={(event) => setTaskUser(event.target.value)}>
-                {employees.map((employee) => <option key={employee.user_id} value={employee.user_id}>{employee.display_name}</option>)}
-              </select>
-              <input aria-label="Task role" value={taskRole} onChange={(event) => setTaskRole(event.target.value)} />
-              <label><input type="checkbox" checked={taskShared} onChange={(event) => setTaskShared(event.target.checked)} /> Shared activity group</label>
-              <button type="submit">Assign task</button>
-            </form>
-            <table>
-              <thead>
-                <tr><th>Employee</th><th>Day</th><th>Shift</th><th>Assignment</th><th>Record</th></tr>
-              </thead>
-              <tbody>
-                {tasks.filter((task) => mode !== "day" || Number(task.day_of_week) === Number(day)).map((task) => {
-                  const shift = entries.find((entry) => Number(entry.user_id) === Number(task.user_id) && Number(entry.day_of_week) === Number(task.day_of_week));
-                  const status = task.draft ? "Draft assignment · not saved" : (task.activity_status || task.status || "pending");
-                  return (
-                    <tr key={task.id || `${task.user_id}-${task.role}`}>
-                      <td>{personName(employees, task.user_id)}</td>
-                      <td>{DAY_NAMES[task.day_of_week]}</td>
-                      <td>{shift ? `${String(shift.start_time).slice(0, 5)}–${String(shift.end_time).slice(0, 5)}` : "No shift"}</td>
-                      <td>{task.role}{task.assignment_group_id ? " · shared group" : ""}</td>
-                      <td>{status}</td>
-                    </tr>
+                    </section>
                   );
                 })}
-              </tbody>
-            </table>
-          </div>
+              </div>
+            </div>
+          ) : null}
+          {lens === "tasks" ? (
+            <div className="sheet">
+              <div className="empty">
+                <div>
+                  <h2>{tasks.some((task) => !task.draft) ? "Task assignments" : "No task assignments"}</h2>
+                  <p>{tasks.some((task) => !task.draft) ? "Completed and verified records stay stored." : "This week has no daily responsibilities. A new assignment uses the existing task records and stays in the draft until you review a save."}</p>
+                  <form
+                    className="task-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (!taskRole.trim() || !taskUser) return;
+                      onCommit({
+                        tasks: [...tasks, {
+                          id: `draft-task-${Date.now()}`,
+                          draft: true,
+                          user_id: Number(taskUser),
+                          day_of_week: day,
+                          role: taskRole.trim(),
+                          shared: taskShared,
+                          assignment_group_id: taskShared ? `draft-group-${Date.now()}` : null,
+                          status: "draft",
+                        }],
+                      }, "Proposed a task assignment. Not saved.");
+                    }}
+                  >
+                    <select aria-label="Task employee" value={taskUser} onChange={(event) => setTaskUser(event.target.value)}>
+                      {employees.map((employee) => <option key={employee.user_id} value={employee.user_id}>{employee.display_name}</option>)}
+                    </select>
+                    <input aria-label="Task role" type="text" value={taskRole} onChange={(event) => setTaskRole(event.target.value)} />
+                    <label><input type="checkbox" checked={taskShared} onChange={(event) => setTaskShared(event.target.checked)} /> Shared group</label>
+                    <button type="submit" className="btn">Assign task</button>
+                    <button type="button" className="btn primary" onClick={() => onReviewBundle("tasks")} disabled={!tasks.some((task) => task.draft)}>Review task save</button>
+                  </form>
+                  {tasks.length ? (
+                    <table className="task-table">
+                      <thead><tr><th>Employee</th><th>Day</th><th>Assignment</th><th>Record</th></tr></thead>
+                      <tbody>
+                        {tasks.filter((task) => mode !== "day" || Number(task.day_of_week) === Number(day)).map((task) => (
+                          <tr key={task.id || `${task.user_id}-${task.role}`}>
+                            <td>{personName(employees, task.user_id)}</td>
+                            <td>{DAY_NAMES[task.day_of_week]}</td>
+                            <td>{task.role}{task.assignment_group_id ? " · shared group" : ""}</td>
+                            <td>{task.draft ? "Draft assignment · not saved" : (task.activity_status || task.status || "pending")}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+        {showDrawer ? (
+          <Drawer
+            entry={selected}
+            employees={employees}
+            tasks={tasks}
+            dayLabel={`${SHORT[selected.day_of_week]} ${dayStamp(weekStart, selected.day_of_week)}`}
+            dirty={dirty}
+            canUndo={canUndo}
+            onClose={() => onSelect("")}
+            onCommit={commit}
+            onReview={onReview}
+            onUndo={onUndo}
+            onDiscard={onDiscard}
+            onAdd={onAdd}
+            onDuplicate={onDuplicate}
+            onSplit={onSplit}
+            onRemove={onRemove}
+          />
         ) : null}
-        <ShiftDrawer
-          entry={selected}
-          employees={employees}
-          onClose={() => onSelect("")}
-          onCommit={commit}
-          onReview={onReview}
-          onRemove={onRemove}
-          onDuplicate={onDuplicate}
-          onSplit={onSplit}
-        />
       </div>
+      {tip ? <div className="tip" style={{ left: tip.left, top: tip.top }}><b>{tip.name}</b><span>{tip.detail}</span></div> : null}
+      {planner?.legacy_template ? null : null}
     </div>
   );
 }

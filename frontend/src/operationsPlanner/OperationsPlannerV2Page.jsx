@@ -2,20 +2,23 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { getWashproApiBase } from "../api";
 import "./operationsPlanner.css";
+import "./plannerSurface.css";
 import {
   BREAK_OVERLAP_CAP,
   DAY_NAMES,
   DAY_ORDER,
   autoScrollDelta,
+  breakAccounting,
   clockMinutes,
   entriesForPeriod,
   hourCoverage,
   minutesToClock,
   movedShift,
-  pointerToMinutes,
-  roleCoverage,
   overlappingBreakCount,
   periodLabel,
+  pointerToMinutes,
+  roleCoverage,
+  shiftHours,
   taskRollup,
 } from "./plannerModel";
 import { printDocumentHtml, scheduleCardSvg, scheduleCsv, schedulePdf } from "./scheduleExport";
@@ -111,6 +114,7 @@ export default function OperationsPlannerV2Page() {
   const [draftBundle, setDraftBundle] = useState(null);
   const [history, setHistory] = useState([]);
   const [selectedKey, setSelectedKey] = useState("");
+  const [pinOpen, setPinOpen] = useState(false);
 
   const load = useCallback(async (weekStart) => {
     const previewMode = new URLSearchParams(window.location.search).get("preview");
@@ -456,90 +460,140 @@ export default function OperationsPlannerV2Page() {
   const exportRows = rowsFor(visibleEntries);
   const preview = pending?.preview?.preview || pending?.preview;
   const snapshot = Boolean(payload?.snapshot);
+  const hourTotals = entries.reduce((sum, entry) => {
+    const hours = shiftHours(entry);
+    return { gross: sum.gross + hours.gross, net: sum.net + hours.net };
+  }, { gross: 0, net: 0 });
+  const breakTotals = breakAccounting(entries);
+  const breakHours = breakTotals.timedHours + breakTotals.unscheduledHours;
+  const scheduledCount = new Set(entries.map((entry) => Number(entry.user_id))).size;
+  const unsplitCount = entries.filter((entry) => !asList(entry.role_assignments).length).length;
+  const coverageLabel = loadedRequirements.length ? "Set" : "Not set";
+  const statusName = snapshot ? "snapshot" : (planner.status || "draft");
+  const monday = week || planner.week_monday || "";
 
   return (
-    <div className={`ops-planner ${full ? "fullscreen" : ""}`}>
-      <header>
-        <div>
-          <h1>Operations Planner</h1>
-          <p>{snapshot ? `${period} · read-only snapshot · not saved` : `${period} · ${planner.status || "draft"} · revision ${planner.revision || 1}`}</p>
+    <div className={`ops-planner ops-v2 ${full ? "fullscreen" : ""}`}>
+      <header className="top">
+        <div className="brand">
+          <span className="mark" aria-hidden="true">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 6.5 4.5 9 10 3" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </span>
+          <strong>Operations Planner</strong>
+          <em>VeeWash</em>
         </div>
-        <button type="button" onClick={() => setFull((value) => !value)}>{full ? "Exit full screen" : "Expand"}</button>
-      </header>
-      {flags && !flags.manager_pilot ? (
-        <div className="ops-toolbar">
-          <span>The manager pilot is off.</span>
-          <button type="button" className="primary" onClick={() => saveFlags({ manager_pilot: true }).catch((err) => setError(err.response?.data?.error || err.message))}>
-            Enable manager pilot
-          </button>
+        <div className="when-week">
+          <button type="button" aria-label="Previous week" disabled={snapshot} onClick={() => setWeek(shiftIso(monday, -7))}>‹</button>
+          <span>{payload?.week_label || period}</span>
+          <button type="button" aria-label="Next week" disabled={snapshot} onClick={() => setWeek(shiftIso(monday, 7))}>›</button>
         </div>
-      ) : (
-        <div className="ops-toolbar no-print">
+        <span className={`status-pill ${statusName}`}>{statusName}{planner.revision ? ` · rev ${planner.revision}` : ""}{planner.published_revision ? ` · published ${planner.published_revision}` : ""}</span>
+        <div className="seg" role="group" aria-label="Calendar span">
+          <button type="button" aria-pressed={mode === "week"} onClick={() => setMode("week")}>Week</button>
+          <button type="button" aria-pressed={mode === "day"} onClick={() => {
+            const chosen = entries.find((entry) => shiftKey(entry) === selectedKey);
+            if (chosen) setDay(Number(chosen.day_of_week));
+            setMode("day");
+          }}>Day</button>
+        </div>
+        {mode === "day" ? (
+          <div className="days" role="group" aria-label="Day">
+            {DAY_ORDER.map((value) => {
+              const offset = value === 0 ? 6 : value - 1;
+              const date = Number(String(shiftIso(monday, offset)).slice(8, 10));
+              return (
+                <button key={value} type="button" aria-pressed={day === value} onClick={() => setDay(value)}>
+                  {DAY_NAMES[value].slice(0, 3)} {Number.isFinite(date) ? date : ""}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+        <div className="spacer" />
+        <details className="menu">
+          <summary>Actions</summary>
+          <div className="menu-panel">
+            {flags && !flags.manager_pilot ? <button type="button" onClick={() => saveFlags({ manager_pilot: true }).catch((err) => setError(err.response?.data?.error || err.message))}>Enable manager pilot</button> : null}
+            <button type="button" disabled={snapshot} onClick={() => { if (!snapshot) api("/operations-planner/v2/weeks/approve", { method: "POST", data: { weeks: [week] } }).then(() => load(week)); }}>Approve week</button>
+            <button type="button" disabled={snapshot} onClick={() => { if (!snapshot) api("/operations-planner/v2/weeks/publish", { method: "POST", data: { weeks: [week] } }).then(() => load(week)); }}>Publish week</button>
+            <button type="button" onClick={() => copyCard(scheduleCardSvg({ title: `Schedule · ${period}`, subtitle: planner.status || "draft", rows: exportRows }))}>Copy image</button>
+            <button type="button" onClick={() => download(`schedule-${week || "week"}.csv`, scheduleCsv(exportRows), "text/csv")}>CSV</button>
+            <button type="button" onClick={() => download(`schedule-${week || "week"}.pdf`, schedulePdf({ title: `Schedule · ${period}`, subtitle: planner.status || "draft", rows: exportRows }), "application/pdf")}>PDF</button>
+            <button type="button" onClick={() => {
+              const html = printDocumentHtml({ title: `${lens} · ${period}`, subtitle: week, sections: [{ heading: lens, rows: exportRows }] });
+              const popup = window.open("", "_blank");
+              if (!popup) return;
+              popup.document.write(html);
+              popup.document.close();
+              popup.focus();
+              popup.print();
+            }}>Print</button>
+            <label>Week starting <input aria-label="Week starting" type="date" value={monday} disabled={snapshot} onChange={(event) => { if (!snapshot) setWeek(event.target.value); }} /></label>
+            <button type="button" onClick={() => setPinOpen(true)}>Employee PIN access</button>
+            <button type="button" onClick={() => setFull((value) => !value)}>{full ? "Exit full screen" : "Expand"}</button>
+          </div>
+        </details>
+        <nav className="tabs" aria-label="Schedule">
           {LENSES.map(([id, label]) => (
-            <button key={id} type="button" className={lens === id ? "active" : ""} onClick={() => setLens(id)}>{label}</button>
+            <button key={id} type="button" aria-pressed={lens === id} onClick={() => setLens(id)}>{label}</button>
           ))}
-          <button type="button" className={mode === "week" ? "active" : ""} onClick={() => setMode("week")}>Week</button>
-          <button type="button" className={mode === "day" ? "active" : ""} onClick={() => setMode("day")}>Day</button>
-          <label className="ops-week-pick">Week <input aria-label="Week starting" type="date" value={week || ""} disabled={snapshot} onChange={(event) => { if (!snapshot) setWeek(event.target.value); }} /></label>
-          <button type="button" disabled={snapshot} onClick={() => setWeek(shiftIso(week, -7))}>Previous</button>
-          <button type="button" disabled={snapshot} onClick={() => setWeek(shiftIso(week, 7))}>Next</button>
-          {mode === "day" ? (
-            <select value={day} onChange={(event) => setDay(Number(event.target.value))}>
-              {DAY_ORDER.map((value) => <option key={value} value={value}>{DAY_NAMES[value]}</option>)}
-            </select>
-          ) : null}
-          <button type="button" disabled={snapshot} onClick={() => { if (!snapshot) api("/operations-planner/v2/weeks/approve", { method: "POST", data: { weeks: [week] } }).then(() => load(week)); }}>Approve week</button>
-          <button type="button" disabled={snapshot} onClick={() => { if (!snapshot) api("/operations-planner/v2/weeks/publish", { method: "POST", data: { weeks: [week] } }).then(() => load(week)); }}>Publish week</button>
-          <button type="button" onClick={() => copyCard(scheduleCardSvg({ title: `Schedule · ${period}`, subtitle: planner.status || "draft", rows: exportRows }))}>Copy image</button>
-          <button type="button" onClick={() => download(`schedule-${week || "week"}.csv`, scheduleCsv(exportRows), "text/csv")}>CSV</button>
-          <button type="button" onClick={() => download(`schedule-${week || "week"}.pdf`, schedulePdf({ title: `Schedule · ${period}`, subtitle: planner.status || "draft", rows: exportRows }), "application/pdf")}>PDF</button>
-          <button type="button" onClick={() => {
-            const html = printDocumentHtml({ title: `${lens} · ${period}`, subtitle: week, sections: [{ heading: lens, rows: exportRows }] });
-            const popup = window.open("", "_blank");
-            if (!popup) return;
-            popup.document.write(html);
-            popup.document.close();
-            popup.focus();
-            popup.print();
-          }}>Print</button>
+        </nav>
+      </header>
+      {payload ? (
+        <div className="metrics" aria-label="Schedule summary">
+          <div className="metric"><b>{entries.length}</b><span>Shifts</span></div>
+          <div className="metric"><b>{hourTotals.gross.toFixed(1)}</b><span>Gross hours</span></div>
+          <div className="metric"><b>{breakHours.toFixed(1)}</b><span>Break hours</span></div>
+          <div className="metric"><b>{hourTotals.net.toFixed(1)}</b><span>Net hours</span></div>
+          <div className="metric"><b>{scheduledCount}</b><span>Scheduled</span></div>
+          <div className="metric"><b>{Math.max(0, employees.length - scheduledCount)}</b><span>Unscheduled</span></div>
+          <div className="metric"><b>{coverageLabel}</b><span>Coverage</span></div>
+          <div className="flags">
+            {breakTotals.unscheduledCount ? <p className="flag"><i />{breakTotals.unscheduledCount} breaks have no clock time</p> : null}
+            {unsplitCount ? <p className="flag"><i />{unsplitCount} shifts have no role split</p> : null}
+            {!loadedRequirements.length ? <p className="flag"><i />Staffing need not set</p> : null}
+            {snapshot ? <p className="flag" title="Draft edits stay in this browser. Nothing is written."><i />Read-only snapshot</p> : null}
+          </div>
         </div>
-      )}
+      ) : null}
       {flags === null && !error ? <p className="ops-note">Loading the schedule…</p> : null}
       {error ? <p className="ops-note ops-warn">{error}</p> : null}
-      {snapshot ? <p className="ops-note">Read-only VeeWash snapshot for January 4–10, 2027. Draft edits stay in this browser. Nothing is written to production.</p> : null}
       {notice ? <p className="ops-note">{notice}</p> : null}
       {payload ? (
-        <div className="ops-main ops-workspace">
-          <PlannerWorkspace
-            lens={lens}
-            mode={mode}
-            day={day}
-            employees={employees}
-            entries={entries}
-            tasks={responsibilities}
-            requirements={requirements}
-            planner={planner}
-            selectedKey={selectedKey}
-            dirty={Boolean(draftBundle)}
-            canUndo={history.length > 0}
-            onSelect={setSelectedKey}
-            onCommit={applyDraft}
-            onUndo={undoDraft}
-            onDiscard={discardDraft}
-            onReview={reviewShift}
-            onReviewBundle={reviewBundle}
-            onAdd={addShift}
-            onDuplicate={duplicateShift}
-            onSplit={splitShift}
-            onRemove={removeShift}
-          />
-          {snapshot ? <p className="ops-side">Employee access and paystubs are not loaded with this snapshot.</p> : (
-            <details className="ops-side">
-              <summary>Employee PIN access</summary>
-              <AccessEditor employees={employees} onSaved={() => load(week)} onError={setError} />
-              {planner.legacy_template ? <p className="ops-warn">The old repeating template is still on. A recurring save will ask to stop it.</p> : null}
-            </details>
-          )}
+        <PlannerWorkspace
+          lens={lens}
+          mode={mode}
+          day={day}
+          weekStart={monday}
+          employees={employees}
+          entries={entries}
+          tasks={responsibilities}
+          requirements={requirements}
+          planner={planner}
+          selectedKey={selectedKey}
+          dirty={Boolean(draftBundle)}
+          canUndo={history.length > 0}
+          onSelect={setSelectedKey}
+          onCommit={applyDraft}
+          onUndo={undoDraft}
+          onDiscard={discardDraft}
+          onReview={reviewShift}
+          onReviewBundle={reviewBundle}
+          onAdd={addShift}
+          onDuplicate={duplicateShift}
+          onSplit={splitShift}
+          onRemove={removeShift}
+          onOpenDay={(value) => { setMode("day"); setDay(Number(value)); }}
+        />
+      ) : null}
+      {pinOpen && !snapshot ? (
+        <div className="ops-dialog-back">
+          <div className="ops-dialog pin-box">
+            <h2>Employee PIN access</h2>
+            <AccessEditor employees={employees} onSaved={() => load(week)} onError={setError} />
+            {planner.legacy_template ? <p className="ops-warn">The old repeating template is still on. A recurring save will ask to stop it.</p> : null}
+            <button type="button" className="btn" onClick={() => setPinOpen(false)}>Close</button>
+          </div>
         </div>
       ) : null}
       {pending ? (

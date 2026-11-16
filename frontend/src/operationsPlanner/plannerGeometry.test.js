@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import week from "./fixtures/veewash-2027-01-04.json";
-import { barBox, displaySegments, placeBreak, relocateShift, resizeBreak, resizeEdge, resizeSegment, timelineAxis, visibleBreaks } from "./plannerGeometry";
+import { barBox, displaySegments, placeBreak, relocateShift, resizeBreak, resizeEdge, resizeSegment, roleColor, timelineAxis, visibleBreaks, visualPieces } from "./plannerGeometry";
 
 describe("planner geometry", () => {
   it("starts the axis at the earliest shift instead of clipping 02:00 to 06:00", () => {
@@ -95,5 +95,16 @@ describe("planner geometry", () => {
     expect(edged.break_minutes).toBe(30);
     expect(displaySegments(edged)[0].allocated).toBe(false);
     expect(displaySegments(edged)[0].role).toBe("wash,attendant");
+  });
+
+  it("keeps an unallocated combined remainder on the combined role", () => {
+    const maria = week.entries.find((entry) => entry.id === 5266);
+    const pieces = visualPieces(maria);
+    expect(pieces.map((piece) => piece.role)).toEqual(["fold,attendant", "attendant"]);
+    expect(pieces[0].allocated).toBe(false);
+    expect(pieces[1].allocated).toBe(true);
+    expect(roleColor("fold,attendant")).toBe("#3e4c59");
+    expect(roleColor("fold,attendant")).not.toBe(roleColor("fold"));
+    expect(roleColor("weigher,fold")).toBe("#3e4c59");
   });
 });
