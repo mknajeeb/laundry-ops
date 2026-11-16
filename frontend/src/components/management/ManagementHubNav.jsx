@@ -2,14 +2,14 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { Box } from "@mui/material";
 import { useI18n } from "../../i18n/I18nContext";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
-import { SUPERVISOR_PORTAL_PILOT } from "../../supervisor/pilotAccess";
+import { SUPERVISOR_MANAGEMENT_NAV } from "../../supervisor/pilotAccess";
 
 /** Hub compartments. Only Rinse WF (+ transitional Today landing) are live. */
 export const HUB_DESTINATIONS = [
   { to: "/management", id: "today", label: "Today", enabled: true },
   { to: "/management/rinse-wf", id: "rinse_wf", label: "Rinse WF", enabled: true },
   { to: "/management/rinse-hd", id: "rinse_hd", label: "Rinse HD", enabled: true },
-  { to: "/management/supervisor", id: "supervisor", label: "Supervisor", enabled: SUPERVISOR_PORTAL_PILOT },
+  { to: "/management/supervisor", id: "supervisor", label: "Supervisor", enabled: SUPERVISOR_MANAGEMENT_NAV },
   { to: "/management/labor", id: "labor", label: "Labor", enabled: false },
   { to: "/management/tasks", id: "tasks", label: "Tasks", enabled: true },
   { to: "/management/revenue", id: "revenue", label: "Revenue", enabled: true },

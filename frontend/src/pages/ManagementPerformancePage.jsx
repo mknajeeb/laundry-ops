@@ -6,7 +6,7 @@ import ManagementWfFolderPerformanceSection from "../components/management/Manag
 import WfOpsMaintenanceBanner from "../components/management/WfOpsMaintenanceBanner";
 import useWfOpsMaintenance from "../hooks/useWfOpsMaintenance";
 import { PERF_TYPE, PERF_UI } from "../components/management/performance/performanceTokens";
-import { SUPERVISOR_PORTAL_PILOT } from "../supervisor/pilotAccess";
+import { SUPERVISOR_MANAGEMENT_NAV } from "../supervisor/pilotAccess";
 
 function todayEtIso() {
   try {
@@ -45,7 +45,7 @@ export default function ManagementPerformancePage() {
           sx={{ mb: 1 }}
         >
           <Typography sx={PERF_TYPE.pageTitle}>Performance</Typography>
-          {SUPERVISOR_PORTAL_PILOT ? (
+          {SUPERVISOR_MANAGEMENT_NAV ? (
             <Button
               component="a"
               href="/management/supervisor?view=performance"

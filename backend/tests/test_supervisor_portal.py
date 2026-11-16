@@ -767,6 +767,7 @@ def test_portal_pilot_stays_off_until_a_flag_is_set():
 
     source = inspect.getsource(read_flags)
     assert '"supervisor_portal": False' in source
+    assert '"employee_pin_training": False' in source
     assert '"scoring_active": False' in source
     assert "flags[\"scoring_active\"] = False" in source
 

@@ -695,6 +695,7 @@ def read_flags(cursor, organization_id: int) -> dict[str, bool]:
     """Rollout switches. Scoring stays off even if a row tries to enable it."""
     flags = {
         "supervisor_portal": False,
+        "employee_pin_training": False,
         "quality_assignments": True,
         "training": True,
         "scoring_active": False,

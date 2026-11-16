@@ -20,11 +20,12 @@ describe("Management Hub destinations", () => {
       "today",
       "rinse_wf",
       "rinse_hd",
+      "supervisor",
       "tasks",
       "revenue",
       "issues",
     ]);
-    expect(HUB_DESTINATIONS.find((d) => d.id === "supervisor").enabled).toBe(false);
+    expect(HUB_DESTINATIONS.find((d) => d.id === "supervisor").enabled).toBe(true);
   });
 
   it("keeps the three operating buckets", () => {
