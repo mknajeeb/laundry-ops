@@ -1,0 +1,207 @@
+import { clockMinutes, minutesToClock, spanMinutes } from "./plannerModel";
+
+export function asList(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string" && value.trim().startsWith("[")) {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+export function shiftKey(entry) {
+  return String(entry?.id ?? `${entry?.user_id}-${entry?.day_of_week}-${entry?.start_time}`);
+}
+
+/** Axis includes early-morning shifts. The old lane started at 06:00 and clipped them. */
+export function timelineAxis(entries) {
+  let min = 6 * 60;
+  let max = 22 * 60;
+  for (const entry of entries || []) {
+    const start = clockMinutes(entry.start_time);
+    let end = clockMinutes(entry.end_time);
+    if (start == null || end == null) continue;
+    if (end <= start) end += 24 * 60;
+    min = Math.min(min, start);
+    max = Math.max(max, end);
+  }
+  const startMin = Math.floor(min / 60) * 60;
+  const endMin = Math.max(startMin + 60, Math.ceil(max / 60) * 60);
+  return { startMin, endMin, span: endMin - startMin };
+}
+
+export function barBox(start, end, axis) {
+  const begin = clockMinutes(start);
+  let finish = clockMinutes(end);
+  if (begin == null || finish == null || !axis?.span) return { left: "0%", width: "0%" };
+  if (finish <= begin) finish += 24 * 60;
+  const left = ((begin - axis.startMin) / axis.span) * 100;
+  const width = ((finish - begin) / axis.span) * 100;
+  return { left: `${Math.max(0, left)}%`, width: `${Math.max(1.5, Math.min(100, width))}%` };
+}
+
+export function pieceBox(shift, piece) {
+  const open = clockMinutes(shift.start_time);
+  let close = clockMinutes(shift.end_time);
+  const begin = clockMinutes(piece.start_time);
+  let finish = clockMinutes(piece.end_time);
+  if (open == null || close == null || begin == null || finish == null || close === open) return { left: "0%", width: "0%" };
+  if (close <= open) close += 24 * 60;
+  if (finish <= begin) finish += 24 * 60;
+  return {
+    left: `${Math.max(0, ((begin - open) / (close - open)) * 100)}%`,
+    width: `${Math.max(6, ((finish - begin) / (close - open)) * 100)}%`,
+  };
+}
+
+/** Stored segments only. A missing list stays missing; the display label is not written back. */
+export function storedSegments(entry) {
+  return asList(entry?.role_assignments).map((segment) => ({
+    role: segment.role,
+    start_time: String(segment.start_time || "").slice(0, 5),
+    end_time: String(segment.end_time || "").slice(0, 5),
+  }));
+}
+
+export function displaySegments(entry) {
+  const assigned = asList(entry?.role_assignments);
+  if (assigned.length) {
+    return assigned.map((segment) => ({
+      role: segment.role || "Unassigned",
+      start_time: String(segment.start_time || entry.start_time).slice(0, 5),
+      end_time: String(segment.end_time || entry.end_time).slice(0, 5),
+      allocated: true,
+    }));
+  }
+  const label = String(entry?.role || "").trim();
+  return [{
+    role: label || "No role segments",
+    start_time: String(entry?.start_time || "").slice(0, 5),
+    end_time: String(entry?.end_time || "").slice(0, 5),
+    allocated: false,
+  }];
+}
+
+/** Timed slots stay on the clock. break_minutes alone is an unscheduled duration, not a guessed time. */
+export function visibleBreaks(entry) {
+  const slots = asList(entry?.break_slots).filter((slot) => slot?.start_time && slot?.end_time);
+  if (slots.length) {
+    return slots.map((slot) => ({
+      start_time: String(slot.start_time).slice(0, 5),
+      end_time: String(slot.end_time).slice(0, 5),
+      timed: slot.timed !== false,
+      unscheduled: false,
+    }));
+  }
+  const minutes = Number(entry?.break_minutes) || 0;
+  if (!minutes) return [];
+  return [{ unscheduled: true, minutes, timed: false }];
+}
+
+function shiftClock(start, delta) {
+  const begin = clockMinutes(start);
+  if (begin == null) return start;
+  const total = ((begin + delta) % (24 * 60) + 24 * 60) % (24 * 60);
+  return minutesToClock(total);
+}
+
+export function relocateShift(entry, startTime, dayOfWeek = entry.day_of_week) {
+  const nextStart = minutesToClock(clockMinutes(startTime));
+  const delta = (clockMinutes(nextStart) ?? 0) - (clockMinutes(entry.start_time) ?? 0);
+  const duration = spanMinutes(entry.start_time, entry.end_time);
+  const next = {
+    ...entry,
+    day_of_week: dayOfWeek,
+    start_time: nextStart || entry.start_time,
+    end_time: duration == null ? entry.end_time : shiftClock(entry.start_time, duration + delta),
+  };
+  if (asList(entry.role_assignments).length) {
+    next.role_assignments = storedSegments(entry).map((segment) => ({
+      role: segment.role,
+      start_time: shiftClock(segment.start_time, delta),
+      end_time: shiftClock(segment.end_time, delta),
+    }));
+  }
+  const slots = asList(entry.break_slots).filter((slot) => slot?.start_time && slot?.end_time);
+  if (slots.length) {
+    next.break_slots = slots.map((slot) => ({
+      start_time: shiftClock(slot.start_time, delta),
+      end_time: shiftClock(slot.end_time, delta),
+      timed: slot.timed !== false,
+    }));
+  }
+  return next;
+}
+
+export function resizeEdge(entry, edge, minutes) {
+  const clock = minutesToClock(minutes);
+  if (!clock) return entry;
+  const next = { ...entry, [edge === "end" ? "end_time" : "start_time"]: clock };
+  const segments = storedSegments(entry);
+  if (segments.length) {
+    if (edge === "start") segments[0] = { ...segments[0], start_time: clock };
+    else segments[segments.length - 1] = { ...segments[segments.length - 1], end_time: clock };
+    next.role_assignments = segments;
+  }
+  return next;
+}
+
+export function resizeSegment(entry, index, edge, minutes) {
+  const clock = minutesToClock(minutes);
+  const segments = storedSegments(entry);
+  if (!clock || !segments[index]) return entry;
+  const key = edge === "end" ? "end_time" : "start_time";
+  segments[index] = { ...segments[index], [key]: clock };
+  const next = { ...entry, role_assignments: segments };
+  if (index === 0 && key === "start_time") next.start_time = clock;
+  if (index === segments.length - 1 && key === "end_time") next.end_time = clock;
+  return next;
+}
+
+export function resizeBreak(entry, index, edge, minutes) {
+  const clock = minutesToClock(minutes);
+  const slots = asList(entry?.break_slots)
+    .filter((slot) => slot?.start_time && slot?.end_time)
+    .map((slot) => ({
+      start_time: String(slot.start_time).slice(0, 5),
+      end_time: String(slot.end_time).slice(0, 5),
+      timed: slot.timed !== false,
+    }));
+  if (!clock || !slots[index]) return entry;
+  slots[index] = { ...slots[index], [edge === "end" ? "end_time" : "start_time"]: clock, timed: true };
+  const breakMinutes = slots.reduce((sum, slot) => sum + (spanMinutes(slot.start_time, slot.end_time) || 0), 0);
+  return { ...entry, break_slots: slots, break_minutes: breakMinutes };
+}
+
+/** A manager placing both ends creates a timed break. An empty field does not invent one. */
+export function placeBreak(entry, start, end) {
+  const startTime = String(start || "").slice(0, 5);
+  const endTime = String(end || "").slice(0, 5);
+  if (!/^\d{2}:\d{2}$/.test(startTime) || !/^\d{2}:\d{2}$/.test(endTime)) return entry;
+  const minutes = spanMinutes(startTime, endTime);
+  if (!minutes) return entry;
+  return {
+    ...entry,
+    break_slots: [{ start_time: startTime, end_time: endTime, timed: true }],
+    break_minutes: minutes,
+  };
+}
+
+export const ROLE_COLOR = {
+  wash: "#1d4e89",
+  fold: "#0f6e56",
+  sort: "#8a5a12",
+  weigher: "#5b4b8a",
+  attendant: "#9a3412",
+  hd_operator: "#1e3a5f",
+  hd_folder: "#3f6212",
+  dry: "#0e7490",
+};
+
+export function roleColor(role) {
+  return ROLE_COLOR[String(role || "").split(",")[0].trim()] || "#16385f";
+}

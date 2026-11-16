@@ -9,10 +9,17 @@ completion rows are not rewritten from here.
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import date, datetime
 from typing import Any, Mapping
 
-from backend.operations_planner_v2 import empty_state, plan_entry_write, plan_task_links
+from backend.operations_planner_v2 import (
+    ACTIVITY_LOCKED,
+    empty_state,
+    plan_assignment_draft,
+    plan_entry_write,
+    plan_task_links,
+)
 from backend.ta_helpers import table_exists
 from backend.weekly_schedule_week import parse_schedule_date, storage_week_for_dow
 
@@ -26,8 +33,15 @@ ROLES = "ops_planner_role_settings"
 HOURS = "ops_planner_role_hours"
 LINKS = "ops_planner_links"
 CODES = "ops_planner_paystub_codes"
+STAFFING = "ops_planner_staffing_requirements"
+RESPONSIBILITIES = "planned_weekly_schedule_responsibilities"
+ACTIVITIES = "cleaning_task_activities"
 PLANNER_TABLES = (FLAGS, PATTERNS, EXCEPTIONS, WEEKS, AUDIT, ACCESS, ROLES, HOURS, CODES, LINKS)
 SCHEMA_VERSION = "operations_planner_v2.2"
+
+
+class StaffingRequirementError(ValueError):
+    """A blank headcount is not stored as zero."""
 
 
 class PlannerSchemaNotApplied(RuntimeError):
@@ -532,6 +546,218 @@ def save_role_setting(cursor, organization_id: int, role: str, body: Mapping[str
                 """,
                 (int(organization_id), role, int(hour), int(needed)),
             )
+
+
+def _clock_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "total_seconds") and not hasattr(value, "strftime"):
+        total = int(value.total_seconds()) % (24 * 3600)
+        return f"{total // 3600:02d}:{(total % 3600) // 60:02d}"
+    if hasattr(value, "strftime"):
+        return value.strftime("%H:%M")
+    return str(value)[:5]
+
+
+def _require_clock(value: Any) -> str:
+    text = _clock_text(value)
+    if len(text) != 5 or text[2] != ":":
+        raise StaffingRequirementError("A requirement needs a start and an end")
+    return text
+
+
+def normalize_staffing_requirement(item: Mapping[str, Any]) -> dict[str, Any]:
+    role = str(item.get("role") or item.get("role_key") or "").strip()
+    if not role:
+        raise StaffingRequirementError("A requirement needs a role")
+    head = item.get("required_headcount")
+    if head is None or head == "":
+        raise StaffingRequirementError(
+            "An empty requirement is not zero. Enter a headcount or leave the interval unconfigured."
+        )
+    try:
+        count = int(head)
+    except (TypeError, ValueError) as exc:
+        raise StaffingRequirementError("Headcount must be a whole number") from exc
+    if count < 0:
+        raise StaffingRequirementError("Headcount cannot be negative")
+    raw_day = item.get("day_of_week")
+    if raw_day in ("", None):
+        day_value = None
+    else:
+        day_value = int(raw_day)
+        if day_value < 0 or day_value > 6:
+            raise StaffingRequirementError("Day must be 0–6 or empty for every day")
+    return {
+        "role": role,
+        "day_of_week": day_value,
+        "start_time": _require_clock(item.get("start_time")),
+        "end_time": _require_clock(item.get("end_time")),
+        "required_headcount": count,
+    }
+
+
+def load_staffing_requirements(cursor, organization_id: int) -> list[dict[str, Any]]:
+    """Missing table or missing rows means unconfigured, not zero staff."""
+    if not table_exists(cursor, STAFFING):
+        return []
+    cursor.execute(
+        f"""
+        SELECT id, role_key, day_of_week, start_time, end_time, required_headcount
+        FROM {STAFFING} WHERE organization_id=%s
+        ORDER BY role_key, day_of_week, start_time, id
+        """,
+        (int(organization_id),),
+    )
+    rows = []
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        rows.append(
+            {
+                "id": row.get("id"),
+                "role": row.get("role_key"),
+                "day_of_week": row.get("day_of_week"),
+                "start_time": _clock_text(row.get("start_time")),
+                "end_time": _clock_text(row.get("end_time")),
+                "required_headcount": row.get("required_headcount"),
+            }
+        )
+    return rows
+
+
+def replace_staffing_requirements(cursor, organization_id: int, items: Any) -> list[dict[str, Any]]:
+    if not table_exists(cursor, STAFFING):
+        raise PlannerSchemaNotApplied([STAFFING])
+    normalized = [normalize_staffing_requirement(item) for item in (items or [])]
+    cursor.execute(f"DELETE FROM {STAFFING} WHERE organization_id=%s", (int(organization_id),))
+    for item in normalized:
+        cursor.execute(
+            f"""
+            INSERT INTO {STAFFING}
+              (organization_id, role_key, day_of_week, start_time, end_time, required_headcount)
+            VALUES (%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                int(organization_id),
+                item["role"],
+                item["day_of_week"],
+                item["start_time"],
+                item["end_time"],
+                item["required_headcount"],
+            ),
+        )
+    return load_staffing_requirements(cursor, organization_id)
+
+
+def _activity_status(cursor, organization_id: int, responsibility_id: int) -> str:
+    if not table_exists(cursor, ACTIVITIES):
+        return ""
+    cursor.execute(
+        f"""
+        SELECT status FROM {ACTIVITIES}
+        WHERE organization_id=%s AND responsibility_id=%s
+        """,
+        (int(organization_id), int(responsibility_id)),
+    )
+    statuses = []
+    for row in cursor.fetchall() or []:
+        statuses.append(str((row.get("status") if isinstance(row, dict) else row[0]) or ""))
+    for locked in ("completed", "approved", "pending_approval", "rejected", "in_progress"):
+        if locked in statuses:
+            return locked
+    return statuses[0] if statuses else ""
+
+
+def load_assignment_rows(cursor, organization_id: int, week_start: date) -> list[dict[str, Any]]:
+    if not table_exists(cursor, RESPONSIBILITIES):
+        return []
+    cursor.execute(
+        f"""
+        SELECT id, user_id, day_of_week, role, remarks, assignment_group_id
+        FROM {RESPONSIBILITIES}
+        WHERE organization_id=%s AND week_start=%s
+        ORDER BY id
+        """,
+        (int(organization_id), week_start),
+    )
+    rows = []
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        item = dict(row)
+        item["activity_status"] = _activity_status(cursor, organization_id, int(item["id"]))
+        rows.append(item)
+    return rows
+
+
+def add_assignments(cursor, organization_id: int, week_start: date, additions: Any) -> dict[str, Any]:
+    """Insert new assignment rows. Existing rows, including completed history, are not updated."""
+    if not table_exists(cursor, RESPONSIBILITIES):
+        raise PlannerSchemaNotApplied([RESPONSIBILITIES])
+    existing = load_assignment_rows(cursor, organization_id, week_start)
+    locked_groups = {
+        str(row.get("assignment_group_id"))
+        for row in existing
+        if row.get("assignment_group_id")
+        and str(row.get("activity_status") or row.get("status") or "") in ACTIVITY_LOCKED
+    }
+    safe = []
+    refused = 0
+    for item in additions or []:
+        group = str(item.get("assignment_group_id") or "")
+        if group and group in locked_groups:
+            refused += 1
+            continue
+        safe.append(item)
+    desired = [
+        {
+            "user_id": row.get("user_id"),
+            "day_of_week": row.get("day_of_week"),
+            "role": row.get("role"),
+            "assignment_group_id": row.get("assignment_group_id"),
+        }
+        for row in existing
+    ] + safe
+    plan = plan_assignment_draft(existing, desired)
+    inserted = []
+    for item in plan["add"]:
+        group = item.get("assignment_group_id") or None
+        if item.get("shared") and not group:
+            group = uuid.uuid4().hex
+        if group and str(group) in locked_groups:
+            refused += 1
+            continue
+        cursor.execute(
+            f"""
+            INSERT INTO {RESPONSIBILITIES} (
+              organization_id, week_start, user_id, day_of_week, role, remarks,
+              assignment_group_id, timing_mode, start_time, execution_mode
+            )
+            VALUES (%s,%s,%s,%s,%s,%s,%s,'anytime',NULL,'individual')
+            """,
+            (
+                int(organization_id),
+                week_start,
+                int(item["user_id"]),
+                int(item["day_of_week"]),
+                str(item.get("role") or "")[:40],
+                None,
+                group,
+            ),
+        )
+        inserted.append(int(cursor.lastrowid or 0))
+    return {
+        "inserted": len(inserted),
+        "inserted_ids": inserted,
+        "preserved_history": [
+            row.get("id")
+            for row in existing
+            if str(row.get("activity_status") or row.get("status") or "") in ACTIVITY_LOCKED
+        ],
+        "refused_groups": refused,
+        "removed": 0,
+    }
 
 
 def acquire_lock(cursor, organization_id: int) -> bool:

@@ -107,6 +107,21 @@ CREATE TABLE IF NOT EXISTS ops_planner_paystub_codes (
   INDEX idx_paystub_code_user (organization_id, user_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Staffing intervals are optional. A missing table, or no row for a role and
+-- hour, means that hour is not configured. It does not mean zero people are
+-- required. This table is not part of the required 2.2 set: the week request
+-- still loads when it is absent.
+CREATE TABLE IF NOT EXISTS ops_planner_staffing_requirements (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  organization_id INT NOT NULL,
+  role_key VARCHAR(64) NOT NULL,
+  day_of_week TINYINT NULL,
+  start_time TIME NOT NULL,
+  end_time TIME NOT NULL,
+  required_headcount INT NOT NULL,
+  INDEX idx_ops_staff_org (organization_id, role_key, day_of_week)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS ops_planner_links (
   organization_id INT NOT NULL,
   week_monday DATE NOT NULL,

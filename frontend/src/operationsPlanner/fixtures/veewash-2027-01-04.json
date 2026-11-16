@@ -1,0 +1,1663 @@
+{
+  "snapshot": true,
+  "snapshot_label": "VeeWash organization 3 \u00b7 January 4\u201310, 2027 \u00b7 read-only export",
+  "week_label": "Jan 4\u201310, 2027",
+  "employees": [
+    {
+      "user_id": 38,
+      "display_name": "Amna Yousaf"
+    },
+    {
+      "user_id": 34,
+      "display_name": "Angelica Angelica"
+    },
+    {
+      "user_id": 63,
+      "display_name": "Aselisa Aselisa"
+    },
+    {
+      "user_id": 30,
+      "display_name": "Evelin Delgado Hernandez"
+    },
+    {
+      "user_id": 53,
+      "display_name": "Florentina Llanto"
+    },
+    {
+      "user_id": 16,
+      "display_name": "Francis Arita"
+    },
+    {
+      "user_id": 56,
+      "display_name": "Gabriela Gabriela"
+    },
+    {
+      "user_id": 27,
+      "display_name": "Guiying  Lin"
+    },
+    {
+      "user_id": 67,
+      "display_name": "Ingris Ramirez"
+    },
+    {
+      "user_id": 65,
+      "display_name": "Jamie Jamie"
+    },
+    {
+      "user_id": 28,
+      "display_name": "Jasanpreet Singh"
+    },
+    {
+      "user_id": 60,
+      "display_name": "Jassi Paaji"
+    },
+    {
+      "user_id": 19,
+      "display_name": "Jennifer Farfan"
+    },
+    {
+      "user_id": 61,
+      "display_name": "Lily Chen"
+    },
+    {
+      "user_id": 31,
+      "display_name": "Maria Perez"
+    },
+    {
+      "user_id": 64,
+      "display_name": "Maria Rivera"
+    },
+    {
+      "user_id": 59,
+      "display_name": "Maria Rodriguez"
+    },
+    {
+      "user_id": 51,
+      "display_name": "Norma Cielo"
+    },
+    {
+      "user_id": 57,
+      "display_name": "Rocio Rocio"
+    },
+    {
+      "user_id": 23,
+      "display_name": "Sarah Kamran"
+    },
+    {
+      "user_id": 62,
+      "display_name": "Tahira Yousuf"
+    },
+    {
+      "user_id": 35,
+      "display_name": "Tarannum Mithila"
+    },
+    {
+      "user_id": 66,
+      "display_name": "Umar Umar"
+    },
+    {
+      "user_id": 26,
+      "display_name": "Varun Kumar Mongia"
+    },
+    {
+      "user_id": 36,
+      "display_name": "Yesenia Yesenia"
+    }
+  ],
+  "entries": [
+    {
+      "id": 5136,
+      "user_id": 19,
+      "day_of_week": 1,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "weigher,fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "weigher",
+          "start_time": "05:00",
+          "end_time": "06:00"
+        },
+        {
+          "role": "fold",
+          "start_time": "06:00",
+          "end_time": "13:00"
+        }
+      ]
+    },
+    {
+      "id": 5143,
+      "user_id": 26,
+      "day_of_week": 1,
+      "start_time": "02:00:00",
+      "end_time": "03:00:00",
+      "role": "weigher",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5144,
+      "user_id": 26,
+      "day_of_week": 1,
+      "start_time": "03:00:00",
+      "end_time": "11:30:00",
+      "role": "wash",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5156,
+      "user_id": 28,
+      "day_of_week": 1,
+      "start_time": "11:30:00",
+      "end_time": "20:00:00",
+      "role": "wash,hd_operator,hd_folder,attendant",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "wash",
+          "start_time": "11:30",
+          "end_time": "13:00"
+        },
+        {
+          "role": "hd_folder",
+          "start_time": "13:00",
+          "end_time": "14:00"
+        },
+        {
+          "role": "hd_operator",
+          "start_time": "14:00",
+          "end_time": "15:00"
+        },
+        {
+          "role": "attendant",
+          "start_time": "15:00",
+          "end_time": "20:00"
+        }
+      ]
+    },
+    {
+      "id": 5178,
+      "user_id": 31,
+      "day_of_week": 1,
+      "start_time": "02:30:00",
+      "end_time": "11:00:00",
+      "role": "sort,fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "sort",
+          "start_time": "02:30",
+          "end_time": "05:30"
+        },
+        {
+          "role": "fold",
+          "start_time": "05:30",
+          "end_time": "11:00"
+        }
+      ]
+    },
+    {
+      "id": 5189,
+      "user_id": 34,
+      "day_of_week": 1,
+      "start_time": "08:00:00",
+      "end_time": "18:00:00",
+      "role": "fold,hd_folder,attendant",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "fold",
+          "start_time": "08:00",
+          "end_time": "14:00"
+        },
+        {
+          "role": "hd_folder",
+          "start_time": "14:00",
+          "end_time": "15:00"
+        },
+        {
+          "role": "attendant",
+          "start_time": "15:00",
+          "end_time": "18:00"
+        }
+      ]
+    },
+    {
+      "id": 5194,
+      "user_id": 35,
+      "day_of_week": 1,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "fold,hd_operator",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "hd_operator",
+          "start_time": "05:00",
+          "end_time": "06:00"
+        },
+        {
+          "role": "fold",
+          "start_time": "06:00",
+          "end_time": "13:00"
+        }
+      ]
+    },
+    {
+      "id": 5208,
+      "user_id": 36,
+      "day_of_week": 1,
+      "start_time": "05:30:00",
+      "end_time": "13:30:00",
+      "role": "sort,fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "sort",
+          "start_time": "05:30",
+          "end_time": "11:00"
+        },
+        {
+          "role": "fold",
+          "start_time": "11:00",
+          "end_time": "13:30"
+        }
+      ]
+    },
+    {
+      "id": 5214,
+      "user_id": 38,
+      "day_of_week": 1,
+      "start_time": "05:00:00",
+      "end_time": "13:30:00",
+      "role": "wash,fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "wash",
+          "start_time": "05:00",
+          "end_time": "07:00"
+        },
+        {
+          "role": "fold",
+          "start_time": "07:00",
+          "end_time": "13:30"
+        }
+      ]
+    },
+    {
+      "id": 5225,
+      "user_id": 53,
+      "day_of_week": 1,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5239,
+      "user_id": 59,
+      "day_of_week": 1,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "sort,fold",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "sort",
+          "start_time": "05:00",
+          "end_time": "07:00"
+        },
+        {
+          "role": "fold",
+          "start_time": "07:00",
+          "end_time": "13:00"
+        }
+      ]
+    },
+    {
+      "id": 5250,
+      "user_id": 61,
+      "day_of_week": 1,
+      "start_time": "05:30:00",
+      "end_time": "14:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5258,
+      "user_id": 63,
+      "day_of_week": 1,
+      "start_time": "09:30:00",
+      "end_time": "18:00:00",
+      "role": "fold,attendant",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "fold",
+          "start_time": "09:30",
+          "end_time": "14:00"
+        },
+        {
+          "role": "attendant",
+          "start_time": "14:00",
+          "end_time": "18:00"
+        }
+      ]
+    },
+    {
+      "id": 5259,
+      "user_id": 63,
+      "day_of_week": 1,
+      "start_time": "14:00:00",
+      "end_time": "18:00:00",
+      "role": "attendant",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5265,
+      "user_id": 64,
+      "day_of_week": 1,
+      "start_time": "08:00:00",
+      "end_time": "16:00:00",
+      "role": "fold,attendant",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "fold",
+          "start_time": "08:00",
+          "end_time": "14:00"
+        },
+        {
+          "role": "attendant",
+          "start_time": "14:00",
+          "end_time": "16:00"
+        }
+      ]
+    },
+    {
+      "id": 5128,
+      "user_id": 16,
+      "day_of_week": 2,
+      "start_time": "05:30:00",
+      "end_time": "14:00:00",
+      "role": "sort,fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "sort",
+          "start_time": "05:30",
+          "end_time": "11:00"
+        },
+        {
+          "role": "fold",
+          "start_time": "11:00",
+          "end_time": "14:00"
+        }
+      ]
+    },
+    {
+      "id": 5137,
+      "user_id": 19,
+      "day_of_week": 2,
+      "start_time": "11:30:00",
+      "end_time": "20:00:00",
+      "role": "wash,hd_operator,hd_folder,attendant",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "wash",
+          "start_time": "11:30",
+          "end_time": "13:00"
+        },
+        {
+          "role": "hd_folder",
+          "start_time": "13:00",
+          "end_time": "14:00"
+        },
+        {
+          "role": "hd_operator",
+          "start_time": "14:00",
+          "end_time": "15:00"
+        },
+        {
+          "role": "attendant",
+          "start_time": "15:00",
+          "end_time": "20:00"
+        }
+      ]
+    },
+    {
+      "id": 5157,
+      "user_id": 28,
+      "day_of_week": 2,
+      "start_time": "02:00:00",
+      "end_time": "11:30:00",
+      "role": "wash,weigher",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "weigher",
+          "start_time": "02:00",
+          "end_time": "03:00"
+        },
+        {
+          "role": "wash",
+          "start_time": "03:00",
+          "end_time": "11:30"
+        }
+      ]
+    },
+    {
+      "id": 5169,
+      "user_id": 30,
+      "day_of_week": 2,
+      "start_time": "05:00:00",
+      "end_time": "13:30:00",
+      "role": "weigher,fold",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "weigher",
+          "start_time": "05:00",
+          "end_time": "06:00"
+        },
+        {
+          "role": "fold",
+          "start_time": "06:00",
+          "end_time": "13:30"
+        }
+      ]
+    },
+    {
+      "id": 5179,
+      "user_id": 31,
+      "day_of_week": 2,
+      "start_time": "02:30:00",
+      "end_time": "12:30:00",
+      "role": "sort,fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "sort",
+          "start_time": "02:30",
+          "end_time": "05:30"
+        },
+        {
+          "role": "fold",
+          "start_time": "05:30",
+          "end_time": "12:30"
+        }
+      ]
+    },
+    {
+      "id": 5195,
+      "user_id": 35,
+      "day_of_week": 2,
+      "start_time": "05:00:00",
+      "end_time": "14:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5196,
+      "user_id": 35,
+      "day_of_week": 2,
+      "start_time": "12:30:00",
+      "end_time": "13:30:00",
+      "role": "hd_folder",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5209,
+      "user_id": 36,
+      "day_of_week": 2,
+      "start_time": "05:00:00",
+      "end_time": "13:30:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5222,
+      "user_id": 51,
+      "day_of_week": 2,
+      "start_time": "05:00:00",
+      "end_time": "14:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5240,
+      "user_id": 59,
+      "day_of_week": 2,
+      "start_time": "05:00:00",
+      "end_time": "13:30:00",
+      "role": "wash,fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "wash",
+          "start_time": "05:00",
+          "end_time": "07:00"
+        },
+        {
+          "role": "fold",
+          "start_time": "07:00",
+          "end_time": "13:30"
+        }
+      ]
+    },
+    {
+      "id": 5251,
+      "user_id": 61,
+      "day_of_week": 2,
+      "start_time": "11:30:00",
+      "end_time": "20:00:00",
+      "role": "wash,attendant",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5260,
+      "user_id": 63,
+      "day_of_week": 2,
+      "start_time": "09:30:00",
+      "end_time": "18:00:00",
+      "role": "fold,attendant",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "fold",
+          "start_time": "09:30",
+          "end_time": "14:00"
+        },
+        {
+          "role": "attendant",
+          "start_time": "14:00",
+          "end_time": "18:00"
+        }
+      ]
+    },
+    {
+      "id": 5266,
+      "user_id": 64,
+      "day_of_week": 2,
+      "start_time": "08:00:00",
+      "end_time": "16:00:00",
+      "role": "fold,attendant",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": [
+        {
+          "role": "attendant",
+          "start_time": "14:00",
+          "end_time": "16:00"
+        }
+      ]
+    },
+    {
+      "id": 5129,
+      "user_id": 16,
+      "day_of_week": 3,
+      "start_time": "05:30:00",
+      "end_time": "11:00:00",
+      "role": "sort",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5130,
+      "user_id": 16,
+      "day_of_week": 3,
+      "start_time": "11:00:00",
+      "end_time": "14:00:00",
+      "role": "fold",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5138,
+      "user_id": 19,
+      "day_of_week": 3,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5139,
+      "user_id": 19,
+      "day_of_week": 3,
+      "start_time": "05:00:00",
+      "end_time": "06:00:00",
+      "role": "hd_operator",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5145,
+      "user_id": 26,
+      "day_of_week": 3,
+      "start_time": "02:00:00",
+      "end_time": "03:00:00",
+      "role": "weigher",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5146,
+      "user_id": 26,
+      "day_of_week": 3,
+      "start_time": "03:00:00",
+      "end_time": "11:30:00",
+      "role": "wash",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5152,
+      "user_id": 27,
+      "day_of_week": 3,
+      "start_time": "05:00:00",
+      "end_time": "13:30:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5158,
+      "user_id": 28,
+      "day_of_week": 3,
+      "start_time": "11:30:00",
+      "end_time": "20:00:00",
+      "role": "wash,attendant",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5159,
+      "user_id": 28,
+      "day_of_week": 3,
+      "start_time": "14:00:00",
+      "end_time": "15:00:00",
+      "role": "hd_folder",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5160,
+      "user_id": 28,
+      "day_of_week": 3,
+      "start_time": "15:00:00",
+      "end_time": "16:00:00",
+      "role": "hd_operator",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5170,
+      "user_id": 30,
+      "day_of_week": 3,
+      "start_time": "05:00:00",
+      "end_time": "07:00:00",
+      "role": "wash",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5171,
+      "user_id": 30,
+      "day_of_week": 3,
+      "start_time": "07:00:00",
+      "end_time": "14:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5180,
+      "user_id": 31,
+      "day_of_week": 3,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5197,
+      "user_id": 35,
+      "day_of_week": 3,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5215,
+      "user_id": 38,
+      "day_of_week": 3,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5216,
+      "user_id": 38,
+      "day_of_week": 3,
+      "start_time": "05:00:00",
+      "end_time": "07:00:00",
+      "role": "sort",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5241,
+      "user_id": 59,
+      "day_of_week": 3,
+      "start_time": "05:00:00",
+      "end_time": "11:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5242,
+      "user_id": 59,
+      "day_of_week": 3,
+      "start_time": "05:00:00",
+      "end_time": "06:00:00",
+      "role": "weigher",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5252,
+      "user_id": 61,
+      "day_of_week": 3,
+      "start_time": "02:30:00",
+      "end_time": "05:30:00",
+      "role": "sort",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5253,
+      "user_id": 61,
+      "day_of_week": 3,
+      "start_time": "12:30:00",
+      "end_time": "13:30:00",
+      "role": "hd_folder",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5267,
+      "user_id": 64,
+      "day_of_week": 3,
+      "start_time": "08:00:00",
+      "end_time": "16:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5140,
+      "user_id": 19,
+      "day_of_week": 4,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5147,
+      "user_id": 26,
+      "day_of_week": 4,
+      "start_time": "02:00:00",
+      "end_time": "03:00:00",
+      "role": "weigher",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5148,
+      "user_id": 26,
+      "day_of_week": 4,
+      "start_time": "03:00:00",
+      "end_time": "11:30:00",
+      "role": "wash",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5153,
+      "user_id": 27,
+      "day_of_week": 4,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5161,
+      "user_id": 28,
+      "day_of_week": 4,
+      "start_time": "11:30:00",
+      "end_time": "20:00:00",
+      "role": "wash,attendant",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5162,
+      "user_id": 28,
+      "day_of_week": 4,
+      "start_time": "14:00:00",
+      "end_time": "15:00:00",
+      "role": "hd_folder",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5163,
+      "user_id": 28,
+      "day_of_week": 4,
+      "start_time": "15:00:00",
+      "end_time": "16:00:00",
+      "role": "hd_operator",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5172,
+      "user_id": 30,
+      "day_of_week": 4,
+      "start_time": "05:00:00",
+      "end_time": "07:00:00",
+      "role": "sort",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5173,
+      "user_id": 30,
+      "day_of_week": 4,
+      "start_time": "07:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5181,
+      "user_id": 31,
+      "day_of_week": 4,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5182,
+      "user_id": 31,
+      "day_of_week": 4,
+      "start_time": "12:30:00",
+      "end_time": "13:30:00",
+      "role": "hd_folder",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5198,
+      "user_id": 35,
+      "day_of_week": 4,
+      "start_time": "05:00:00",
+      "end_time": "07:00:00",
+      "role": "fold",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5199,
+      "user_id": 35,
+      "day_of_week": 4,
+      "start_time": "05:00:00",
+      "end_time": "06:00:00",
+      "role": "hd_operator",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5200,
+      "user_id": 35,
+      "day_of_week": 4,
+      "start_time": "08:00:00",
+      "end_time": "12:30:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5210,
+      "user_id": 36,
+      "day_of_week": 4,
+      "start_time": "05:30:00",
+      "end_time": "11:00:00",
+      "role": "sort",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5211,
+      "user_id": 36,
+      "day_of_week": 4,
+      "start_time": "11:00:00",
+      "end_time": "14:00:00",
+      "role": "fold",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5217,
+      "user_id": 38,
+      "day_of_week": 4,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5218,
+      "user_id": 38,
+      "day_of_week": 4,
+      "start_time": "05:00:00",
+      "end_time": "06:00:00",
+      "role": "weigher",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5226,
+      "user_id": 53,
+      "day_of_week": 4,
+      "start_time": "05:00:00",
+      "end_time": "13:30:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5243,
+      "user_id": 59,
+      "day_of_week": 4,
+      "start_time": "05:00:00",
+      "end_time": "12:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5244,
+      "user_id": 59,
+      "day_of_week": 4,
+      "start_time": "05:00:00",
+      "end_time": "07:00:00",
+      "role": "sort",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5254,
+      "user_id": 61,
+      "day_of_week": 4,
+      "start_time": "02:30:00",
+      "end_time": "05:30:00",
+      "role": "sort",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5261,
+      "user_id": 63,
+      "day_of_week": 4,
+      "start_time": "09:30:00",
+      "end_time": "14:00:00",
+      "role": "fold",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5262,
+      "user_id": 63,
+      "day_of_week": 4,
+      "start_time": "14:00:00",
+      "end_time": "18:00:00",
+      "role": "attendant",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5131,
+      "user_id": 16,
+      "day_of_week": 5,
+      "start_time": "05:30:00",
+      "end_time": "11:00:00",
+      "role": "sort",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5132,
+      "user_id": 16,
+      "day_of_week": 5,
+      "start_time": "11:00:00",
+      "end_time": "14:00:00",
+      "role": "fold",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5154,
+      "user_id": 27,
+      "day_of_week": 5,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5164,
+      "user_id": 28,
+      "day_of_week": 5,
+      "start_time": "02:00:00",
+      "end_time": "03:00:00",
+      "role": "weigher",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5165,
+      "user_id": 28,
+      "day_of_week": 5,
+      "start_time": "03:00:00",
+      "end_time": "11:30:00",
+      "role": "wash",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5174,
+      "user_id": 30,
+      "day_of_week": 5,
+      "start_time": "05:00:00",
+      "end_time": "07:00:00",
+      "role": "wash",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5175,
+      "user_id": 30,
+      "day_of_week": 5,
+      "start_time": "07:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5183,
+      "user_id": 31,
+      "day_of_week": 5,
+      "start_time": "05:00:00",
+      "end_time": "06:00:00",
+      "role": "hd_operator",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5190,
+      "user_id": 34,
+      "day_of_week": 5,
+      "start_time": "08:00:00",
+      "end_time": "11:00:00",
+      "role": "fold",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5201,
+      "user_id": 35,
+      "day_of_week": 5,
+      "start_time": "05:00:00",
+      "end_time": "07:00:00",
+      "role": "fold",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5202,
+      "user_id": 35,
+      "day_of_week": 5,
+      "start_time": "08:00:00",
+      "end_time": "12:30:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5203,
+      "user_id": 35,
+      "day_of_week": 5,
+      "start_time": "12:30:00",
+      "end_time": "13:30:00",
+      "role": "hd_folder",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5212,
+      "user_id": 36,
+      "day_of_week": 5,
+      "start_time": "02:30:00",
+      "end_time": "05:30:00",
+      "role": "sort",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5219,
+      "user_id": 38,
+      "day_of_week": 5,
+      "start_time": "11:30:00",
+      "end_time": "20:00:00",
+      "role": "wash,attendant",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5220,
+      "user_id": 38,
+      "day_of_week": 5,
+      "start_time": "14:00:00",
+      "end_time": "15:00:00",
+      "role": "hd_folder",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5221,
+      "user_id": 38,
+      "day_of_week": 5,
+      "start_time": "15:00:00",
+      "end_time": "16:00:00",
+      "role": "hd_operator",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5223,
+      "user_id": 51,
+      "day_of_week": 5,
+      "start_time": "05:00:00",
+      "end_time": "14:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5227,
+      "user_id": 53,
+      "day_of_week": 5,
+      "start_time": "05:00:00",
+      "end_time": "13:30:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5255,
+      "user_id": 61,
+      "day_of_week": 5,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5256,
+      "user_id": 61,
+      "day_of_week": 5,
+      "start_time": "05:00:00",
+      "end_time": "07:00:00",
+      "role": "wash",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5263,
+      "user_id": 63,
+      "day_of_week": 5,
+      "start_time": "09:30:00",
+      "end_time": "14:00:00",
+      "role": "fold",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5264,
+      "user_id": 63,
+      "day_of_week": 5,
+      "start_time": "14:00:00",
+      "end_time": "18:00:00",
+      "role": "attendant",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5268,
+      "user_id": 64,
+      "day_of_week": 5,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5269,
+      "user_id": 64,
+      "day_of_week": 5,
+      "start_time": "05:00:00",
+      "end_time": "06:00:00",
+      "role": "weigher",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5133,
+      "user_id": 16,
+      "day_of_week": 6,
+      "start_time": "05:30:00",
+      "end_time": "11:00:00",
+      "role": "sort",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5134,
+      "user_id": 16,
+      "day_of_week": 6,
+      "start_time": "11:00:00",
+      "end_time": "14:00:00",
+      "role": "fold",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5149,
+      "user_id": 26,
+      "day_of_week": 6,
+      "start_time": "02:00:00",
+      "end_time": "03:00:00",
+      "role": "weigher",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5150,
+      "user_id": 26,
+      "day_of_week": 6,
+      "start_time": "03:00:00",
+      "end_time": "11:30:00",
+      "role": "wash",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5155,
+      "user_id": 27,
+      "day_of_week": 6,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5166,
+      "user_id": 28,
+      "day_of_week": 6,
+      "start_time": "11:30:00",
+      "end_time": "20:00:00",
+      "role": "wash,attendant",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5167,
+      "user_id": 28,
+      "day_of_week": 6,
+      "start_time": "14:00:00",
+      "end_time": "15:00:00",
+      "role": "hd_folder",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5168,
+      "user_id": 28,
+      "day_of_week": 6,
+      "start_time": "15:00:00",
+      "end_time": "16:00:00",
+      "role": "hd_operator",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5176,
+      "user_id": 30,
+      "day_of_week": 6,
+      "start_time": "05:00:00",
+      "end_time": "07:00:00",
+      "role": "sort",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5177,
+      "user_id": 30,
+      "day_of_week": 6,
+      "start_time": "07:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5184,
+      "user_id": 31,
+      "day_of_week": 6,
+      "start_time": "02:30:00",
+      "end_time": "05:30:00",
+      "role": "sort",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5185,
+      "user_id": 31,
+      "day_of_week": 6,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5191,
+      "user_id": 34,
+      "day_of_week": 6,
+      "start_time": "08:00:00",
+      "end_time": "14:00:00",
+      "role": "fold",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5192,
+      "user_id": 34,
+      "day_of_week": 6,
+      "start_time": "14:00:00",
+      "end_time": "15:00:00",
+      "role": "hd_folder",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5193,
+      "user_id": 34,
+      "day_of_week": 6,
+      "start_time": "15:00:00",
+      "end_time": "18:00:00",
+      "role": "attendant",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5228,
+      "user_id": 53,
+      "day_of_week": 6,
+      "start_time": "05:00:00",
+      "end_time": "13:30:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5231,
+      "user_id": 56,
+      "day_of_week": 6,
+      "start_time": "05:00:00",
+      "end_time": "07:00:00",
+      "role": "wash",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5232,
+      "user_id": 56,
+      "day_of_week": 6,
+      "start_time": "07:00:00",
+      "end_time": "14:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5235,
+      "user_id": 57,
+      "day_of_week": 6,
+      "start_time": "05:00:00",
+      "end_time": "14:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5236,
+      "user_id": 57,
+      "day_of_week": 6,
+      "start_time": "05:00:00",
+      "end_time": "06:00:00",
+      "role": "weigher",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5257,
+      "user_id": 61,
+      "day_of_week": 6,
+      "start_time": "05:00:00",
+      "end_time": "06:00:00",
+      "role": "hd_operator",
+      "break_minutes": 0,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5270,
+      "user_id": 64,
+      "day_of_week": 6,
+      "start_time": "05:00:00",
+      "end_time": "13:00:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    },
+    {
+      "id": 5271,
+      "user_id": 64,
+      "day_of_week": 6,
+      "start_time": "05:00:00",
+      "end_time": "13:30:00",
+      "role": "fold",
+      "break_minutes": 30,
+      "break_slots": null,
+      "role_assignments": null
+    }
+  ],
+  "daily_responsibilities": [],
+  "planner": {
+    "week_monday": "2027-01-04",
+    "status": "snapshot",
+    "revision": null,
+    "published_revision": null,
+    "snapshot": true,
+    "flags": {
+      "manager_pilot": true,
+      "employee_pilot": false,
+      "paystub_access": false
+    },
+    "role_settings": [],
+    "legacy_template": false,
+    "staffing_requirements": []
+  }
+}

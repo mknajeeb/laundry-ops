@@ -16,6 +16,7 @@ from backend.operations_planner_v2 import (
     hour_coverage,
     patterns_overlap,
     paystub_decision,
+    plan_assignment_draft,
     plan_change,
     plan_entry_write,
     plan_task_links,
@@ -473,6 +474,50 @@ def test_task_completion_history_is_not_part_of_a_schedule_edit():
     kept = plan_task_links(existing, [{"role": "trash"}, {"role": "floor_reset"}])
     assert kept["add"] == []
     assert {row["id"] for row in kept["keep"]} == {1, 2}
+
+
+def test_assignment_draft_keeps_completed_history_and_shared_groups():
+    existing = [
+        {
+            "id": 9,
+            "user_id": 19,
+            "day_of_week": 1,
+            "role": "floor_reset",
+            "activity_status": "completed",
+            "assignment_group_id": "shared-1",
+        },
+        {
+            "id": 10,
+            "user_id": 38,
+            "day_of_week": 1,
+            "role": "floor_reset",
+            "activity_status": "",
+            "assignment_group_id": "shared-1",
+        },
+    ]
+    dropped = plan_assignment_draft(existing, [{"user_id": 61, "day_of_week": 1, "role": "trash"}])
+    assert [row["id"] for row in dropped["preserved_history"]] == [9]
+    assert [row["id"] for row in dropped["remove"]] == [10]
+    assert dropped["add"][0]["role"] == "trash"
+    kept = plan_assignment_draft(existing, None)
+    assert kept["unchanged"] is True
+    assert [row["id"] for row in kept["keep"]] == [9, 10]
+
+
+def test_blank_staffing_requirement_is_not_stored_as_zero():
+    from backend.operations_planner_v2_store import StaffingRequirementError, normalize_staffing_requirement
+
+    try:
+        normalize_staffing_requirement({"role": "wash", "day_of_week": 1, "start_time": "05:00", "end_time": "13:00", "required_headcount": ""})
+    except StaffingRequirementError as exc:
+        assert "not zero" in str(exc)
+    else:
+        raise AssertionError("blank headcount was accepted")
+    stored = normalize_staffing_requirement(
+        {"role": "wash", "day_of_week": 1, "start_time": "05:00", "end_time": "13:00", "required_headcount": 0}
+    )
+    assert stored["required_headcount"] == 0
+    assert stored["day_of_week"] == 1
 
 
 def test_missing_planner_tables_are_reported_without_create():

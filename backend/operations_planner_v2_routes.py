@@ -31,13 +31,17 @@ from backend.operations_planner_v2_store import (
     acquire_lock,
     legacy_template_enabled,
     load_access,
+    add_assignments,
     load_flags,
     load_role_settings,
+    load_staffing_requirements,
     load_state,
     materialize_plans,
     PaystubSecurityHold,
     PlannerSchemaNotApplied,
     release_lock,
+    replace_staffing_requirements,
+    StaffingRequirementError,
     save_access,
     save_flags,
     save_role_setting,
@@ -265,6 +269,7 @@ def register_operations_planner_v2_routes(
                 "flags": flags,
                 "legacy_template": legacy_template_enabled(cursor, org),
                 "role_settings": roles,
+                "staffing_requirements": load_staffing_requirements(cursor, org),
             }
             return jsonify(payload)
         except Exception as exc:
@@ -452,6 +457,52 @@ def register_operations_planner_v2_routes(
             else:
                 access = load_access(cursor, org, user_id)
             return jsonify({"user_id": user_id, "access": access})
+        except Exception as exc:
+            conn.rollback()
+            return _error_response(exc, rolled_back=True)
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/operations-planner/v2/staffing-requirements", methods=["PUT"])
+    def operations_planner_v2_staffing():
+        conn, cursor, me, denied = _manager()
+        if denied:
+            return denied
+        try:
+            _, err_gate, code_gate = require_admin(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            body = request.get_json(silent=True) or {}
+            saved = replace_staffing_requirements(cursor, user_org_id(me), body.get("requirements") or [])
+            conn.commit()
+            return jsonify({"ok": True, "requirements": saved})
+        except StaffingRequirementError as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            conn.rollback()
+            return _error_response(exc, rolled_back=True)
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/operations-planner/v2/task-assignments", methods=["POST"])
+    def operations_planner_v2_task_assignments():
+        conn, cursor, me, denied = _manager()
+        if denied:
+            return denied
+        try:
+            _, err_gate, code_gate = require_admin(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            body = request.get_json(silent=True) or {}
+            monday = _monday_arg(body.get("week_start"))
+            if monday is None:
+                return jsonify({"error": "week_start is required"}), 400
+            result = add_assignments(cursor, user_org_id(me), monday, body.get("tasks") or [])
+            conn.commit()
+            return jsonify({"ok": True, **result})
         except Exception as exc:
             conn.rollback()
             return _error_response(exc, rolled_back=True)

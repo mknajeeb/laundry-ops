@@ -7,8 +7,10 @@ import {
   movedShift,
   roleCoverage,
   snapMinutes,
+  breakAccounting,
   overlappingBreakCount,
   placePopover,
+  requirementFor,
   shiftHours,
   taskRollup,
 } from "./plannerModel";
@@ -41,6 +43,36 @@ describe("planner period and coverage", () => {
     expect(noon.scheduled).toHaveLength(2);
     expect(noon.available.map((entry) => entry.user_id)).toEqual([2]);
     expect(shiftHours(fold)).toMatchObject({ gross: 8, net: 7.5 });
+  });
+
+  it("keeps unscheduled break minutes out of overlap and coverage", () => {
+    const stored = {
+      user_id: 26,
+      start_time: "03:00",
+      end_time: "11:30",
+      role: "wash",
+      break_minutes: 30,
+      break_slots: null,
+      role_assignments: null,
+    };
+    expect(shiftHours(stored)).toMatchObject({ gross: 8.5, timedBreak: 0.5, net: 8 });
+    expect(overlappingBreakCount([stored, { ...stored, user_id: 19 }])).toBe(0);
+    expect(hourCoverage([stored], 9).available).toHaveLength(1);
+    expect(hourCoverage([stored], 9).onBreak).toHaveLength(0);
+    const combined = { ...stored, role: "wash,attendant" };
+    expect(roleCoverage([combined], "wash", 9, 1).scheduled).toHaveLength(0);
+    expect(roleCoverage([stored], "wash", 9, 1).available).toHaveLength(1);
+    const breaks = breakAccounting([stored, { ...stored, user_id: 19, break_minutes: 0 }, fold]);
+    expect(breaks.unscheduledCount).toBe(1);
+    expect(breaks.unscheduledHours).toBe(0.5);
+    expect(breaks.timedHours).toBe(0.5);
+    expect(breaks.overlapKnown).toBe(false);
+    expect(requirementFor([], "wash", 1, 9)).toBeNull();
+    expect(requirementFor([{ role: "wash", day_of_week: 1, start_time: "05:00", end_time: "13:00", required_headcount: 0 }], "wash", 1, 9)).toBe(0);
+    expect(requirementFor([{ role: "wash", day_of_week: 1, start_time: "05:00", end_time: "13:00", required_headcount: 3 }], "wash", 2, 9)).toBeNull();
+    expect(requirementFor([], "fold", 1, 12, { hourly_headcount: { 12: 2 } })).toBe(2);
+    expect(roleCoverage([stored], "wash", 9, null).required).toBeNull();
+    expect(roleCoverage([stored], "wash", 9, null).shortage).toBe(0);
   });
 
   it("warns above three overlapping timed breaks", () => {

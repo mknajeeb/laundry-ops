@@ -124,6 +124,58 @@ function intervalOverlaps(startText, endText, begin, end) {
   return start < end && begin < finish;
 }
 
+/**
+ * Headcount for one role, day, and hour.
+ * No matching interval returns null. Null means the hour is not configured.
+ * A stored 0 is a real requirement for nobody, and is not the same as null.
+ * An older hourly map is used only when this role has no interval rows.
+ */
+export function requirementFor(requirements, role, day, hour, setting) {
+  const rows = (requirements || []).filter((item) => String(item.role || item.role_key || "") === String(role));
+  if (rows.length) {
+    const begin = hour * 60;
+    const end = begin + 60;
+    const matches = rows.filter((item) => {
+      if (item.day_of_week != null && item.day_of_week !== "" && Number(item.day_of_week) !== Number(day)) return false;
+      return intervalOverlaps(item.start_time, item.end_time, begin, end);
+    });
+    if (!matches.length) return null;
+    const count = matches[matches.length - 1].required_headcount;
+    if (count == null || count === "") return null;
+    const need = Number(count);
+    return Number.isFinite(need) ? need : null;
+  }
+  const hourly = setting?.hourly_headcount?.[hour] ?? setting?.hourly_headcount?.[String(hour)];
+  if (hourly == null || hourly === "") return null;
+  const need = Number(hourly);
+  return Number.isFinite(need) ? need : null;
+}
+
+/** Timed clock breaks and unscheduled durations are separate. Overlap uses clocks only. */
+export function breakAccounting(entries) {
+  let timedMinutes = 0;
+  let unscheduledMinutes = 0;
+  let unscheduledCount = 0;
+  for (const entry of entries || []) {
+    const slots = (entry.break_slots || []).filter((slot) => slot?.start_time && slot?.end_time && slot?.timed !== false);
+    if (slots.length) {
+      for (const slot of slots) timedMinutes += spanMinutes(slot.start_time, slot.end_time) || 0;
+      continue;
+    }
+    const minutes = Number(entry.break_minutes) || 0;
+    if (minutes > 0) {
+      unscheduledMinutes += minutes;
+      unscheduledCount += 1;
+    }
+  }
+  return {
+    timedHours: timedMinutes / 60,
+    unscheduledHours: unscheduledMinutes / 60,
+    unscheduledCount,
+    overlapKnown: unscheduledCount === 0,
+  };
+}
+
 /** Required, scheduled, active, and on-break counts for one role during one hour. */
 export function roleCoverage(entries, role, hour, required) {
   const begin = hour * 60;

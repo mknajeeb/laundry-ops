@@ -268,6 +268,56 @@ def plan_task_links(
     return {"add": add, "keep": keep, "remove": remove, "preserved_history": preserved, "unchanged": False}
 
 
+def assignment_key(row: Mapping[str, Any]) -> tuple[int, int, str]:
+    try:
+        user_id = int(row.get("user_id") or 0)
+    except (TypeError, ValueError):
+        user_id = 0
+    raw_day = row.get("day_of_week")
+    try:
+        day = int(raw_day) if raw_day is not None and raw_day != "" else -1
+    except (TypeError, ValueError):
+        day = -1
+    return (user_id, day, str(row.get("role") or ""))
+
+
+def plan_assignment_draft(
+    existing: Sequence[Mapping[str, Any]],
+    desired: Sequence[Mapping[str, Any]] | None,
+) -> dict[str, list[Any]]:
+    """Plan assignment edits by employee, day, and role.
+
+    ``desired is None`` leaves every stored row alone.
+    A row with task-execution activity is never removed or rewritten.
+    """
+    if desired is None:
+        return {"add": [], "keep": list(existing), "remove": [], "preserved_history": [], "unchanged": True}
+    wanted: list[Mapping[str, Any]] = []
+    seen: set[tuple[int, int, str]] = set()
+    for item in desired:
+        key = assignment_key(item)
+        if not key[2] or key in seen:
+            continue
+        seen.add(key)
+        wanted.append(item)
+    existing_by: dict[tuple[int, int, str], Mapping[str, Any]] = {}
+    for row in existing:
+        existing_by.setdefault(assignment_key(row), row)
+    add = [item for item in wanted if assignment_key(item) not in existing_by]
+    keep = [existing_by[assignment_key(item)] for item in wanted if assignment_key(item) in existing_by]
+    remove: list[Mapping[str, Any]] = []
+    preserved: list[Mapping[str, Any]] = []
+    for key, row in existing_by.items():
+        if key in seen:
+            continue
+        status = str(row.get("activity_status") or row.get("status") or "")
+        if status in ACTIVITY_LOCKED:
+            preserved.append(row)
+        else:
+            remove.append(row)
+    return {"add": add, "keep": keep, "remove": remove, "preserved_history": preserved, "unchanged": False}
+
+
 def shift_hours(shift: Mapping[str, Any] | None) -> dict[str, float]:
     if not shift:
         return {"gross": 0.0, "net": 0.0, "timed_break": 0.0}

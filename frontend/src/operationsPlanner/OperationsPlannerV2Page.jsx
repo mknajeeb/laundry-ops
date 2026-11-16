@@ -16,10 +16,11 @@ import {
   roleCoverage,
   overlappingBreakCount,
   periodLabel,
-  shiftHours,
   taskRollup,
 } from "./plannerModel";
 import { printDocumentHtml, scheduleCardSvg, scheduleCsv, schedulePdf } from "./scheduleExport";
+import PlannerWorkspace from "./PlannerWorkspace";
+import { asList, shiftKey } from "./plannerGeometry";
 
 const LENSES = [
   ["employees", "Employees"],
@@ -75,14 +76,15 @@ async function copyCard(svg) {
 
 function entryShift(entry) {
   return {
+    id: entry.id,
     user_id: Number(entry.user_id),
     day_of_week: Number(entry.day_of_week),
     start_time: String(entry.start_time || "").slice(0, 5),
     end_time: String(entry.end_time || "").slice(0, 5),
-    role: entry.role || "fold",
+    role: entry.role || "",
     break_minutes: Number(entry.break_minutes || 0),
-    break_slots: entry.break_slots || [],
-    role_assignments: entry.role_assignments || entry.assignments || [],
+    break_slots: asList(entry.break_slots),
+    role_assignments: asList(entry.role_assignments || entry.assignments),
   };
 }
 
@@ -106,12 +108,22 @@ export default function OperationsPlannerV2Page() {
   const [drag, setDrag] = useState(null);
   const [dragPreview, setDragPreview] = useState("");
   const [pickedEmployees, setPickedEmployees] = useState([]);
+  const [draftBundle, setDraftBundle] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [selectedKey, setSelectedKey] = useState("");
 
   const load = useCallback(async (weekStart) => {
-    if (new URLSearchParams(window.location.search).get("preview") === "1") {
+    const previewMode = new URLSearchParams(window.location.search).get("preview");
+    if (import.meta.env.DEV && (previewMode === "1" || previewMode === "veewash")) {
       setFlags({ manager_pilot: true, employee_pilot: false, paystub_access: false });
-      setPayload(previewPayload());
-      if (!weekStart) setWeek("2026-11-09");
+      if (previewMode === "veewash") {
+        const snapshot = await import("./fixtures/veewash-2027-01-04.json");
+        setPayload(snapshot.default);
+        if (!weekStart) setWeek("2027-01-04");
+      } else {
+        setPayload(previewPayload());
+        if (!weekStart) setWeek("2026-11-09");
+      }
       return;
     }
     const status = await api("/operations-planner/v2/status");
@@ -144,15 +156,20 @@ export default function OperationsPlannerV2Page() {
   }, [full]);
 
   const employees = payload?.employees || [];
-  const entries = useMemo(() => (payload?.entries || []).map(entryShift), [payload]);
-  const responsibilities = payload?.daily_responsibilities || [];
+  const loadedEntries = useMemo(() => (payload?.entries || []).map(entryShift), [payload]);
+  const loadedRequirements = payload?.planner?.staffing_requirements || [];
+  const loadedTasks = payload?.daily_responsibilities || [];
+  const entries = draftBundle ? draftBundle.entries : loadedEntries;
+  const requirements = draftBundle ? draftBundle.requirements : loadedRequirements;
+  const responsibilities = draftBundle ? draftBundle.tasks : loadedTasks;
+  useEffect(() => {
+    setDraftBundle(null);
+    setHistory([]);
+    setSelectedKey("");
+  }, [payload]);
   const visibleEntries = entriesForPeriod(entries, { mode, day });
-  const visibleTasks = responsibilities.filter((row) => mode !== "day" || Number(row.day_of_week) === Number(day));
   const planner = payload?.planner || {};
   const period = periodLabel(mode, payload?.week_label || week, DAY_NAMES[day]);
-  const hours = visibleEntries.reduce((sum, entry) => sum + shiftHours(entry).net, 0);
-  const breakHot = overlappingBreakCount(visibleEntries) > BREAK_OVERLAP_CAP;
-  const tasks = taskRollup(visibleTasks);
 
   function rowsFor(list) {
     return list.map((entry) => {
@@ -189,7 +206,125 @@ export default function OperationsPlannerV2Page() {
     setError("");
   }
 
+  function currentBundle() {
+    return { entries, requirements, tasks: responsibilities };
+  }
+
+  function applyDraft(next, label) {
+    const patch = Array.isArray(next) ? { entries: next } : next;
+    const current = currentBundle();
+    setHistory((stack) => [...stack, current]);
+    setDraftBundle({ ...current, ...patch });
+    setNotice(label || "Draft updated. Nothing is saved.");
+    setError("");
+  }
+
+  function undoDraft() {
+    setHistory((stack) => {
+      if (!stack.length) return stack;
+      const previous = stack[stack.length - 1];
+      const rest = stack.slice(0, -1);
+      setDraftBundle(rest.length ? previous : null);
+      return rest;
+    });
+    setNotice("Undid the last draft change.");
+  }
+
+  function discardDraft() {
+    setDraftBundle(null);
+    setHistory([]);
+    setPending(null);
+    setSelectedKey("");
+    setNotice("");
+  }
+
+  function reviewBundle(kind) {
+    if (kind === "requirements") {
+      queueChange({ action: "save_staffing_requirements", requirements });
+      return;
+    }
+    queueChange({
+      action: "assign_tasks",
+      tasks: responsibilities.filter((task) => task.draft),
+    });
+  }
+
+  function reviewShift(entry) {
+    queueChange({
+      action: "upsert",
+      user_id: Number(entry.user_id),
+      user_ids: [Number(entry.user_id)],
+      day_of_week: Number(entry.day_of_week),
+      shift: entry,
+    });
+  }
+
+  function addShift(userId) {
+    const id = `draft-${Date.now()}`;
+    const chosen = Number(userId) || employees[0]?.user_id;
+    if (!chosen) return;
+    applyDraft([...entries, {
+      id,
+      user_id: chosen,
+      day_of_week: day,
+      start_time: "08:00",
+      end_time: "16:00",
+      role: "",
+      break_minutes: 0,
+      break_slots: [],
+      role_assignments: [],
+    }], "Added a draft shift. Not saved.");
+    setSelectedKey(String(id));
+  }
+
+  function duplicateShift(entry) {
+    const index = DAY_ORDER.indexOf(Number(entry.day_of_week));
+    const nextDay = DAY_ORDER[(index + 1) % DAY_ORDER.length];
+    const id = `draft-${Date.now()}`;
+    applyDraft([...entries, { ...entry, id, day_of_week: nextDay }], "Duplicated the shift into the draft. Not saved.");
+    setSelectedKey(String(id));
+  }
+
+  function splitShift(entry) {
+    const begin = Number(String(entry.start_time).slice(0, 2)) * 60 + Number(String(entry.start_time).slice(3, 5));
+    let end = Number(String(entry.end_time).slice(0, 2)) * 60 + Number(String(entry.end_time).slice(3, 5));
+    if (end <= begin) end += 24 * 60;
+    const midTotal = Math.round((begin + (end - begin) / 2) / 15) * 15;
+    const mid = `${String(Math.floor((midTotal % (24 * 60)) / 60)).padStart(2, "0")}:${String(midTotal % 60).padStart(2, "0")}`;
+    const id = `draft-${Date.now()}`;
+    const first = { ...entry, end_time: mid };
+    const second = { ...entry, id, start_time: mid, break_slots: [] };
+    applyDraft(entries.flatMap((item) => (shiftKey(item) === shiftKey(entry) ? [first, second] : [item])), "Split the shift in the draft. Not saved.");
+    setSelectedKey(shiftKey(first));
+  }
+
+  function removeShift(entry) {
+    applyDraft(entries.filter((item) => shiftKey(item) !== shiftKey(entry)), "Removed the shift from the draft. Not saved.");
+    setSelectedKey("");
+  }
+
   async function send(path) {
+    if (snapshot) {
+      setError("This snapshot does not write. Cancel restores the loaded week.");
+      return;
+    }
+    const action = pending.command.action;
+    if (action === "save_staffing_requirements" || action === "assign_tasks") {
+      const target = action === "save_staffing_requirements"
+        ? { path: "/operations-planner/v2/staffing-requirements", method: "PUT", data: { requirements: pending.command.requirements } }
+        : { path: "/operations-planner/v2/task-assignments", method: "POST", data: { week_start: week, tasks: pending.command.tasks } };
+      const response = await api(target.path, { method: target.method, data: target.data, validateStatus: () => true });
+      if (response.status >= 400) {
+        setError(response.data?.error || "Could not save the draft");
+        return;
+      }
+      setPending(null);
+      setNotice(action === "assign_tasks"
+        ? `Saved ${response.data.inserted || 0} assignment${response.data.inserted === 1 ? "" : "s"}. Completed records were left as stored.`
+        : "Saved the staffing requirements.");
+      await load(week);
+      return;
+    }
     const body = {
       ...pending.command,
       scope,
@@ -320,13 +455,14 @@ export default function OperationsPlannerV2Page() {
 
   const exportRows = rowsFor(visibleEntries);
   const preview = pending?.preview?.preview || pending?.preview;
+  const snapshot = Boolean(payload?.snapshot);
 
   return (
     <div className={`ops-planner ${full ? "fullscreen" : ""}`}>
       <header>
         <div>
           <h1>Operations Planner</h1>
-          <p>{period} · {planner.status || "draft"} · revision {planner.revision || 1}</p>
+          <p>{snapshot ? `${period} · read-only snapshot · not saved` : `${period} · ${planner.status || "draft"} · revision ${planner.revision || 1}`}</p>
         </div>
         <button type="button" onClick={() => setFull((value) => !value)}>{full ? "Exit full screen" : "Expand"}</button>
       </header>
@@ -344,15 +480,16 @@ export default function OperationsPlannerV2Page() {
           ))}
           <button type="button" className={mode === "week" ? "active" : ""} onClick={() => setMode("week")}>Week</button>
           <button type="button" className={mode === "day" ? "active" : ""} onClick={() => setMode("day")}>Day</button>
-          <button type="button" onClick={() => setWeek(shiftIso(week, -7))}>Previous</button>
-          <button type="button" onClick={() => setWeek(shiftIso(week, 7))}>Next</button>
+          <label className="ops-week-pick">Week <input aria-label="Week starting" type="date" value={week || ""} disabled={snapshot} onChange={(event) => { if (!snapshot) setWeek(event.target.value); }} /></label>
+          <button type="button" disabled={snapshot} onClick={() => setWeek(shiftIso(week, -7))}>Previous</button>
+          <button type="button" disabled={snapshot} onClick={() => setWeek(shiftIso(week, 7))}>Next</button>
           {mode === "day" ? (
             <select value={day} onChange={(event) => setDay(Number(event.target.value))}>
               {DAY_ORDER.map((value) => <option key={value} value={value}>{DAY_NAMES[value]}</option>)}
             </select>
           ) : null}
-          <button type="button" onClick={() => api("/operations-planner/v2/weeks/approve", { method: "POST", data: { weeks: [week] } }).then(() => load(week))}>Approve week</button>
-          <button type="button" onClick={() => api("/operations-planner/v2/weeks/publish", { method: "POST", data: { weeks: [week] } }).then(() => load(week))}>Publish week</button>
+          <button type="button" disabled={snapshot} onClick={() => { if (!snapshot) api("/operations-planner/v2/weeks/approve", { method: "POST", data: { weeks: [week] } }).then(() => load(week)); }}>Approve week</button>
+          <button type="button" disabled={snapshot} onClick={() => { if (!snapshot) api("/operations-planner/v2/weeks/publish", { method: "POST", data: { weeks: [week] } }).then(() => load(week)); }}>Publish week</button>
           <button type="button" onClick={() => copyCard(scheduleCardSvg({ title: `Schedule · ${period}`, subtitle: planner.status || "draft", rows: exportRows }))}>Copy image</button>
           <button type="button" onClick={() => download(`schedule-${week || "week"}.csv`, scheduleCsv(exportRows), "text/csv")}>CSV</button>
           <button type="button" onClick={() => download(`schedule-${week || "week"}.pdf`, schedulePdf({ title: `Schedule · ${period}`, subtitle: planner.status || "draft", rows: exportRows }), "application/pdf")}>PDF</button>
@@ -369,132 +506,54 @@ export default function OperationsPlannerV2Page() {
       )}
       {flags === null && !error ? <p className="ops-note">Loading the schedule…</p> : null}
       {error ? <p className="ops-note ops-warn">{error}</p> : null}
+      {snapshot ? <p className="ops-note">Read-only VeeWash snapshot for January 4–10, 2027. Draft edits stay in this browser. Nothing is written to production.</p> : null}
       {notice ? <p className="ops-note">{notice}</p> : null}
       {payload ? (
-        <div className="ops-main">
-          <section className="ops-board" onDragOver={onDragOver}>
-            {lens === "employees" && mode === "day" ? (
-              <DayTimeline
-                employees={employees}
-                entries={visibleEntries}
-                preview={dragPreview}
-                day={day}
-                onResize={resizeEntry}
-                onPreview={setDragPreview}
-                onDragStart={(shift, kind = "timeline", index = 0) => setDrag({ shift, kind, index })}
-                onDragOver={(event) => {
-                  const minutes = pointerToMinutes(event.clientX, event.currentTarget.getBoundingClientRect());
-                  if (minutes != null && drag?.shift) setDragPreview(`${minutesToClock(minutes)} · ${drag.shift.role}`);
-                }}
-                onDrop={onDrop}
-              />
-            ) : null}
-            {lens === "employees" && mode !== "day" ? (
-              <table className="ops-grid">
-                <thead>
-                  <tr>
-                    <th>Employee</th>
-                    {(mode === "day" ? [day] : DAY_ORDER).map((value) => <th key={value}>{DAY_NAMES[value]}</th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {employees.map((employee) => (
-                    <tr key={employee.user_id}>
-                      <th>{employee.display_name}</th>
-                      {(mode === "day" ? [day] : DAY_ORDER).map((value) => (
-                        <td key={value} onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDrop(event, Number(employee.user_id), value)}>
-                          {entries.filter((entry) => Number(entry.user_id) === Number(employee.user_id) && Number(entry.day_of_week) === value).map((entry) => {
-                            const figures = shiftHours(entry);
-                            return (
-                              <button
-                                key={entry.id || `${entry.user_id}-${entry.start_time}`}
-                                type="button"
-                                className="ops-shift"
-                                draggable
-                                onDragStart={() => setDrag({ shift: entry, kind: "move" })}
-                                title={`${entry.role}, ${figures.net} net hours. Drag to move. Hold Alt to copy.`}
-                              >
-                                {entry.start_time}–{entry.end_time}
-                                <small>{entry.role} · {figures.gross.toFixed(1)} gross / {figures.net.toFixed(1)} net</small>
-                              </button>
-                            );
-                          })}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : null}
-            {lens === "employees" ? (
-              <TimeEditor employees={employees} day={day} picked={pickedEmployees} onToggle={setPickedEmployees} onEdit={editShift} />
-            ) : null}
-            {lens === "roles" ? (
-              <RoleBoard
-                entries={visibleEntries}
-                employees={employees}
-                settings={planner.role_settings || []}
-                onAssign={(entry, role) => editShift(entry, {
-                  role,
-                  role_assignments: (entry.role_assignments || []).map((item, index) => (index === 0 ? { ...item, role } : item)),
-                })}
-                onHeadcount={(role, body) => {
-                  api(`/operations-planner/v2/roles/${encodeURIComponent(role)}`, { method: "PUT", data: body })
-                    .then(() => load(week))
-                    .catch((err) => setError(err.response?.data?.error || err.message));
-                }}
-              />
-            ) : null}
-            {lens === "breaks" ? (
-              <BreakBoard
-                entries={visibleEntries}
-                employees={employees}
-                onMove={(entry, startTime) => {
-                  const slot = (entry.break_slots || [])[0];
-                  if (!slot) return;
-                  const duration = (Number(slot.end_time.slice(0, 2)) * 60 + Number(slot.end_time.slice(3, 5))) - (Number(slot.start_time.slice(0, 2)) * 60 + Number(slot.start_time.slice(3, 5)));
-                  const end = minutesToClock((Number(startTime.slice(0, 2)) * 60 + Number(startTime.slice(3, 5))) + Math.max(15, duration));
-                  editShift(entry, { break_slots: [{ ...slot, start_time: startTime, end_time: end }] });
-                }}
-                onCopyPattern={(source) => editShift(source, { break_slots: source.break_slots || [] })}
-              />
-            ) : null}
-            {lens === "tasks" ? (
-              <TaskBoard tasks={visibleTasks} employees={employees} entries={visibleEntries} day={day} onEdit={editShift} />
-            ) : null}
-          </section>
-          <aside className="ops-side">
-            <h2>{period}</h2>
-            <p>{employees.length} employees · {visibleEntries.length} shifts · {hours.toFixed(1)} net hours</p>
-            <p>Tasks: {tasks.counts.total} groups. Employee rows: {tasks.people.completed} completed, {tasks.people.inProgress} in progress, {tasks.people.awaiting} awaiting verification, {tasks.people.pending} pending.</p>
-            {breakHot ? <p className="ops-warn">More than three timed breaks overlap in this {mode}.</p> : <p>Break overlap is within the limit of three.</p>}
-            <p>Status: {planner.status || "draft"}. Employees see the last published revision{planner.published_revision ? ` ${planner.published_revision}` : ""}.</p>
-            <AccessEditor employees={employees} onSaved={() => load(week)} onError={setError} />
-            {(planner.role_settings || []).map((role) => (
-              <label key={role.role} style={{ display: "block", fontSize: 13 }}>
-                <input
-                  type="checkbox"
-                  checked={Boolean(role.show_on_rinse_dashboard)}
-                  onChange={(event) => {
-                    api(`/operations-planner/v2/roles/${encodeURIComponent(role.role)}`, {
-                      method: "PUT",
-                      data: { show_on_rinse_dashboard: event.target.checked },
-                    }).then(() => load(week)).catch((err) => setError(err.response?.data?.error || err.message));
-                  }}
-                />
-                {" "}{role.role} on the Rinse dashboard
-                {role.visible_to_rinse ? "" : " (still hidden by labor policy)"}
-              </label>
-            ))}
-            {planner.legacy_template ? <p className="ops-warn">The old repeating template is still on. A recurring save will ask to stop it.</p> : null}
-          </aside>
+        <div className="ops-main ops-workspace">
+          <PlannerWorkspace
+            lens={lens}
+            mode={mode}
+            day={day}
+            employees={employees}
+            entries={entries}
+            tasks={responsibilities}
+            requirements={requirements}
+            planner={planner}
+            selectedKey={selectedKey}
+            dirty={Boolean(draftBundle)}
+            canUndo={history.length > 0}
+            onSelect={setSelectedKey}
+            onCommit={applyDraft}
+            onUndo={undoDraft}
+            onDiscard={discardDraft}
+            onReview={reviewShift}
+            onReviewBundle={reviewBundle}
+            onAdd={addShift}
+            onDuplicate={duplicateShift}
+            onSplit={splitShift}
+            onRemove={removeShift}
+          />
+          {snapshot ? <p className="ops-side">Employee access and paystubs are not loaded with this snapshot.</p> : (
+            <details className="ops-side">
+              <summary>Employee PIN access</summary>
+              <AccessEditor employees={employees} onSaved={() => load(week)} onError={setError} />
+              {planner.legacy_template ? <p className="ops-warn">The old repeating template is still on. A recurring save will ask to stop it.</p> : null}
+            </details>
+          )}
         </div>
       ) : null}
       {pending ? (
         <div className="ops-dialog-back">
-          <form className="ops-dialog" onSubmit={(event) => { event.preventDefault(); send("/operations-planner/v2/apply"); }}>
+          <form className="ops-dialog" onSubmit={(event) => { event.preventDefault(); if (!snapshot) send("/operations-planner/v2/apply"); }}>
             <h2>How should this change apply?</h2>
-            <p>{pending.command.action} · employee {pending.command.user_id} · {DAY_NAMES[pending.command.day_of_week] || ""}</p>
+            <p>
+              {pending.command.action === "save_staffing_requirements"
+                ? `${(pending.command.requirements || []).length} staffing interval${(pending.command.requirements || []).length === 1 ? "" : "s"}. Hours without an interval stay unconfigured.`
+                : pending.command.action === "assign_tasks"
+                  ? `${(pending.command.tasks || []).length} new assignment${(pending.command.tasks || []).length === 1 ? "" : "s"}. Completed records are not rewritten.`
+                  : `${pending.command.action} · employee ${pending.command.user_id} · ${DAY_NAMES[pending.command.day_of_week] || ""}`}
+            </p>
+            {snapshot ? <p>Confirm is off for this snapshot. Cancel restores the loaded week, including fields this edit did not change.</p> : null}
             {["this_week", "this_and_future", "future_only", "selected_weeks"].map((value) => (
               <label key={value} style={{ display: "block", marginBottom: 6 }}>
                 <input type="radio" name="scope" checked={scope === value} onChange={() => setScope(value)} /> {value.replaceAll("_", " ")}
@@ -535,9 +594,9 @@ export default function OperationsPlannerV2Page() {
               </label>
             ) : null}
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-              <button type="button" onClick={() => send("/operations-planner/v2/preview")}>Review</button>
-              <button type="submit" className="primary">Confirm</button>
-              <button type="button" onClick={() => setPending(null)}>Cancel</button>
+              <button type="button" disabled={snapshot} onClick={() => { if (!snapshot) send("/operations-planner/v2/preview"); }}>Review</button>
+              <button type="submit" className="primary" disabled={snapshot}>Confirm</button>
+              <button type="button" onClick={() => discardDraft()}>Cancel</button>
             </div>
           </form>
         </div>
@@ -1001,6 +1060,7 @@ function previewPayload() {
       { id: 1, user_id: 7, day_of_week: 1, start_time: "08:00", end_time: "16:00", role: "wash", break_slots: [{ start_time: "12:00", end_time: "12:30", timed: true }], role_assignments: [{ role: "wash", start_time: "08:00", end_time: "12:00" }, { role: "fold", start_time: "12:30", end_time: "16:00" }] },
       { id: 2, user_id: 8, day_of_week: 1, start_time: "09:00", end_time: "17:00", role: "fold", break_slots: [{ start_time: "12:00", end_time: "12:30", timed: true }], role_assignments: [{ role: "fold", start_time: "09:00", end_time: "17:00" }] },
       { id: 3, user_id: 9, day_of_week: 1, start_time: "10:00", end_time: "18:00", role: "fold", break_slots: [{ start_time: "13:00", end_time: "13:30", timed: true }], role_assignments: [{ role: "fold", start_time: "10:00", end_time: "18:00" }] },
+      { id: 4, user_id: 7, day_of_week: 2, start_time: "05:00", end_time: "13:00", role: "sort", break_minutes: 30, break_slots: null, role_assignments: [{ role: "sort", start_time: "05:00", end_time: "09:00" }, { role: "fold", start_time: "09:00", end_time: "13:00" }] },
     ],
     daily_responsibilities: [
       { id: 11, user_id: 7, day_of_week: 1, role: "floor_reset", status: "completed", assignment_group_id: "g1" },
