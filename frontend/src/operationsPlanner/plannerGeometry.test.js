@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import week from "./fixtures/veewash-2027-01-04.json";
-import { barBox, displaySegments, placeBreak, relocateShift, resizeBreak, resizeEdge, resizeSegment, roleColor, timelineAxis, visibleBreaks, visualPieces } from "./plannerGeometry";
+import { barBox, displaySegments, placeBreak, relocateShift, resizeBreak, resizeEdge, resizeSegment, roleColor, storedRoleSegments, timelineAxis, visibleBreaks, visualPieces } from "./plannerGeometry";
 
 describe("planner geometry", () => {
   it("starts the axis at the earliest shift instead of clipping 02:00 to 06:00", () => {
@@ -106,5 +106,27 @@ describe("planner geometry", () => {
     expect(roleColor("fold,attendant")).toBe("#3e4c59");
     expect(roleColor("fold,attendant")).not.toBe(roleColor("fold"));
     expect(roleColor("weigher,fold")).toBe("#3e4c59");
+  });
+
+  it("ignores a full-shift placeholder from the weekly schedule payload", () => {
+    const fromApi = {
+      role: "fold,attendant",
+      start_time: "08:00",
+      end_time: "16:00",
+      role_assignments: null,
+      assignments: [
+        { role: "attendant", start_time: "14:00", end_time: "16:00", full_shift: false },
+        { role: "fold", start_time: "08:00", end_time: "16:00", full_shift: true },
+      ],
+    };
+    expect(storedRoleSegments(fromApi).map((segment) => segment.role)).toEqual(["attendant"]);
+    const pieces = visualPieces({ ...fromApi, role_assignments: storedRoleSegments(fromApi) });
+    expect(pieces.map((piece) => piece.role)).toEqual(["fold,attendant", "attendant"]);
+    expect(pieces[0].allocated).toBe(false);
+    const plain = storedRoleSegments({
+      role: "fold",
+      assignments: [{ role: "fold", start_time: "08:00", end_time: "16:00", full_shift: true }],
+    });
+    expect(plain).toEqual([]);
   });
 });

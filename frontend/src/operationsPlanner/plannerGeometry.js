@@ -13,6 +13,15 @@ export function asList(value) {
   return [];
 }
 
+/** Segments a manager actually stored. A full-shift placeholder is not a split. */
+export function storedRoleSegments(entry) {
+  const explicit = entry?.role_assignments;
+  const source = Array.isArray(explicit) || (typeof explicit === "string" && explicit.trim().startsWith("["))
+    ? explicit
+    : entry?.assignments;
+  return asList(source).filter((item) => item && item.full_shift !== true && item.role);
+}
+
 export function shiftKey(entry) {
   return String(entry?.id ?? `${entry?.user_id}-${entry?.day_of_week}-${entry?.start_time}`);
 }

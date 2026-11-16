@@ -504,6 +504,28 @@ def test_assignment_draft_keeps_completed_history_and_shared_groups():
     assert [row["id"] for row in kept["keep"]] == [9, 10]
 
 
+def test_planner_segments_do_not_store_a_combined_gap_as_the_first_role():
+    from backend.operations_planner_v2_store import planner_shift_assignments
+    from backend.planned_weekly_schedule import role_assignments_storage
+
+    maria = planner_shift_assignments(
+        {
+            "role": "fold,attendant",
+            "role_assignments": [{"role": "attendant", "start_time": "14:00", "end_time": "16:00"}],
+        }
+    )
+    assert [item["role"] for item in maria] == ["fold", "attendant"]
+    assert maria[0]["full_shift"] is True
+    assert maria[1]["full_shift"] is False
+    stored = role_assignments_storage(maria)
+    assert stored is not None
+    assert "fold" not in stored
+    assert "14:00" in stored
+    plain = planner_shift_assignments({"role": "fold", "role_assignments": []})
+    assert plain == [{"role": "fold", "full_shift": True}]
+    assert role_assignments_storage(plain) is None
+
+
 def test_blank_staffing_requirement_is_not_stored_as_zero():
     from backend.operations_planner_v2_store import StaffingRequirementError, normalize_staffing_requirement
 
@@ -518,6 +540,35 @@ def test_blank_staffing_requirement_is_not_stored_as_zero():
     )
     assert stored["required_headcount"] == 0
     assert stored["day_of_week"] == 1
+
+
+def test_overlapping_staffing_intervals_are_rejected_before_save():
+    from backend.operations_planner_v2_store import (
+        StaffingRequirementError,
+        reject_overlapping_staffing_requirements,
+    )
+
+    touching = [
+        {"role": "fold", "day_of_week": 1, "start_time": "08:00", "end_time": "12:00"},
+        {"role": "fold", "day_of_week": 1, "start_time": "12:00", "end_time": "16:00"},
+    ]
+    reject_overlapping_staffing_requirements(touching)
+    different_roles = [
+        {"role": "fold", "day_of_week": 1, "start_time": "08:00", "end_time": "12:00"},
+        {"role": "wash", "day_of_week": 1, "start_time": "08:00", "end_time": "12:00"},
+    ]
+    reject_overlapping_staffing_requirements(different_roles)
+    try:
+        reject_overlapping_staffing_requirements(
+            [
+                {"role": "fold", "day_of_week": None, "start_time": "09:00", "end_time": "12:00"},
+                {"role": "fold", "day_of_week": 1, "start_time": "11:00", "end_time": "13:00"},
+            ]
+        )
+    except StaffingRequirementError as exc:
+        assert "Overlapping" in str(exc)
+    else:
+        raise AssertionError("an every-day interval was allowed to cover a Monday interval")
 
 
 def test_missing_planner_tables_are_reported_without_create():

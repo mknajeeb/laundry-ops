@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import date, datetime
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from backend.operations_planner_v2 import (
     ACTIVITY_LOCKED,
@@ -288,6 +288,42 @@ def _entry_rows(cursor, organization_id: int, storage_week: date, user_id: int, 
     return [row for row in (cursor.fetchall() or []) if isinstance(row, dict)]
 
 
+def planner_shift_assignments(shift: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Turn planner segments into weekly-schedule assignments without inventing ranges.
+
+    A role named on the shift but missing from the stored segments stays a full-shift
+    placeholder. Weekly schedule persistence skips those placeholders, so the combined
+    label is kept and the unallocated hours are not written as the first role.
+    """
+    from backend.planned_weekly_schedule import parse_weekly_roles
+
+    timed: dict[str, list[dict[str, Any]]] = {}
+    for item in shift.get("role_assignments") or []:
+        if not isinstance(item, Mapping):
+            continue
+        role = str(item.get("role") or "").strip()
+        if not role or item.get("full_shift") is True:
+            continue
+        start = item.get("start_time")
+        end = item.get("end_time")
+        if not start or not end:
+            continue
+        timed.setdefault(role, []).append(
+            {"role": role, "start_time": start, "end_time": end, "full_shift": False}
+        )
+    roles = parse_weekly_roles(shift.get("role")) or list(timed)
+    ordered: list[dict[str, Any]] = []
+    for role in roles:
+        pieces = timed.pop(role, None)
+        if pieces:
+            ordered.extend(sorted(pieces, key=lambda piece: str(piece.get("start_time"))))
+        else:
+            ordered.append({"role": role, "full_shift": True})
+    for pieces in timed.values():
+        ordered.extend(pieces)
+    return ordered
+
+
 def materialize_plans(conn, cursor, organization_id: int, plans: list[Mapping[str, Any]]) -> None:
     """Write planned entries for the cells a confirmed change named."""
     from backend.planned_weekly_schedule import create_entry, delete_entry, update_entry
@@ -311,6 +347,8 @@ def materialize_plans(conn, cursor, organization_id: int, plans: list[Mapping[st
             entry_id = None
         elif action in ("create", "update"):
             body = dict(plan.get("shift") or {})
+            if "assignments" not in body and "role_assignments" in body:
+                body["assignments"] = planner_shift_assignments(body)
             body["user_id"] = user_id
             body["day_of_week"] = day
             if action == "create":
@@ -626,10 +664,41 @@ def load_staffing_requirements(cursor, organization_id: int) -> list[dict[str, A
     return rows
 
 
+def _clock_minutes(value: str) -> int:
+    hour, minute = str(value).split(":")
+    return int(hour) * 60 + int(minute)
+
+
+def reject_overlapping_staffing_requirements(items: Sequence[Mapping[str, Any]]) -> None:
+    """Refuse two intervals for the same role that cover the same minute.
+
+    An empty day means every day, so it conflicts with that role on any weekday.
+    Intervals that only touch at an endpoint are kept.
+    """
+    normalized = [item for item in items if isinstance(item, Mapping)]
+    for index, left in enumerate(normalized):
+        left_day = left.get("day_of_week")
+        left_start = _clock_minutes(str(left.get("start_time")))
+        left_end = _clock_minutes(str(left.get("end_time")))
+        for right in normalized[index + 1 :]:
+            if str(left.get("role")) != str(right.get("role")):
+                continue
+            right_day = right.get("day_of_week")
+            if left_day is not None and right_day is not None and int(left_day) != int(right_day):
+                continue
+            right_start = _clock_minutes(str(right.get("start_time")))
+            right_end = _clock_minutes(str(right.get("end_time")))
+            if left_start < right_end and right_start < left_end:
+                raise StaffingRequirementError(
+                    "Overlapping staffing intervals for the same role must be resolved before saving."
+                )
+
+
 def replace_staffing_requirements(cursor, organization_id: int, items: Any) -> list[dict[str, Any]]:
     if not table_exists(cursor, STAFFING):
         raise PlannerSchemaNotApplied([STAFFING])
     normalized = [normalize_staffing_requirement(item) for item in (items or [])]
+    reject_overlapping_staffing_requirements(normalized)
     cursor.execute(f"DELETE FROM {STAFFING} WHERE organization_id=%s", (int(organization_id),))
     for item in normalized:
         cursor.execute(

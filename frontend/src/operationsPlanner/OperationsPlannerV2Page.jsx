@@ -23,7 +23,7 @@ import {
 } from "./plannerModel";
 import { printDocumentHtml, scheduleCardSvg, scheduleCsv, schedulePdf } from "./scheduleExport";
 import PlannerWorkspace from "./PlannerWorkspace";
-import { asList, shiftKey } from "./plannerGeometry";
+import { asList, shiftKey, storedRoleSegments } from "./plannerGeometry";
 
 const LENSES = [
   ["employees", "Employees"],
@@ -87,7 +87,7 @@ function entryShift(entry) {
     role: entry.role || "",
     break_minutes: Number(entry.break_minutes || 0),
     break_slots: asList(entry.break_slots),
-    role_assignments: asList(entry.role_assignments || entry.assignments),
+    role_assignments: storedRoleSegments(entry),
   };
 }
 
@@ -179,16 +179,17 @@ export default function OperationsPlannerV2Page() {
     return list.map((entry) => {
       const person = employees.find((employee) => Number(employee.user_id) === Number(entry.user_id));
       const slot = (entry.break_slots || []).map((item) => `${item.start_time}–${item.end_time}${item.timed === false ? " untimed" : ""}`).join("; ");
+      const breaks = slot || (Number(entry.break_minutes) > 0 ? `${entry.break_minutes} min, no clock time` : "");
       return {
         employee: person?.display_name || `Employee ${entry.user_id}`,
         day: DAY_NAMES[entry.day_of_week],
         start: entry.start_time,
         end: entry.end_time,
         role: entry.role,
-        breaks: slot,
+        breaks,
         tasks: "",
         when: `${DAY_NAMES[entry.day_of_week]} ${entry.start_time}–${entry.end_time}`,
-        detail: `${entry.role} ${slot}`.trim(),
+        detail: `${entry.role} ${breaks}`.trim(),
         name: person?.display_name || `Employee ${entry.user_id}`,
       };
     });
