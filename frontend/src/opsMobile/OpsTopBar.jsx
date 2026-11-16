@@ -88,8 +88,8 @@ export default function OpsTopBar({
 
       <Box
         sx={{
-          flex: onBack ? { xs: "1 1 100%", sm: 1 } : 1,
-          order: onBack ? { xs: 4, sm: 0 } : 0,
+          flex: identity && onBack ? { xs: "1 1 100%", sm: 1 } : 1,
+          order: identity && onBack ? { xs: 4, sm: 0 } : 0,
           minWidth: 0,
         }}
       >

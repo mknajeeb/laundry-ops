@@ -1,10 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import BadgeOutlinedIcon from "@mui/icons-material/BadgeOutlined";
 import CheckroomOutlinedIcon from "@mui/icons-material/CheckroomOutlined";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DryCleaningOutlinedIcon from "@mui/icons-material/DryCleaningOutlined";
+import LocalLaundryServiceOutlinedIcon from "@mui/icons-material/LocalLaundryServiceOutlined";
+import PhotoCameraOutlinedIcon from "@mui/icons-material/PhotoCameraOutlined";
+import PhotoLibraryOutlinedIcon from "@mui/icons-material/PhotoLibraryOutlined";
+import ReplayIcon from "@mui/icons-material/Replay";
 import ReportProblemOutlinedIcon from "@mui/icons-material/ReportProblemOutlined";
-import { Alert, Box, Button, Stack, TextField, Typography } from "@mui/material";
+import SwapHorizIcon from "@mui/icons-material/SwapHoriz";
+import { Alert, Box, Button, Stack, TextField, Tooltip, Typography } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import OpsChoiceCard from "../../opsMobile/OpsChoiceCard";
+import OpsStickyActionBar from "../../opsMobile/OpsStickyActionBar";
 import { OPS_MOBILE } from "../../opsMobile/tokens";
 import { useI18n } from "../../i18n/I18nContext";
 import {
@@ -25,14 +33,58 @@ const CATEGORIES = [
 const FOUND_PLACES = ["washer", "dryer", "folding_table", "floor", "cart", "other"];
 const EQUIPMENT_TYPES = ["washer", "dryer", "dehumidifier", "other"];
 const REDRY_FLAGS = [
-  ["mesh_bag", "lostFound.redry.meshBag"],
-  ["wrong_pocket", "lostFound.redry.wrongPocket"],
-  ["missing_ticket", "lostFound.redry.missingTicket"],
+  ["mesh_bag", "lostFound.redry.meshBag", LocalLaundryServiceOutlinedIcon],
+  ["wrong_pocket", "lostFound.redry.wrongPocket", DryCleaningOutlinedIcon],
+  ["missing_ticket", "lostFound.redry.missingTicket", BadgeOutlinedIcon],
 ];
 
 function newRequestId() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
   return `lf-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function IssueChoiceButton({ title, selected, disabled, onClick, icon: Icon }) {
+  return (
+    <Button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      aria-pressed={selected}
+      sx={{
+        width: "100%",
+        minHeight: 52,
+        px: 1.1,
+        py: 0.75,
+        justifyContent: "flex-start",
+        textAlign: "left",
+        textTransform: "none",
+        fontWeight: 800,
+        fontSize: "0.92rem",
+        lineHeight: 1.2,
+        borderRadius: `${OPS_MOBILE.radius.button}px`,
+        color: OPS_MOBILE.navy,
+        bgcolor: selected ? alpha(OPS_MOBILE.cobalt, 0.16) : "#fff",
+        border: `2px solid ${selected ? OPS_MOBILE.cobalt : alpha(OPS_MOBILE.blue, 0.32)}`,
+        boxShadow: selected ? `inset 3px 0 0 ${OPS_MOBILE.cobalt}` : "none",
+        "&:hover": {
+          bgcolor: selected ? alpha(OPS_MOBILE.cobalt, 0.22) : alpha(OPS_MOBILE.cobalt, 0.06),
+          borderColor: OPS_MOBILE.cobalt,
+        },
+      }}
+    >
+      {Icon ? (
+        <Icon
+          sx={{
+            fontSize: 18,
+            mr: 0.75,
+            flexShrink: 0,
+            color: selected ? OPS_MOBILE.cobalt : OPS_MOBILE.blue,
+          }}
+        />
+      ) : null}
+      <Box component="span" sx={{ minWidth: 0, whiteSpace: "normal", textAlign: "left" }}>{title}</Box>
+    </Button>
+  );
 }
 
 function NumberPicker({ label, options, value, onChange, optional = false }) {
@@ -53,8 +105,8 @@ function NumberPicker({ label, options, value, onChange, optional = false }) {
     );
   }
   return (
-    <Stack spacing={0.75}>
-      <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>{label}</Typography>
+    <Stack spacing={0.5}>
+      <Typography sx={{ fontWeight: 800, fontSize: "0.9rem", color: OPS_MOBILE.navy }}>{label}</Typography>
       {options.length > 12 ? (
         <TextField
           size="small"
@@ -63,7 +115,7 @@ function NumberPicker({ label, options, value, onChange, optional = false }) {
           onChange={(event) => setQuery(event.target.value)}
         />
       ) : null}
-      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75, maxHeight: 180, overflowY: "auto" }}>
+      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, maxHeight: 112, overflowY: "auto" }}>
         {shown.map((id) => {
           const selected = value === id;
           return (
@@ -73,16 +125,15 @@ function NumberPicker({ label, options, value, onChange, optional = false }) {
               onClick={() => onChange(id)}
               aria-pressed={selected}
               sx={{
-                minWidth: 52,
-                minHeight: 48,
-                px: 1.25,
+                minWidth: 48,
+                minHeight: 44,
+                px: 1.1,
                 borderRadius: `${OPS_MOBILE.radius.button}px`,
                 fontWeight: 800,
                 textTransform: "none",
                 color: selected ? "#fff" : OPS_MOBILE.navy,
                 bgcolor: selected ? OPS_MOBILE.cobalt : "#fff",
-                border: `2px solid ${selected ? OPS_MOBILE.cobalt : OPS_MOBILE.border}`,
-                boxShadow: `0 8px 18px -16px ${alpha(OPS_MOBILE.navy, 0.7)}`,
+                border: `2px solid ${selected ? OPS_MOBILE.cobalt : alpha(OPS_MOBILE.blue, 0.28)}`,
               }}
             >
               {displayMachineNumber(id)}
@@ -92,6 +143,45 @@ function NumberPicker({ label, options, value, onChange, optional = false }) {
         {!shown.length ? <Typography variant="caption">{t("lostFound.noMatches")}</Typography> : null}
       </Box>
     </Stack>
+  );
+}
+
+function PhotoAction({ label, icon: Icon, onClick, tone = "default" }) {
+  const color = tone === "danger" ? OPS_MOBILE.danger : tone === "accent" ? OPS_MOBILE.cobalt : OPS_MOBILE.blue;
+  return (
+    <Tooltip title={label}>
+      <Button
+        type="button"
+        aria-label={label}
+        onClick={onClick}
+        sx={{
+          flex: "1 1 0",
+          minWidth: 0,
+          minHeight: 48,
+          px: 0.4,
+          py: 0.4,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 0.15,
+          textTransform: "none",
+          fontWeight: 800,
+          fontSize: "0.68rem",
+          lineHeight: 1.15,
+          whiteSpace: "normal",
+          wordBreak: "break-word",
+          color,
+          bgcolor: alpha(color, tone === "danger" ? 0.1 : 0.08),
+          border: `1px solid ${alpha(color, 0.38)}`,
+          borderRadius: "10px",
+          "&:hover": { bgcolor: alpha(color, 0.16) },
+        }}
+      >
+        {Icon ? <Icon sx={{ fontSize: 18 }} /> : null}
+        {label}
+      </Button>
+    </Tooltip>
   );
 }
 
@@ -110,26 +200,40 @@ function PhotoManager({ photos, onChange }) {
     urls.forEach((photo) => URL.revokeObjectURL(photo.url));
   }, [urls]);
 
+  const captureLabel = photos.length ? t("lostFound.addMore") : t("lostFound.takePhoto");
+
   return (
     <Box
       sx={{
-        p: 1.5,
+        p: 1,
         borderRadius: `${OPS_MOBILE.radius.card}px`,
         bgcolor: "#fff",
         border: `1px solid ${OPS_MOBILE.border}`,
       }}
     >
-      <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy, mb: 1 }}>
+      <Typography sx={{ fontWeight: 800, fontSize: "0.9rem", color: OPS_MOBILE.navy, mb: 0.75 }}>
         {t("lostFound.photos")} · {photos.length}
       </Typography>
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={0.75}>
-        <Button type="button" onClick={() => cameraRef.current?.click()} sx={photoButtonSx}>
-          {photos.length ? t("lostFound.addMore") : t("lostFound.takePhoto")}
+      <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0.75 }}>
+        <Button
+          type="button"
+          aria-label={captureLabel}
+          onClick={() => cameraRef.current?.click()}
+          sx={captureButtonSx}
+        >
+          <PhotoCameraOutlinedIcon sx={{ fontSize: 20, flexShrink: 0, color: OPS_MOBILE.cobalt }} />
+          <Box component="span" sx={{ minWidth: 0, whiteSpace: "normal" }}>{captureLabel}</Box>
         </Button>
-        <Button type="button" onClick={() => libraryRef.current?.click()} sx={photoButtonSx}>
-          {t("lostFound.choosePhoto")}
+        <Button
+          type="button"
+          aria-label={t("lostFound.choosePhoto")}
+          onClick={() => libraryRef.current?.click()}
+          sx={libraryButtonSx}
+        >
+          <PhotoLibraryOutlinedIcon sx={{ fontSize: 20, flexShrink: 0, color: OPS_MOBILE.blue }} />
+          <Box component="span" sx={{ minWidth: 0, whiteSpace: "normal" }}>{t("lostFound.choosePhoto")}</Box>
         </Button>
-      </Stack>
+      </Box>
       <input ref={cameraRef} hidden type="file" accept="image/*" capture="environment" onChange={(event) => { onChange(addReportPhotos(photos, event.target.files)); event.target.value = ""; }} />
       <input ref={libraryRef} hidden type="file" accept="image/*" multiple onChange={(event) => { onChange(addReportPhotos(photos, event.target.files)); event.target.value = ""; }} />
       <input
@@ -156,21 +260,42 @@ function PhotoManager({ photos, onChange }) {
         }}
       />
       {urls.length ? (
-        <Stack direction="row" spacing={1} sx={{ overflowX: "auto", mt: 1.25 }}>
+        <Stack spacing={0.75} sx={{ mt: 0.75 }}>
           {urls.map((photo) => (
-            <Box key={photo.id} sx={{ width: 112, flexShrink: 0 }}>
-              <Box component="img" src={photo.url} alt="" sx={{ width: 112, height: 112, objectFit: "cover", borderRadius: `${OPS_MOBILE.radius.button}px`, display: "block" }} />
-              <Stack direction="row" spacing={0.25} sx={{ mt: 0.25 }}>
-                <Button type="button" size="small" sx={tinySx} onClick={() => { replaceId.current = photo.id; replaceRef.current?.click(); }}>
-                  {t("lostFound.retake")}
-                </Button>
-                <Button type="button" size="small" sx={tinySx} onClick={() => { replaceId.current = photo.id; libraryReplaceRef.current?.click(); }}>
-                  {t("lostFound.replacePhoto")}
-                </Button>
-                <Button type="button" size="small" sx={tinySx} onClick={() => onChange(removeReportPhoto(photos, photo.id))}>
-                  {t("lostFound.deletePhoto")}
-                </Button>
-              </Stack>
+            <Box key={photo.id} sx={{ display: "flex", alignItems: "center", gap: 0.75, minWidth: 0 }}>
+              <Box
+                component="img"
+                src={photo.url}
+                alt=""
+                sx={{
+                  width: 64,
+                  height: 64,
+                  objectFit: "cover",
+                  borderRadius: "10px",
+                  display: "block",
+                  flexShrink: 0,
+                  border: `1px solid ${OPS_MOBILE.border}`,
+                }}
+              />
+              <Box sx={{ display: "flex", flex: 1, gap: 0.5, minWidth: 0 }}>
+                <PhotoAction
+                  label={t("lostFound.retake")}
+                  icon={ReplayIcon}
+                  tone="accent"
+                  onClick={() => { replaceId.current = photo.id; replaceRef.current?.click(); }}
+                />
+                <PhotoAction
+                  label={t("lostFound.replacePhoto")}
+                  icon={SwapHorizIcon}
+                  onClick={() => { replaceId.current = photo.id; libraryReplaceRef.current?.click(); }}
+                />
+                <PhotoAction
+                  label={t("lostFound.deletePhoto")}
+                  icon={DeleteOutlineIcon}
+                  tone="danger"
+                  onClick={() => onChange(removeReportPhoto(photos, photo.id))}
+                />
+              </Box>
             </Box>
           ))}
         </Stack>
@@ -179,18 +304,43 @@ function PhotoManager({ photos, onChange }) {
   );
 }
 
-const photoButtonSx = {
-  flex: 1,
-  minHeight: 52,
+const captureButtonSx = {
+  minHeight: 48,
+  px: 1,
+  py: 0.75,
+  gap: 0.5,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
   textTransform: "none",
   fontWeight: 800,
+  fontSize: "0.9rem",
+  lineHeight: 1.15,
   color: OPS_MOBILE.navy,
   borderRadius: `${OPS_MOBILE.radius.button}px`,
-  border: `2px solid ${OPS_MOBILE.border}`,
-  bgcolor: "#fff",
+  border: `2px solid ${alpha(OPS_MOBILE.cobalt, 0.5)}`,
+  bgcolor: alpha(OPS_MOBILE.cobalt, 0.08),
+  "&:hover": { bgcolor: alpha(OPS_MOBILE.cobalt, 0.14) },
 };
 
-const tinySx = { minWidth: 0, minHeight: 40, px: 0.5, textTransform: "none", fontWeight: 700, color: OPS_MOBILE.blue };
+const libraryButtonSx = {
+  minHeight: 48,
+  px: 1,
+  py: 0.75,
+  gap: 0.5,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  textTransform: "none",
+  fontWeight: 800,
+  fontSize: "0.9rem",
+  lineHeight: 1.15,
+  color: OPS_MOBILE.navy,
+  borderRadius: `${OPS_MOBILE.radius.button}px`,
+  border: `2px solid ${alpha(OPS_MOBILE.blue, 0.28)}`,
+  bgcolor: "#fff",
+  "&:hover": { bgcolor: alpha(OPS_MOBILE.blue, 0.06) },
+};
 
 export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
   const { t } = useI18n();
@@ -288,18 +438,18 @@ export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
   const places = category === "equipment" ? EQUIPMENT_TYPES : FOUND_PLACES;
 
   return (
-    <Stack component="form" spacing={1.5} onSubmit={submit}>
-      {error ? <Alert severity="warning">{error}</Alert> : null}
+    <Stack component="form" spacing={1} onSubmit={submit} sx={{ flex: "1 1 auto" }}>
+      {error ? <Alert severity="warning" sx={{ py: 0.25 }}>{error}</Alert> : null}
       {category ? (
-        <Stack direction="row" justifyContent="space-between" alignItems="center">
-          <Typography sx={{ fontWeight: 900, color: OPS_MOBILE.navy, fontSize: "1.15rem" }}>
+        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ minHeight: 36 }}>
+          <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy, fontSize: "1.05rem", lineHeight: 1.2 }}>
             {t(CATEGORIES.find(([id]) => id === category)?.[1] || "")}
           </Typography>
           <Button
             type="button"
             disabled={submitting}
             onClick={() => { setCategory(""); resetDetails(); }}
-            sx={{ textTransform: "none", fontWeight: 800, color: OPS_MOBILE.blue }}
+            sx={{ minHeight: 36, px: 1, py: 0.25, textTransform: "none", fontWeight: 800, color: OPS_MOBILE.blue }}
           >
             {t("lostFound.changeCategory")}
           </Button>
@@ -309,7 +459,7 @@ export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
           sx={{
             display: "grid",
             gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr 1fr" },
-            gap: 1.25,
+            gap: 1,
           }}
         >
           {CATEGORIES.map(([id, title, hint, Icon]) => (
@@ -333,33 +483,32 @@ export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
       )}
 
       {category === "redry" ? (
-        <Stack spacing={1}>
-          <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>{t("lostFound.redry.oneReason")}</Typography>
-          {REDRY_FLAGS.map(([id, key]) => (
-            <OpsChoiceCard
-              key={id}
-              title={t(key)}
-              selected={reason === id}
-              compact
-              disabled={submitting}
-              onClick={() => chooseReason(id)}
-              sx={{ minHeight: 72 }}
-            />
-          ))}
+        <Stack spacing={0.75}>
+          <Typography sx={{ fontWeight: 800, fontSize: "0.9rem", color: OPS_MOBILE.navy }}>{t("lostFound.redry.oneReason")}</Typography>
+          <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0.75 }}>
+            {REDRY_FLAGS.map(([id, key, Icon]) => (
+              <IssueChoiceButton
+                key={id}
+                title={t(key)}
+                icon={Icon}
+                selected={reason === id}
+                disabled={submitting}
+                onClick={() => chooseReason(id)}
+              />
+            ))}
+          </Box>
         </Stack>
       ) : null}
 
       {category && category !== "redry" ? (
-        <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "1fr 1fr 1fr" }, gap: 1 }}>
+        <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0.75 }}>
           {places.map((id) => (
-            <OpsChoiceCard
+            <IssueChoiceButton
               key={id}
               title={t(`lostFound.location.${id}`)}
               selected={kind === id}
-              compact
               disabled={submitting}
               onClick={() => { setKind(id); setNumber(""); setDetail(""); setError(""); }}
-              sx={{ minHeight: 72, px: 1.5, py: 1.25 }}
             />
           ))}
         </Box>
@@ -391,23 +540,28 @@ export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
             value={notes}
             onChange={(event) => setNotes(event.target.value)}
             helperText={t("lostFound.optional")}
+            slotProps={{ formHelperText: { sx: { mt: 0.25, mx: 0 } } }}
           />
-          <Button
-            type="submit"
-            disabled={submitting}
-            sx={{
-              minHeight: 52,
-              fontWeight: 800,
-              fontSize: "1.05rem",
-              textTransform: "none",
-              color: "#fff",
-              bgcolor: OPS_MOBILE.navy,
-              borderRadius: `${OPS_MOBILE.radius.button}px`,
-              "&:hover": { bgcolor: OPS_MOBILE.blue },
-            }}
-          >
-            {submitting ? t("lostFound.submitting") : t("lostFound.submit")}
-          </Button>
+          <Box sx={{ flex: "1 1 0px", minHeight: 0 }} />
+          <OpsStickyActionBar sx={{ pt: 0.75, pb: 0 }}>
+            <Button
+              type="submit"
+              fullWidth
+              disabled={submitting}
+              sx={{
+                minHeight: 52,
+                fontWeight: 800,
+                fontSize: "1.05rem",
+                textTransform: "none",
+                color: "#fff",
+                bgcolor: OPS_MOBILE.navy,
+                borderRadius: `${OPS_MOBILE.radius.button}px`,
+                "&:hover": { bgcolor: OPS_MOBILE.blue },
+              }}
+            >
+              {submitting ? t("lostFound.submitting") : t("lostFound.submit")}
+            </Button>
+          </OpsStickyActionBar>
         </>
       ) : null}
     </Stack>

@@ -116,7 +116,7 @@ export default function LostFoundReportPinPage() {
   }
 
   const page = (
-    <OpsMobileShell showLocaleToggle contentSx={{ gap: 1.25 }} maxWidth={880}>
+    <OpsMobileShell showLocaleToggle contentSx={{ gap: 0.75 }} maxWidth={880}>
       <OpsTopBar
         title={t("lostFound.report")}
         logoSrc={logoSrc}
