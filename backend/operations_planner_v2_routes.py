@@ -21,6 +21,7 @@ from backend.operations_planner_v2 import (
     employee_schedule_view,
     employee_visible_snapshot,
     paystub_decision,
+    plan_cell_scopes,
     plan_change,
     publish_weeks,
     shift_set_confirmation,
@@ -42,12 +43,15 @@ from backend.operations_planner_v2_store import (
     PaystubSecurityHold,
     PlannerSchemaNotApplied,
     release_lock,
+    remove_unlocked_assignment,
+    update_unlocked_assignment,
     replace_staffing_requirements,
     StaffingRequirementError,
     save_access,
     save_flags,
     save_role_setting,
     save_state,
+    schedule_fingerprint,
     stop_legacy_template,
 )
 from backend.ta_helpers import table_has_column
@@ -268,6 +272,7 @@ def register_operations_planner_v2_routes(
                 "status": status.get("status") or "draft",
                 "revision": status.get("revision") or 1,
                 "published_revision": status.get("published_revision"),
+                "schedule_token": schedule_fingerprint(cursor, org, monday),
                 "flags": flags,
                 "legacy_template": legacy_template_enabled(cursor, org),
                 "role_settings": roles,
@@ -339,7 +344,9 @@ def register_operations_planner_v2_routes(
                         },
                     }
                 )
-            result = plan_change(load_state(cursor, org), _command(body, org, cursor))
+            command = _command(body, org, cursor)
+            planner = plan_cell_scopes if str(body.get("action") or "") == "apply_cell_scopes" else plan_change
+            result = planner(load_state(cursor, org), command)
             result.pop("state", None)
             result["legacy_template"] = legacy_template_enabled(cursor, org)
             code = 200 if result.get("ok") else 409
@@ -365,6 +372,61 @@ def register_operations_planner_v2_routes(
             if not acquire_lock(cursor, org):
                 return jsonify({"error": "Another manager is saving this schedule", "code": "busy"}), 409
             try:
+                action = str(body.get("action") or "")
+                if action in ("apply_shift_set", "apply_cell_scopes"):
+                    monday = _monday_arg(body.get("week_start") or body.get("anchor"))
+                    expected = body.get("expected_schedule_token")
+                    if monday is not None and expected:
+                        current = schedule_fingerprint(cursor, org, monday)
+                        if current != expected:
+                            return jsonify(
+                                {
+                                    "ok": False,
+                                    "code": "schedule_changed",
+                                    "error": "Another manager saved this week. Reload the week before saving so their changes are not overwritten.",
+                                }
+                            ), 409
+                if action == "apply_cell_scopes":
+                    if str(body.get("scope") or "") == "this_week":
+                        return jsonify(
+                            {
+                                "ok": False,
+                                "code": "invalid_action",
+                                "error": "This week is saved as the shifts on the schedule. Choose a future scope for a repeating pattern, or save this week from the shift list.",
+                            }
+                        ), 409
+                    result = plan_cell_scopes(load_state(cursor, org), _command(body, org, cursor))
+                    if not result.get("ok"):
+                        result.pop("state", None)
+                        return jsonify(result), 409
+                    if legacy_template_enabled(cursor, org) and not body.get("stop_legacy_template"):
+                        return jsonify(
+                            {
+                                "ok": False,
+                                "code": "legacy_template_active",
+                                "error": "Stop the old week-to-week template before saving a recurring change.",
+                                "preview": result.get("preview"),
+                            }
+                        ), 409
+                    if body.get("stop_legacy_template"):
+                        stop_legacy_template(cursor, org, actor)
+
+                    def _write_cells():
+                        save_state(cursor, org, result["state"], result.get("audit"), actor)
+                        materialize_plans(conn, cursor, org, result.get("cell_plans") or [])
+
+                    outcome = commit_or_rollback(_write_cells, conn.commit, conn.rollback)
+                    if not outcome["ok"]:
+                        return jsonify({"ok": False, "code": "rolled_back", "rolled_back": True, "error": outcome["error"]}), 409
+                    return jsonify(
+                        {
+                            "ok": True,
+                            "write_weeks": result.get("write_weeks"),
+                            "preview": result.get("preview"),
+                            "warnings": result.get("warnings"),
+                            "republish_required": result.get("republish_required"),
+                        }
+                    )
                 if str(body.get("action") or "") == "apply_shift_set":
                     monday = _monday_arg(body.get("week_start") or body.get("anchor"))
                     if monday is None:
@@ -374,7 +436,7 @@ def register_operations_planner_v2_routes(
                             {
                                 "ok": False,
                                 "code": "invalid_action",
-                                "error": "Saving more than one shift applies to this week. Choose this week.",
+                                "error": "These shifts are saved on this week. A repeating pattern is a separate choice and is not applied silently.",
                             }
                         ), 409
                     state = load_state(cursor, org)
@@ -565,9 +627,20 @@ def register_operations_planner_v2_routes(
             monday = _monday_arg(body.get("week_start"))
             if monday is None:
                 return jsonify({"error": "week_start is required"}), 400
-            result = add_assignments(cursor, user_org_id(me), monday, body.get("tasks") or [])
+            org = user_org_id(me)
+            removed = []
+            updated = []
+            for item in body.get("updates") or []:
+                if not isinstance(item, dict) or not item.get("id"):
+                    continue
+                update_unlocked_assignment(cursor, org, monday, item)
+                updated.append(int(item["id"]))
+            for raw in body.get("removals") or []:
+                remove_unlocked_assignment(cursor, org, int(raw))
+                removed.append(int(raw))
+            result = add_assignments(cursor, org, monday, body.get("tasks") or [])
             conn.commit()
-            return jsonify({"ok": True, **result})
+            return jsonify({"ok": True, "removed": removed, "updated": updated, **result})
         except Exception as exc:
             conn.rollback()
             return _error_response(exc, rolled_back=True)

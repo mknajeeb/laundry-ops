@@ -322,6 +322,35 @@ export function resizeBreak(entry, index, edge, minutes) {
   return { ...entry, break_slots: slots, break_minutes: breakMinutes };
 }
 
+/** Take the clock off a break and keep its duration. The break is not given a guessed time. */
+export function unscheduleBreak(entry) {
+  const slots = asList(entry?.break_slots).filter((slot) => slot?.start_time && slot?.end_time);
+  const timed = slots.reduce((sum, slot) => sum + (spanMinutes(slot.start_time, slot.end_time) || 0), 0);
+  const minutes = Math.max(Number(entry?.break_minutes) || 0, timed);
+  return { ...entry, break_slots: [], break_minutes: minutes };
+}
+
+/**
+ * Add a timed role segment the manager named.
+ * A combined role with no stored split is left unchanged so hours are not assigned to the first role.
+ */
+export function addRoleSegment(entry, role, start, end) {
+  const name = String(role || "").trim();
+  const startTime = String(start || "").slice(0, 5);
+  const endTime = String(end || "").slice(0, 5);
+  if (!name || !spanMinutes(startTime, endTime)) return entry;
+  if (String(entry?.role || "").includes(",") && !storedRoleSegments(entry).length) return entry;
+  return {
+    ...entry,
+    role_assignments: [...storedRoleSegments(entry), { role: name, start_time: startTime, end_time: endTime }],
+  };
+}
+
+export function removeRoleSegment(entry, index) {
+  const segments = storedRoleSegments(entry).filter((_, itemIndex) => itemIndex !== index);
+  return { ...entry, role_assignments: segments };
+}
+
 /** A manager placing both ends creates a timed break. An empty field does not invent one. */
 export function placeBreak(entry, start, end) {
   const startTime = String(start || "").slice(0, 5);

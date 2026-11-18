@@ -6,6 +6,8 @@ from datetime import date, timedelta
 
 from backend.operations_planner_v2 import (
     approve_weeks,
+    cell_shifts,
+    plan_cell_scopes,
     break_overlap_warnings,
     cell_shift,
     commit_or_rollback,
@@ -673,3 +675,44 @@ def test_a_busy_planner_lock_is_not_treated_as_free():
             return {"locked": 0}
 
     assert acquire_lock(Busy(), 4) is False
+
+
+def test_repeating_scope_keeps_two_shifts_on_one_day():
+    accepted = plan_cell_scopes(
+        empty_state(),
+        {
+            "scope": "this_and_future",
+            "anchor": ANCHOR,
+            "today": TODAY,
+            "include_published": False,
+            "replace_exceptions": True,
+            "horizon_weeks": 4,
+            "cells": [
+                {
+                    "user_id": 7,
+                    "day_of_week": 1,
+                    "shifts": [_shift(), _shift(start_time="17:00", end_time="21:00", role="sort")],
+                }
+            ],
+        },
+    )
+    assert accepted["ok"] is True
+    later = cell_shifts(accepted["state"], 7, 1, NEXT)
+    assert [item["start_time"] for item in later] == ["08:00", "17:00"]
+    assert accepted["cell_plans"][0]["shifts"][1]["role"] == "sort"
+
+    accepted = plan_cell_scopes(
+        empty_state(),
+        {
+            "scope": "this_and_future",
+            "anchor": ANCHOR,
+            "today": TODAY,
+            "include_published": False,
+            "replace_exceptions": True,
+            "horizon_weeks": 4,
+            "cells": [{"user_id": 7, "day_of_week": 1, "shift": _shift()}],
+        },
+    )
+    assert accepted["ok"] is True
+    assert cell_shift(accepted["state"], 7, 1, NEXT)["start_time"] == "08:00"
+    assert "2026-11-09" in accepted["preview"]["dates"]

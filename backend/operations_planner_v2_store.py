@@ -423,6 +423,30 @@ def materialize_shift_set(
     return {"created_ids": created, "updated_ids": updated, "deleted_ids": deleted}
 
 
+def _replace_cell_shifts(conn, cursor, organization_id: int, storage: date, user_id: int, day: int, shifts: Sequence[Mapping[str, Any]]) -> None:
+    """Write every shift on one employee-day. Extra stored rows are removed. Missing rows are created."""
+    from backend.planned_weekly_schedule import create_entry, delete_entry, update_entry
+
+    existing = _entry_rows(cursor, organization_id, storage, user_id, day)
+    for index, shift in enumerate(shifts):
+        body = dict(shift)
+        body["user_id"] = user_id
+        body["day_of_week"] = day
+        if "assignments" not in body and "role_assignments" in body:
+            body["assignments"] = planner_shift_assignments(body)
+        if index < len(existing):
+            updated, err = update_entry(conn, cursor, organization_id, int(existing[index]["id"]), body)
+            if err or not updated:
+                raise ValueError(err or "could not update the shift")
+            continue
+        created, err = create_entry(conn, cursor, organization_id, week_start=storage, data=body)
+        if err or not created:
+            raise ValueError(err or "could not create the shift")
+    for row in existing[len(list(shifts)) :]:
+        if not delete_entry(cursor, organization_id, int(row["id"])):
+            raise ValueError("could not remove the extra shift")
+
+
 def materialize_plans(conn, cursor, organization_id: int, plans: list[Mapping[str, Any]]) -> None:
     """Write planned entries for the cells a confirmed change named."""
     from backend.planned_weekly_schedule import create_entry, delete_entry, update_entry
@@ -436,6 +460,9 @@ def materialize_plans(conn, cursor, organization_id: int, plans: list[Mapping[st
         day = int(plan["day_of_week"])
         storage = storage_week_for_dow(monday, day)
         existing = _entry_rows(cursor, organization_id, storage, user_id, day)
+        if isinstance(plan.get("shifts"), list):
+            _replace_cell_shifts(conn, cursor, organization_id, storage, user_id, day, plan.get("shifts") or [])
+            continue
         decision = plan_entry_write(existing, plan.get("shift"))
         if not decision.get("ok"):
             raise ValueError(decision.get("error") or "could not update the shift")
@@ -896,13 +923,16 @@ def add_assignments(cursor, organization_id: int, week_start: date, additions: A
         if group and str(group) in locked_groups:
             refused += 1
             continue
+        mode = str(item.get("timing_mode") or "anytime")
+        start = item.get("start_time") if mode == "specific_time" else None
+        execution = "shared" if item.get("shared") or item.get("execution_mode") == "shared" else "individual"
         cursor.execute(
             f"""
             INSERT INTO {RESPONSIBILITIES} (
               organization_id, week_start, user_id, day_of_week, role, remarks,
               assignment_group_id, timing_mode, start_time, execution_mode
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,'anytime',NULL,'individual')
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 int(organization_id),
@@ -912,6 +942,9 @@ def add_assignments(cursor, organization_id: int, week_start: date, additions: A
                 str(item.get("role") or "")[:40],
                 None,
                 group,
+                mode,
+                start,
+                execution,
             ),
         )
         inserted.append(int(cursor.lastrowid or 0))
@@ -926,6 +959,84 @@ def add_assignments(cursor, organization_id: int, week_start: date, additions: A
         "refused_groups": refused,
         "removed": 0,
     }
+
+
+def schedule_fingerprint(cursor, organization_id: int, monday: date) -> str:
+    """Identity of the stored shifts for a Monday–Sunday week. A mismatch means another save landed first."""
+    import hashlib
+
+    rows: list[dict[str, Any]] = []
+    for dow in (1, 2, 3, 4, 5, 6, 0):
+        storage = storage_week_for_dow(monday, dow)
+        cursor.execute(
+            """
+            SELECT id, user_id, day_of_week, start_time, end_time, role, break_minutes
+            FROM planned_weekly_schedule_entries
+            WHERE organization_id=%s AND week_start=%s AND day_of_week=%s
+            ORDER BY id
+            """,
+            (int(organization_id), storage, dow),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            rows.append(
+                {
+                    "id": int(row["id"]),
+                    "user_id": int(row["user_id"]),
+                    "day": int(row["day_of_week"]),
+                    "start": _clock_text(row.get("start_time")),
+                    "end": _clock_text(row.get("end_time")),
+                    "role": row.get("role") or "",
+                    "break": int(row.get("break_minutes") or 0),
+                }
+            )
+    raw = json.dumps(rows, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def update_unlocked_assignment(cursor, organization_id: int, week_monday: date, item: Mapping[str, Any]) -> None:
+    """Reschedule or reassign one task that has no execution history."""
+    responsibility_id = int(item.get("id") or 0)
+    status = _activity_status(cursor, organization_id, responsibility_id)
+    if status in ACTIVITY_LOCKED:
+        raise ValueError("This task already has execution history and was left unchanged.")
+    day = int(item.get("day_of_week"))
+    storage = storage_week_for_dow(week_monday, day)
+    mode = str(item.get("timing_mode") or "anytime")
+    start = item.get("start_time") if mode == "specific_time" else None
+    cursor.execute(
+        f"""
+        UPDATE {RESPONSIBILITIES}
+           SET user_id=%s, day_of_week=%s, week_start=%s, role=%s, timing_mode=%s, start_time=%s
+         WHERE organization_id=%s AND id=%s
+        """,
+        (
+            int(item.get("user_id") or 0),
+            day,
+            storage,
+            str(item.get("role") or "")[:40],
+            mode,
+            start,
+            int(organization_id),
+            responsibility_id,
+        ),
+    )
+    if not cursor.rowcount:
+        raise ValueError("The task assignment was not found.")
+
+
+def remove_unlocked_assignment(cursor, organization_id: int, responsibility_id: int) -> None:
+    """Delete one assignment that has no execution history. Completed rows stay stored."""
+    status = _activity_status(cursor, organization_id, int(responsibility_id))
+    if status in ACTIVITY_LOCKED:
+        raise ValueError("This task already has execution history and was left unchanged.")
+    cursor.execute(
+        f"DELETE FROM {RESPONSIBILITIES} WHERE organization_id=%s AND id=%s",
+        (int(organization_id), int(responsibility_id)),
+    )
+    if not cursor.rowcount:
+        raise ValueError("The task assignment was not found.")
 
 
 def acquire_lock(cursor, organization_id: int) -> bool:

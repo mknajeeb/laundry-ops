@@ -354,3 +354,66 @@ export function autoScrollDelta(pointerY, rect, edge = 48) {
 export function periodLabel(mode, weekLabel, dayName) {
   return mode === "day" ? dayName : weekLabel;
 }
+
+/** Unique employees working a role during each hour, beside the configured need. */
+export function staffingHours(entries, requirements, role, day) {
+  const dayEntries = (entries || []).filter((entry) => Number(entry.day_of_week) === Number(day));
+  const rows = [];
+  for (let hour = 5; hour <= 22; hour += 1) {
+    const required = requirementFor(requirements, role, day, hour);
+    const coverage = roleCoverage(dayEntries, role, hour, required);
+    const scheduledIds = [...new Set(coverage.scheduled.map((entry) => Number(entry.user_id)))];
+    const breakIds = new Set(coverage.onBreak.map((entry) => Number(entry.user_id)));
+    const working = scheduledIds.filter((id) => !breakIds.has(id));
+    const need = coverage.required;
+    let status = "unset";
+    if (need != null) {
+      if (working.length < need) status = "short";
+      else if (working.length > need) status = "extra";
+      else status = "ok";
+    }
+    if (!scheduledIds.length && need == null) continue;
+    rows.push({
+      hour,
+      required: need,
+      scheduled: working.length,
+      assignments: coverage.scheduled.length,
+      onBreak: scheduledIds.filter((id) => breakIds.has(id)).length,
+      status,
+      userIds: working,
+    });
+  }
+  return rows;
+}
+
+/** People scheduled, on a timed break, and still working, by hour. Untimed breaks are not placed. */
+export function breakLoad(entries, day) {
+  const dayEntries = (entries || []).filter((entry) => Number(entry.day_of_week) === Number(day));
+  const rows = [];
+  for (let hour = 5; hour <= 22; hour += 1) {
+    const coverage = hourCoverage(dayEntries, hour);
+    const scheduled = new Set(coverage.scheduled.map((entry) => Number(entry.user_id)));
+    const onBreak = new Set(coverage.onBreak.map((entry) => Number(entry.user_id)));
+    if (!scheduled.size && !onBreak.size) continue;
+    rows.push({
+      hour,
+      scheduled: scheduled.size,
+      onBreak: onBreak.size,
+      working: scheduled.size - onBreak.size,
+    });
+  }
+  return rows;
+}
+
+const TASK_MINUTES = 30;
+
+/** A clock position only when the task itself stores a specific time. */
+export function taskWindow(task) {
+  if (task?.timing_mode !== "specific_time" || !task?.start_time) {
+    return { scheduled: false, label: task?.timing_mode && task.timing_mode !== "anytime" ? task.timing_mode : "no clock time" };
+  }
+  const start = clockMinutes(task.start_time);
+  if (start == null) return { scheduled: false, label: "no clock time" };
+  const duration = Math.max(15, Number(task.estimated_minutes || task.duration_minutes || TASK_MINUTES));
+  return { scheduled: true, start, end: start + duration, label: `${minutesToClock(start)}–${minutesToClock((start + duration) % (24 * 60))}` };
+}

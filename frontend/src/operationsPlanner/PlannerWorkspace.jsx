@@ -11,9 +11,13 @@ import {
   spanMinutes,
 } from "./plannerModel";
 import {
+  addRoleSegment,
   asList,
   placeBreak,
   relocateShift,
+  removeRoleSegment,
+  resizeBreak,
+  unscheduleBreak,
   resizeEdge,
   resizeSegment,
   roleColor,
@@ -23,6 +27,7 @@ import {
   visibleBreaks,
   visualPieces,
 } from "./plannerGeometry";
+import { BreakImpact, CoverageBoard, TaskPlanner } from "./PlannerBoards";
 
 const SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -200,7 +205,7 @@ function coverageBands(role, dow, placed, requirements, axis) {
   return bands;
 }
 
-function ShiftFace({ entry, axis, lane, bar, stacked, selected, peer, showGrips, muted, onSelect, onCommit, onHover }) {
+function ShiftFace({ entry, axis, lane, bar, stacked, selected, peer, showGrips, muted, onSelect, onCommit, onHover, onDragShift }) {
   const range = shiftRange(entry);
   if (!range) return null;
   const pieces = visualPieces(entry);
@@ -221,6 +226,12 @@ function ShiftFace({ entry, axis, lane, bar, stacked, selected, peer, showGrips,
         width: `${widthOf(range.start, range.end, axis)}%`,
         top: 4 + lane * (bar + 3),
         height: bar,
+      }}
+      draggable={!showGrips}
+      onDragStart={(event) => {
+        event.dataTransfer.setData("text/plain", shiftKey(entry));
+        event.dataTransfer.effectAllowed = "move";
+        onDragShift?.(entry);
       }}
       onClick={() => onSelect(entry)}
       onKeyDown={(event) => {
@@ -407,6 +418,20 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, canUndo, onClose, on
         <div className="sec">
           <h3>Role time</h3>
           <input className="role-field" aria-label="Shift role" value={entry.role || ""} onChange={(event) => patch({ role: event.target.value }, "Proposed a role label change. Not saved.")} />
+          {String(entry.role || "").includes(",") && !stored.length ? <p className="quiet">This combined role has no timed split. It stays combined until you know how the time is divided.</p> : (
+            <div className="break-times">
+              <input aria-label="New role segment" placeholder="Role" id={`segment-role-${entry.id}`} />
+              <button type="button" className="btn" onClick={() => {
+                const field = document.getElementById(`segment-role-${entry.id}`);
+                const name = field?.value || "";
+                const range = shiftRange(entry);
+                if (!range || !name.trim()) return;
+                const start = minutesToClock(range.start);
+                const end = minutesToClock(Math.min(range.end, range.start + 60));
+                patch(addRoleSegment(entry, name.trim(), start, end), "Proposed a role segment. Not saved.");
+              }}>Add segment</button>
+            </div>
+          )}
           <ul className="segs">
             {pieces.map((piece) => {
               const span = ((piece.end - piece.start) / 60).toFixed(1);
@@ -416,6 +441,7 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, canUndo, onClose, on
                   <span className="swatch" style={{ background: roleColor(piece.role) }} />
                   <b>{nice(piece.role)}</b>
                   <em>{minutesToClock(piece.start)}–{minutesToClock(piece.end)} · {span}h{note}</em>
+                  {piece.allocated ? <button type="button" className="btn" onClick={() => patch(removeRoleSegment(entry, stored.findIndex((segment) => segment.role === piece.role && clockMinutes(segment.start_time) === piece.start)), "Proposed removing a role segment. Not saved.")}>Remove</button> : null}
                 </li>
               );
             })}
@@ -486,13 +512,17 @@ export default function PlannerWorkspace({
   onRemove,
   onReviewBundle,
   onOpenDay,
+  onMove,
+  onCopyRequest,
+  catalog,
 }) {
   const boardRef = useRef(null);
   const [roster, setRoster] = useState("all");
+  const [query, setQuery] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
+  const [sort, setSort] = useState("name");
+  const [zoom, setZoom] = useState(1);
   const [tip, setTip] = useState(null);
-  const [taskUser, setTaskUser] = useState(employees[0] ? String(employees[0].user_id) : "");
-  const [taskRole, setTaskRole] = useState("floor_reset");
-  const [taskShared, setTaskShared] = useState(false);
   const axis = useMemo(() => timelineAxis(entries), [entries]);
   const days = mode === "day" ? [day] : DAY_ORDER;
   const guides = guideImage(axis);
@@ -501,10 +531,24 @@ export default function PlannerWorkspace({
   const scheduledIds = new Set(entries.map((entry) => Number(entry.user_id)));
   const rosterEmployees = employees.filter((employee) => {
     const scheduled = scheduledIds.has(Number(employee.user_id));
-    if (roster === "scheduled") return scheduled;
-    if (roster === "unscheduled") return !scheduled;
+    if (roster === "scheduled" && !scheduled) return false;
+    if (roster === "unscheduled" && scheduled) return false;
+    if (query && !String(employee.display_name || "").toLowerCase().includes(query.toLowerCase())) return false;
+    if (roleFilter) {
+      const mine = entries.filter((entry) => Number(entry.user_id) === Number(employee.user_id));
+      const holds = mine.some((entry) => String(entry.role || "").split(",").includes(roleFilter) || visualPieces(entry).some((piece) => piece.role === roleFilter));
+      if (!holds && scheduled) return false;
+    }
     return true;
+  }).sort((a, b) => {
+    if (sort === "scheduled") {
+      const left = scheduledIds.has(Number(a.user_id)) ? 0 : 1;
+      const right = scheduledIds.has(Number(b.user_id)) ? 0 : 1;
+      if (left !== right) return left - right;
+    }
+    return String(a.display_name || "").localeCompare(String(b.display_name || ""));
   });
+  const roleNames = [...new Set(entries.flatMap((entry) => String(entry.role || "").split(",").map((item) => item.trim()).filter(Boolean)))].sort();
   const addTarget = selected ? Number(selected.user_id) : Number(rosterEmployees[0]?.user_id || employees[0]?.user_id || 0);
   const breaks = breakAccounting(entries);
   const overlap = overlappingBreakCount(entries.filter((entry) => mode !== "day" || Number(entry.day_of_week) === Number(day)));
@@ -554,7 +598,17 @@ export default function PlannerWorkspace({
           const value = days[index];
           const stacked = column.lanes > 1 && column.placed.length > 1;
           return (
-            <div key={value} className={`cell${value === 6 || value === 0 ? " is-end" : ""}`} style={{ "--guides": guides }}>
+            <div
+              key={value}
+              className={`cell${value === 6 || value === 0 ? " is-end" : ""}`}
+              style={{ "--guides": guides }}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                const key = event.dataTransfer.getData("text/plain");
+                const moving = entries.find((entry) => shiftKey(entry) === key);
+                if (moving && onMove) onMove(moving, Number(employee.user_id), Number(value));
+              }}
+            >
               <div className="guides" />
               <div className="track" style={{ height }}>
                 {!column.placed.length && lens === "employees" ? (
@@ -575,6 +629,7 @@ export default function PlannerWorkspace({
                     onSelect={(entry) => onSelect(shiftKey(entry))}
                     onCommit={commit}
                     onHover={hover}
+                    onDragShift={() => onSelect(shiftKey(item.entry))}
                   />
                 ))}
                 {lens === "breaks" ? column.placed.flatMap((item) => visibleBreaks(item.entry).filter((slot) => slot.start_time).map((slot) => {
@@ -583,8 +638,40 @@ export default function PlannerWorkspace({
                   if (start == null || end == null) return null;
                   if (end <= start) end += 24 * 60;
                   return (
-                    <span key={`${shiftKey(item.entry)}-${slot.start_time}`} className="break-block" style={{ left: `${leftOf(start, axis)}%`, width: `${widthOf(start, end, axis)}%`, top: 4 + item.lane * (bar + 3), height: bar }} title={`Break ${hm(slot.start_time)}–${hm(slot.end_time)}`}>
-                      Break {hm(slot.start_time)}
+                    <span
+                      key={`${shiftKey(item.entry)}-${slot.start_time}`}
+                      className="break-block"
+                      style={{ left: `${leftOf(start, axis)}%`, width: `${widthOf(start, end, axis)}%`, top: 4 + item.lane * (bar + 3), height: bar }}
+                      title={`Break ${hm(slot.start_time)}–${hm(slot.end_time)}`}
+                    >
+                      <button
+                        type="button"
+                        className="break-grip"
+                        aria-label={`Change break start ${hm(slot.start_time)}`}
+                        onPointerDown={(event) => trackPointer(event, axis, (minutes, done) => {
+                          if (!done) return;
+                          const index = visibleBreaks(item.entry).filter((itemSlot) => itemSlot.start_time).indexOf(slot);
+                          commit(resizeBreak(item.entry, index, "start", minutes), "Proposed a new break start. Not saved.");
+                        })}
+                      />
+                      Break {hm(slot.start_time)}–{hm(slot.end_time)}
+                      <button
+                        type="button"
+                        className="break-grip"
+                        aria-label={`Change break end ${hm(slot.end_time)}`}
+                        onPointerDown={(event) => trackPointer(event, axis, (minutes, done) => {
+                          if (!done) return;
+                          const index = visibleBreaks(item.entry).filter((itemSlot) => itemSlot.start_time).indexOf(slot);
+                          commit(resizeBreak(item.entry, index, "end", minutes), "Proposed a new break end. Not saved.");
+                        })}
+                      />
+                      <button
+                        type="button"
+                        aria-label="Remove the clock time and keep the break length"
+                        onClick={() => commit(unscheduleBreak(item.entry), "Removed the break clock time. The break length stays. Not saved.")}
+                      >
+                        Unschedule
+                      </button>
                     </span>
                   );
                 })) : null}
@@ -639,6 +726,10 @@ export default function PlannerWorkspace({
           <button type="button" className="btn" onClick={() => onSplit(selected)}>Split</button>
           <button type="button" className="btn danger" onClick={() => onRemove(selected)}>Delete</button>
           {canPaste ? <button type="button" className="btn" onClick={() => onPaste(Number(selected.user_id), Number(selected.day_of_week))}>Paste here</button> : null}
+          <button type="button" className="btn" onClick={() => onCopyRequest?.("employee-day")}>Copy employee day</button>
+          <button type="button" className="btn" onClick={() => onCopyRequest?.("employee-week")}>Copy employee week</button>
+          <button type="button" className="btn" onClick={() => onCopyRequest?.("day")}>Copy day</button>
+          <button type="button" className="btn" onClick={() => onCopyRequest?.("week")}>Copy week</button>
         </div>
       ) : null}
       {lens === "breaks" ? (
@@ -658,7 +749,9 @@ export default function PlannerWorkspace({
           </ul>
         </div>
       ) : null}
-      {lens === "breaks" ? (
+          {lens === "breaks" ? (
+        <>
+        <BreakImpact entries={entries} day={day} unscheduledCount={entries.filter((entry) => untimed(entry) && (mode !== "day" || Number(entry.day_of_week) === Number(day))).length} />
         <div className="inspect">
           <span className="when">
             {overlap > BREAK_OVERLAP_CAP
@@ -668,18 +761,37 @@ export default function PlannerWorkspace({
                 : `Timed break overlap is ${overlap}. ${breaks.unscheduledCount} breaks have no clock time, so overlap cannot be fully determined.`}
           </span>
         </div>
+        </>
       ) : null}
       <div className="workspace">
         <div className="board" ref={boardRef}>
           {lens === "employees" || lens === "breaks" ? (
-            <div className={`sheet${mode === "day" ? " day-layout" : ""}`} style={{ "--cols": String(days.length) }}>
+            <div className={`sheet${mode === "day" ? " day-layout" : ""}`} style={{ "--cols": String(days.length), "--colmin": `${Math.round(96 * zoom)}px` }}>
+              <div className="filters">
+                <select aria-label="Employee roster" value={roster} onChange={(event) => setRoster(event.target.value)}>
+                  <option value="all">All</option>
+                  <option value="scheduled">Scheduled</option>
+                  <option value="unscheduled">Unscheduled</option>
+                </select>
+                <input aria-label="Find employee" value={query} placeholder="Find employee" onChange={(event) => setQuery(event.target.value)} />
+                <select aria-label="Role filter" value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>
+                  <option value="">All roles</option>
+                  {roleNames.map((role) => <option key={role} value={role}>{role}</option>)}
+                </select>
+                <select aria-label="Sort employees" value={sort} onChange={(event) => setSort(event.target.value)}>
+                  <option value="name">Name</option>
+                  <option value="scheduled">Scheduled first</option>
+                </select>
+                <select aria-label="Timeline zoom" value={String(zoom)} onChange={(event) => setZoom(Number(event.target.value))}>
+                  <option value="1">Fit</option>
+                  <option value="1.4">Wider</option>
+                  <option value="1.8">Widest</option>
+                </select>
+                <span className="legend">{roleNames.slice(0, 8).map((role) => <span key={role}><i style={{ background: roleColor(role) }} />{nice(role)}</span>)}</span>
+              </div>
               <div className="head">
                 <div className="who">
-                  <select aria-label="Employee roster" value={roster} onChange={(event) => setRoster(event.target.value)}>
-                    <option value="all">All</option>
-                    <option value="scheduled">Scheduled</option>
-                    <option value="unscheduled">Unscheduled</option>
-                  </select>
+                  <span>Employee</span>
                   <button type="button" onClick={() => onAdd(addTarget)}>Add</button>
                 </div>
                 {head}
@@ -703,7 +815,7 @@ export default function PlannerWorkspace({
                       <div className="role-id">
                         <span className="swatch" style={{ background: roleColor(role) }} />
                         <strong>{nice(role)}</strong>
-                        <div className="meta">{items.length} scheduled</div>
+                        <div className="meta">{items.length} assignments</div>
                         <RequirementEditor role={role} day={day} requirements={requirements} axis={axis} onChange={(next, label) => onCommit({ requirements: next }, label)} />
                       </div>
                       {columns.map((column, index) => {
@@ -734,60 +846,27 @@ export default function PlannerWorkspace({
                     </section>
                   );
                 })}
+                <CoverageBoard
+                  entries={entries}
+                  requirements={requirements}
+                  employees={employees}
+                  day={day}
+                  onOpenGap={(value) => onOpenDay(value)}
+                />
               </div>
             </div>
           ) : null}
           {lens === "tasks" ? (
-            <div className="sheet">
-              <div className="empty">
-                <div>
-                  <h2>{tasks.some((task) => !task.draft) ? "Task assignments" : "No task assignments"}</h2>
-                  <p>{tasks.some((task) => !task.draft) ? "Completed and verified records stay stored." : "This week has no daily responsibilities. A new assignment uses the existing task records and stays in the draft until you review a save."}</p>
-                  <form
-                    className="task-form"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      if (!taskRole.trim() || !taskUser) return;
-                      onCommit({
-                        tasks: [...tasks, {
-                          id: `draft-task-${Date.now()}`,
-                          draft: true,
-                          user_id: Number(taskUser),
-                          day_of_week: day,
-                          role: taskRole.trim(),
-                          shared: taskShared,
-                          assignment_group_id: taskShared ? `draft-group-${Date.now()}` : null,
-                          status: "draft",
-                        }],
-                      }, "Proposed a task assignment. Not saved.");
-                    }}
-                  >
-                    <select aria-label="Task employee" value={taskUser} onChange={(event) => setTaskUser(event.target.value)}>
-                      {employees.map((employee) => <option key={employee.user_id} value={employee.user_id}>{employee.display_name}</option>)}
-                    </select>
-                    <input aria-label="Task role" type="text" value={taskRole} onChange={(event) => setTaskRole(event.target.value)} />
-                    <label><input type="checkbox" checked={taskShared} onChange={(event) => setTaskShared(event.target.checked)} /> Shared group</label>
-                    <button type="submit" className="btn">Assign task</button>
-                    <button type="button" className="btn primary" onClick={() => onReviewBundle("tasks")} disabled={!tasks.some((task) => task.draft)}>Review task save</button>
-                  </form>
-                  {tasks.length ? (
-                    <table className="task-table">
-                      <thead><tr><th>Employee</th><th>Day</th><th>Assignment</th><th>Record</th></tr></thead>
-                      <tbody>
-                        {tasks.filter((task) => mode !== "day" || Number(task.day_of_week) === Number(day)).map((task) => (
-                          <tr key={task.id || `${task.user_id}-${task.role}`}>
-                            <td>{personName(employees, task.user_id)}</td>
-                            <td>{DAY_NAMES[task.day_of_week]}</td>
-                            <td>{task.role}{task.assignment_group_id ? " · shared group" : ""}</td>
-                            <td>{task.draft ? "Draft assignment · not saved" : (task.activity_status || task.status || "pending")}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  ) : null}
-                </div>
-              </div>
-            </div>
+            <TaskPlanner
+              tasks={tasks}
+              employees={employees}
+              entries={entries}
+              day={day}
+              mode={mode}
+              catalog={catalog}
+              onChange={(next) => onCommit({ tasks: next }, "Updated the task draft. Not saved.")}
+              onReview={() => onReviewBundle("tasks")}
+            />
           ) : null}
         </div>
         {showDrawer ? (

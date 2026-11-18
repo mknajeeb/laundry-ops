@@ -395,23 +395,42 @@ def find_exception(
     return None
 
 
+def _shift_list(raw: Any) -> list[dict[str, Any]]:
+    """One stored shift, or every shift when a day repeats more than one."""
+    if isinstance(raw, Mapping) and isinstance(raw.get("shifts"), list):
+        return [deepcopy(item) for item in raw["shifts"] if isinstance(item, Mapping) and item.get("start_time")]
+    if isinstance(raw, Mapping) and raw.get("start_time"):
+        return [deepcopy(raw)]
+    return []
+
+
+def cell_shifts(
+    state: Mapping[str, Any],
+    user_id: int,
+    day_of_week: int,
+    monday: date,
+) -> list[dict[str, Any]]:
+    row = find_exception(state, user_id, day_of_week, monday)
+    if row is not None:
+        if row.get("kind") == "deleted":
+            return []
+        return _shift_list(row.get("shift"))
+    pattern = active_pattern(state, user_id, day_of_week, monday)
+    if pattern is None:
+        return []
+    return _shift_list(pattern.get("shift"))
+
+
 def cell_shift(
     state: Mapping[str, Any],
     user_id: int,
     day_of_week: int,
     monday: date,
 ) -> dict[str, Any] | None:
-    row = find_exception(state, user_id, day_of_week, monday)
-    if row is not None:
-        if row.get("kind") == "deleted":
-            return None
-        shift = row.get("shift")
-        return deepcopy(shift) if isinstance(shift, Mapping) else None
-    pattern = active_pattern(state, user_id, day_of_week, monday)
-    if pattern is None:
-        return None
-    shift = pattern.get("shift")
-    return deepcopy(shift) if isinstance(shift, Mapping) else None
+    shifts = cell_shifts(state, user_id, day_of_week, monday)
+    if len(shifts) == 1:
+        return shifts[0]
+    return shifts[0] if shifts else None
 
 
 def target_weeks(
@@ -684,6 +703,145 @@ def plan_shift_set(operations: Sequence[Mapping[str, Any]] | None) -> dict[str, 
     if any(item["user_id"] <= 0 or item["day_of_week"] < 0 or item["day_of_week"] > 6 for item in decisions):
         return {"ok": False, "code": "invalid_shift", "error": "each change needs an employee and a day"}
     return {"ok": True, "decisions": decisions}
+
+
+def _pack_shifts(shifts: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    cleaned: list[dict[str, Any]] = []
+    for raw in shifts:
+        normalized, err = normalize_shift(raw)
+        if err or normalized is None:
+            raise ValueError(err or "a shift is required")
+        cleaned.append({**dict(raw), **normalized})
+    if not cleaned:
+        return None
+    if len(cleaned) == 1:
+        return cleaned[0]
+    return {"shifts": cleaned}
+
+
+def _stamp_cell_shifts(
+    state: dict[str, Any],
+    *,
+    user_id: int,
+    day: int,
+    packed: Mapping[str, Any],
+    scope: str,
+    anchor: date,
+    weeks: Sequence[date],
+) -> None:
+    """Replace the single shift just stored with every shift on that day."""
+    start = _pattern_start(scope, anchor)
+    if start is not None:
+        for pattern in state.get("patterns") or []:
+            begin = pattern.get("effective_from")
+            if _same_cell(pattern, user_id, day) and begin == start and _pattern_is_open(pattern):
+                pattern["shift"] = deepcopy(dict(packed))
+    week_set = set(weeks)
+    for row in state.get("exceptions") or []:
+        if _same_cell(row, user_id, day) and row.get("week_monday") in week_set and row.get("kind") != "deleted":
+            row["shift"] = deepcopy(dict(packed))
+
+
+def plan_cell_scopes(state: Mapping[str, Any], command: Mapping[str, Any]) -> dict[str, Any]:
+    """Repeat every shift on a changed day, including more than one shift that day.
+
+    A this-week save remains the temporary exception. A future scope stores the
+    whole day, not only the first shift.
+    """
+    scope = str(command.get("scope") or "").strip()
+    cells = command.get("cells") or []
+    if scope not in SCOPES:
+        return {"ok": False, "code": "invalid_action", "error": "choose how broadly to apply this change"}
+    if not isinstance(cells, list) or not cells:
+        return {"ok": False, "code": "nothing_to_apply", "error": "nothing to save"}
+    seen: set[tuple[int, int]] = set()
+    draft = state
+    collected: list[dict[str, Any]] = []
+    dates: list[str] = []
+    anchor = _monday(command.get("anchor") or command.get("week_start"))
+    for cell in cells:
+        if not isinstance(cell, Mapping):
+            return {"ok": False, "code": "invalid_shift", "error": "each change must name a shift"}
+        try:
+            user_id = int(cell.get("user_id") or 0)
+            day = int(cell.get("day_of_week"))
+        except (TypeError, ValueError):
+            return {"ok": False, "code": "invalid_shift", "error": "each change needs an employee and a day"}
+        if (user_id, day) in seen:
+            return {"ok": False, "code": "invalid_shift", "error": "the same employee and day was listed twice"}
+        seen.add((user_id, day))
+        raw_shifts = cell.get("shifts")
+        if not isinstance(raw_shifts, list):
+            raw_shifts = [] if cell.get("shift") is None else [cell.get("shift")]
+        try:
+            packed = _pack_shifts([item for item in raw_shifts if isinstance(item, Mapping)])
+        except ValueError as exc:
+            return {"ok": False, "code": "invalid_shift", "error": str(exc)}
+        probe = None if packed is None else (packed if packed.get("start_time") else packed["shifts"][0])
+        one = {
+            "action": "delete" if probe is None else "upsert",
+            "scope": scope,
+            "anchor": command.get("anchor") or command.get("week_start"),
+            "today": command.get("today"),
+            "user_id": user_id,
+            "user_ids": [user_id],
+            "day_of_week": day,
+            "shift": probe,
+            "selected_weeks": command.get("selected_weeks"),
+            "include_published": command.get("include_published"),
+            "replace_exceptions": command.get("replace_exceptions"),
+            "replace_later_patterns": command.get("replace_later_patterns"),
+            "horizon_weeks": command.get("horizon_weeks") or HORIZON_WEEKS,
+        }
+        result = plan_change(draft, one)
+        if not result.get("ok"):
+            return result
+        draft = result["state"]
+        written_weeks = []
+        for plan in result.get("cell_plans") or []:
+            if int(plan.get("user_id") or 0) == user_id and int(plan.get("day_of_week") or -1) == day:
+                monday = parse_schedule_date(plan.get("week_monday"))
+                if monday is not None:
+                    written_weeks.append(monday)
+        if packed is not None and isinstance(packed.get("shifts"), list) and anchor is not None:
+            _stamp_cell_shifts(
+                draft,
+                user_id=user_id,
+                day=day,
+                packed=packed,
+                scope=scope,
+                anchor=anchor,
+                weeks=written_weeks,
+            )
+        for plan in result.get("cell_plans") or []:
+            if int(plan.get("user_id") or 0) != user_id or int(plan.get("day_of_week") or -1) != day:
+                collected.append(plan)
+                continue
+            monday = parse_schedule_date(plan.get("week_monday"))
+            shifts_now = cell_shifts(draft, user_id, day, monday) if monday is not None else []
+            collected.append({**plan, "shifts": shifts_now, "shift": shifts_now[0] if len(shifts_now) == 1 else plan.get("shift")})
+        for item in (result.get("preview") or {}).get("dates") or []:
+            if item not in dates:
+                dates.append(item)
+    preview = {
+        "scope": scope,
+        "action": "apply_cell_scopes",
+        "dates": dates,
+        "cells": len(cells),
+        "week_meaning": "Each date is the Monday that starts a Monday–Sunday week.",
+    }
+    return {
+        "ok": True,
+        "code": "applied",
+        "state": draft,
+        "cell_plans": collected,
+        "preview": preview,
+        "write_weeks": dates,
+        "frozen_weeks": [],
+        "republish_required": [],
+        "warnings": [],
+        "audit": {"action": "apply_cell_scopes", "scope": scope, "cells": len(seen)},
+    }
 
 
 def shift_set_confirmation(state: Mapping[str, Any], monday: date, include_published: Any) -> dict[str, Any]:

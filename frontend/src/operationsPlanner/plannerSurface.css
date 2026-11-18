@@ -1,4 +1,6 @@
 .ops-planner.ops-v2 {
+  overflow: hidden;
+  max-width: 100%;
   --ink: #16181d;
   --muted: #667085;
   --faint: #98a2b3;
@@ -130,7 +132,7 @@
 .ops-v2 .sheet { min-width: 100%; }
 
 .ops-v2 .head, .ops-v2 .person, .ops-v2 .role {
-  display: grid; grid-template-columns: var(--name) repeat(var(--cols), minmax(0, 1fr));
+  display: grid; grid-template-columns: var(--name) repeat(var(--cols), minmax(var(--colmin, 0px), 1fr));
 }
 .ops-v2 .head {
   position: sticky; top: 0; z-index: 6; background: #fbfbfc; border-bottom: 1px solid var(--line-strong); height: 38px;
@@ -330,7 +332,14 @@
 .ops-v2 .shift.is-work { opacity: .28; }
 .ops-v2 .break-block {
   position: absolute; border-radius: 4px; background: #b45309; color: #fff; font-size: 10px; font-weight: 700;
-  display: flex; align-items: center; padding: 0 4px; overflow: hidden; white-space: nowrap; z-index: 3;
+  display: flex; align-items: center; gap: 3px; padding: 0 4px; overflow: hidden; white-space: nowrap; z-index: 3;
+}
+.ops-v2 .break-block .break-grip {
+  position: relative; flex: none; width: 8px; height: 14px; padding: 0; border: 1.5px solid #fff; border-radius: 3px;
+  background: #fff; cursor: ew-resize;
+}
+.ops-v2 .break-block button:not(.break-grip) {
+  border: 0; background: transparent; color: #fff; font-size: 10px; font-weight: 700; cursor: pointer; padding: 0;
 }
 .ops-v2 .break-queue { align-items: flex-start; flex-direction: column; }
 .ops-v2 .break-queue li { display: flex; align-items: center; gap: 8px; list-style: none; }
@@ -371,7 +380,35 @@
 .ops-v2 .tip b { display: block; font-size: 12.5px; font-weight: 640; }
 .ops-v2 .tip span { display: block; color: #d0d5dd; font-size: 12px; }
 
-.ops-v2 .ops-dialog-back { position: fixed; inset: 0; z-index: 40; background: rgba(16,24,40,.28); display: grid; place-items: center; padding: 24px; }
+.ops-v2 .ops-dialog-back { position: fixed; inset: 0; z-index: 90; background: rgba(16,24,40,.28); display: grid; place-items: center; padding: 24px; }
+.ops-v2 .filters {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 6px 10px; background: #fff; border-bottom: 1px solid var(--line);
+}
+.ops-v2 .filters select, .ops-v2 .filters input {
+  height: 28px; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; padding: 0 8px;
+}
+.ops-v2 .filters .legend { margin-left: auto; }
+.ops-v2 .coverage-board, .ops-v2 .task-planner { padding: 12px 14px 16px; border-top: 1px solid var(--line); background: #fff; }
+.ops-v2 .coverage-board h2, .ops-v2 .task-planner h2, .ops-v2 .task-planner h3 { margin: 0 0 4px; font-size: 14px; }
+.ops-v2 .coverage-board p, .ops-v2 .task-planner p { margin: 0 0 8px; color: var(--muted); font-size: 12.5px; max-width: 760px; }
+.ops-v2 .coverage-role { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.ops-v2 .coverage-role strong { display: flex; align-items: center; gap: 6px; }
+.ops-v2 .coverage-role i { width: 8px; height: 8px; border-radius: 99px; display: block; }
+.ops-v2 .hour-row { display: flex; gap: 4px; overflow: auto; padding-bottom: 4px; }
+.ops-v2 .hour-chip { min-width: 64px; border: 0; border-radius: 8px; padding: 4px 6px; display: flex; flex-direction: column; font-size: 11px; text-align: left; }
+.ops-v2 .hour-chip b { font-variant-numeric: tabular-nums; }
+.ops-v2 .hour-chip.short { background: #fde8e6; color: #9f2d20; }
+.ops-v2 .hour-chip.extra { background: #e8f0fa; color: #0e4d92; }
+.ops-v2 .hour-chip.ok { background: #e7f6ee; color: #067647; }
+.ops-v2 .hour-chip.unset { background: #f2f4f7; color: #667085; }
+.ops-v2 .task-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.ops-v2 .task-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.ops-v2 .task-list li { display: flex; flex-direction: column; gap: 2px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.ops-v2 .task-list em { font-style: normal; color: var(--muted); font-size: 12px; }
+.ops-v2 .task-list em.warn { color: #9f2d20; }
+.ops-v2 .workload { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; color: var(--muted); font-size: 12px; }
+.ops-v2 .menu-panel, .ops-v2 .tip, .ops-v2 .ops-dialog { z-index: 90; }
 .ops-v2 .ops-dialog {
   width: min(480px, 100%); background: #fff; color: var(--ink); border-radius: 12px; border: 1px solid var(--line);
   box-shadow: 0 18px 40px rgba(16,24,40,.18); padding: 16px; display: flex; flex-direction: column; gap: 8px;
