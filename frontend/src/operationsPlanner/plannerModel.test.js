@@ -11,6 +11,7 @@ import {
   overlappingBreakCount,
   placePopover,
   requirementFor,
+  scheduleHourReconciliation,
   shiftHours,
   taskRollup,
 } from "./plannerModel";
@@ -104,6 +105,19 @@ describe("planner period and coverage", () => {
     expect(noon.available).toHaveLength(1);
     expect(noon.onBreak).toHaveLength(1);
     expect(noon.shortage).toBe(1);
+  });
+
+  it("counts overlapping shifts once for worked hours and separately for shift totals", () => {
+    const first = { user_id: 1, day_of_week: 1, start_time: "08:00", end_time: "16:00", break_minutes: 30, break_slots: null };
+    const overlap = { ...first, start_time: "12:00", end_time: "16:00", break_minutes: 30 };
+    const other = { ...first, user_id: 2, break_minutes: 0 };
+    const hours = scheduleHourReconciliation([first, overlap, other]);
+    expect(hours.shiftGross).toBe(20);
+    expect(hours.workedGross).toBe(16);
+    expect(hours.overlapHours).toBe(4);
+    expect(hours.shiftBreak).toBe(1);
+    expect(hours.workedBreak).toBe(0.5);
+    expect(hours.workedNet).toBe(15.5);
   });
 
   it("keeps popovers inside the viewport and scrolls near the edges", () => {

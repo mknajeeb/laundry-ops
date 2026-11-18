@@ -18,6 +18,7 @@ import {
   periodLabel,
   pointerToMinutes,
   roleCoverage,
+  scheduleHourReconciliation,
   shiftHours,
   taskRollup,
 } from "./plannerModel";
@@ -28,12 +29,25 @@ import { asList, draftOperations, shiftKey, splitHalves, storedRoleSegments } fr
 const LENSES = [
   ["employees", "Employees"],
   ["roles", "Roles"],
-  ["breaks", "Breaks"],
+  ["breaks", "Break planner"],
   ["tasks", "Tasks"],
 ];
 
 function api(path, config = {}) {
   return axios({ baseURL: getWashproApiBase(), url: path, ...config });
+}
+
+function easternMonday(now = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now).map((part) => [part.type, part.value]));
+  const weekday = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[parts.weekday];
+  const offset = weekday === 0 ? -6 : 1 - weekday;
+  return new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day) + offset)).toISOString().slice(0, 10);
 }
 
 function shiftIso(iso, days) {
@@ -115,6 +129,8 @@ export default function OperationsPlannerV2Page() {
   const [history, setHistory] = useState([]);
   const [selectedKey, setSelectedKey] = useState("");
   const [pinOpen, setPinOpen] = useState(false);
+  const [clipboard, setClipboard] = useState(null);
+  const [lifecycle, setLifecycle] = useState(null);
 
   const load = useCallback(async (weekStart) => {
     const previewMode = new URLSearchParams(window.location.search).get("preview");
@@ -263,14 +279,15 @@ export default function OperationsPlannerV2Page() {
     queueChange({ action: "apply_shift_set", operations });
   }
 
-  function addShift(userId) {
+  function addShift(userId, dayOfWeek) {
     const id = `draft-${Date.now()}`;
     const chosen = Number(userId) || employees[0]?.user_id;
+    const chosenDay = Number.isFinite(Number(dayOfWeek)) ? Number(dayOfWeek) : day;
     if (!chosen) return;
     applyDraft([...entries, {
       id,
       user_id: chosen,
-      day_of_week: day,
+      day_of_week: chosenDay,
       start_time: "08:00",
       end_time: "16:00",
       role: "",
@@ -278,6 +295,26 @@ export default function OperationsPlannerV2Page() {
       break_slots: [],
       role_assignments: [],
     }], "Added a draft shift. Not saved.");
+    setSelectedKey(String(id));
+    setDay(chosenDay);
+    setMode("day");
+  }
+
+  function copyShift(entry) {
+    if (!entry) return;
+    setClipboard({ ...entry });
+    setNotice(`Copied ${entry.role || "shift"} ${String(entry.start_time).slice(0, 5)}–${String(entry.end_time).slice(0, 5)}. Paste places a new draft shift. Copy image is a picture of the schedule, not this shift.`);
+  }
+
+  function pasteShift(userId, dayOfWeek) {
+    if (!clipboard) return;
+    const id = `draft-${Date.now()}`;
+    applyDraft([...entries, {
+      ...clipboard,
+      id,
+      user_id: Number(userId) || clipboard.user_id,
+      day_of_week: Number.isFinite(Number(dayOfWeek)) ? Number(dayOfWeek) : clipboard.day_of_week,
+    }], "Pasted a draft copy. Not saved.");
     setSelectedKey(String(id));
   }
 
@@ -461,10 +498,7 @@ export default function OperationsPlannerV2Page() {
   const exportRows = rowsFor(visibleEntries);
   const preview = pending?.preview?.preview || pending?.preview;
   const snapshot = Boolean(payload?.snapshot);
-  const hourTotals = entries.reduce((sum, entry) => {
-    const hours = shiftHours(entry);
-    return { gross: sum.gross + hours.gross, net: sum.net + hours.net };
-  }, { gross: 0, net: 0 });
+  const hourTotals = scheduleHourReconciliation(entries);
   const breakTotals = breakAccounting(entries);
   const breakHours = breakTotals.timedHours + breakTotals.unscheduledHours;
   const scheduledCount = new Set(entries.map((entry) => Number(entry.user_id))).size;
@@ -487,6 +521,7 @@ export default function OperationsPlannerV2Page() {
           <button type="button" aria-label="Previous week" disabled={snapshot} onClick={() => setWeek(shiftIso(monday, -7))}>‹</button>
           <span>{payload?.week_label || period}</span>
           <button type="button" aria-label="Next week" disabled={snapshot} onClick={() => setWeek(shiftIso(monday, 7))}>›</button>
+          <button type="button" disabled={snapshot} onClick={() => setWeek(easternMonday())}>Today</button>
         </div>
         <span className={`status-pill ${statusName}`}>{statusName}{planner.revision ? ` · rev ${planner.revision}` : ""}{planner.published_revision ? ` · published ${planner.published_revision}` : ""}</span>
         <div className="seg" role="group" aria-label="Calendar span">
@@ -510,13 +545,14 @@ export default function OperationsPlannerV2Page() {
             })}
           </div>
         ) : null}
+        <button type="button" className="btn" onClick={() => addShift(employees[0]?.user_id, mode === "day" ? day : 1)}>Add shift</button>
         <div className="spacer" />
         <details className="menu">
           <summary>Actions</summary>
           <div className="menu-panel">
             {flags && !flags.manager_pilot ? <button type="button" onClick={() => saveFlags({ manager_pilot: true }).catch((err) => setError(err.response?.data?.error || err.message))}>Enable manager pilot</button> : null}
-            <button type="button" disabled={snapshot} onClick={() => { if (!snapshot) api("/operations-planner/v2/weeks/approve", { method: "POST", data: { weeks: [week] } }).then(() => load(week)); }}>Approve week</button>
-            <button type="button" disabled={snapshot} onClick={() => { if (!snapshot) api("/operations-planner/v2/weeks/publish", { method: "POST", data: { weeks: [week] } }).then(() => load(week)); }}>Publish week</button>
+            <button type="button" disabled={snapshot} onClick={() => setLifecycle("approve")}>Approve week…</button>
+            <button type="button" disabled={snapshot} onClick={() => setLifecycle("publish")}>Publish week…</button>
             <button type="button" onClick={() => copyCard(scheduleCardSvg({ title: `Schedule · ${period}`, subtitle: planner.status || "draft", rows: exportRows }))}>Copy image</button>
             <button type="button" onClick={() => download(`schedule-${week || "week"}.csv`, scheduleCsv(exportRows), "text/csv")}>CSV</button>
             <button type="button" onClick={() => download(`schedule-${week || "week"}.pdf`, schedulePdf({ title: `Schedule · ${period}`, subtitle: planner.status || "draft", rows: exportRows }), "application/pdf")}>PDF</button>
@@ -543,9 +579,11 @@ export default function OperationsPlannerV2Page() {
       {payload ? (
         <div className="metrics" aria-label="Schedule summary">
           <div className="metric"><b>{entries.length}</b><span>Shifts</span></div>
-          <div className="metric"><b>{hourTotals.gross.toFixed(1)}</b><span>Gross hours</span></div>
-          <div className="metric"><b>{breakHours.toFixed(1)}</b><span>Break hours</span></div>
-          <div className="metric"><b>{hourTotals.net.toFixed(1)}</b><span>Net hours</span></div>
+          <div className="metric"><b>{hourTotals.shiftGross.toFixed(1)}</b><span>Shift gross</span></div>
+          <div className="metric"><b>{hourTotals.workedGross.toFixed(1)}</b><span>Unique time</span></div>
+          <div className="metric"><b>{breakHours.toFixed(1)}</b><span>Shift breaks</span></div>
+          <div className="metric"><b>{hourTotals.workedBreak.toFixed(1)}</b><span>Unique breaks</span></div>
+          <div className="metric"><b>{hourTotals.workedNet.toFixed(1)}</b><span>Unique net</span></div>
           <div className="metric"><b>{scheduledCount}</b><span>Scheduled</span></div>
           <div className="metric"><b>{Math.max(0, employees.length - scheduledCount)}</b><span>Unscheduled</span></div>
           <div className="metric"><b>{coverageLabel}</b><span>Coverage</span></div>
@@ -553,6 +591,7 @@ export default function OperationsPlannerV2Page() {
             {breakTotals.unscheduledCount ? <p className="flag"><i />{breakTotals.unscheduledCount} breaks have no clock time</p> : null}
             {unsplitCount ? <p className="flag"><i />{unsplitCount} shifts have no role split</p> : null}
             {!loadedRequirements.length ? <p className="flag"><i />Staffing need not set</p> : null}
+            {hourTotals.overlapHours > 0 ? <p className="flag" title="Shift gross adds every shift. Unique time counts overlapping shifts for the same employee and day once. Weekly Schedule then splits that time by role, so its total can still differ."><i />{hourTotals.overlapHours.toFixed(1)}h overlap</p> : null}
             {snapshot ? <p className="flag" title="Draft edits stay in this browser. Nothing is written."><i />Read-only snapshot</p> : null}
           </div>
         </div>
@@ -581,11 +620,34 @@ export default function OperationsPlannerV2Page() {
           onReview={reviewDraft}
           onReviewBundle={reviewBundle}
           onAdd={addShift}
+          onCopy={copyShift}
+          onPaste={pasteShift}
+          canPaste={Boolean(clipboard)}
           onDuplicate={duplicateShift}
           onSplit={splitShift}
           onRemove={removeShift}
           onOpenDay={(value) => { setMode("day"); setDay(Number(value)); }}
         />
+      ) : null}
+      {lifecycle && !snapshot ? (
+        <div className="ops-dialog-back">
+          <form className="ops-dialog" onSubmit={(event) => {
+            event.preventDefault();
+            const path = lifecycle === "approve" ? "/operations-planner/v2/weeks/approve" : "/operations-planner/v2/weeks/publish";
+            api(path, { method: "POST", data: { weeks: [week] } }).then(() => {
+              setLifecycle(null);
+              load(week);
+            });
+          }}>
+            <h2>{lifecycle === "approve" ? "Approve this week?" : "Publish this week?"}</h2>
+            <p>Week of {monday}. Current status {statusName}{planner.revision ? `, revision ${planner.revision}` : ""}. {scheduledCount} scheduled employees. Worked net {hourTotals.workedNet.toFixed(1)} hours. Shift gross {hourTotals.shiftGross.toFixed(1)} hours includes {hourTotals.overlapHours.toFixed(1)} hours of overlap.</p>
+            <p>Confirm writes the publication status for this week. Cancel leaves it unchanged.</p>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button type="button" onClick={() => setLifecycle(null)}>Cancel</button>
+              <button type="submit" className="primary">Confirm {lifecycle}</button>
+            </div>
+          </form>
+        </div>
       ) : null}
       {pinOpen && !snapshot ? (
         <div className="ops-dialog-back">

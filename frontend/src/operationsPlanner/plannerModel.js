@@ -151,6 +151,70 @@ export function requirementFor(requirements, role, day, hour, setting) {
   return Number.isFinite(need) ? need : null;
 }
 
+function breakMinutesOf(entry) {
+  const slots = (entry?.break_slots || []).filter((slot) => slot?.start_time && slot?.end_time && slot?.timed !== false);
+  const timed = slots.reduce((sum, slot) => sum + (spanMinutes(slot.start_time, slot.end_time) || 0), 0);
+  const declared = Math.max(0, Number(entry?.break_minutes) || 0);
+  return { timed, declared: Math.max(declared, timed) };
+}
+
+/**
+ * Two hour totals for the same entries.
+ * Shift totals add every stored shift. Unique time counts overlapping shifts
+ * for the same employee and day once, and one overlap keeps the larger break.
+ */
+export function scheduleHourReconciliation(entries) {
+  const groups = new Map();
+  for (const entry of entries || []) {
+    const start = clockMinutes(entry.start_time);
+    let end = clockMinutes(entry.end_time);
+    if (start == null || end == null || start === end) continue;
+    if (end <= start) end += 24 * 60;
+    const key = `${entry.user_id}:${Number(entry.day_of_week)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({ start, end, entry });
+  }
+  let shiftGross = 0;
+  let workedGross = 0;
+  let shiftBreak = 0;
+  let workedBreak = 0;
+  for (const items of groups.values()) {
+    for (const item of items) {
+      shiftGross += item.end - item.start;
+      const breaks = breakMinutesOf(item.entry);
+      shiftBreak += breaks.timed || Math.max(0, Number(item.entry.break_minutes) || 0);
+    }
+    const sorted = [...items].sort((a, b) => a.start - b.start || a.end - b.end);
+    const clusters = [];
+    for (const item of sorted) {
+      const last = clusters[clusters.length - 1];
+      if (last && item.start < last.end) {
+        last.end = Math.max(last.end, item.end);
+        last.items.push(item);
+      } else {
+        clusters.push({ start: item.start, end: item.end, items: [item] });
+      }
+    }
+    for (const cluster of clusters) {
+      const span = cluster.end - cluster.start;
+      const timed = Math.max(...cluster.items.map((item) => breakMinutesOf(item.entry).timed));
+      const declared = Math.max(...cluster.items.map((item) => breakMinutesOf(item.entry).declared));
+      workedGross += span;
+      workedBreak += Math.min(span, Math.max(timed, declared));
+    }
+  }
+  const hours = (minutes) => Math.round((minutes / 60) * 10000) / 10000;
+  return {
+    shiftGross: hours(shiftGross),
+    shiftBreak: hours(shiftBreak),
+    shiftNet: hours(Math.max(0, shiftGross - shiftBreak)),
+    workedGross: hours(workedGross),
+    workedBreak: hours(workedBreak),
+    workedNet: hours(Math.max(0, workedGross - workedBreak)),
+    overlapHours: hours(Math.max(0, shiftGross - workedGross)),
+  };
+}
+
 /** Timed clock breaks and unscheduled durations are separate. Overlap uses clocks only. */
 export function breakAccounting(entries) {
   let timedMinutes = 0;
