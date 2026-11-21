@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -67,7 +67,7 @@ import {
   formatPayrollMoney,
   formatPayrollRate,
 } from "../payroll/timeRecordPayroll";
-import { displayRoleLabel } from "../opsMobile/switchRoleFlowHelpers";
+import { categoryMenuOptions, roleMenuOptions } from "../payroll/roleSegmentOptions";
 import {
   CLASSIFICATION_OVERRIDE_OPTIONS,
   OT_WEEK_OPTIONS,
@@ -164,6 +164,24 @@ const emptySegmentForm = () => ({
   ended_at: "",
 });
 
+function savedRoleTag(source) {
+  if (!source) return null;
+  return {
+    categoryId: source.category_id,
+    categoryName: source.category_name || source.category_name_snapshot || "",
+    roleId: source.role_id,
+    roleName: source.role_name || source.role_name_snapshot || "",
+  };
+}
+
+function treeLoadError(e) {
+  return (
+    e?.response?.data?.detail ||
+    e?.response?.data?.error ||
+    "Category/role list failed to load. Refresh the page, or check that your account can view job tracking."
+  );
+}
+
 function hoursCellSx(level, theme) {
   if (level === "critical") {
     return {
@@ -245,6 +263,10 @@ export default function PayrollTimeRecordsPanel({
   const [userId, setUserId] = useState("");
   const [users, setUsers] = useState([]);
   const [selectionTree, setSelectionTree] = useState([]);
+  const [dayRoleSaved, setDayRoleSaved] = useState(null);
+  const selectionTreeRef = useRef([]);
+  const selectionTreeRequestRef = useRef(null);
+  selectionTreeRef.current = selectionTree;
   const [workers, setWorkers] = useState([]);
   const [scheduleSettings, setScheduleSettings] = useState(null);
   const [calendarSettings, setCalendarSettings] = useState(null);
@@ -445,26 +467,38 @@ export default function PayrollTimeRecordsPanel({
     load();
   }, [load]);
 
-  const ensureSelectionTree = () => {
-    if (selectionTree.length) return;
-    getTaskTrackingSelectionTree()
-      .then((r) => setSelectionTree(Array.isArray(r.data) ? r.data : []))
-      .catch(() => {});
-  };
+  const ensureSelectionTree = useCallback(() => {
+    if (selectionTreeRef.current.length) return Promise.resolve(selectionTreeRef.current);
+    if (selectionTreeRequestRef.current) return selectionTreeRequestRef.current;
+    selectionTreeRequestRef.current = getTaskTrackingSelectionTree()
+      .then((r) => {
+        const tree = Array.isArray(r.data) ? r.data : [];
+        selectionTreeRef.current = tree;
+        setSelectionTree(tree);
+        if (!tree.length) selectionTreeRequestRef.current = null;
+        return tree;
+      })
+      .catch((err) => {
+        selectionTreeRequestRef.current = null;
+        throw err;
+      });
+    return selectionTreeRequestRef.current;
+  }, []);
 
   const openAdd = () => {
-    ensureSelectionTree();
+    ensureSelectionTree().catch((e) => setEditorError(treeLoadError(e)));
     setEditorMode("add");
     setEditingId(null);
     setEditingSegmentCount(0);
     setInitialRoleKey("");
+    setDayRoleSaved(null);
     setEditorError("");
     setForm(emptyForm());
     setEditorOpen(true);
   };
 
   const openEdit = (row) => {
-    ensureSelectionTree();
+    ensureSelectionTree().catch((e) => setEditorError(treeLoadError(e)));
     setEditorMode("edit");
     setEditingId(row.id);
     setEditorError("");
@@ -473,6 +507,7 @@ export default function PayrollTimeRecordsPanel({
     const lastSeg = segs.length ? segs[segs.length - 1] : null;
     const categoryId = lastSeg?.category_id != null ? String(lastSeg.category_id) : "";
     const roleId = lastSeg?.role_id != null ? String(lastSeg.role_id) : "";
+    setDayRoleSaved(savedRoleTag(lastSeg));
     setInitialRoleKey(`${categoryId}:${roleId}`);
     setForm({
       user_id: String(row.user_id || ""),
@@ -615,6 +650,13 @@ export default function PayrollTimeRecordsPanel({
       ended_at: toDatetimeLocal(seg?.ended_at),
     });
     setSegmentEditorOpen(true);
+    ensureSelectionTree()
+      .then((tree) => {
+        if (!tree.length) {
+          setSegmentEditorError("No active categories are configured for this organization.");
+        }
+      })
+      .catch((e) => setSegmentEditorError(treeLoadError(e)));
   };
 
   const saveSegmentEditor = async (conflictResolution = null) => {
@@ -1624,17 +1666,11 @@ export default function PayrollTimeRecordsPanel({
                     <MenuItem value="">
                       <em>No role tag</em>
                     </MenuItem>
-                    {selectionTree.map((cat) => (
-                      <MenuItem key={cat.id} value={String(cat.id)}>
-                        {cat.name || cat.category_name}
+                    {categoryMenuOptions(selectionTree, dayRoleSaved || {}).map((cat) => (
+                      <MenuItem key={cat.id} value={cat.id}>
+                        {cat.label}
                       </MenuItem>
                     ))}
-                    {form.category_id &&
-                    !selectionTree.some((c) => String(c.id) === String(form.category_id)) ? (
-                      <MenuItem value={String(form.category_id)}>
-                        Current category (id {form.category_id})
-                      </MenuItem>
-                    ) : null}
                   </Select>
                 </FormControl>
                 <FormControl fullWidth size="small" disabled={!form.category_id}>
@@ -1647,29 +1683,13 @@ export default function PayrollTimeRecordsPanel({
                     <MenuItem value="">
                       <em>Select role</em>
                     </MenuItem>
-                    {(
-                      selectionTree.find((c) => String(c.id) === String(form.category_id))
-                        ?.roles || []
-                    ).map((role) => (
-                      <MenuItem
-                        key={role.role_id ?? role.id}
-                        value={String(role.role_id ?? role.id)}
-                      >
-                        {displayRoleLabel(role)}
-                      </MenuItem>
-                    ))}
-                    {form.role_id &&
-                    !(
-                      selectionTree
-                        .find((c) => String(c.id) === String(form.category_id))
-                        ?.roles || []
-                    ).some(
-                      (role) => String(role.role_id ?? role.id) === String(form.role_id),
-                    ) ? (
-                      <MenuItem value={String(form.role_id)}>
-                        Current role (id {form.role_id})
-                      </MenuItem>
-                    ) : null}
+                    {roleMenuOptions(selectionTree, form.category_id, dayRoleSaved || {}).map(
+                      (role) => (
+                        <MenuItem key={role.id} value={role.id}>
+                          {role.label}
+                        </MenuItem>
+                      ),
+                    )}
                   </Select>
                 </FormControl>
                 <Typography variant="caption" color="text.secondary">
@@ -1757,17 +1777,14 @@ export default function PayrollTimeRecordsPanel({
                   }))
                 }
               >
-                {selectionTree.map((cat) => (
-                  <MenuItem key={cat.id} value={String(cat.id)}>
-                    {cat.name || cat.category_name}
+                {categoryMenuOptions(
+                  selectionTree,
+                  savedRoleTag(segmentTarget?.segment),
+                ).map((cat) => (
+                  <MenuItem key={cat.id} value={cat.id}>
+                    {cat.label}
                   </MenuItem>
                 ))}
-                {segmentForm.category_id &&
-                !selectionTree.some((c) => String(c.id) === String(segmentForm.category_id)) ? (
-                  <MenuItem value={String(segmentForm.category_id)}>
-                    Current category (id {segmentForm.category_id})
-                  </MenuItem>
-                ) : null}
               </Select>
             </FormControl>
             <FormControl fullWidth size="small" disabled={!segmentForm.category_id}>
@@ -1777,29 +1794,15 @@ export default function PayrollTimeRecordsPanel({
                 value={segmentForm.role_id}
                 onChange={(e) => setSegmentForm((f) => ({ ...f, role_id: e.target.value }))}
               >
-                {(
-                  selectionTree.find((c) => String(c.id) === String(segmentForm.category_id))
-                    ?.roles || []
+                {roleMenuOptions(
+                  selectionTree,
+                  segmentForm.category_id,
+                  savedRoleTag(segmentTarget?.segment),
                 ).map((role) => (
-                  <MenuItem
-                    key={role.role_id ?? role.id}
-                    value={String(role.role_id ?? role.id)}
-                  >
-                    {displayRoleLabel(role)}
+                  <MenuItem key={role.id} value={role.id}>
+                    {role.label}
                   </MenuItem>
                 ))}
-                {segmentForm.role_id &&
-                !(
-                  selectionTree
-                    .find((c) => String(c.id) === String(segmentForm.category_id))
-                    ?.roles || []
-                ).some(
-                  (role) => String(role.role_id ?? role.id) === String(segmentForm.role_id),
-                ) ? (
-                  <MenuItem value={String(segmentForm.role_id)}>
-                    Current role (id {segmentForm.role_id})
-                  </MenuItem>
-                ) : null}
               </Select>
             </FormControl>
             <PayrollDateTimeField

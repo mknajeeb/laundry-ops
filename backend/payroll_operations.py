@@ -599,6 +599,8 @@ def _attach_role_segments_to_time_records(conn, items: list[dict]) -> None:
                     "id": row["id"],
                     "category_id": row.get("category_id"),
                     "role_id": row.get("role_id"),
+                    "category_name": cat,
+                    "role_name": role,
                     "display_label": label,
                     "started_at": row.get("started_at"),
                     "ended_at": row.get("ended_at"),
@@ -2027,6 +2029,8 @@ def update_time_record_segment(
             "shift_session_id": sid,
             "category_id": out_seg.get("category_id"),
             "role_id": out_seg.get("role_id"),
+            "category_name": out_seg.get("category_name_snapshot"),
+            "role_name": out_seg.get("role_name_snapshot"),
             "display_label": _segment_display_label(
                 out_seg.get("category_name_snapshot"),
                 out_seg.get("role_name_snapshot"),
