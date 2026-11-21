@@ -9,11 +9,16 @@ function savedId(value) {
   return String(value);
 }
 
+function savedTag(saved) {
+  return saved && typeof saved === "object" ? saved : {};
+}
+
 /**
  * Active operational categories for a time-record role dropdown.
  * A saved category that is no longer in the active tree keeps its stored name.
  */
-export function categoryMenuOptions(selectionTree, saved = {}) {
+export function categoryMenuOptions(selectionTree, saved) {
+  const tag = savedTag(saved);
   const tree = Array.isArray(selectionTree) ? selectionTree : [];
   const options = [];
   const seen = new Set();
@@ -24,9 +29,9 @@ export function categoryMenuOptions(selectionTree, saved = {}) {
     seen.add(id);
     options.push({ id, label });
   }
-  const currentId = savedId(saved.categoryId);
+  const currentId = savedId(tag.categoryId);
   if (currentId && !seen.has(currentId)) {
-    const label = text(saved.categoryName);
+    const label = text(tag.categoryName);
     if (label) options.push({ id: currentId, label });
   }
   return options;
@@ -36,7 +41,8 @@ export function categoryMenuOptions(selectionTree, saved = {}) {
  * Roles assigned to the selected category. Ids are ta_task_roles ids, not
  * assignment ids. A saved role stays visible only on its original category.
  */
-export function roleMenuOptions(selectionTree, categoryId, saved = {}) {
+export function roleMenuOptions(selectionTree, categoryId, saved) {
+  const tag = savedTag(saved);
   const tree = Array.isArray(selectionTree) ? selectionTree : [];
   const cat = tree.find((row) => String(row?.id) === String(categoryId));
   const roles = Array.isArray(cat?.roles) ? cat.roles : [];
@@ -49,15 +55,15 @@ export function roleMenuOptions(selectionTree, categoryId, saved = {}) {
     seen.add(id);
     options.push({ id, label });
   }
-  const currentCategory = savedId(saved.categoryId);
-  const currentRole = savedId(saved.roleId);
+  const currentCategory = savedId(tag.categoryId);
+  const currentRole = savedId(tag.roleId);
   if (
     currentRole &&
     currentCategory &&
     String(categoryId) === currentCategory &&
     !seen.has(currentRole)
   ) {
-    const label = text(displayRoleLabel(saved.roleName || ""));
+    const label = text(displayRoleLabel(tag.roleName || ""));
     if (label) options.push({ id: currentRole, label });
   }
   return options;

@@ -165,7 +165,7 @@ const emptySegmentForm = () => ({
 });
 
 function savedRoleTag(source) {
-  if (!source) return null;
+  if (!source) return {};
   return {
     categoryId: source.category_id,
     categoryName: source.category_name || source.category_name_snapshot || "",

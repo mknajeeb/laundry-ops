@@ -95,6 +95,23 @@ test("a saved role that is not on the newly selected category is not offered", (
   );
 });
 
+test("a missing saved tag does not crash and does not invent a category", () => {
+  for (const saved of [null, undefined, {}, { categoryId: null, roleId: null }]) {
+    const categories = categoryMenuOptions(tree, saved);
+    assert.deepEqual(
+      categories.map((row) => row.label),
+      ["Rinse WF", "Rinse HD", "DHS", "Drop Off"],
+    );
+    const roles = roleMenuOptions(tree, "1", saved);
+    assert.deepEqual(
+      roles.map((row) => row.id),
+      ["1", "3", "2"],
+    );
+  }
+  assert.deepEqual(categoryMenuOptions(null, null), []);
+  assert.deepEqual(roleMenuOptions(tree, "", null), []);
+});
+
 test("an inactive saved category keeps its stored name when absent from the active tree", () => {
   const options = categoryMenuOptions(tree, {
     categoryId: 5,
