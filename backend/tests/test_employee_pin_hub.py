@@ -107,6 +107,59 @@ def test_resolve_hub_features_inventory_module_off():
     assert features["switch_role"]["allowed"] is True
 
 
+def test_issues_tile_follows_supervisor_role_not_ordinary_staff():
+    conn = MagicMock()
+    menu = {
+        "enabled": True,
+        "features": {
+            "switch_role": True,
+            "checklist": True,
+            "inventory": True,
+            "issues": True,
+            "ops_dashboard": True,
+            "scan_chronology": True,
+            "payroll": True,
+        },
+    }
+    with patch("backend.employee_pin_hub.load_pin_menu_settings", return_value=menu), patch(
+        "backend.employee_pin_hub.is_category_role_tracking_enabled", return_value=True
+    ), patch("backend.employee_pin_hub._tenant_module_enabled", return_value=True), patch(
+        "backend.employee_pin_hub._permission_keys", return_value=set()
+    ):
+        staff = resolve_hub_features(
+            conn,
+            org_id=3,
+            matched=_matched(["FRONT_DESK"]),
+            employee_module_access={"switch_role": True, "checklist": True},
+        )
+        supervisor = resolve_hub_features(
+            conn,
+            org_id=3,
+            matched=_matched(["OPS"]),
+            employee_module_access={"switch_role": True, "checklist": True},
+        )
+        admin = resolve_hub_features(
+            conn,
+            org_id=3,
+            matched=_matched(["ADMIN"]),
+            employee_module_access={"switch_role": True},
+        )
+    assert staff["issues"]["allowed"] is False
+    assert staff["scan_chronology"]["allowed"] is False
+    assert staff["payroll"]["allowed"] is False
+    assert staff["ops_dashboard"]["allowed"] is False
+    assert supervisor["issues"]["allowed"] is True
+    assert supervisor["scan_chronology"]["allowed"] is True
+    assert supervisor["payroll"]["allowed"] is True
+    assert admin["issues"]["allowed"] is True
+    hidden = apply_attendance_gates_to_features(
+        {"issues": {"allowed": True}},
+        {"on_break": True, "clocked_in": True},
+    )
+    assert hidden["issues"]["allowed"] is False
+    assert hidden["issues"]["hidden"] is True
+
+
 def test_apply_attendance_gates_keeps_role_visible_when_clocked_out():
     features = {
         "switch_role": {"id": "switch_role", "allowed": True, "label": "Switch Role"},
@@ -410,6 +463,47 @@ def test_perform_pin_hub_open_when_all_features_off_still_ok():
     assert status == 200
     assert body["ok"] is True
     assert body["attendance"]["allow_clock_from_hub"] is False
+
+
+def test_admin_pin_keeps_management_modules_and_blocks_clock():
+    conn = MagicMock()
+    matched = _matched(["ADMIN"])
+    features = {
+        "issues": {"id": "issues", "allowed": True},
+        "ops_dashboard": {"id": "ops_dashboard", "allowed": True},
+        "scan_chronology": {"id": "scan_chronology", "allowed": True},
+        "payroll": {"id": "payroll", "allowed": True},
+        "inventory": {"id": "inventory", "allowed": True},
+        "team_status": {"id": "team_status", "allowed": True},
+    }
+    with patch("backend.employee_pin_hub.payroll_profiles_active", return_value=True), patch(
+        "backend.employee_pin_hub.fetch_organization_by_slug",
+        return_value={"id": 3, "slug": "veewash"},
+    ), patch("backend.employee_pin_hub.is_rate_limited", return_value=False), patch(
+        "backend.employee_pin_hub.load_pin_menu_settings",
+        return_value={"enabled": True, "features": {}},
+    ), patch(
+        "backend.employee_pin_hub.resolve_user_by_attendance_pin", return_value=matched
+    ), patch("backend.employee_pin_hub.record_pin_attempt"), patch(
+        "backend.employee_pin_hub.resolve_hub_features", return_value=features
+    ), patch(
+        "backend.employee_pin_hub.attendance_snapshot_for_hub",
+        return_value={"allow_clock_from_hub": True, "clocked_in": False, "on_break": False},
+    ), patch(
+        "backend.employee_pin_hub.issue_hub_session_token", return_value="hub-token"
+    ), patch("backend.issues_register.outstanding_issue_count", return_value=2):
+        body, status = perform_pin_hub_open(
+            conn, "veewash", "1234", lambda *_: ["ADMIN"], "127.0.0.1"
+        )
+    assert status == 200
+    assert body["attendance"]["allow_clock_from_hub"] is False
+    assert body["features"]["issues"]["allowed"] is True
+    assert body["features"]["scan_chronology"]["allowed"] is True
+    assert body["features"]["payroll"]["allowed"] is True
+    assert body["features"]["ops_dashboard"]["allowed"] is True
+    assert body["features"]["inventory"]["allowed"] is False
+    assert body["features"]["inventory"]["hidden"] is True
+    assert body["features"]["team_status"]["allowed"] is False
 
 
 def test_perform_pin_hub_open_menu_disabled():

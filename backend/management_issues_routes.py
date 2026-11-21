@@ -188,6 +188,7 @@ def register_management_issues_routes(
                 status_group=request.args.get("status_group") or "",
                 employee=request.args.get("employee") or "",
                 q=request.args.get("q") or "",
+                sort=request.args.get("sort") or "newest",
                 page=int(request.args.get("page") or 1),
                 page_size=int(request.args.get("page_size") or 50),
             )

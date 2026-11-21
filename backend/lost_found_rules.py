@@ -318,6 +318,21 @@ def validate_equipment(
     }
 
 
+def _status_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def status_payload_unchanged(current: Mapping[str, Any], cleaned: Mapping[str, Any]) -> bool:
+    """True when a status save would not change the stored report."""
+    return (
+        _status_text(current.get("status")) == _status_text(cleaned.get("status"))
+        and _status_text(current.get("order_reference")) == _status_text(cleaned.get("order_reference"))
+        and _status_text(current.get("status_comment")) == _status_text(cleaned.get("status_comment"))
+        and _status_text(current.get("resolved_reason")) == _status_text(cleaned.get("resolved_reason"))
+    )
+
+
 def validate_status_change(
     status: Any,
     *,

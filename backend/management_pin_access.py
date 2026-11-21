@@ -12,6 +12,15 @@ from backend.employee_mobile_pin_access import employee_allows_module
 
 HUB_ROLES = frozenset({"ADMIN", "OPS", "MANAGER", "SUPER_ADMIN", "PLATFORM_ADMIN"})
 
+# Supervisor/admin PIN modules. Ordinary employee tiles stay outside this set.
+PIN_MANAGEMENT_MODULES = frozenset(
+    {"issues", "scan_chronology", "payroll", "ops_dashboard"}
+)
+
+
+def is_pin_management_module(module: str | None) -> bool:
+    return str(module or "").strip().lower() in PIN_MANAGEMENT_MODULES
+
 
 def role_set(me: dict) -> set[str]:
     raw = me.get("roles") or []

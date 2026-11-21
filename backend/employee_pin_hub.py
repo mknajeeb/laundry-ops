@@ -15,6 +15,7 @@ from flask import current_app
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from backend.attendance_pin_punch import (
+    ADMIN_ROLE_CODES,
     INVALID_PIN_MESSAGE,
     KIOSK_DISABLED_MESSAGE,
     PIN_LEN_KIOSK,
@@ -83,6 +84,26 @@ PIN_HUB_FEATURE_DEFS = (
         "id": "team_status",
         "label": "Team Status",
         "path": "/team-status",
+    },
+    {
+        "id": "issues",
+        "label": "Issues",
+        "path": "/pin-issues",
+    },
+    {
+        "id": "ops_dashboard",
+        "label": "Dashboard",
+        "path": "/pin-dashboard",
+    },
+    {
+        "id": "scan_chronology",
+        "label": "Scan Chronology",
+        "path": "/pin-scan",
+    },
+    {
+        "id": "payroll",
+        "label": "Payroll",
+        "path": "/pin-payroll",
     },
     {
         "id": "my_schedule",
@@ -344,6 +365,10 @@ def apply_attendance_gates_to_features(
             "checklist",
             "inventory",
             "team_status",
+            "issues",
+            "ops_dashboard",
+            "scan_chronology",
+            "payroll",
             "cleaning_tasks",
             "cleaning_task_review",
             "clock",
@@ -369,6 +394,10 @@ def apply_attendance_gates_to_features(
             "checklist",
             "inventory",
             "team_status",
+            "issues",
+            "ops_dashboard",
+            "scan_chronology",
+            "payroll",
             "cleaning_task_review",
             "clock",
         ):
@@ -445,7 +474,13 @@ def _user_may_use_feature(
     here — Mobile PIN Access is the employee permission source for PIN modules.
     Manager/admin app permissions remain separate on manager routes.
     """
-    del keys, roles, matched  # reserved for future non-employee gates
+    held_roles = set(roles)
+    # matched stays deleted so self-service tiles keep failing closed.
+    del keys, roles, matched
+    if feature_id in ("issues", "ops_dashboard", "scan_chronology", "payroll"):
+        from backend.management_pin_access import HUB_ROLES
+
+        return bool(held_roles & HUB_ROLES)
     if feature_id == "switch_role":
         return bool(is_category_role_tracking_enabled(conn, org_id))
 
@@ -590,7 +625,9 @@ def perform_pin_hub_open(
         record_pin_attempt(conn, org_id, ip_address, False)
         return {"ok": False, "error": "Mobile PIN menu is disabled for this organization."}, 403
 
-    matched = resolve_user_by_attendance_pin(conn, org_id, pin_clean, fetch_roles_fn)
+    matched = resolve_user_by_attendance_pin(
+        conn, org_id, pin_clean, fetch_roles_fn, allow_admin=True
+    )
     if not matched:
         record_pin_attempt(conn, org_id, ip_address, False)
         return {"ok": False, "error": INVALID_PIN_MESSAGE}, 401
@@ -626,6 +663,20 @@ def perform_pin_hub_open(
         attendance,
         allow_take_break=bool(emp_access.get("take_break")),
     )
+    # Admin PIN opens management modules only. Clock punch stays closed.
+    if _role_set(matched) & ADMIN_ROLE_CODES:
+        from backend.management_pin_access import PIN_MANAGEMENT_MODULES
+
+        attendance = dict(attendance or {})
+        attendance["allow_clock_from_hub"] = False
+        for fid, feat in list(features.items()):
+            if fid in PIN_MANAGEMENT_MODULES or not isinstance(feat, dict) or not feat.get("allowed"):
+                continue
+            blocked = dict(feat)
+            blocked["allowed"] = False
+            blocked["hidden"] = True
+            blocked["blocked_reason"] = "admin_pin_issues"
+            features[fid] = blocked
 
     # Weekday checklist assignment: tile stays visible when org-enabled; disable if not assigned.
     checklist = features.get("checklist")
@@ -650,6 +701,25 @@ def perform_pin_hub_open(
             checklist["disabled"] = True
             checklist["disabled_helper"] = "No maintenance checklist assigned today."
         features["checklist"] = checklist
+
+    issues = features.get("issues")
+    if isinstance(issues, dict) and issues.get("allowed"):
+        try:
+            from backend.issues_register import outstanding_issue_count
+
+            count_cursor = conn.cursor(dictionary=True)
+            try:
+                outstanding = outstanding_issue_count(count_cursor, org_id)
+            finally:
+                try:
+                    count_cursor.close()
+                except Exception:
+                    pass
+            issues = dict(issues)
+            issues["outstanding"] = int(outstanding)
+            features["issues"] = issues
+        except Exception:
+            pass
 
     # Prefetch org selection tree when Role or Resume Work is usable from hub.
     selection_tree = None

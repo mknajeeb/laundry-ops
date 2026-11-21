@@ -60,7 +60,7 @@ export function ScanSessionCell({ row, sessionsById }) {
     return (
       <Chip
         size="small"
-        label="Unassigned"
+        label="No recorded session"
         sx={{ bgcolor: "#fff7ed", color: "#c2410c", fontWeight: 700, height: 22 }}
       />
     );
@@ -157,7 +157,7 @@ export default function ScanChronologyLocalSessions({
       </Stack>
       {sessions.length === 0 ? (
         <Alert severity="info" sx={{ py: 0 }}>
-          No sessions for {dateEt}. Scans stay Unassigned until a session covers them.
+          No recorded sessions for {dateEt}. Scan records stay visible without a session.
         </Alert>
       ) : (
         <TableContainer

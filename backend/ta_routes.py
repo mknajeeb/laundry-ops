@@ -6524,6 +6524,8 @@ def payroll_payout_batches():
             # Accountant list is filtered by persisted send_to_accountant, not category.
             if accountant_visible_only:
                 worker_category = None
+            from backend.payroll_payout_details import can_record_payroll_payment
+
             return jsonify(
                 {
                     "items": list_payout_batches(
@@ -6531,7 +6533,8 @@ def payroll_payout_batches():
                         oid,
                         worker_category=worker_category,
                         accountant_visible_only=accountant_visible_only,
-                    )
+                    ),
+                    "payment_actions_allowed": can_record_payroll_payment(conn, uid),
                 }
             )
         if not (
@@ -6631,8 +6634,12 @@ def payroll_payout_batch_detail(batch_id):
             "refresh_rates",
             "recalculate_taxes",
         ):
+            from backend.payroll_payout_details import can_record_payroll_payment
             from backend.payroll_workflow import apply_batch_workflow_action
 
+            if body.get("action") in ("mark_paid", "mark_line_paid", "mark_line_unpaid"):
+                if not can_record_payroll_payment(conn, int(g.ta_user["id"])):
+                    return jsonify({"error": "Forbidden"}), 403
             try:
                 row = apply_batch_workflow_action(
                     conn,

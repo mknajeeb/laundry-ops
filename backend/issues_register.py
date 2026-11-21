@@ -121,6 +121,23 @@ def _matches(row: Mapping[str, Any], *, source: str, category: str, employee: st
     return True
 
 
+def _sort_rows(rows: list[dict[str, Any]], sort: str) -> None:
+    mode = str(sort or "newest").strip().lower()
+    if mode == "oldest":
+        rows.sort(key=lambda row: (row.get("reported_at") or "", row["key"]))
+        return
+    if mode == "status":
+        rank = {"open": 0, "review": 1, "resolved": 2}
+        rows.sort(
+            key=lambda row: (
+                rank.get(row.get("status_group"), 9),
+                row.get("reported_at") or "",
+            )
+        )
+        return
+    rows.sort(key=lambda row: (row.get("reported_at") or "", row["key"]), reverse=True)
+
+
 def compose_register(
     rinse_issues: Sequence[Mapping[str, Any]],
     employee_items: Sequence[Mapping[str, Any]],
@@ -130,6 +147,7 @@ def compose_register(
     status_group_filter: str = "",
     employee: str = "",
     q: str = "",
+    sort: str = "newest",
     page: int = 1,
     page_size: int = 50,
 ) -> dict[str, Any]:
@@ -139,7 +157,7 @@ def compose_register(
         row for row in rows
         if _matches(row, source=source, category=category, employee=employee, q=q)
     ]
-    narrowed.sort(key=lambda row: (row.get("reported_at") or "", row["key"]), reverse=True)
+    _sort_rows(narrowed, sort)
     summary = _summary(narrowed)
     group = str(status_group_filter or "").strip().lower()
     visible = [row for row in narrowed if not group or group == "all" or row["status_group"] == group]
@@ -178,6 +196,37 @@ def _summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         ],
         "recent": attention,
     }
+
+
+def outstanding_issue_count(cursor, organization_id: int) -> int:
+    """Open customer issues plus new or under-review employee reports for one org."""
+    from backend.ta_helpers import table_exists
+
+    total = 0
+    oid = int(organization_id)
+    if table_exists(cursor, "mgmt_issues"):
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM mgmt_issues
+            WHERE organization_id = %s AND status IN ('open', 'investigating')
+            """,
+            (oid,),
+        )
+        row = cursor.fetchone() or {}
+        total += int(row.get("n") or row.get("COUNT(*)") or 0)
+    if table_exists(cursor, "found_items"):
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM found_items
+            WHERE organization_id = %s AND status IN ('new', 'under_review')
+            """,
+            (oid,),
+        )
+        row = cursor.fetchone() or {}
+        total += int(row.get("n") or row.get("COUNT(*)") or 0)
+    return total
 
 
 def load_issue_register(cursor, organization_id: int, **filters: Any) -> dict[str, Any]:
@@ -247,6 +296,7 @@ def load_issue_register(cursor, organization_id: int, **filters: Any) -> dict[st
         status_group_filter=str(filters.get("status_group") or ""),
         employee=str(filters.get("employee") or ""),
         q=str(filters.get("q") or ""),
+        sort=str(filters.get("sort") or "newest"),
         page=int(filters.get("page") or 1),
         page_size=int(filters.get("page_size") or 50),
     )

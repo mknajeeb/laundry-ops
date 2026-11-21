@@ -26,6 +26,7 @@ export default function OpsLauncherGrid({ tiles = [], busyId = "", disabled = fa
             color={tile.color}
             busy={busyId === tile.id}
             disabled={tileDisabled}
+            badge={tile.badge || 0}
             disabledHelper={tile.disabledHelper || ""}
             onClick={() => {
               if (tile.disabled) return;

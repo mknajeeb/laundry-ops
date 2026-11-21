@@ -1587,9 +1587,23 @@ def update_issue(
                 action = "restored"
             events.append((action, {"status": before["status"]}, {"status": st}, None))
 
-    for key in ("description", "internal_notes", "resolution_type", "resolution_notes", "severity"):
+    for key in ("description", "resolution_type", "resolution_notes", "severity"):
         if key in payload:
             fields[key] = payload.get(key)
+
+    if "internal_notes" in payload:
+        new_notes = payload.get("internal_notes")
+        old_notes = before.get("internal_notes")
+        if str(new_notes or "").strip() != str(old_notes or "").strip():
+            fields["internal_notes"] = new_notes
+            events.append(
+                (
+                    "note_added",
+                    {"internal_notes": old_notes},
+                    {"internal_notes": new_notes},
+                    None,
+                )
+            )
 
     if "reported_at_et" in payload:
         fields["reported_at_et"] = _parse_et_dt(payload.get("reported_at_et")) or before[

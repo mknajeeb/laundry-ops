@@ -23,14 +23,17 @@ import {
   AccessTime,
   AssignmentTurnedIn,
   Backspace,
+  DashboardOutlined,
   FreeBreakfast,
   Groups,
   Inventory2,
+  PaymentsOutlined,
   ReportProblemOutlined,
   Login,
   Logout,
   RequestQuote,
   SwapHoriz,
+  Timeline,
 } from "@mui/icons-material";
 import {
   attendancePinBreakStart,
@@ -88,6 +91,9 @@ const TILE_ICONS = {
   revenue: RequestQuote,
   team: Groups,
   issue: ReportProblemOutlined,
+  dashboard: DashboardOutlined,
+  scan: Timeline,
+  payroll: PaymentsOutlined,
 };
 
 function sanitizeSlug(raw) {
@@ -529,6 +535,31 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         setAuthSession(payload);
         onLoggedIn?.(payload.user);
         navigate("/revenue-cash", { replace: true });
+        return;
+      }
+      const managementRoutes = {
+        issues: "/pin-issues",
+        ops_dashboard: "/pin-dashboard",
+        scan_chronology: "/pin-scan",
+        payroll: "/pin-payroll",
+      };
+      if (managementRoutes[featureId]) {
+        const feature = hub?.features?.[featureId];
+        if (tile?.disabled || feature?.disabled || !feature?.allowed) {
+          return;
+        }
+        const res = await authAttendancePinUnlock(slug, hub.pin, {
+          hubToken: hub.token,
+          pinHubModule: featureId,
+        });
+        const payload = res?.data || {};
+        if (!payload?.token || !payload?.user) {
+          throw new Error(payload?.error || "Could not open this PIN module");
+        }
+        markPinHubAppSession(slug);
+        setAuthSession(payload);
+        onLoggedIn?.(payload.user);
+        navigate(managementRoutes[featureId], { replace: true });
         return;
       }
       if (featureId === "team_status") {

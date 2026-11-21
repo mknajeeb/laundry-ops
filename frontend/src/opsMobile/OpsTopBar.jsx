@@ -25,6 +25,13 @@ export default function OpsTopBar({
   const accent = theme.palette.primary.main || OPS_MOBILE.navy;
   const resolvedLock = !lockLabel || lockLabel === "Lock" ? t("mobileOps.lock") : lockLabel;
   const resolvedBack = !backLabel || backLabel === "PIN" ? t("tasks.pin.backToPin") : backLabel;
+  const shortBack =
+    !backLabel ||
+    backLabel === "PIN" ||
+    backLabel === t("tasks.pin.backToPin") ||
+    backLabel === t("mobileOps.backPin")
+      ? "PIN"
+      : backLabel;
   return (
     <Box
       sx={{
@@ -73,7 +80,7 @@ export default function OpsTopBar({
           }}
         >
           <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>{resolvedBack}</Box>
-          <Box component="span" sx={{ display: { xs: "inline", sm: "none" } }}>PIN</Box>
+          <Box component="span" sx={{ display: { xs: "inline", sm: "none" } }}>{shortBack}</Box>
         </Button>
       ) : null}
 

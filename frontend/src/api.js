@@ -2311,8 +2311,8 @@ export const getPayrollDue = (params) =>
 export const getWorkerPayments = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/worker-payments`, { params });
 
-export const getPayoutBatches = (params) =>
-  axios.get(`${API_BASE}/api/ta/payroll/payout-batches`, { params });
+export const getPayoutBatches = (params, config = {}) =>
+  axios.get(`${API_BASE}/api/ta/payroll/payout-batches`, { params, ...config });
 
 export const getPayrollAnalysisWeekAvailability = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/analysis-week-availability`, { params });
@@ -3424,8 +3424,8 @@ export const getManagementIssuesOrderContext = (bagId, orderInstanceId) =>
 export const getManagementIssues = (params = {}) =>
   axios.get(`${API_BASE}/api/management/issues`, { params, timeout: 20000 });
 
-export const getIssuesRegister = (params = {}) =>
-  axios.get(`${API_BASE}/api/management/issues/register`, { params, timeout: 20000 });
+export const getIssuesRegister = (params = {}, config = {}) =>
+  axios.get(`${API_BASE}/api/management/issues/register`, { params, timeout: 20000, ...config });
 
 export const createManagementIssue = (body) =>
   axios.post(`${API_BASE}/api/management/issues`, body, { timeout: 20000 });

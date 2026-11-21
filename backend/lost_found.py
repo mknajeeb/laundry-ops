@@ -32,6 +32,7 @@ from backend.lost_found_rules import (
     validate_redry,
     snapshot_is_current,
     validate_location,
+    status_payload_unchanged,
     validate_status_change,
 )
 from backend.payroll_identity import eastern_now_naive
@@ -790,6 +791,8 @@ def change_status(
         reason=reason,
         report_category=report_category_of(current),
     )
+    if status_payload_unchanged(current, cleaned):
+        return _hydrate(cursor, organization_id, [current])[0]
     at = eastern_now_naive().replace(microsecond=0)
     revision = int(current.get("revision") or 1) + 1
     before = {

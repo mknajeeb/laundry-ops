@@ -14,6 +14,7 @@ export default function OpsLauncherTile({
   busy = false,
   disabled = false,
   disabledHelper = "",
+  badge = 0,
   onClick,
   "aria-label": ariaLabel,
 }) {
@@ -22,7 +23,7 @@ export default function OpsLauncherTile({
       fullWidth
       disabled={disabled || busy}
       onClick={onClick}
-      aria-label={ariaLabel || label}
+      aria-label={badge > 0 ? `${ariaLabel || label}, ${badge}` : ariaLabel || label}
       sx={{
         display: "flex",
         flexDirection: "column",
@@ -54,6 +55,7 @@ export default function OpsLauncherTile({
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
+          position: "relative",
           bgcolor: alpha(color, 0.16),
           color,
           flexShrink: 0,
@@ -63,6 +65,28 @@ export default function OpsLauncherTile({
           <CircularProgress size={26} sx={{ color }} />
         ) : Icon ? (
           <Icon sx={{ fontSize: { xs: 24, sm: 28 } }} />
+        ) : null}
+        {badge > 0 ? (
+          <Box
+            component="span"
+            sx={{
+              position: "absolute",
+              top: -6,
+              right: -8,
+              minWidth: 18,
+              height: 18,
+              px: 0.4,
+              borderRadius: 99,
+              bgcolor: "#b91c1c",
+              color: "#fff",
+              fontSize: 10,
+              fontWeight: 800,
+              lineHeight: "18px",
+              textAlign: "center",
+            }}
+          >
+            {badge > 99 ? "99+" : badge}
+          </Box>
         ) : null}
       </Box>
       <Typography

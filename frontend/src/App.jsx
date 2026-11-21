@@ -91,6 +91,16 @@ import OrganizationSettingsPage from "./pages/OrganizationSettingsPage";
 import DailyRevenueCostPage from "./pages/DailyRevenueCostPage";
 import PinRevenueCashPage from "./pages/PinRevenueCashPage";
 import TeamStatusPage from "./pages/TeamStatusPage";
+import PinIssuesPage from "./pages/PinIssuesPage";
+import PinScanPage from "./pages/PinScanPage";
+import PinPayrollPage from "./pages/PinPayrollPage";
+import PinDashboardPage from "./pages/PinDashboardPage";
+import {
+  DevPinDashboardPreviewPage,
+  DevPinPayrollPreviewPage,
+  DevPinScanPreviewPage,
+} from "./pages/DevPinManagementPreviewPage";
+import DevPinIssuesPreviewPage from "./pages/DevPinIssuesPreviewPage";
 import DailyOperationsPage from "./pages/DailyOperationsPage";
 import ManagementHubPage from "./pages/ManagementHubPage";
 import ManagementRinseWfPage from "./pages/ManagementRinseWfPage";
@@ -234,6 +244,23 @@ function isTeamStatusRoute(path) {
   return p === "/team-status" || p.startsWith("/team-status/");
 }
 
+function isPinIssuesRoute(path) {
+  const p = normalizePathname(path);
+  return p === "/pin-issues" || p.startsWith("/pin-issues/");
+}
+
+function isPinManagementRoute(path) {
+  const p = normalizePathname(path);
+  return (
+    p === "/pin-scan" ||
+    p.startsWith("/pin-scan/") ||
+    p === "/pin-payroll" ||
+    p.startsWith("/pin-payroll/") ||
+    p === "/pin-dashboard" ||
+    p.startsWith("/pin-dashboard/")
+  );
+}
+
 function isLegacyRevenueCostFloorRoute(path) {
   const p = normalizePathname(path);
   return p === "/revenue-cost/floor" || p.startsWith("/revenue-cost/");
@@ -244,11 +271,13 @@ function isLegacyHangDryFloorRoute(path) {
   return p === "/hang-dry/floor" || p.startsWith("/hang-dry/");
 }
 
-/** PIN hub employee Revenue / Cash + Team Status (Management APIs) + legacy redirects. */
+/** PIN hub employee Revenue / Cash + Team Status + Issues + legacy redirects. */
 function isPinHubFinanceRoute(path) {
   return (
     isPinRevenueCashRoute(path) ||
     isTeamStatusRoute(path) ||
+    isPinIssuesRoute(path) ||
+    isPinManagementRoute(path) ||
     isLegacyRevenueCostFloorRoute(path) ||
     isLegacyHangDryFloorRoute(path)
   );
@@ -274,7 +303,12 @@ function isDevPreviewRoute(path) {
     p === "/dev/breaks-tasks-preview" ||
     p.startsWith("/dev/breaks-tasks-preview/") ||
     p === "/dev/supervisor-preview" ||
-    p.startsWith("/dev/supervisor-preview/")
+    p.startsWith("/dev/supervisor-preview/") ||
+    p === "/dev/pin-issues" ||
+    p.startsWith("/dev/pin-issues/") ||
+    p === "/dev/pin-scan" ||
+    p === "/dev/pin-payroll" ||
+    p === "/dev/pin-dashboard"
   );
 }
 
@@ -786,6 +820,50 @@ function AppShell() {
               />
             }
           />
+          <Route
+            path="/pin-issues"
+            element={
+              <PinIssuesPage
+                onPinHubDone={() => {
+                  washproSessionSyncedRef.current = false;
+                  setUser(null);
+                }}
+              />
+            }
+          />
+          <Route
+            path="/pin-scan"
+            element={
+              <PinScanPage
+                onPinHubDone={() => {
+                  washproSessionSyncedRef.current = false;
+                  setUser(null);
+                }}
+              />
+            }
+          />
+          <Route
+            path="/pin-payroll"
+            element={
+              <PinPayrollPage
+                onPinHubDone={() => {
+                  washproSessionSyncedRef.current = false;
+                  setUser(null);
+                }}
+              />
+            }
+          />
+          <Route
+            path="/pin-dashboard"
+            element={
+              <PinDashboardPage
+                onPinHubDone={() => {
+                  washproSessionSyncedRef.current = false;
+                  setUser(null);
+                }}
+              />
+            }
+          />
           <Route path="/revenue-cost/floor" element={<Navigate to="/revenue-cash" replace />} />
           <Route path="/hang-dry/floor" element={<Navigate to="/revenue-cash" replace />} />
         </Routes>
@@ -801,6 +879,10 @@ function AppShell() {
         <Route path="/dev/activity-responsibility-preview" element={<ActivityResponsibilityPreviewPage />} />
         <Route path="/dev/breaks-tasks-preview" element={<BreaksTasksPlannerPreviewPage />} />
         <Route path="/dev/supervisor-preview" element={<SupervisorPortalPage />} />
+        <Route path="/dev/pin-issues" element={<DevPinIssuesPreviewPage />} />
+        <Route path="/dev/pin-scan" element={<DevPinScanPreviewPage />} />
+        <Route path="/dev/pin-payroll" element={<DevPinPayrollPreviewPage />} />
+        <Route path="/dev/pin-dashboard" element={<DevPinDashboardPreviewPage />} />
       </Routes>
     );
   }

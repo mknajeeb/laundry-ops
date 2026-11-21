@@ -73,3 +73,18 @@ def test_source_and_search_filters_do_not_mix_records():
     assert payload["rows"][0]["key"] == "employee:8"
     assert status_group("rinse", "investigating") == "review"
     assert status_group("employee", "stored") == "resolved"
+
+
+def test_sort_oldest_and_status_do_not_change_counts():
+    rinse = [
+        {"id": 1, "issue_category": "DAMAGE", "status": "resolved", "reported_at_et": "2026-11-12 09:00:00"},
+        {"id": 2, "issue_category": "MISSING", "status": "open", "reported_at_et": "2026-11-10 09:00:00"},
+    ]
+    employee = [
+        {"id": 3, "report_category": "equipment", "status": "under_review", "reported_at": "2026-11-11 09:00:00"},
+    ]
+    oldest = compose_register(rinse, employee, sort="oldest")
+    assert [row["key"] for row in oldest["rows"]] == ["rinse:2", "employee:3", "rinse:1"]
+    by_status = compose_register(rinse, employee, sort="status")
+    assert [row["status_group"] for row in by_status["rows"]] == ["open", "review", "resolved"]
+    assert by_status["summary"]["total"] == 3

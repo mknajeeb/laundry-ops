@@ -1006,6 +1006,15 @@ def enrich_payout_batch(
     return enrich_batch_payroll_display(json_safe(batch))
 
 
+def line_is_explicitly_paid(line: dict) -> bool:
+    """True only when this worker's own payment status is paid."""
+    if str(line.get("payment_status") or "").strip().lower() == "paid":
+        return True
+    details = line.get("payout_details") if isinstance(line.get("payout_details"), dict) else {}
+    settlement = details.get("settlement") if isinstance(details.get("settlement"), dict) else {}
+    return str(settlement.get("payment_recorded") or "").strip().lower() == "paid"
+
+
 def _available_batch_actions(batch: dict) -> list[str]:
     from backend.payroll_status_display import compute_display_status
     from backend.payroll_worker_categories import batch_send_to_accountant_enabled
@@ -1018,6 +1027,13 @@ def _available_batch_actions(batch: dict) -> list[str]:
     elif ds == "ready_for_payroll":
         if batch_send_to_accountant_enabled(batch) and st == "hours_reviewed":
             actions.append("send_to_accountant")
+        if str(batch.get("worker_category") or "").strip().lower() == "w2" and st in (
+            "hours_reviewed",
+            "sent_to_accountant",
+            "accountant_reviewed",
+            "approved_for_payment",
+        ):
+            actions.append("mark_paid")
     elif ds == "ready_to_pay":
         actions.append("mark_paid")
         actions.append("mark_line_paid")
@@ -1128,6 +1144,164 @@ def refresh_batch_line_rates(conn, organization_id: int, batch_id: int) -> dict:
     recalculate_w2_batch_taxes(conn, organization_id, batch_id)
     out = get_payout_batch(conn, organization_id, batch_id) or {}
     return enrich_payout_batch(conn, organization_id, out)
+
+
+def _audit_batch_event(conn, organization_id: int, batch: dict, batch_id: int, event: str, actor_id, detail: str) -> None:
+    from backend.payroll_payout_details import _audit_append
+
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT payout_details_audit_json FROM payout_batches
+        WHERE id=%s AND organization_id=%s
+        """,
+        (int(batch_id), int(organization_id)),
+    )
+    row = c.fetchone()
+    blob = row.get("payout_details_audit_json") if isinstance(row, dict) else (row[0] if row else None)
+    source = dict(batch or {})
+    if blob is not None:
+        source["payout_details_audit_json"] = blob
+    events = _audit_append(source, event, int(actor_id or 0), detail=detail, reason="payment_status")
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE payout_batches SET payout_details_audit_json=%s, updated_at=CURRENT_TIMESTAMP
+        WHERE id=%s AND organization_id=%s
+        """,
+        (json.dumps({"events": events}), int(batch_id), int(organization_id)),
+    )
+
+
+def _promote_batch_when_every_worker_paid(conn, organization_id: int, batch_id: int, *, actor_id) -> bool:
+    """Set the batch Paid only after every worker line is paid."""
+    fresh = get_payout_batch(conn, organization_id, batch_id)
+    if not fresh:
+        return False
+    if str(fresh.get("status") or "") in ("paid", "closed"):
+        return False
+    lines = fresh.get("lines") or []
+    if not lines or not all(line_is_explicitly_paid(ln) for ln in lines):
+        return False
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE payout_batches SET status='paid', paid_at=COALESCE(paid_at, NOW()),
+        correction_reopened_at=NULL, updated_at=CURRENT_TIMESTAMP
+        WHERE id=%s AND organization_id=%s AND status NOT IN ('paid', 'closed')
+        """,
+        (int(batch_id), int(organization_id)),
+    )
+    _audit_batch_event(
+        conn,
+        organization_id,
+        fresh,
+        batch_id,
+        "batch_marked_paid",
+        actor_id,
+        "All workers marked paid",
+    )
+    return True
+
+
+def _explicit_w2_mark_paid(
+    conn,
+    cursor,
+    organization_id: int,
+    batch_id: int,
+    batch: dict,
+    *,
+    actor_id,
+    payment_date: str,
+    payment_reference: Optional[str],
+) -> None:
+    """Explicit W-2 payment completion. Does not run for approve, export, or send."""
+    from backend.payroll_payout_details import (
+        ensure_payout_details_columns,
+        sync_payment_recorded_for_paid_lines,
+    )
+
+    ensure_payout_details_columns(cursor)
+    pay_ref = str(payment_reference).strip() if payment_reference else None
+    if not pay_ref:
+        pay_ref = None
+    cursor.execute(
+        """
+        UPDATE payout_batches SET status='paid', paid_at=COALESCE(paid_at, NOW()),
+        correction_reopened_at=NULL,
+        updated_at=CURRENT_TIMESTAMP WHERE id=%s AND organization_id=%s
+        """,
+        (int(batch_id), int(organization_id)),
+    )
+    cursor.execute(
+        """
+        UPDATE payout_batch_lines SET payment_status='paid',
+        payment_date=COALESCE(payment_date, %s),
+        payment_reference=COALESCE(%s, payment_reference),
+        line_status='approved'
+        WHERE batch_id=%s AND organization_id=%s
+          AND payment_status NOT IN ('paid')
+        """,
+        (payment_date, pay_ref, int(batch_id), int(organization_id)),
+    )
+    sync_payment_recorded_for_paid_lines(
+        conn,
+        organization_id,
+        batch_id,
+        payment_date=payment_date,
+        payment_reference=pay_ref,
+    )
+    _audit_batch_event(
+        conn,
+        organization_id,
+        batch,
+        batch_id,
+        "batch_marked_paid",
+        actor_id,
+        "W-2 batch explicitly marked paid",
+    )
+
+
+def _pay_all_eligible_workers(
+    conn,
+    organization_id: int,
+    batch_id: int,
+    batch: dict,
+    *,
+    actor_id,
+    payment_date: str,
+    payment_reference: Optional[str],
+) -> None:
+    """Mark each unpaid 1099/Temp worker paid. The batch stays open until all are paid."""
+    from backend.payroll_payout_details import set_line_payment_recorded
+
+    lines = batch.get("lines") or []
+    if not lines:
+        raise ValueError("Batch has no workers to pay")
+    eligible = [ln for ln in lines if not line_is_explicitly_paid(ln)]
+    if not eligible:
+        raise ValueError("Every worker is already marked paid")
+    for ln in eligible:
+        set_line_payment_recorded(
+            conn,
+            organization_id,
+            batch_id,
+            int(ln["id"]),
+            recorded="paid",
+            actor_id=actor_id,
+            payment_date=payment_date,
+            payment_reference=payment_reference,
+        )
+    _audit_batch_event(
+        conn,
+        organization_id,
+        batch,
+        batch_id,
+        "pay_all",
+        actor_id,
+        f"{len(eligible)} worker(s)",
+    )
+    _promote_batch_when_every_worker_paid(conn, organization_id, batch_id, actor_id=actor_id)
 
 
 def apply_batch_workflow_action(
@@ -1270,44 +1444,42 @@ def apply_batch_workflow_action(
             (int(batch_id), int(organization_id)),
         )
     elif action == "mark_paid":
-        from backend.payroll_payout_details import (
-            ensure_payout_details_columns,
-            sync_payment_recorded_for_paid_lines,
-        )
-
-        ensure_payout_details_columns(c)
-        pay_ref = str(payment_reference).strip() if payment_reference else None
-        if not pay_ref:
-            pay_ref = None
-        c.execute(
-            """
-            UPDATE payout_batches SET status='paid', paid_at=COALESCE(paid_at, NOW()),
-            correction_reopened_at=NULL,
-            updated_at=CURRENT_TIMESTAMP WHERE id=%s AND organization_id=%s
-            """,
-            (int(batch_id), int(organization_id)),
-        )
-        c.execute(
-            """
-            UPDATE payout_batch_lines SET payment_status='paid',
-            payment_date=COALESCE(payment_date, %s),
-            payment_reference=COALESCE(%s, payment_reference),
-            line_status='approved'
-            WHERE batch_id=%s AND organization_id=%s
-              AND payment_status NOT IN ('paid', 'unpaid')
-            """,
-            (pd, pay_ref, int(batch_id), int(organization_id)),
-        )
-        sync_payment_recorded_for_paid_lines(
-            conn,
-            organization_id,
-            batch_id,
-            payment_date=pd,
-            payment_reference=pay_ref,
-        )
+        if str(batch.get("status") or "") in ("paid", "closed"):
+            raise ValueError("This batch is already marked paid")
+        cat = str(batch.get("worker_category") or "").strip().lower()
+        if cat == "w2":
+            _explicit_w2_mark_paid(
+                conn,
+                c,
+                organization_id,
+                batch_id,
+                batch,
+                actor_id=actor_id,
+                payment_date=pd,
+                payment_reference=payment_reference,
+            )
+        else:
+            _pay_all_eligible_workers(
+                conn,
+                organization_id,
+                batch_id,
+                batch,
+                actor_id=actor_id,
+                payment_date=pd,
+                payment_reference=payment_reference,
+            )
+        conn.commit()
+        out = get_payout_batch(conn, organization_id, batch_id) or {}
+        return enrich_payout_batch(conn, organization_id, out)
     elif action == "mark_line_paid":
         if not line_id:
             raise ValueError("line_id required")
+        target = next(
+            (ln for ln in (batch.get("lines") or []) if int(ln.get("id") or 0) == int(line_id)),
+            None,
+        )
+        if target and line_is_explicitly_paid(target):
+            raise ValueError("This worker is already marked paid")
         from backend.payroll_payout_details import set_line_payment_recorded
 
         set_line_payment_recorded(
@@ -1319,6 +1491,9 @@ def apply_batch_workflow_action(
             actor_id=actor_id,
             payment_date=pd,
             payment_reference=payment_reference,
+        )
+        _promote_batch_when_every_worker_paid(
+            conn, organization_id, batch_id, actor_id=actor_id
         )
         conn.commit()
         out = get_payout_batch(conn, organization_id, batch_id) or {}

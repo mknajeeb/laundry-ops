@@ -169,6 +169,19 @@ def can_view_accountant_queue(conn, user_id: int) -> bool:
     return False
 
 
+def can_record_payroll_payment(conn, user_id: int) -> bool:
+    """Payment-status changes require an administrator or ta.settings.
+
+    users.view and a supervisor role are not enough.
+    """
+    from backend.attendance_pin_punch import ADMIN_ROLE_CODES
+    from backend.ta_routes import user_has_perm
+
+    if user_role_codes(conn, user_id) & ADMIN_ROLE_CODES:
+        return True
+    return bool(user_has_perm(conn, user_id, "ta.settings"))
+
+
 def can_confirm_accountant_payment(conn, user_id: int) -> bool:
     from backend.ta_routes import user_has_perm
 
@@ -2745,9 +2758,13 @@ def set_line_payment_recorded(
         blob = row.get("payout_details_json")
     else:
         blob = row[0]
+    current_status = str(row.get("payment_status") or "") if isinstance(row, dict) else str(row[1] or "")
     details = parse_line_payout_details({"payout_details_json": blob})
     settlement = dict(details.get("settlement") or {})
     old = settlement.get("payment_recorded")
+    already = normalize_payment_recorded(old) == rec or current_status.strip().lower() == rec
+    if already:
+        return details
     settlement["payment_recorded"] = rec
     details["settlement"] = settlement
     extra_sql = ""
@@ -2774,8 +2791,24 @@ def set_line_payment_recorded(
             int(organization_id),
         ),
     )
+    c.execute(
+        """
+        SELECT payout_details_audit_json FROM payout_batches
+        WHERE id=%s AND organization_id=%s
+        """,
+        (int(batch_id), int(organization_id)),
+    )
+    audit_row = c.fetchone()
+    audit_blob = (
+        audit_row.get("payout_details_audit_json")
+        if isinstance(audit_row, dict)
+        else (audit_row[0] if audit_row else None)
+    )
+    audit_batch = dict(batch)
+    if audit_blob is not None:
+        audit_batch["payout_details_audit_json"] = audit_blob
     events = _audit_append(
-        batch,
+        audit_batch,
         "payment_recorded_set",
         actor_id or 0,
         detail=f"line_id={line_id}",

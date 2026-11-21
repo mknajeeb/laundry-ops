@@ -269,9 +269,13 @@ def _pin_last4(pin: str) -> str:
 
 
 def resolve_user_by_attendance_pin(
-    conn, organization_id: int, pin: str, fetch_roles_fn
+    conn, organization_id: int, pin: str, fetch_roles_fn, *, allow_admin: bool = False
 ) -> Optional[dict]:
-    """Return matched user row dict or None. Excludes admin roles."""
+    """Return matched user row dict or None.
+
+    Clock punch excludes admin roles. The PIN hub passes allow_admin so an
+    administrator can open Issues without gaining a floor punch.
+    """
     c = conn.cursor(dictionary=True)
     has_last4 = table_has_column(c, "payroll_profiles", "attendance_pin_last4")
     last4 = _pin_last4(pin)
@@ -338,7 +342,7 @@ def resolve_user_by_attendance_pin(
 
     roles = fetch_roles_fn(c, matched["id"])
     rs = {str(r).upper() for r in roles}
-    if rs & ADMIN_ROLE_CODES:
+    if rs & ADMIN_ROLE_CODES and not allow_admin:
         return None
     matched["_roles"] = roles
     return matched

@@ -21,6 +21,37 @@ def test_display_status_ready_to_pay_when_finalized():
     assert compute_display_status(batch) == "ready_to_pay"
 
 
+def test_w2_stays_ready_for_payroll_until_explicitly_paid():
+    approved = {
+        "status": "approved_for_payment",
+        "worker_category": "w2",
+        "payout_details_finalized_at": "2026-01-01",
+    }
+    assert compute_display_status(approved) == "ready_for_payroll"
+    sent = {"status": "sent_to_accountant", "worker_category": "w2"}
+    assert compute_display_status(sent) == "ready_for_payroll"
+    assert compute_display_status({"status": "paid", "worker_category": "w2"}) == "paid"
+
+
+def test_contractor_and_temp_are_ready_to_pay_when_approved():
+    assert (
+        compute_display_status({"status": "hours_reviewed", "worker_category": "contractor_1099"})
+        == "ready_to_pay"
+    )
+    assert compute_display_status({"status": "hours_reviewed", "worker_category": "temp"}) == "ready_to_pay"
+    assert compute_display_status({"status": "paid", "worker_category": "temp"}) == "paid"
+
+
+def test_line_paid_is_per_worker_not_batch_status():
+    from backend.payroll_workflow import line_is_explicitly_paid
+
+    assert line_is_explicitly_paid({"payment_status": "paid"}) is True
+    assert line_is_explicitly_paid({"payment_status": "approved_unpaid"}) is False
+    assert line_is_explicitly_paid(
+        {"payment_status": "approved_unpaid", "payout_details": {"settlement": {"payment_recorded": "paid"}}}
+    ) is True
+
+
 def test_display_status_paid():
     assert compute_display_status({"status": "paid"}) == "paid"
     assert compute_display_status({"status": "closed"}) == "paid"

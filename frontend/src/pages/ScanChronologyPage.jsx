@@ -820,7 +820,7 @@ export default function ScanChronologyPage() {
         <SummaryCard
           label="Total Scans"
           value={ls.total_scans ?? sessions.length}
-          sub={`${ls.unassigned_scans ?? 0} unassigned`}
+          sub={`${ls.unassigned_scans ?? 0} without a recorded session`}
         />
         <SummaryCard label="Total Sessions" value={ls.total_sessions ?? 0} />
         <SummaryCard label="Total Hours" value={num(ls.total_hours)} />

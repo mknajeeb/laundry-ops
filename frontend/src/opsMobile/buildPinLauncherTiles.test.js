@@ -27,6 +27,24 @@ describe("isClockAllowedFromHub", () => {
 });
 
 describe("buildPinLauncherTiles", () => {
+  it("shows Issues with an outstanding count only when the hub allows it", () => {
+    const tiles = buildPinLauncherTiles({
+      features: {
+        issues: { allowed: true, outstanding: 4 },
+        team_status: { allowed: true },
+      },
+      attendance: { clocked_in: true },
+    });
+    const issues = tiles.find((tile) => tile.id === "issues");
+    expect(issues?.label).toBe("Issues");
+    expect(issues?.badge).toBe(4);
+    const hidden = buildPinLauncherTiles({
+      features: { issues: { allowed: false, outstanding: 9 } },
+      attendance: { clocked_in: true },
+    });
+    expect(hidden.some((tile) => tile.id === "issues")).toBe(false);
+  });
+
   it("puts Clock last; disables when allow_clock_from_hub is false", () => {
     const enabled = buildPinLauncherTiles({
       features: {

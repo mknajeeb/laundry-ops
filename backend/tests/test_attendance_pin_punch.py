@@ -106,6 +106,11 @@ class TestResolveUserByPin(unittest.TestCase):
 
         matched = resolve_user_by_attendance_pin(conn, 1, pin, roles_admin)
         self.assertIsNone(matched)
+        allowed = resolve_user_by_attendance_pin(
+            conn, 1, pin, roles_admin, allow_admin=True
+        )
+        self.assertEqual(allowed["id"], 5)
+        self.assertIn("ADMIN", {str(role).upper() for role in allowed["_roles"]})
 
     def test_matches_floor_user(self):
         pin = "4321"

@@ -49,6 +49,26 @@ export const PIN_LAUNCHER_META = {
     color: "#1d4ed8",
     iconKey: "team",
   },
+  issues: {
+    label: "Issues",
+    color: "#9f1239",
+    iconKey: "issue",
+  },
+  ops_dashboard: {
+    label: "Dashboard",
+    color: "#0f2744",
+    iconKey: "dashboard",
+  },
+  scan_chronology: {
+    label: "Scan Chronology",
+    color: "#1d4ed8",
+    iconKey: "scan",
+  },
+  payroll: {
+    label: "Payroll",
+    color: "#0f766e",
+    iconKey: "payroll",
+  },
   my_schedule: {
     label: "My Schedule",
     color: "#0f2744",
@@ -84,6 +104,10 @@ export const PIN_HOME_FEATURE_ORDER = [
   "cleaning_tasks",
   "cleaning_task_review",
   "team_status",
+  "ops_dashboard",
+  "issues",
+  "scan_chronology",
+  "payroll",
   "revenue_cost",
   "checklist",
   "inventory",
@@ -107,6 +131,10 @@ export const PIN_LAUNCHER_I18N = {
   cleaning_tasks: "mobileOps.tile.cleaningTasks",
   cleaning_task_review: "mobileOps.tile.taskReview",
   team_status: "mobileOps.tile.teamStatus",
+  issues: "mobileOps.tile.issues",
+  ops_dashboard: "mobileOps.tile.dashboard",
+  scan_chronology: "mobileOps.tile.scanChronology",
+  payroll: "mobileOps.tile.payroll",
   revenue_cost: "mobileOps.tile.revenueCash",
   checklist: "mobileOps.tile.checklist",
   inventory: "mobileOps.tile.inventory",
@@ -170,11 +198,13 @@ export function buildPinLauncherTiles({
     };
     const i18nKey = PIN_LAUNCHER_I18N[id];
     const helperKey = PIN_LAUNCHER_HELPER_I18N[id];
+    const outstanding = Number(feat.outstanding || feat.badge || 0);
     const tile = {
       id,
       label: (tr && i18nKey ? tr(i18nKey) : null) || meta.label || feat.label || id,
       color: meta.color,
       iconKey: meta.iconKey,
+      badge: outstanding > 0 ? outstanding : 0,
       helper:
         (tr && helperKey ? tr(helperKey) : null) ||
         (id === "team_status" ? "Who's working today" : "") ||

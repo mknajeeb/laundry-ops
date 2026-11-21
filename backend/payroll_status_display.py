@@ -18,7 +18,7 @@ DISPLAY_STATUS_LABELS = {
 PRIMARY_ACTIONS = {
     "draft": {"action": "approve_hours", "label": "Approve Hours"},
     "ready_for_payroll": {"action": "enter_details", "label": "Enter Payroll Details"},
-    "ready_to_pay": {"action": "mark_paid", "label": "Mark Paid"},
+    "ready_to_pay": {"action": "mark_paid", "label": "Pay All"},
     "paid": {"action": "view_documents", "label": "View Documents"},
 }
 
@@ -40,15 +40,33 @@ READY_FOR_PAYROLL_INTERNAL = frozenset(
 )
 
 
+PAYABLE_WORKER_CATEGORIES = frozenset({"contractor_1099", "temp", "tryout"})
+
+
+def worker_category_key(batch: dict) -> str:
+    return str(batch.get("worker_category") or "").strip().lower()
+
+
 def compute_display_status(batch: dict) -> str:
+    """W-2 stays Ready For Payroll until status is explicitly paid.
+
+    1099, Temp, and Try Out stay Ready To Pay until every worker is paid and
+    the batch status is then set to paid. Finalizing details, approving hours,
+    or sending a batch for processing does not mark it paid.
+    """
     st = str(batch.get("status") or "draft")
     if st in PAID_INTERNAL_STATUSES:
         return "paid"
-    finalized = bool(batch.get("payout_details_finalized_at"))
-    if finalized:
-        return "ready_to_pay"
     if st == "draft":
         return "draft"
+    cat = worker_category_key(batch)
+    approved = st in READY_FOR_PAYROLL_INTERNAL or bool(batch.get("payout_details_finalized_at"))
+    if cat == "w2":
+        return "ready_for_payroll" if approved else "draft"
+    if cat in PAYABLE_WORKER_CATEGORIES:
+        return "ready_to_pay" if approved else "draft"
+    if bool(batch.get("payout_details_finalized_at")):
+        return "ready_to_pay"
     if st in READY_FOR_PAYROLL_INTERNAL:
         return "ready_for_payroll"
     return "draft"
@@ -82,6 +100,8 @@ def compute_primary_action(batch: dict) -> dict[str, str]:
             return {"action": "enter_details", "label": "Enter Deductions & Payment"}
         return {"action": "enter_details", "label": "Enter Payroll Details"}
     if ds == "ready_to_pay":
+        if worker_category_key(batch) in PAYABLE_WORKER_CATEGORIES:
+            return {"action": "mark_paid", "label": "Pay All"}
         return {"action": "mark_paid", "label": "Mark Paid"}
     if ds == "paid":
         return {"action": "view_documents", "label": "View Documents"}

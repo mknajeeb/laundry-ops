@@ -652,6 +652,12 @@ export default function PayoutBatchesPanel({
 
   const runWorkflowAction = async (action, extra = {}) => {
     if (!selectedId) return;
+    const paymentConfirm = {
+      mark_paid: "Update payment status only? This does not send a bank or payroll payment.",
+      mark_line_paid: "Mark this worker paid? This updates payment status only and does not send a payment.",
+      mark_line_unpaid: "Mark this worker unpaid? This updates payment status only.",
+    };
+    if (paymentConfirm[action] && !window.confirm(paymentConfirm[action])) return;
     setError("");
     setInfo("");
     try {

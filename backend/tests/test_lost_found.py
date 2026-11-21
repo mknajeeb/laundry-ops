@@ -35,6 +35,7 @@ from backend.lost_found_rules import (
     validate_equipment,
     validate_location,
     validate_redry,
+    status_payload_unchanged,
     validate_status_change,
 )
 from backend.lost_found_routes import register_lost_found_routes
@@ -530,6 +531,16 @@ def test_status_rules_do_not_touch_orders():
     with pytest.raises(LostFoundError) as missing_reason:
         validate_status_change("resolved", reason="no")
     assert missing_reason.value.code == "reason_required"
+    current = {
+        "status": "under_review",
+        "order_reference": None,
+        "status_comment": "Looking",
+        "resolved_reason": None,
+    }
+    same = validate_status_change("under_review", comment="Looking", report_category="equipment")
+    assert status_payload_unchanged(current, same) is True
+    changed = validate_status_change("resolved", reason="Dryer repaired", comment="Looking", report_category="equipment")
+    assert status_payload_unchanged(current, changed) is False
     source = Path(__file__).resolve().parents[1].joinpath("lost_found.py").read_text(encoding="utf-8")
     assert "UPDATE orders" not in source
     assert "rinse_bag" not in source

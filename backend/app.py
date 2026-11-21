@@ -5045,7 +5045,12 @@ def attendance_pin_unlock():
                 return jsonify({"error": DENIED_MODULE_MESSAGE}), 403
             matched_roles = fetch_user_roles(cursor, matched["id"])
             rs = {str(r).upper() for r in matched_roles}
-            if rs & {"ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"}:
+            from backend.management_pin_access import HUB_ROLES, is_pin_management_module
+
+            if is_pin_management_module(pin_hub_module):
+                if not (rs & HUB_ROLES):
+                    return jsonify({"error": "Forbidden"}), 403
+            elif rs & {"ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"}:
                 return jsonify({"error": "Invalid PIN"}), 401
         else:
             cursor.execute(
@@ -5096,6 +5101,12 @@ def attendance_pin_unlock():
                     )
                 except MobilePinAccessDeniedError:
                     return jsonify({"error": DENIED_MODULE_MESSAGE}), 403
+            from backend.management_pin_access import HUB_ROLES, is_pin_management_module
+
+            if is_pin_management_module(pin_hub_module):
+                rs = {str(r).upper() for r in (matched_roles or [])}
+                if not (rs & HUB_ROLES):
+                    return jsonify({"error": "Forbidden"}), 403
 
         if matched.get("organization_logo_url"):
             matched["organization_logo_url"] = rewrite_org_logo_url_for_client(
