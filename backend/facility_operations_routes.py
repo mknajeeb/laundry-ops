@@ -169,14 +169,19 @@ def register_facility_operations_routes(app, *, require_user: Callable, user_org
         if not _manager(roles):
             conn.close()
             return jsonify({"error": "Forbidden"}), 403
-        week = normalize_week_start(request.args.get("week_start") or business_today().isoformat())
+        body = request.json or {}
+        week = normalize_week_start(
+            request.args.get("week_start") or body.get("week_start") or business_today().isoformat()
+        )
         try:
             tasks = list_task_definitions(cursor, int(org_id))
-            if request.method == "POST":
+            if request.method == "POST" and body.get("action") not in ("skip", "reschedule"):
+                from backend.task_recurrence import materialize_schedule_weeks
+
+                materialize_schedule_weeks(cursor, int(org_id), week)
                 generate_week(cursor, int(org_id), week, tasks)
                 conn.commit()
             rows = list_occurrences(cursor, int(org_id), week)
-            body = request.json or {}
             action = body.get("action") if request.method == "POST" else None
             if action in ("skip", "reschedule"):
                 key = str(body.get("recurrence_key") or "")

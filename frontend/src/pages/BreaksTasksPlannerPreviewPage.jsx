@@ -38,6 +38,8 @@ const PREVIEW_ROLES = [
     active: true,
     uses_time_slots: false,
   },
+  { code: "custom_bathroom_cleaning", name: "Bathroom Cleaning", display_order: 3, active: true, uses_time_slots: false },
+  { code: "custom_washer_deep_cleaning", name: "Washer Deep Cleaning", display_order: 4, active: true, uses_time_slots: false },
 ];
 
 export default function BreaksTasksPlannerPreviewPage() {
@@ -88,6 +90,32 @@ export default function BreaksTasksPlannerPreviewPage() {
       activity_status: "pending_approval",
       timing_label: "10:00 AM",
     },
+    {
+      id: 3,
+      user_id: 1,
+      day_of_week: 6,
+      role: "custom_washer_deep_cleaning",
+      remarks: "recurring:custom_washer_deep_cleaning:2026-11-09:slot:1",
+      recurrence_key: "custom_washer_deep_cleaning:2026-11-09:slot:1",
+      recurring: true,
+      occurrence_status: "pending_verification",
+      execution_mode: "individual",
+      activity_status: "pending_approval",
+      timing_label: "2:00 PM",
+    },
+    {
+      id: null,
+      user_id: 0,
+      day_of_week: null,
+      role: "custom_bathroom_cleaning",
+      remarks: "recurring:custom_bathroom_cleaning:2026-11-09:slot:1",
+      recurrence_key: "custom_bathroom_cleaning:2026-11-09:slot:1",
+      recurring: true,
+      unassigned_occurrence: true,
+      occurrence_status: "due",
+      execution_mode: "individual",
+      timing_label: "Unscheduled",
+    },
   ];
 
   return (
@@ -121,6 +149,13 @@ export default function BreaksTasksPlannerPreviewPage() {
           setAssignOpen(true);
         }}
         onMoveTask={() => setNotice("Reassign opened for this shared group.")}
+        onReconcileOccurrence={(request) =>
+          setNotice(
+            request.action === "skip"
+              ? "Skip recorded for this preview. The occurrence stays in history."
+              : "Reschedule recorded for this preview. The same occurrence is kept.",
+          )
+        }
       />
       <AssignTasksDialog
         open={assignOpen}

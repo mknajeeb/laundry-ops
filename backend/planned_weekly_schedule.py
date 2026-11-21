@@ -2455,6 +2455,19 @@ def build_week_payload(
 
     responsibilities = attach_checklist_responsibilities(cursor, organization_id, responsibilities)
     shown_week = display_monday or week_start
+    try:
+        from backend.task_recurrence import list_occurrences, materialize_schedule_weeks, schedule_occurrence_rows
+
+        materialize_schedule_weeks(cursor, organization_id, shown_week)
+        occurrence_rows = []
+        for storage in storage_weeks:
+            occurrence_rows.extend(list_occurrences(cursor, organization_id, storage))
+        for row in responsibilities:
+            if str(row.get("remarks") or "").startswith("recurring:"):
+                row["recurring"] = True
+        responsibilities = list(responsibilities) + schedule_occurrence_rows(occurrence_rows, responsibilities)
+    except Exception:
+        pass
     template_payload = (
         display_schedule_template_payload(cursor, organization_id, shown_week)
         if display_monday is not None

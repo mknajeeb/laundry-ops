@@ -588,6 +588,7 @@ export const attendancePinCleaningTasksReview = (organization_slug, pin, options
       ...(options.status ? { status: options.status } : {}),
       ...(options.user_id != null ? { user_id: options.user_id } : {}),
       ...(options.role ? { role: options.role } : {}),
+      ...(options.progress_date ? { progress_date: options.progress_date } : {}),
     }),
     _pinCleaningOpts,
   );
@@ -3423,6 +3424,9 @@ export const getManagementIssuesOrderContext = (bagId, orderInstanceId) =>
 
 export const getManagementIssues = (params = {}) =>
   axios.get(`${API_BASE}/api/management/issues`, { params, timeout: 20000 });
+
+export const reconcileTaskOccurrences = (body = {}) =>
+  axios.post(`${API_BASE}/api/management/task-occurrences`, body);
 
 export const getFacilityMachines = (params = {}, config = {}) =>
   axios.get(`${API_BASE}/api/facility-machines`, { params, ...config });

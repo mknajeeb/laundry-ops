@@ -1303,6 +1303,7 @@ def _finalize_completion(
             completed_at=at,
             completion_input=completion_input,
             verified=final_status == "approved",
+            occurrence_key=str(row.get("assignment_group_id") or "") or None,
         )
     except Exception:
         pass

@@ -158,7 +158,10 @@ export function buildTaskGroups(responsibilities, employeesById = {}) {
         groupId: item.assignment_group_id || null,
         role: item.role,
         label: scheduleRoleLabel(item.role),
-        day: Number(item.day_of_week),
+        day: item.day_of_week == null ? -1 : Number(item.day_of_week),
+        recurring: Boolean(item.recurring || item.unassigned_occurrence),
+        occurrenceStatus: item.occurrence_status || null,
+        recurrenceKey: item.recurrence_key || null,
         timingLabel: item.timing_label || "",
         executionMode: item.execution_mode || "individual",
         shared: String(item.execution_mode || "") === "shared",
@@ -167,6 +170,7 @@ export function buildTaskGroups(responsibilities, employeesById = {}) {
     }
     const group = groups.get(key);
     const userId = Number(item.user_id);
+    if (!userId || item.unassigned_occurrence) continue;
     if (group.members.some((member) => member.userId === userId)) continue;
     const status = item.activity_status || null;
     group.members.push({
@@ -198,7 +202,7 @@ export function taskGroupCounts(group, employees = []) {
 
 export function filterTaskGroups(groups, { day = null, role = "", userId = null, status = "", scope = "day" } = {}) {
   return (groups || []).filter((group) => {
-    if (scope !== "week" && day != null && group.day !== Number(day)) return false;
+    if (scope !== "week" && day != null && group.day !== Number(day) && group.day !== -1) return false;
     if (role && group.role !== role) return false;
     if (userId != null && !group.members.some((member) => member.userId === Number(userId))) return false;
     if (status === "not_started") return group.members.every((member) => member.state === "assigned");

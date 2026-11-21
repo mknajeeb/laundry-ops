@@ -97,6 +97,12 @@ import PinPayrollPage from "./pages/PinPayrollPage";
 import PinDashboardPage from "./pages/PinDashboardPage";
 import PinMachinesPage, { DevPinMachinesPreviewPage } from "./pages/PinMachinesPage";
 import {
+  DevFacilityMachineSelectPreviewPage,
+  DevFacilityProgressPreviewPage,
+  DevFacilityReportPreviewPage,
+  DevFacilityTaskConfigPreviewPage,
+} from "./pages/DevFacilityWorkflowPreviewPage";
+import {
   DevPinDashboardPreviewPage,
   DevPinPayrollPreviewPage,
   DevPinScanPreviewPage,
@@ -312,7 +318,11 @@ function isDevPreviewRoute(path) {
     p === "/dev/pin-scan" ||
     p === "/dev/pin-payroll" ||
     p === "/dev/pin-dashboard" ||
-    p === "/dev/pin-machines"
+    p === "/dev/pin-machines" ||
+    p === "/dev/facility-task-config" ||
+    p === "/dev/facility-progress" ||
+    p === "/dev/facility-machine-select" ||
+    p === "/dev/facility-report"
   );
 }
 
@@ -899,6 +909,10 @@ function AppShell() {
         <Route path="/dev/pin-payroll" element={<DevPinPayrollPreviewPage />} />
         <Route path="/dev/pin-dashboard" element={<DevPinDashboardPreviewPage />} />
         <Route path="/dev/pin-machines" element={<DevPinMachinesPreviewPage />} />
+        <Route path="/dev/facility-task-config" element={<DevFacilityTaskConfigPreviewPage />} />
+        <Route path="/dev/facility-progress" element={<DevFacilityProgressPreviewPage />} />
+        <Route path="/dev/facility-machine-select" element={<DevFacilityMachineSelectPreviewPage />} />
+        <Route path="/dev/facility-report" element={<DevFacilityReportPreviewPage />} />
       </Routes>
     );
   }

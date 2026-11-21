@@ -9,8 +9,11 @@ from backend.task_recurrence import (
     machine_codes_from_completion,
     machine_week_targets,
     normalize_recurrence,
+    occurrence_key,
     plan_slots,
+    reconcile_open_slots,
     reschedule_slot,
+    schedule_occurrence_rows,
     skip_slot,
     unique_machine_codes,
     weekly_task_progress,
@@ -52,6 +55,50 @@ def test_generation_is_idempotent_and_keeps_completed_slots():
     assert moved["day_of_week"] == 2
     skipped = skip_slot(first[1], "Holiday")
     assert skipped["status"] == "skipped"
+
+
+def test_weekday_change_keeps_the_slot_and_frequency_drop_cancels_only_open_slots():
+    planned = plan_slots(
+        normalize_recurrence({"mode": "recurring", "weekly_frequency": 2, "weekdays": [1, 3]}),
+        WEEK,
+    )
+    existing = apply_generation([], planned, task_code="custom_facility_mopping", week_start=WEEK)
+    moved = plan_slots(
+        normalize_recurrence({"mode": "recurring", "weekly_frequency": 1, "weekdays": [2]}),
+        WEEK,
+    )
+    assert occurrence_key("custom_facility_mopping", WEEK, planned[0]) == occurrence_key(
+        "custom_facility_mopping", WEEK, moved[0]
+    )
+    updates = reconcile_open_slots(existing, moved, task_code="custom_facility_mopping", week_start=WEEK)
+    by_key = {row["recurrence_key"]: row for row in updates}
+    assert by_key[existing[0]["recurrence_key"]]["day_of_week"] == 2
+    assert by_key[existing[1]["recurrence_key"]]["status"] == "cancelled"
+    completed = dict(existing[1])
+    completed["status"] = "completed"
+    kept = reconcile_open_slots([existing[0], completed], moved, task_code="custom_facility_mopping", week_start=WEEK)
+    assert completed["recurrence_key"] not in {row["recurrence_key"] for row in kept}
+
+
+def test_unassigned_occurrences_are_planner_rows_and_assigned_ones_are_not_duplicated():
+    occurrence = {
+        "task_code": "custom_bathroom_cleaning",
+        "recurrence_key": "custom_bathroom_cleaning:2026-11-15:slot:1",
+        "status": "due",
+        "day_of_week": None,
+    }
+    assigned = {
+        "user_id": 7,
+        "role": "custom_bathroom_cleaning",
+        "remarks": "recurring:custom_bathroom_cleaning:2026-11-15:slot:1",
+    }
+    rows = schedule_occurrence_rows([occurrence], [assigned])
+    assert rows == []
+    assert assigned["recurring"] is True
+    open_rows = schedule_occurrence_rows([occurrence], [])
+    assert open_rows[0]["unassigned_occurrence"] is True
+    assert open_rows[0]["user_id"] == 0
+    assert open_rows[0]["day_of_week"] is None
 
 
 def test_shared_occurrence_does_not_inflate_the_weekly_target():

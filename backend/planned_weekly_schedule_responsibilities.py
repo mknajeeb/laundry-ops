@@ -1632,14 +1632,25 @@ def copy_week_responsibilities(
     seed_sunday_from_saturday: bool,
 ) -> int:
     """Copy responsibilities into the target week (same Sat→Sun seeding rule as planned entries)."""
-    source = list_week_responsibilities(cursor, organization_id, week_start=source_week_start)
+    source = [
+        item
+        for item in list_week_responsibilities(cursor, organization_id, week_start=source_week_start)
+        if not str(item.get("remarks") or "").startswith("recurring:")
+    ]
     rows = responsibility_copy_rows(
         source,
         valid_user_ids=valid_user_ids,
         seed_sunday_from_saturday=seed_sunday_from_saturday
         and not any(item["day_of_week"] == 0 for item in source),
     )
-    return insert_responsibility_rows(cursor, organization_id, week_start=target_week_start, rows=rows)
+    copied = insert_responsibility_rows(cursor, organization_id, week_start=target_week_start, rows=rows)
+    try:
+        from backend.task_recurrence import materialize_schedule_weeks
+
+        materialize_schedule_weeks(cursor, organization_id, target_week_start)
+    except Exception:
+        pass
+    return copied
 
 
 def responsibility_copy_rows(

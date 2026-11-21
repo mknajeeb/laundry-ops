@@ -769,6 +769,7 @@ def register_cleaning_task_activity_routes(
                 return jsonify({"ok": False, "error": "Supervisor task review is not available for this PIN."}), 403
             data = request.json or {}
             day = _parse_date(data.get("business_date")) or business_today()
+            progress_day = _parse_date(data.get("progress_date")) or day
             payload = list_supervisor_queue(
                 cursor,
                 int(ctx["org_id"]),
@@ -777,6 +778,114 @@ def register_cleaning_task_activity_routes(
                 user_id=int(data["user_id"]) if data.get("user_id") not in (None, "") else None,
                 role=str(data["role"]).strip() if data.get("role") else None,
             )
+            try:
+                from backend.facility_cleaning import CATEGORY_CODE
+                from backend.facility_machines import list_exclusions, list_machines
+                from backend.task_catalog import list_task_definitions
+                from backend.task_recurrence import (
+                    MACHINE_CLEANINGS,
+                    list_occurrences,
+                    machine_week_targets,
+                    materialize_schedule_weeks,
+                    weekly_task_progress,
+                )
+                from backend.planned_weekly_schedule import normalize_week_start
+
+                materialize_schedule_weeks(cursor, int(ctx["org_id"]), progress_day)
+                week = normalize_week_start(progress_day)
+                tasks = [
+                    task
+                    for task in list_task_definitions(cursor, int(ctx["org_id"]))
+                    if task.get("category_code") == CATEGORY_CODE or (task.get("recurrence") or {}).get("mode") == "recurring"
+                ]
+                occurrences = list_occurrences(cursor, int(ctx["org_id"]), week) if week else []
+                progress = []
+                for task in tasks:
+                    rule = task.get("recurrence") or {}
+                    mine = [row for row in occurrences if row.get("task_code") == task.get("code")]
+                    if rule.get("mode") != "recurring" and not mine:
+                        continue
+                    item = {
+                        "task_code": task.get("code"),
+                        "name": task.get("name"),
+                        "recurring": rule.get("mode") == "recurring",
+                        "assignee_user_ids": rule.get("assignee_user_ids") or [],
+                        **weekly_task_progress(
+                            frequency=int(rule.get("weekly_frequency") or 1),
+                            occurrences=mine,
+                            today=business_today(),
+                        ),
+                    }
+                    if week and ("washer" in str(task.get("code")) or "dryer" in str(task.get("code"))):
+                        from datetime import timedelta
+                        from backend.rinse_scan_time import system_datetime_to_et
+
+                        kind = "washer" if "washer" in str(task.get("code")) else "dryer"
+                        machines = list_machines(cursor, int(ctx["org_id"]), machine_type=kind)
+                        cursor.execute(
+                            f"SELECT machine_code, occurrence_key, user_id, verified, completed_at FROM {MACHINE_CLEANINGS} WHERE organization_id=%s AND task_code=%s",
+                            (int(ctx["org_id"]), task.get("code")),
+                        )
+                        cleanings = []
+                        for row in cursor.fetchall() or []:
+                            if not isinstance(row, dict):
+                                continue
+                            completed = system_datetime_to_et(row.get("completed_at"))
+                            if completed and week <= completed.date() < week + timedelta(days=7):
+                                cleanings.append(row)
+                        exclusions = list_exclusions(cursor, int(ctx["org_id"]))
+                        targets = machine_week_targets(
+                            machines,
+                            cleanings,
+                            exclusions,
+                            frequency=int(rule.get("weekly_frequency") or 1),
+                            week_start=week,
+                        )
+                        by_code = {str(machine.get("machine_code") or ""): machine for machine in machines}
+                        shown = []
+                        for row in targets["machines"]:
+                            machine = by_code.get(row["machine_code"], {})
+                            shown.append({**row, "display_number": machine.get("display_number") or row["machine_code"], "excluded": False})
+                        included = {row["machine_code"] for row in shown}
+                        for machine in machines:
+                            code = str(machine.get("machine_code") or "")
+                            if code in included:
+                                continue
+                            shown.append(
+                                {
+                                    "machine_code": code,
+                                    "display_number": machine.get("display_number") or code,
+                                    "excluded": True,
+                                    "reason": machine.get("exclusion_reason") or machine.get("operational_status") or "Not eligible",
+                                    "remaining": 0,
+                                    "employees": [],
+                                }
+                            )
+                        item["machines"] = shown
+                    progress.append(item)
+                names = {}
+                try:
+                    assignee_ids = sorted({int(uid) for item in progress for uid in (item.get("assignee_user_ids") or []) if uid})
+                    if assignee_ids:
+                        marks = ",".join(["%s"] * len(assignee_ids))
+                        cursor.execute(
+                            f"SELECT id, display_name FROM users WHERE id IN ({marks})",
+                            tuple(assignee_ids),
+                        )
+                        for row in cursor.fetchall() or []:
+                            if isinstance(row, dict) and row.get("id"):
+                                names[int(row["id"])] = row.get("display_name") or f"Employee {row['id']}"
+                except Exception:
+                    names = {}
+                for item in progress:
+                    item["assignees"] = [names.get(int(uid), f"Employee {uid}") for uid in (item.get("assignee_user_ids") or [])]
+                payload["facility_progress"] = {
+                    "week_start": week.isoformat() if week else None,
+                    "tasks": progress,
+                    "exclusions": list_exclusions(cursor, int(ctx["org_id"])),
+                }
+            except Exception:
+                payload["facility_progress"] = None
             conn.commit()
             return jsonify({"ok": True, "supervisor_id": int(ctx["user_id"]), **payload})
         except CleaningTaskError as exc:
@@ -1943,6 +2052,12 @@ def register_cleaning_task_activity_routes(
             data = request.json or {}
             code = str(data.get("code") or "").strip()
             row = upsert_task_definition(cursor, int(org_id), code, data)
+            try:
+                from backend.task_recurrence import materialize_schedule_weeks
+
+                materialize_schedule_weeks(cursor, int(org_id), business_today())
+            except Exception:
+                pass
             conn.commit()
             return jsonify({"ok": True, "task": row})
         except TaskCatalogError as exc:

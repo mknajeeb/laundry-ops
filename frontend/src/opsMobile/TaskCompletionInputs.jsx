@@ -331,21 +331,24 @@ export default function TaskCompletionInputs({
               <Stack spacing={0.75}>
                 {shown.map((machine) => {
                   const on = selected.includes(machine.machine_code);
+                  const excluded = Boolean(machine.exclusion_reason) || machine.cleaning_eligible === false || machine.operational_status === "retired";
+                  const label = excluded ? "Excluded" : on ? "Selected" : machine.cleaned_this_week ? "Completed" : "Due";
                   return (
                     <Button
                       key={machine.machine_code}
                       variant={on ? "contained" : "outlined"}
-                      disabled={disabled || machine.operational_status === "retired"}
+                      color={excluded ? "inherit" : machine.cleaned_this_week && !on ? "success" : "primary"}
+                      disabled={disabled || excluded}
                       onClick={() => {
                         const next = on
                           ? selected.filter((code) => code !== machine.machine_code)
                           : [...selected, machine.machine_code];
                         onChangeValues?.({ ...values, [field.id]: [...new Set(next)] });
                       }}
-                      sx={{ justifyContent: "space-between", textTransform: "none", minHeight: 44 }}
+                      sx={{ justifyContent: "space-between", textTransform: "none", minHeight: 44, gap: 1 }}
                     >
                       <span>{machine.display_number}</span>
-                      <span>{machine.operational_status === "operational" ? (on ? "Selected" : "Due") : machine.operational_status}</span>
+                      <span>{label}{machine.exclusion_reason ? ` · ${machine.exclusion_reason}` : ""}</span>
                     </Button>
                   );
                 })}

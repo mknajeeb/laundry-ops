@@ -24,6 +24,58 @@ import {
   pinHubMenuPath,
 } from "../utils/pinHubSession";
 
+function shiftIsoDate(iso, days) {
+  const [year, month, day] = String(iso || "").split("-").map(Number);
+  const next = new Date(year, (month || 1) - 1, (day || 1) + days);
+  const mm = String(next.getMonth() + 1).padStart(2, "0");
+  const dd = String(next.getDate()).padStart(2, "0");
+  return `${next.getFullYear()}-${mm}-${dd}`;
+}
+
+export function FacilityProgress({ progress, date, onShift }) {
+  const tasks = progress?.tasks || [];
+  return (
+    <Box sx={{ mb: 2, p: 1.25, border: "1px solid #dbe3ef", borderRadius: 2, bgcolor: "#fff" }}>
+      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+        <Button size="small" onClick={() => onShift?.(-7)}>Previous week</Button>
+        <Typography fontWeight={800}>Cleaning progress · {progress?.week_start || date}</Typography>
+        <Button size="small" onClick={() => onShift?.(7)}>Next week</Button>
+      </Stack>
+      {!tasks.length ? (
+        <Typography variant="body2">No recurring facility tasks for this week.</Typography>
+      ) : (
+        tasks.map((task) => (
+          <Box key={task.task_code} sx={{ py: 0.75, borderTop: "1px solid #eef2f7" }}>
+            <Typography fontWeight={800}>{task.name || task.task_code}</Typography>
+            <Typography variant="body2">
+              {`Required ${task.required || 0} · Completed ${task.completed || 0} · Verified ${task.verified || 0} · Pending ${task.pending_verification || 0} · Skipped ${task.skipped || 0} · Remaining ${task.remaining || 0}`}
+            </Typography>
+            {task.overdue ? <Typography variant="body2" color="error">{`${task.overdue} overdue`}</Typography> : null}
+            <Typography variant="caption" component="div">
+              {(task.assignees || []).length ? `Assigned employees: ${task.assignees.join(", ")}` : "Unassigned"}
+            </Typography>
+            {(task.machines || []).length ? (
+              <Typography variant="caption" component="div">
+                {(task.machines || [])
+                  .map((machine) => {
+                    const state = machine.excluded ? `Excluded${machine.reason ? ` (${machine.reason})` : ""}` : machine.remaining ? "Due" : "Completed";
+                    return `${machine.display_number || machine.machine_code} ${state}`;
+                  })
+                  .join(" · ")}
+              </Typography>
+            ) : null}
+          </Box>
+        ))
+      )}
+      {(progress?.exclusions || []).length ? (
+        <Typography variant="caption" component="div" sx={{ mt: 1 }}>
+          {`Excluded machines: ${progress.exclusions.map((row) => `${row.machine_code} (${row.reason || "excluded"})`).join(", ")}`}
+        </Typography>
+      ) : null}
+    </Box>
+  );
+}
+
 function ReviewGroup({ label, count, startOpen, children }) {
   const [open, setOpen] = useState(startOpen);
   return (
@@ -75,6 +127,7 @@ export default function CleaningTaskReviewPinPage() {
   const [error, setError] = useState("");
   const [queue, setQueue] = useState(null);
   const [notice, setNotice] = useState("");
+  const [progressDate, setProgressDate] = useState(() => new Date().toISOString().slice(0, 10));
 
   const goHub = useCallback(() => {
     navigate(pinHubMenuPath(slug || hub?.organization_slug || ""), { replace: true });
@@ -95,7 +148,10 @@ export default function CleaningTaskReviewPinPage() {
     setError("");
     setNotice("");
     try {
-      const res = await attendancePinCleaningTasksReview(slug, hub.pin, { hubToken: hub.token });
+      const res = await attendancePinCleaningTasksReview(slug, hub.pin, {
+        hubToken: hub.token,
+        progress_date: progressDate,
+      });
       const body = res?.data || {};
       if (!body.ok) throw new Error(body.error || t("tasks.pin.loadReview"));
       setQueue(body);
@@ -104,7 +160,7 @@ export default function CleaningTaskReviewPinPage() {
     } finally {
       setLoading(false);
     }
-  }, [hub, slug, t]);
+  }, [hub, slug, t, progressDate]);
 
   useEffect(() => {
     load();
@@ -195,6 +251,13 @@ export default function CleaningTaskReviewPinPage() {
         identity={hub.employee_first_name || hub.employee_name || ""}
         right={<OpsLocaleToggle />}
       />
+          <FacilityProgress
+            progress={queue?.facility_progress}
+            date={progressDate}
+            onShift={(days) => {
+              setProgressDate(shiftIsoDate(progressDate, days));
+            }}
+          />
           {notice ? (
         <Alert severity="success" sx={{ mb: 1.5 }}>
           {notice}

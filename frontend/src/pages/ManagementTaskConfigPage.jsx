@@ -27,6 +27,7 @@ import {
   groupActivitiesByCategory,
   isOperationalActivity,
 } from "../components/tasks/taskManagementLists";
+import TaskRecurrenceFields from "../components/tasks/TaskRecurrenceFields";
 import VerifyingScheduleRoleField from "../components/tasks/VerifyingScheduleRoleField";
 import {
   getEndOfDayClosingTemplate,
@@ -39,6 +40,7 @@ import {
   upsertManagementTaskActivityGroup,
   upsertManagementTaskVerificationPolicy,
   updateManagementTaskCategory,
+  reconcileTaskOccurrences,
 } from "../api";
 
 function schemaToText(schema) {
@@ -77,6 +79,7 @@ export default function ManagementTaskConfigPage() {
   const { locale, t } = useI18n();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [okMsg, setOkMsg] = useState("");
   const [categories, setCategories] = useState([]);
   const [tasks, setTasks] = useState([]);
@@ -438,6 +441,11 @@ export default function ManagementTaskConfigPage() {
           {t("tasks.config.openDashboard")}
         </Button>
       </Stack>
+      {notice ? (
+        <Alert severity="success" sx={{ mb: 2 }} onClose={() => setNotice("")}>
+          {notice}
+        </Alert>
+      ) : null}
       {error ? (
         <Alert severity="error" sx={{ mb: 2 }}>
           {error}
@@ -1197,60 +1205,22 @@ export default function ManagementTaskConfigPage() {
                   }
                   label={t("tasks.config.active")}
                 />
-                <Typography fontWeight={800}>Recurrence</Typography>
-                <TextField
-                  select
-                  size="small"
-                  label="Assignment"
-                  value={draft.recurrence?.mode || "manual"}
-                  onChange={(e) =>
-                    setDraft({ ...draft, recurrence: { ...(draft.recurrence || {}), mode: e.target.value } })
-                  }
-                >
-                  <MenuItem value="manual">Manual assignment</MenuItem>
-                  <MenuItem value="recurring">Recurring</MenuItem>
-                </TextField>
-                <TextField
-                  size="small"
-                  type="number"
-                  label="Times per week"
-                  value={draft.recurrence?.weekly_frequency || 1}
-                  onChange={(e) =>
-                    setDraft({
-                      ...draft,
-                      recurrence: { ...(draft.recurrence || {}), weekly_frequency: Number(e.target.value) || 1 },
-                    })
-                  }
-                  inputProps={{ min: 1, max: 14 }}
-                />
-                <TextField
-                  size="small"
-                  label="Preferred weekdays (0=Sun … 6=Sat)"
-                  value={(draft.recurrence?.weekdays || []).join(", ")}
-                  onChange={(e) =>
-                    setDraft({
-                      ...draft,
-                      recurrence: {
-                        ...(draft.recurrence || {}),
-                        weekdays: e.target.value
-                          .split(",")
-                          .map((part) => Number(part.trim()))
-                          .filter((day) => day >= 0 && day <= 6),
-                      },
-                    })
-                  }
-                  helperText="Leave blank to keep a weekly target without generating dates."
-                />
-                <FormControlLabel
-                  control={
-                    <Switch
-                      checked={!!draft.recurrence?.paused}
-                      onChange={(e) =>
-                        setDraft({ ...draft, recurrence: { ...(draft.recurrence || {}), paused: e.target.checked } })
-                      }
-                    />
-                  }
-                  label="Paused"
+                <TaskRecurrenceFields
+                  draft={draft}
+                  setDraft={setDraft}
+                  assignees={assignees}
+                  busy={busy}
+                  onReconcile={async () => {
+                    setBusy(true);
+                    try {
+                      await reconcileTaskOccurrences({});
+                      setNotice("Occurrences reconciled for the current, previous, and next weeks.");
+                    } catch (err) {
+                      setError(err?.response?.data?.error || "Could not reconcile occurrences.");
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
                 />
                 <Stack direction="row" spacing={1}>
                   <Button variant="contained" disabled={busy} onClick={saveTask}>

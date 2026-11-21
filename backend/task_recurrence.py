@@ -122,8 +122,8 @@ def plan_slots(recurrence: Mapping[str, Any], week_start: date) -> list[dict[str
 
 
 def occurrence_key(task_code: str, week_start: date, slot: Mapping[str, Any]) -> str:
-    day = "open" if slot.get("day_of_week") is None else str(int(slot["day_of_week"]))
-    return f"{task_code}:{week_start.isoformat()}:{day}:{int(slot.get('slot_index') or 1)}"
+    """Stable for the week and slot. Moving the day does not create another requirement."""
+    return f"{task_code}:{week_start.isoformat()}:slot:{int(slot.get('slot_index') or 1)}"
 
 
 def apply_generation(
@@ -152,6 +152,47 @@ def apply_generation(
         )
         known.add(key)
     return created
+
+
+def reconcile_open_slots(
+    existing: Sequence[Mapping[str, Any]],
+    planned: Sequence[Mapping[str, Any]],
+    *,
+    task_code: str,
+    week_start: date,
+) -> list[dict[str, Any]]:
+    """Move or retire open slots when frequency or weekdays change. Completed slots stay."""
+    planned_by_key = {occurrence_key(task_code, week_start, slot): slot for slot in planned}
+    updates: list[dict[str, Any]] = []
+    for row in existing:
+        key = str(row.get("recurrence_key") or "")
+        status = str(row.get("status") or "")
+        if status not in OPEN_STATUSES:
+            continue
+        slot = planned_by_key.get(key)
+        if not slot:
+            updates.append(
+                {
+                    "recurrence_key": key,
+                    "status": "cancelled",
+                    "day_of_week": row.get("day_of_week"),
+                    "skip_reason": "No longer required",
+                }
+            )
+            continue
+        new_day = slot.get("day_of_week")
+        new_status = "scheduled" if slot.get("scheduled") else "due"
+        old_day = row.get("day_of_week")
+        if old_day != new_day or status != new_status:
+            updates.append(
+                {
+                    "recurrence_key": key,
+                    "status": new_status,
+                    "day_of_week": new_day,
+                    "skip_reason": None,
+                }
+            )
+    return updates
 
 
 def reschedule_slot(row: Mapping[str, Any], day_of_week: int, reason: str) -> dict[str, Any]:
@@ -408,7 +449,26 @@ def generate_week(cursor, organization_id: int, week_start: date, tasks: Sequenc
         rule = normalize_recurrence(task.get("recurrence"))
         if not code or rule["mode"] != "recurring":
             continue
+        if rule["paused"] or not rule["active"]:
+            continue
         planned = plan_slots(rule, week)
+        existing = list_occurrences(cursor, organization_id, week, code)
+        for update in reconcile_open_slots(existing, planned, task_code=code, week_start=week):
+            cursor.execute(
+                f"""
+                UPDATE {OCCURRENCES}
+                SET status=%s, day_of_week=%s, skip_reason=%s
+                WHERE organization_id=%s AND recurrence_key=%s
+                  AND status IN ('due', 'scheduled')
+                """,
+                (
+                    update["status"],
+                    update.get("day_of_week"),
+                    update.get("skip_reason"),
+                    int(organization_id),
+                    update["recurrence_key"],
+                ),
+            )
         existing = list_occurrences(cursor, organization_id, week, code)
         fresh = apply_generation(existing, planned, task_code=code, week_start=week)
         for row in fresh:
@@ -445,7 +505,17 @@ def _assign_defined_employees(cursor, organization_id, week, code, rule, row) ->
     start = window.get("start") or None
     rows = []
     for uid in rule["assignee_user_ids"]:
-        rows.append((uid, int(row["day_of_week"]), code, None, row["recurrence_key"][:36], "specific_time" if start else "anytime", start))
+        rows.append(
+            (
+                uid,
+                int(row["day_of_week"]),
+                code,
+                f"recurring:{row['recurrence_key']}",
+                row["recurrence_key"][:36],
+                "specific_time" if start else "anytime",
+                start,
+            )
+        )
     insert_responsibility_rows(cursor, int(organization_id), week_start=week, rows=rows)
 
 
@@ -459,13 +529,14 @@ def record_machine_cleanings(
     completed_at: datetime,
     completion_input: Any,
     verified: bool = False,
+    occurrence_key: str | None = None,
 ) -> list[str]:
     """Store one row per machine on this activity. Repeating a machine does not add another cleaning."""
     codes = machine_codes_from_completion(completion_input)
     if not codes:
         return []
     ensure_recurrence_tables(cursor)
-    occurrence_key = f"activity:{int(activity_id)}"
+    occurrence_key = str(occurrence_key or "").strip() or f"activity:{int(activity_id)}"
     for code in codes:
         cursor.execute(
             f"""
@@ -486,3 +557,71 @@ def record_machine_cleanings(
             ),
         )
     return codes
+
+
+def materialize_schedule_weeks(cursor, organization_id: int, *anchors: Any) -> int:
+    """Create missing occurrences for the current, previous, next, and viewed weeks."""
+    from backend.business_time import business_today
+    from backend.task_catalog import list_task_definitions
+
+    weeks: list[date] = []
+    seeds: list[Any] = [business_today(), business_today() - timedelta(days=7), business_today() + timedelta(days=7)]
+    seeds.extend(anchors)
+    for raw in seeds:
+        week = normalize_week_start(raw if isinstance(raw, date) else str(raw or ""))
+        if week and week not in weeks:
+            weeks.append(week)
+    tasks = list_task_definitions(cursor, int(organization_id))
+    created = 0
+    for week in weeks:
+        created += len(generate_week(cursor, int(organization_id), week, tasks))
+    return created
+
+
+def schedule_occurrence_rows(
+    occurrences: Sequence[Mapping[str, Any]],
+    responsibilities: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Unassigned recurring slots for the planner. Assigned slots stay on responsibility rows."""
+    placed = set()
+    for item in responsibilities:
+        remarks = str(item.get("remarks") or "")
+        if remarks.startswith("recurring:"):
+            placed.add(remarks.split(":", 1)[1])
+            item_copy = item
+            if isinstance(item_copy, dict):
+                item_copy["recurring"] = True
+    rows: list[dict[str, Any]] = []
+    for occ in occurrences:
+        status = str(occ.get("status") or "")
+        key = str(occ.get("recurrence_key") or "")
+        if status in ("cancelled",) or not key or key in placed:
+            continue
+        day = occ.get("day_of_week")
+        activity = None
+        if status == "verified":
+            activity = "approved"
+        elif status == "completed":
+            activity = "completed"
+        elif status == "pending_verification":
+            activity = "pending_approval"
+        rows.append(
+            {
+                "id": None,
+                "user_id": 0,
+                "day_of_week": int(day) if day is not None else None,
+                "role": occ.get("task_code"),
+                "remarks": f"recurring:{key}",
+                "assignment_group_id": key,
+                "timing_mode": "anytime",
+                "timing_label": "Unscheduled" if day is None else "Any time",
+                "execution_mode": "individual",
+                "activity_status": activity,
+                "recurring": True,
+                "unassigned_occurrence": True,
+                "occurrence_status": status,
+                "recurrence_key": key,
+                "display_order": 0,
+            }
+        )
+    return rows

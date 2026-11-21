@@ -158,7 +158,38 @@ def list_machines(cursor, organization_id: int, *, machine_type: str | None = No
         params.append(status)
     sql += " ORDER BY machine_type, display_number"
     cursor.execute(sql, tuple(params))
-    return [_public_machine(row) for row in (cursor.fetchall() or []) if isinstance(row, dict)]
+    rows = [_public_machine(row) for row in (cursor.fetchall() or []) if isinstance(row, dict)]
+    reasons = {}
+    for exclusion in list_exclusions(cursor, int(organization_id)):
+        reasons.setdefault(str(exclusion.get("machine_code") or ""), str(exclusion.get("reason") or ""))
+    cleaned = set()
+    if table_exists(cursor, "task_machine_cleanings"):
+        from backend.business_time import business_today
+        from backend.planned_weekly_schedule import normalize_week_start
+        from backend.rinse_scan_time import system_datetime_to_et
+
+        week = normalize_week_start(business_today())
+        cursor.execute(
+            """
+            SELECT machine_code, completed_at FROM task_machine_cleanings
+            WHERE organization_id=%s
+            """,
+            (int(organization_id),),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            completed = system_datetime_to_et(row.get("completed_at"))
+            if not completed or not week or normalize_week_start(completed.date()) != week:
+                continue
+            if row.get("machine_code"):
+                cleaned.add(str(row["machine_code"]))
+    for row in rows:
+        row["exclusion_reason"] = reasons.get(row["machine_code"])
+        if row["exclusion_reason"]:
+            row["cleaning_eligible"] = False
+        row["cleaned_this_week"] = row["machine_code"] in cleaned
+    return rows
 
 
 def _public_machine(row: Mapping[str, Any]) -> dict[str, Any]:

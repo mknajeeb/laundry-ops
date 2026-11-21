@@ -200,6 +200,7 @@ export default function BreaksTasksPlanner({
   onEditResponsibility,
   onAssign,
   onMoveTask,
+  onReconcileOccurrence,
 }) {
   const { t } = useI18n();
   const [showWeek, setShowWeek] = useState(false);
@@ -487,10 +488,10 @@ export default function BreaksTasksPlanner({
                 sx={{ border: "1px solid #e2e8f0", borderRadius: 1, p: 1, cursor: "pointer", bgcolor: selectedKey === group.key ? "#f0fdfa" : "#fff" }}
               >
                 <Typography sx={{ fontWeight: 800, fontSize: "0.86rem" }}>
-                  {`${group.label} · ${DAY_LABELS[group.day]}${group.shared ? ` · ${t("weeklySchedule.planner.shared")}` : ""}`}
+                  {`${group.label} · ${group.day < 0 ? "Unscheduled" : DAY_LABELS[group.day]}${group.recurring ? " · Recurring" : " · Manual"}${group.shared ? ` · ${t("weeklySchedule.planner.shared")}` : ""}`}
                 </Typography>
                 <Typography variant="caption">
-                  {`${counts.assigned} assigned · ${counts.started} started · ${counts.completed} completed · ${counts.awaiting} awaiting verification`}
+                  {`${group.members.length ? `${counts.assigned} assigned` : "Unassigned"} · ${counts.started} started · ${counts.completed} completed · ${counts.awaiting} awaiting verification${group.occurrenceStatus ? ` · ${group.occurrenceStatus}` : ""}`}
                 </Typography>
               </Box>
             );
@@ -539,7 +540,13 @@ export default function BreaksTasksPlanner({
                 )) : <Typography variant="caption">{t("weeklySchedule.planner.noHistory")}</Typography>
               ) : null}
               <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: 1 }}>
-                <Button size="small" variant="contained" onClick={() => onAssign?.({ day: selected.day, role: selected.role })}>{t("weeklySchedule.assign")}</Button>
+                <Button size="small" variant="contained" onClick={() => onAssign?.({ day: selected.day < 0 ? null : selected.day, role: selected.role, recurrenceKey: selected.recurrenceKey })}>{t("weeklySchedule.assign")}</Button>
+                {selected.recurrenceKey ? (
+                  <>
+                    <Button size="small" onClick={() => onReconcileOccurrence?.({ action: "skip", recurrenceKey: selected.recurrenceKey })}>Skip</Button>
+                    <Button size="small" onClick={() => onReconcileOccurrence?.({ action: "reschedule", recurrenceKey: selected.recurrenceKey, day: selected.day })}>Reschedule</Button>
+                  </>
+                ) : null}
                 <Button size="small" onClick={() => onMoveTask?.(selected.members[0] ? { id: selected.members[0].responsibilityId, ...selected } : selected)}>{t("weeklySchedule.planner.reassign")}</Button>
                 <Button size="small" onClick={() => onEditResponsibility?.({ id: selected.id, role: selected.role, day_of_week: selected.day, user_id: selected.members[0]?.userId })}>{t("weeklySchedule.planner.edit")}</Button>
                 <Button

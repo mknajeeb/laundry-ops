@@ -565,7 +565,9 @@ export default function WeeklySchedulePage() {
   /** Daily responsibilities follow the employee's tab (they carry no shift employer of their own). */
   const tabResponsibilities = useMemo(() => {
     const ids = new Set([...shiftTabEmployees, ...addableForTab].map((e) => Number(e.user_id)));
-    return (data?.daily_responsibilities || []).filter((item) => ids.has(Number(item.user_id)));
+    return (data?.daily_responsibilities || []).filter(
+      (item) => item.unassigned_occurrence || ids.has(Number(item.user_id)),
+    );
   }, [data?.daily_responsibilities, shiftTabEmployees, addableForTab]);
 
   const tabEmployees = useMemo(() => {
@@ -822,7 +824,10 @@ export default function WeeklySchedulePage() {
     [tabEntries, breaksRosterIds],
   );
   const plannerResponsibilities = useMemo(
-    () => tabResponsibilities.filter((item) => breaksRosterIds.has(Number(item.user_id))),
+    () =>
+      tabResponsibilities.filter(
+        (item) => item.unassigned_occurrence || breaksRosterIds.has(Number(item.user_id)),
+      ),
     [tabResponsibilities, breaksRosterIds],
   );
   const plannerTimeline = useMemo(
@@ -1870,6 +1875,25 @@ export default function WeeklySchedulePage() {
                     employeesById={employeesById}
                     entries={breaksScopeEntries}
                     responsibilities={plannerResponsibilities}
+                    onReconcileOccurrence={async (request) => {
+                      const reason = window.prompt(request.action === "skip" ? "Reason for skipping this occurrence" : "Reason for rescheduling");
+                      if (!reason) return;
+                      let dayOfWeek = request.day;
+                      if (request.action === "reschedule") {
+                        const next = window.prompt("New day (0=Sun … 6=Sat)", String(request.day < 0 ? 1 : request.day));
+                        if (next == null || next === "") return;
+                        dayOfWeek = Number(next);
+                      }
+                      const { reconcileTaskOccurrences } = await import("../api");
+                      await reconcileTaskOccurrences({
+                        week_start: weekStart,
+                        action: request.action,
+                        recurrence_key: request.recurrenceKey,
+                        reason,
+                        day_of_week: dayOfWeek,
+                      });
+                      await load(weekStart);
+                    }}
                     canEdit={canEdit}
                     onSaveBreak={handleSaveBreak}
                     onEditEntry={openEdit}
