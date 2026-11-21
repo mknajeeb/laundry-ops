@@ -163,10 +163,31 @@ def test_issues_tile_follows_supervisor_role_not_ordinary_staff():
             matched=_matched(["ADMIN"]),
             employee_module_access={"switch_role": True},
         )
+        granted = resolve_hub_features(
+            conn,
+            org_id=3,
+            matched=_matched(["FRONT_DESK"]),
+            employee_module_access={
+                "switch_role": True,
+                "cleaning_task_review": True,
+            },
+        )
+        named = resolve_hub_features(
+            conn,
+            org_id=3,
+            matched=_matched(["SHIFT SUPERVISOR"]),
+            employee_module_access={"switch_role": True},
+        )
     assert staff["issues"]["allowed"] is False
     assert staff["scan_chronology"]["allowed"] is False
     assert staff["payroll"]["allowed"] is False
     assert staff["ops_dashboard"]["allowed"] is False
+    assert granted["issues"]["allowed"] is True
+    assert granted["scan_chronology"]["allowed"] is True
+    assert granted["payroll"]["allowed"] is True
+    assert granted["ops_dashboard"]["allowed"] is True
+    assert named["issues"]["allowed"] is True
+    assert named["payroll"]["allowed"] is True
     assert supervisor["issues"]["allowed"] is True
     assert supervisor["scan_chronology"]["allowed"] is True
     assert supervisor["payroll"]["allowed"] is True

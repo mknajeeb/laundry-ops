@@ -1148,12 +1148,21 @@ def current_user_from_token(cursor):
 
 def fetch_user_roles(cursor, user_id):
     cursor.execute("""
-        SELECT r.code
+        SELECT r.code, r.name
         FROM user_roles ur
         JOIN roles r ON r.id = ur.role_id
         WHERE ur.user_id = %s
     """, (user_id,))
-    return [str(r["code"]).upper() for r in cursor.fetchall()]
+    found = []
+    seen = set()
+    for row in cursor.fetchall() or []:
+        values = (row.get("code"), row.get("name")) if isinstance(row, dict) else (row[0], None)
+        for raw in values:
+            token = str(raw or "").upper().strip()
+            if token and token not in seen:
+                seen.add(token)
+                found.append(token)
+    return found
 
 
 def require_admin(cursor):
@@ -5045,10 +5054,10 @@ def attendance_pin_unlock():
                 return jsonify({"error": DENIED_MODULE_MESSAGE}), 403
             matched_roles = fetch_user_roles(cursor, matched["id"])
             rs = {str(r).upper() for r in matched_roles}
-            from backend.management_pin_access import holds_pin_management_role, is_pin_management_module
+            from backend.management_pin_access import is_pin_management_module, may_use_pin_management
 
             if is_pin_management_module(pin_hub_module):
-                if not holds_pin_management_role(rs):
+                if not may_use_pin_management(cursor, org_id, emp_id, rs):
                     return jsonify({"error": "Forbidden"}), 403
             elif str(pin_hub_module or "") == "machines":
                 pass
@@ -5103,10 +5112,15 @@ def attendance_pin_unlock():
                     )
                 except MobilePinAccessDeniedError:
                     return jsonify({"error": DENIED_MODULE_MESSAGE}), 403
-            from backend.management_pin_access import holds_pin_management_role, is_pin_management_module
+            from backend.management_pin_access import is_pin_management_module, may_use_pin_management
 
             if is_pin_management_module(pin_hub_module):
-                if not holds_pin_management_role(matched_roles or []):
+                if not may_use_pin_management(
+                    cursor,
+                    int(matched["organization_id"]),
+                    int(matched["id"]),
+                    matched_roles or [],
+                ):
                     return jsonify({"error": "Forbidden"}), 403
 
         if matched.get("organization_logo_url"):

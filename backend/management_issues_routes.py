@@ -28,6 +28,7 @@ from backend.management_today import CountingCursor
 from backend.rinse_scan_time import json_safe_rinse
 
 from backend.management_pin_access import PIN_MANAGEMENT_ROLES as HUB_ROLES
+from backend.management_pin_access import may_use_pin_management
 
 
 def _role_set(me: dict) -> set[str]:
@@ -73,9 +74,14 @@ def register_management_issues_routes(
         me, err_resp, err_code = require_user(cursor)
         if err_resp:
             return None, None, err_resp, err_code
-        if not (_role_set(me) & HUB_ROLES):
+        try:
+            oid = int(user_org_id(me))
+            uid = int(me.get("user_id") or me.get("id") or 0)
+        except (TypeError, ValueError):
             return None, None, jsonify({"error": "Forbidden"}), 403
-        return me, int(user_org_id(me)), None, None
+        if not may_use_pin_management(cursor, oid, uid, _role_set(me)):
+            return None, None, jsonify({"error": "Forbidden"}), 403
+        return me, oid, None, None
 
     @app.route("/api/management/issues/taxonomy", methods=["GET"])
     def management_issues_taxonomy():

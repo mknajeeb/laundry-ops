@@ -621,6 +621,32 @@ export default function PinIssuesFlow({ onBack, onLock, preview = null }) {
             <CountButton label={t("issues.closed")} value={summary?.resolved ?? 0} selected={statusGroup === "resolved"} color="#0f766e" onClick={() => setStatusGroup("resolved")} />
           </Stack>
           <Stack direction="row" spacing={0.6}>
+            {[
+              ["all", t("issues.source.all")],
+              ["employee", t("lostFound.desktopTitle")],
+              ["rinse", t("issues.source.customer")],
+            ].map(([value, label]) => (
+              <Button
+                key={value}
+                onClick={() => setSource(value)}
+                aria-pressed={source === value}
+                sx={{
+                  flex: "1 1 0",
+                  minHeight: 40,
+                  px: 0.75,
+                  textTransform: "none",
+                  fontWeight: 800,
+                  fontSize: "0.78rem",
+                  lineHeight: 1.15,
+                  bgcolor: source === value ? alpha(OPS_MOBILE.navy, 0.1) : "#fff",
+                  border: `1.5px solid ${source === value ? OPS_MOBILE.navy : alpha(OPS_MOBILE.navy, 0.08)}`,
+                }}
+              >
+                {label}
+              </Button>
+            ))}
+          </Stack>
+          <Stack direction="row" spacing={0.6}>
             <TextField
               size="small"
               fullWidth

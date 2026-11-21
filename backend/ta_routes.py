@@ -6510,11 +6510,11 @@ def payroll_payout_batches():
 
         oid = _tenant_id()
         if request.method == "GET":
-            from backend.management_pin_access import user_holds_pin_management_role
+            from backend.management_pin_access import user_may_use_pin_management
 
             role_cursor = conn.cursor(dictionary=True)
             try:
-                management_reader = user_holds_pin_management_role(role_cursor, int(g.ta_user["id"]))
+                management_reader = user_may_use_pin_management(role_cursor, int(g.ta_user["id"]))
             finally:
                 role_cursor.close()
             if not (
@@ -6584,11 +6584,11 @@ def payroll_payout_batch_detail(batch_id):
             user_has_perm(conn, uid, key) for key in ("ta.settings", "users.edit", "users.view")
         )
         if request.method == "GET":
-            from backend.management_pin_access import user_holds_pin_management_role
+            from backend.management_pin_access import user_may_use_pin_management
 
             role_cursor = conn.cursor(dictionary=True)
             try:
-                management_reader = user_holds_pin_management_role(role_cursor, uid)
+                management_reader = user_may_use_pin_management(role_cursor, uid)
             finally:
                 role_cursor.close()
             if not (has_payroll_perm or management_reader):

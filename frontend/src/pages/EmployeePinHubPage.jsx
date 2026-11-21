@@ -168,6 +168,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
   const [breakConfirmOpen, setBreakConfirmOpen] = useState(false);
   /** When clocked in, Clock tile asks Take Break vs End Shift (avoids mid-day clock-out loops). */
   const [clockOutIntentOpen, setClockOutIntentOpen] = useState(false);
+  const [menuRefreshing, setMenuRefreshing] = useState(false);
 
   const punchInFlightRef = useRef(false);
   const prevPinLenRef = useRef(0);
@@ -343,9 +344,12 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
     if (!slug) return undefined;
     const existing = loadPinHubSession();
     if (!existing || existing.organization_slug !== slug) return undefined;
-    setHub(existing);
     setPhase(existing?.attendance?.on_break === true ? "break" : "menu");
-    if (!existing.pin) return undefined;
+    if (!existing.pin) {
+      setHub(existing);
+      return undefined;
+    }
+    setMenuRefreshing(true);
     let cancelled = false;
     (async () => {
       try {
@@ -353,9 +357,13 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         const body = res?.data && typeof res.data === "object" ? res.data : {};
         if (!cancelled && res?.status >= 200 && res?.status < 300 && body.ok) {
           applyHubBody(body, existing.pin);
+          return;
         }
+        if (!cancelled) setHub(existing);
       } catch {
-        /* keep cached session */
+        if (!cancelled) setHub(existing);
+      } finally {
+        if (!cancelled) setMenuRefreshing(false);
       }
     })();
     return () => {
@@ -778,17 +786,11 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
             </Alert>
           ) : null}
 
-          {phase === "menu" ? (
+          {phase === "menu" && hub?.attendance?.clocked_in ? (
             <Box sx={{ width: "100%", textAlign: "center", px: 0.5 }}>
               <Typography sx={{ fontWeight: 800, fontSize: "1rem", color: VW.navy }}>
-                {t("mobileOps.currentRole")}:{" "}
-                {(hub?.attendance?.clocked_in && hub?.attendance?.current_display_label) || "—"}
+                {t("mobileOps.currentRole")}: {hub?.attendance?.current_display_label || "—"}
               </Typography>
-              {!hub?.attendance?.clocked_in ? (
-                <Typography sx={{ mt: 0.25, fontWeight: 600, fontSize: "0.9rem", color: alpha(VW.navy, 0.72) }}>
-                  {t("mobileOps.notClockedIn")}
-                </Typography>
-              ) : null}
             </Box>
           ) : null}
 
@@ -854,7 +856,9 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
           )}
 
           {phase === "menu" &&
-            (launcherTiles.length > 0 ? (
+            (menuRefreshing ? (
+              <CircularProgress size={28} />
+            ) : launcherTiles.length > 0 ? (
               <OpsLauncherSections
                 tiles={launcherTiles}
                 t={t}

@@ -23,7 +23,7 @@ from backend.facility_machines import (
     related_issue_reports,
     update_machine,
 )
-from backend.management_pin_access import PIN_MANAGEMENT_ROLES
+from backend.management_pin_access import may_use_pin_management
 from backend.planned_weekly_schedule import normalize_week_start
 from backend.task_catalog import list_task_definitions
 from backend.task_recurrence import (
@@ -50,8 +50,12 @@ def register_facility_operations_routes(app, *, require_user: Callable, user_org
         roles = {str(role).upper() for role in (user.get("roles") or fetch_user_roles(cursor, user["id"]) or [])}
         return user, org_id, conn, cursor, roles
 
-    def _manager(roles) -> bool:
-        return bool(roles & PIN_MANAGEMENT_ROLES)
+    def _manager(cursor, org_id, user, roles) -> bool:
+        try:
+            uid = int((user or {}).get("id") or (user or {}).get("user_id") or 0)
+        except (TypeError, ValueError):
+            uid = 0
+        return may_use_pin_management(cursor, org_id, uid, roles)
 
     @app.route("/api/facility-machines", methods=["GET"])
     def facility_machines_list():
@@ -67,7 +71,7 @@ def register_facility_operations_routes(app, *, require_user: Callable, user_org
             summary = {name: 0 for name in STATUSES}
             for row in rows:
                 summary[row["operational_status"]] = summary.get(row["operational_status"], 0) + 1
-            return jsonify({"ok": True, "machines": rows, "summary": summary, "can_update": _manager(_roles)})
+            return jsonify({"ok": True, "machines": rows, "summary": summary, "can_update": _manager(cursor, org_id, _user, _roles)})
         finally:
             conn.close()
 
@@ -90,7 +94,7 @@ def register_facility_operations_routes(app, *, require_user: Callable, user_org
                     "events": list_events(cursor, int(org_id), machine_code),
                     "exclusions": list_exclusions(cursor, int(org_id), machine_code),
                     "issues": related_issue_reports(cursor, int(org_id), machine_code),
-                    "can_update": _manager(roles),
+                    "can_update": _manager(cursor, org_id, _user, roles),
                 }
             )
         finally:
@@ -102,7 +106,7 @@ def register_facility_operations_routes(app, *, require_user: Callable, user_org
         if opened[0] is None:
             return opened[4]
         user, org_id, conn, cursor, roles = opened
-        if not _manager(roles):
+        if not _manager(cursor, org_id, user, roles):
             return jsonify({"error": "Forbidden"}), 403
         try:
             updated = update_machine(
@@ -126,7 +130,7 @@ def register_facility_operations_routes(app, *, require_user: Callable, user_org
         if opened[0] is None:
             return opened[4]
         user, org_id, conn, cursor, roles = opened
-        if not _manager(roles):
+        if not _manager(cursor, org_id, user, roles):
             return jsonify({"error": "Forbidden"}), 403
         body = request.json or {}
         try:
@@ -153,7 +157,7 @@ def register_facility_operations_routes(app, *, require_user: Callable, user_org
         if opened[0] is None:
             return opened[4]
         user, org_id, conn, cursor, roles = opened
-        if not _manager(roles):
+        if not _manager(cursor, org_id, user, roles):
             return jsonify({"error": "Forbidden"}), 403
         end_exclusion(cursor, int(org_id), exclusion_id, actor_user_id=int(user["id"]))
         conn.commit()
@@ -166,7 +170,7 @@ def register_facility_operations_routes(app, *, require_user: Callable, user_org
         if opened[0] is None:
             return opened[4]
         _user, org_id, conn, cursor, roles = opened
-        if not _manager(roles):
+        if not _manager(cursor, org_id, _user, roles):
             conn.close()
             return jsonify({"error": "Forbidden"}), 403
         body = request.json or {}

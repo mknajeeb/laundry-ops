@@ -51,7 +51,7 @@ export function OpsLauncherSections({ tiles = [], t = null, ...gridProps }) {
     ...section,
     tiles: tiles.filter((tile) => (tile.group || "work") === section.id),
   })).filter((section) => section.tiles.length > 0);
-  const showHeadings = groups.length > 1;
+  const showHeadings = groups.length > 0;
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1.75, width: "100%" }}>
       {groups.map((section) => (

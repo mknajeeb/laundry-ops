@@ -168,6 +168,7 @@ export const PIN_LAUNCHER_I18N = {
 };
 
 export const PIN_LAUNCHER_HELPER_I18N = {
+  issues: "mobileOps.tile.issuesHelper",
   team_status: "mobileOps.tile.teamStatusHelper",
   take_break: "mobileOps.tile.takeBreakHelper",
   resume_work: "mobileOps.tile.resumeWorkHelper",
@@ -235,6 +236,7 @@ export function buildPinLauncherTiles({
       group: pinTileGroup(id, feats),
       helper:
         (tr && helperKey ? tr(helperKey) : null) ||
+        (id === "issues" ? "Includes Lost & Found" : "") ||
         (id === "team_status" ? "Who's working today" : "") ||
         "",
     };

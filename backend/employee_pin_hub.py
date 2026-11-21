@@ -550,6 +550,8 @@ def resolve_hub_features(
                 pass
 
     tenant_modules = _tenant_modules_enabled(conn, org_id, ("inventory", "finance"))
+    # Task Review is the supervisor grant already stored on the employee.
+    supervisor_grant = bool(isinstance(emp_access, dict) and emp_access.get("cleaning_task_review"))
 
     out: dict[str, Any] = {}
     for defn in PIN_HUB_FEATURE_DEFS:
@@ -573,6 +575,14 @@ def resolve_hub_features(
             if org_on and emp_on
             else False
         )
+        if (
+            not user_ok
+            and supervisor_grant
+            and org_on
+            and emp_on
+            and fid in ("issues", "ops_dashboard", "scan_chronology", "payroll")
+        ):
+            user_ok = True
         out[fid] = {
             "id": fid,
             "label": defn["label"],
