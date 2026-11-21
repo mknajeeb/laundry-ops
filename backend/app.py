@@ -216,6 +216,14 @@ def health():
     }
     if build_time:
         out["build_time"] = build_time
+    try:
+        from backend.onesignal_client import _app_id, _rest_key
+
+        out["onesignal_app_configured"] = bool(_app_id())
+        out["onesignal_key_configured"] = bool(_rest_key())
+    except Exception:
+        out["onesignal_app_configured"] = False
+        out["onesignal_key_configured"] = False
     return jsonify(out), (200 if healthy else 503)
 
 

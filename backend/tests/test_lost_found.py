@@ -865,6 +865,21 @@ def test_notify_failure_does_not_raise(monkeypatch):
     notify_found_item(Cursor(), 7, {"id": 4, "employee_name": "Ana", "report_category": "orphan"})
 
 
+def test_onesignal_idempotency_key_is_a_stable_uuid():
+    import uuid
+
+    from backend.onesignal_client import onesignal_idempotency_uuid
+
+    raw = "lf-3-15:15"
+    first = onesignal_idempotency_uuid(raw)
+    assert first == onesignal_idempotency_uuid(raw)
+    uuid.UUID(first)
+    given = "6f0e2a1c-9b4d-4e7a-8c31-0a6d5b2e91f4"
+    assert onesignal_idempotency_uuid(given) == given
+    assert onesignal_idempotency_uuid(None) is None
+    assert onesignal_idempotency_uuid("  ") is None
+
+
 def test_push_result_treats_zero_recipients_as_not_delivered():
     from backend.onesignal_client import _classify_push_result
 

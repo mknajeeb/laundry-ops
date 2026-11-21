@@ -19,11 +19,14 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 logger = logging.getLogger(__name__)
 
 ONESIGNAL_NOTIFY_URL = "https://api.onesignal.com/notifications"
 ONESIGNAL_NOTIFY_URL_V1 = "https://onesignal.com/api/v1/notifications"
+# Stable namespace so the same report and recipient always map to the same OneSignal key.
+_IDEMPOTENCY_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 
 # Must match frontend/src/onesignalUser.js
 def external_user_id(organization_id: int, user_id: int) -> str:
@@ -37,6 +40,17 @@ def _app_id() -> str | None:
 
 def _rest_key() -> str | None:
     return (os.getenv("ONESIGNAL_REST_API_KEY") or "").strip() or None
+
+
+def onesignal_idempotency_uuid(raw: str | None) -> str | None:
+    """OneSignal accepts only a UUID. A business key becomes a stable UUID5."""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return str(uuid.UUID(text))
+    except ValueError:
+        return str(uuid.uuid5(_IDEMPOTENCY_NAMESPACE, text[:64]))
 
 
 def public_web_url(path: str | None) -> str | None:
@@ -115,10 +129,11 @@ def send_push_to_external_user_ids(
         payload["data"] = {k: v for k, v in data.items() if k != "user_id"}
     if url:
         payload["url"] = url
-    if idempotency_key:
-        payload["idempotency_key"] = str(idempotency_key)[:64]
+    idem = onesignal_idempotency_uuid(idempotency_key)
+    if idem:
+        payload["idempotency_key"] = idem
 
-    ok, err = _post_notification(payload, idempotency_key=idempotency_key)
+    ok, err = _post_notification(payload, idempotency_key=idem)
     if ok:
         return ok, err
     # A rejected create (not an accepted notification with zero devices) can be retried
@@ -134,12 +149,12 @@ def send_push_to_external_user_ids(
             legacy["data"] = {k: v for k, v in data.items() if k != "user_id"}
         if url:
             legacy["url"] = url
-        if idempotency_key:
-            legacy["idempotency_key"] = str(idempotency_key)[:64]
+        if idem:
+            legacy["idempotency_key"] = idem
         return _post_notification(
             legacy,
             endpoint=ONESIGNAL_NOTIFY_URL_V1,
-            idempotency_key=idempotency_key,
+            idempotency_key=idem,
         )
     return ok, err
 
@@ -179,7 +194,7 @@ def _post_notification(
         "Authorization": f"Key {key}",
     }
     if idempotency_key:
-        headers["Idempotency-Key"] = str(idempotency_key)[:64]
+        headers["Idempotency-Key"] = onesignal_idempotency_uuid(idempotency_key) or ""
     target = endpoint or ONESIGNAL_NOTIFY_URL
     req = urllib.request.Request(target, data=raw, method="POST", headers=headers)
     try:
