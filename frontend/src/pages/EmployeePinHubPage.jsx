@@ -27,6 +27,7 @@ import {
   FreeBreakfast,
   Groups,
   Inventory2,
+  LocalLaundryServiceOutlined,
   PaymentsOutlined,
   ReportProblemOutlined,
   Login,
@@ -94,6 +95,7 @@ const TILE_ICONS = {
   dashboard: DashboardOutlined,
   scan: Timeline,
   payroll: PaymentsOutlined,
+  machines: LocalLaundryServiceOutlined,
 };
 
 function sanitizeSlug(raw) {
@@ -542,6 +544,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         ops_dashboard: "/pin-dashboard",
         scan_chronology: "/pin-scan",
         payroll: "/pin-payroll",
+        machines: "/pin-machines",
       };
       if (managementRoutes[featureId]) {
         const feature = hub?.features?.[featureId];

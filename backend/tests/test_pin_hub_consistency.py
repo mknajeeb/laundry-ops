@@ -37,6 +37,7 @@ def test_feature_defs_include_revenue_and_inventory_labels():
         "ops_dashboard",
         "scan_chronology",
         "payroll",
+        "machines",
         "my_schedule",
         "my_hours",
         "my_paystubs",

@@ -10,7 +10,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { getAuthToken, getWashproApiBase } from "../api";
+import { getAuthToken, getFacilityMachines, getWashproApiBase } from "../api";
 import { useI18n } from "../i18n/I18nContext";
 
 export function conditionMet(condition, values) {
@@ -61,6 +61,7 @@ export function normalizeInputSchema(schema) {
       show_when: f.show_when || null,
       required_when: f.required_when || null,
       min: f.min == null || f.min === "" ? null : Number(f.min),
+      machine_kind: f.machine_kind || null,
     }));
 }
 
@@ -70,6 +71,7 @@ export function emptyInputValues(schema) {
     if (field.type === "yes_no") values[field.id] = "";
     else if (field.type === "checkbox") values[field.id] = false;
     else if (field.type === "checklist") values[field.id] = [];
+    else if (field.type === "machine_numbers") values[field.id] = [];
     else values[field.id] = "";
   }
   return values;
@@ -210,9 +212,25 @@ export default function TaskCompletionInputs({
   onChangeValues,
   onChangeRemarks,
   disabled,
+  machines = [],
 }) {
   const { t } = useI18n();
   const fields = normalizeInputSchema(schema);
+  const needsMachines = fields.some((field) => field.type === "machine_numbers" && field.machine_kind);
+  const [loadedMachines, setLoadedMachines] = useState(machines);
+  useEffect(() => {
+    if (!needsMachines || machines.length) return undefined;
+    let cancel = false;
+    getFacilityMachines()
+      .then((res) => {
+        if (!cancel) setLoadedMachines(res?.data?.machines || []);
+      })
+      .catch(() => {});
+    return () => {
+      cancel = true;
+    };
+  }, [needsMachines, machines]);
+  const machineChoices = machines.length ? machines : loadedMachines;
   if (!fields.length) {
     return (
       <TextField
@@ -274,20 +292,65 @@ export default function TaskCompletionInputs({
           );
         }
         if (field.type === "machine_numbers") {
-          const text = Array.isArray(value) ? value.join(", ") : value ?? "";
+          const choices = (machineChoices || []).filter((machine) => !field.machine_kind || machine.machine_type === field.machine_kind);
+          const selected = Array.isArray(value) ? value.map(String) : String(value || "").split(",").map((part) => part.trim()).filter(Boolean);
+          if (!choices.length) {
+            const text = selected.join(", ");
+            return (
+              <TextField
+                key={field.id}
+                fullWidth
+                size="small"
+                label={field.label}
+                required={required}
+                value={text}
+                disabled={disabled}
+                placeholder="Machine numbers"
+                onChange={(e) => onChangeValues?.({ ...values, [field.id]: e.target.value.split(",").map((part) => part.trim()).filter(Boolean) })}
+                sx={{ bgcolor: "#fff" }}
+              />
+            );
+          }
+          const q = String(values?.[`${field.id}__search`] || "").trim().toLowerCase();
+          const shown = choices.filter((machine) => !q || String(machine.display_number || machine.machine_code).toLowerCase().includes(q));
           return (
-            <TextField
-              key={field.id}
-              fullWidth
-              size="small"
-              label={field.label}
-              required={required}
-              value={text}
-              disabled={disabled}
-              placeholder="12, 18, 24"
-              onChange={(e) => onChangeValues?.({ ...values, [field.id]: e.target.value })}
-              sx={{ bgcolor: "#fff" }}
-            />
+            <Box key={field.id}>
+              <Typography variant="body2" sx={{ fontWeight: 800, mb: 0.5 }}>
+                {field.label}
+                {required ? " *" : ""}
+              </Typography>
+              <TextField
+                size="small"
+                fullWidth
+                placeholder="Search machine number"
+                value={values?.[`${field.id}__search`] || ""}
+                disabled={disabled}
+                onChange={(e) => onChangeValues?.({ ...values, [`${field.id}__search`]: e.target.value })}
+                sx={{ mb: 1, bgcolor: "#fff" }}
+              />
+              <Stack spacing={0.75}>
+                {shown.map((machine) => {
+                  const on = selected.includes(machine.machine_code);
+                  return (
+                    <Button
+                      key={machine.machine_code}
+                      variant={on ? "contained" : "outlined"}
+                      disabled={disabled || machine.operational_status === "retired"}
+                      onClick={() => {
+                        const next = on
+                          ? selected.filter((code) => code !== machine.machine_code)
+                          : [...selected, machine.machine_code];
+                        onChangeValues?.({ ...values, [field.id]: [...new Set(next)] });
+                      }}
+                      sx={{ justifyContent: "space-between", textTransform: "none", minHeight: 44 }}
+                    >
+                      <span>{machine.display_number}</span>
+                      <span>{machine.operational_status === "operational" ? (on ? "Selected" : "Due") : machine.operational_status}</span>
+                    </Button>
+                  );
+                })}
+              </Stack>
+            </Box>
           );
         }
         if (field.type === "photo") {

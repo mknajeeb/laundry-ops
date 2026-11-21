@@ -106,6 +106,11 @@ PIN_HUB_FEATURE_DEFS = (
         "path": "/pin-payroll",
     },
     {
+        "id": "machines",
+        "label": "Machines",
+        "path": "/pin-machines",
+    },
+    {
         "id": "my_schedule",
         "label": "My Schedule",
         "path": "/pin/me/schedule",
@@ -502,7 +507,7 @@ def _user_may_use_feature(
         # Manager/supervisor roster — gated only by Mobile PIN Access grant.
         return True
 
-    if feature_id in ("cleaning_tasks", "cleaning_task_review"):
+    if feature_id in ("cleaning_tasks", "cleaning_task_review", "machines"):
         return True
 
     if feature_id in ("my_schedule", "my_hours", "my_paystubs"):
@@ -670,7 +675,7 @@ def perform_pin_hub_open(
         attendance = dict(attendance or {})
         attendance["allow_clock_from_hub"] = False
         for fid, feat in list(features.items()):
-            if fid in PIN_MANAGEMENT_MODULES or not isinstance(feat, dict) or not feat.get("allowed"):
+            if fid in PIN_MANAGEMENT_MODULES or fid == "machines" or not isinstance(feat, dict) or not feat.get("allowed"):
                 continue
             blocked = dict(feat)
             blocked["allowed"] = False

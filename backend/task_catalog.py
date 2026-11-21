@@ -98,6 +98,7 @@ _TASK_CONFIG_COLUMNS: tuple[tuple[str, str], ...] = (
     ("checklist_id", "INT NULL"),
     # 0 = explicit override (preserves existing task configs); 1 = inherit global/group.
     ("verification_inherits", "TINYINT(1) NOT NULL DEFAULT 0"),
+    ("recurrence_json", "TEXT NULL"),
 )
 
 
@@ -428,6 +429,19 @@ def task_definition_from_role(role: Mapping[str, Any], *, categories_by_code: Ma
         "checklist_id": int(role["checklist_id"]) if role.get("checklist_id") is not None else None,
         "display_order": int(role.get("display_order") or 0),
         "builtin": bool(role.get("builtin")),
+        "recurrence": _parse_json(role.get("recurrence_json"), None) or {
+            "mode": "manual",
+            "weekly_frequency": 1,
+            "weekdays": [],
+            "time_window": None,
+            "effective_start": None,
+            "effective_end": None,
+            "assignee_user_ids": [],
+            "assignee_role": None,
+            "paused": False,
+            "active": True,
+            "temporary_exceptions": [],
+        },
     }
 
 
@@ -445,7 +459,8 @@ def list_task_definitions(cursor, organization_id: int, *, include_inactive: boo
         """
         SELECT code, task_category_code, completion_type, timer_enabled, verification_required,
                verification_method, verification_timing, verifier_config_json, input_schema_json,
-               checklist_id, active, name, display_order, uses_time_slots, verification_inherits
+               checklist_id, active, name, display_order, uses_time_slots, verification_inherits,
+               recurrence_json
         FROM weekly_schedule_roles
         WHERE organization_id = %s
         """,
@@ -553,7 +568,8 @@ def get_task_definition(cursor, organization_id: int, code: str) -> dict[str, An
             """
             SELECT code, task_category_code, completion_type, timer_enabled, verification_required,
                    verification_method, verification_timing, verifier_config_json, input_schema_json,
-                   checklist_id, active, name, display_order, uses_time_slots, verification_inherits
+                   checklist_id, active, name, display_order, uses_time_slots, verification_inherits,
+                   recurrence_json
             FROM weekly_schedule_roles
             WHERE organization_id = %s AND code = %s
             LIMIT 1
@@ -719,6 +735,15 @@ def upsert_task_definition(cursor, organization_id: int, code: str, data: Mappin
         input_schema = json.dumps(input_schema)
     checklist_id = data.get("checklist_id")
     display_order = int(data.get("display_order") or 0)
+    from backend.task_recurrence import normalize_recurrence
+
+    recurrence_provided = "recurrence" in data or "recurrence_json" in data
+    recurrence_json = None
+    if recurrence_provided:
+        raw_recurrence = data.get("recurrence") if "recurrence" in data else data.get("recurrence_json")
+        if isinstance(raw_recurrence, str):
+            raw_recurrence = _parse_json(raw_recurrence, {})
+        recurrence_json = json.dumps(normalize_recurrence(raw_recurrence))
 
     cursor.execute(
         """
@@ -737,7 +762,8 @@ def upsert_task_definition(cursor, organization_id: int, code: str, data: Mappin
                 task_category_code = %s, completion_type = %s, timer_enabled = %s,
                 verification_required = %s, verification_method = %s, verification_timing = %s,
                 verifier_config_json = %s, input_schema_json = %s, checklist_id = %s,
-                verification_inherits = %s
+                verification_inherits = %s,
+                recurrence_json = COALESCE(%s, recurrence_json)
             WHERE organization_id = %s AND code = %s
             """,
             (
@@ -754,19 +780,23 @@ def upsert_task_definition(cursor, organization_id: int, code: str, data: Mappin
                 input_schema,
                 int(checklist_id) if checklist_id not in (None, "") else None,
                 1 if inherits else 0,
+                recurrence_json if recurrence_provided else None,
                 oid,
                 code_clean,
             ),
         )
     else:
+        if not recurrence_provided:
+            recurrence_json = json.dumps(normalize_recurrence(None))
         cursor.execute(
             """
             INSERT INTO weekly_schedule_roles (
               organization_id, code, name, role_group, display_order, active,
               uses_time_slots, remarks_enabled, task_category_code, completion_type,
               timer_enabled, verification_required, verification_method, verification_timing,
-              verifier_config_json, input_schema_json, checklist_id, verification_inherits
-            ) VALUES (%s,%s,%s,'CLEANING',%s,%s,0,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              verifier_config_json, input_schema_json, checklist_id, verification_inherits,
+              recurrence_json
+            ) VALUES (%s,%s,%s,'CLEANING',%s,%s,0,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 oid,
@@ -784,6 +814,7 @@ def upsert_task_definition(cursor, organization_id: int, code: str, data: Mappin
                 input_schema,
                 int(checklist_id) if checklist_id not in (None, "") else None,
                 1 if inherits else 0,
+                recurrence_json,
             ),
         )
     defn = get_task_definition(cursor, oid, code_clean)

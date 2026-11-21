@@ -1291,6 +1291,21 @@ def _finalize_completion(
             oid,
         ),
     )
+    try:
+        from backend.task_recurrence import record_machine_cleanings
+
+        record_machine_cleanings(
+            cursor,
+            organization_id=oid,
+            task_code=str(row.get("role") or ""),
+            activity_id=int(activity_id),
+            user_id=uid,
+            completed_at=at,
+            completion_input=completion_input,
+            verified=final_status == "approved",
+        )
+    except Exception:
+        pass
     _record_event(
         cursor,
         organization_id=oid,

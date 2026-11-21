@@ -69,6 +69,11 @@ export const PIN_LAUNCHER_META = {
     color: "#0f766e",
     iconKey: "payroll",
   },
+  machines: {
+    label: "Machines",
+    color: "#0f2744",
+    iconKey: "machines",
+  },
   my_schedule: {
     label: "My Schedule",
     color: "#0f2744",
@@ -108,6 +113,7 @@ export const PIN_HOME_FEATURE_ORDER = [
   "issues",
   "scan_chronology",
   "payroll",
+  "machines",
   "revenue_cost",
   "checklist",
   "inventory",
@@ -135,6 +141,7 @@ export const PIN_LAUNCHER_I18N = {
   ops_dashboard: "mobileOps.tile.dashboard",
   scan_chronology: "mobileOps.tile.scanChronology",
   payroll: "mobileOps.tile.payroll",
+  machines: "mobileOps.tile.machines",
   revenue_cost: "mobileOps.tile.revenueCash",
   checklist: "mobileOps.tile.checklist",
   inventory: "mobileOps.tile.inventory",

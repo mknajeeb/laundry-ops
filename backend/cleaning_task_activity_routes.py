@@ -1710,6 +1710,9 @@ def register_cleaning_task_activity_routes(
             return err
         try:
             seed_builtin_categories(cursor, int(org_id))
+            from backend.facility_cleaning import ensure_facility_cleaning
+
+            ensure_facility_cleaning(cursor, int(org_id))
             conn.commit()
             from backend.task_verification_policy import (
                 ensure_verification_policy_schema,

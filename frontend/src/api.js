@@ -3424,6 +3424,15 @@ export const getManagementIssuesOrderContext = (bagId, orderInstanceId) =>
 export const getManagementIssues = (params = {}) =>
   axios.get(`${API_BASE}/api/management/issues`, { params, timeout: 20000 });
 
+export const getFacilityMachines = (params = {}, config = {}) =>
+  axios.get(`${API_BASE}/api/facility-machines`, { params, ...config });
+
+export const getFacilityMachine = (code, config = {}) =>
+  axios.get(`${API_BASE}/api/facility-machines/${encodeURIComponent(code)}`, config);
+
+export const patchFacilityMachine = (code, body) =>
+  axios.patch(`${API_BASE}/api/facility-machines/${encodeURIComponent(code)}`, body);
+
 export const getIssuesRegister = (params = {}, config = {}) =>
   axios.get(`${API_BASE}/api/management/issues/register`, { params, timeout: 20000, ...config });
 

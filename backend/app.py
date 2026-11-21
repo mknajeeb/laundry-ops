@@ -5050,6 +5050,8 @@ def attendance_pin_unlock():
             if is_pin_management_module(pin_hub_module):
                 if not (rs & HUB_ROLES):
                     return jsonify({"error": "Forbidden"}), 403
+            elif str(pin_hub_module or "") == "machines":
+                pass
             elif rs & {"ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"}:
                 return jsonify({"error": "Invalid PIN"}), 401
         else:
@@ -10993,6 +10995,13 @@ register_maintenance_task_list_routes(
     get_request_ip=get_request_ip,
     effective_washpro_permission_keys=effective_washpro_permission_keys,
     write_audit=write_audit,
+)
+from backend.facility_operations_routes import register_facility_operations_routes
+register_facility_operations_routes(
+    app,
+    require_user=require_user,
+    user_org_id=user_org_id,
+    fetch_user_roles=fetch_user_roles,
 )
 register_cleaning_task_activity_routes(
     app,

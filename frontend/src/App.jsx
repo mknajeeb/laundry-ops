@@ -95,6 +95,7 @@ import PinIssuesPage from "./pages/PinIssuesPage";
 import PinScanPage from "./pages/PinScanPage";
 import PinPayrollPage from "./pages/PinPayrollPage";
 import PinDashboardPage from "./pages/PinDashboardPage";
+import PinMachinesPage, { DevPinMachinesPreviewPage } from "./pages/PinMachinesPage";
 import {
   DevPinDashboardPreviewPage,
   DevPinPayrollPreviewPage,
@@ -257,7 +258,9 @@ function isPinManagementRoute(path) {
     p === "/pin-payroll" ||
     p.startsWith("/pin-payroll/") ||
     p === "/pin-dashboard" ||
-    p.startsWith("/pin-dashboard/")
+    p.startsWith("/pin-dashboard/") ||
+    p === "/pin-machines" ||
+    p.startsWith("/pin-machines/")
   );
 }
 
@@ -308,7 +311,8 @@ function isDevPreviewRoute(path) {
     p.startsWith("/dev/pin-issues/") ||
     p === "/dev/pin-scan" ||
     p === "/dev/pin-payroll" ||
-    p === "/dev/pin-dashboard"
+    p === "/dev/pin-dashboard" ||
+    p === "/dev/pin-machines"
   );
 }
 
@@ -864,6 +868,17 @@ function AppShell() {
               />
             }
           />
+          <Route
+            path="/pin-machines"
+            element={
+              <PinMachinesPage
+                onPinHubDone={() => {
+                  washproSessionSyncedRef.current = false;
+                  setUser(null);
+                }}
+              />
+            }
+          />
           <Route path="/revenue-cost/floor" element={<Navigate to="/revenue-cash" replace />} />
           <Route path="/hang-dry/floor" element={<Navigate to="/revenue-cash" replace />} />
         </Routes>
@@ -883,6 +898,7 @@ function AppShell() {
         <Route path="/dev/pin-scan" element={<DevPinScanPreviewPage />} />
         <Route path="/dev/pin-payroll" element={<DevPinPayrollPreviewPage />} />
         <Route path="/dev/pin-dashboard" element={<DevPinDashboardPreviewPage />} />
+        <Route path="/dev/pin-machines" element={<DevPinMachinesPreviewPage />} />
       </Routes>
     );
   }

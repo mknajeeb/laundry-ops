@@ -342,12 +342,12 @@ const libraryButtonSx = {
   "&:hover": { bgcolor: alpha(OPS_MOBILE.blue, 0.06) },
 };
 
-export default function LostFoundReportForm({ choices, submitting, onSubmit }) {
+export default function LostFoundReportForm({ choices, submitting, onSubmit, initialCategory = "", initialKind = "", initialNumber = "" }) {
   const { t } = useI18n();
   const requestId = useRef(newRequestId());
-  const [category, setCategory] = useState("");
-  const [kind, setKind] = useState("");
-  const [number, setNumber] = useState("");
+  const [category, setCategory] = useState(initialCategory);
+  const [kind, setKind] = useState(initialKind);
+  const [number, setNumber] = useState(initialNumber);
   const [detail, setDetail] = useState("");
   const [notes, setNotes] = useState("");
   const [photos, setPhotos] = useState([]);

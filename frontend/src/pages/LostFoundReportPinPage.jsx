@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Alert, Button, Stack, Typography } from "@mui/material";
 import { ThemeProvider, createTheme } from "@mui/material/styles";
 import { getPublicOrgBranding, pinLostFoundLocations, pinLostFoundReport } from "../api";
@@ -36,6 +36,7 @@ function slugOf(raw) {
 
 export default function LostFoundReportPinPage() {
   const { orgSlug } = useParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { t } = useI18n();
   const slug = slugOf(orgSlug);
@@ -147,6 +148,9 @@ export default function LostFoundReportPinPage() {
           choices={choices}
           submitting={submitting}
           onSubmit={submit}
+          initialCategory={searchParams.get("category") || ""}
+          initialKind={searchParams.get("kind") || ""}
+          initialNumber={searchParams.get("number") || ""}
         />
       )}
     </OpsMobileShell>

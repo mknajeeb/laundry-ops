@@ -1197,6 +1197,61 @@ export default function ManagementTaskConfigPage() {
                   }
                   label={t("tasks.config.active")}
                 />
+                <Typography fontWeight={800}>Recurrence</Typography>
+                <TextField
+                  select
+                  size="small"
+                  label="Assignment"
+                  value={draft.recurrence?.mode || "manual"}
+                  onChange={(e) =>
+                    setDraft({ ...draft, recurrence: { ...(draft.recurrence || {}), mode: e.target.value } })
+                  }
+                >
+                  <MenuItem value="manual">Manual assignment</MenuItem>
+                  <MenuItem value="recurring">Recurring</MenuItem>
+                </TextField>
+                <TextField
+                  size="small"
+                  type="number"
+                  label="Times per week"
+                  value={draft.recurrence?.weekly_frequency || 1}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      recurrence: { ...(draft.recurrence || {}), weekly_frequency: Number(e.target.value) || 1 },
+                    })
+                  }
+                  inputProps={{ min: 1, max: 14 }}
+                />
+                <TextField
+                  size="small"
+                  label="Preferred weekdays (0=Sun … 6=Sat)"
+                  value={(draft.recurrence?.weekdays || []).join(", ")}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      recurrence: {
+                        ...(draft.recurrence || {}),
+                        weekdays: e.target.value
+                          .split(",")
+                          .map((part) => Number(part.trim()))
+                          .filter((day) => day >= 0 && day <= 6),
+                      },
+                    })
+                  }
+                  helperText="Leave blank to keep a weekly target without generating dates."
+                />
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={!!draft.recurrence?.paused}
+                      onChange={(e) =>
+                        setDraft({ ...draft, recurrence: { ...(draft.recurrence || {}), paused: e.target.checked } })
+                      }
+                    />
+                  }
+                  label="Paused"
+                />
                 <Stack direction="row" spacing={1}>
                   <Button variant="contained" disabled={busy} onClick={saveTask}>
                     {t("tasks.config.save")}
