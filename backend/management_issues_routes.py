@@ -27,7 +27,7 @@ from backend.management_issues import (
 from backend.management_today import CountingCursor
 from backend.rinse_scan_time import json_safe_rinse
 
-HUB_ROLES = frozenset({"ADMIN", "OPS", "MANAGER", "SUPER_ADMIN", "PLATFORM_ADMIN"})
+from backend.management_pin_access import PIN_MANAGEMENT_ROLES as HUB_ROLES
 
 
 def _role_set(me: dict) -> set[str]:

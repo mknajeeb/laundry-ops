@@ -138,6 +138,25 @@ def test_issues_tile_follows_supervisor_role_not_ordinary_staff():
             matched=_matched(["OPS"]),
             employee_module_access={"switch_role": True, "checklist": True},
         )
+        floor_supervisor = resolve_hub_features(
+            conn,
+            org_id=3,
+            matched=_matched(["SUPERVISOR"]),
+            employee_module_access={
+                "switch_role": True,
+                "cleaning_tasks": True,
+                "cleaning_task_review": True,
+                "team_status": True,
+                "revenue_cost": True,
+                "inventory": True,
+            },
+        )
+        operations = resolve_hub_features(
+            conn,
+            org_id=3,
+            matched=_matched(["OPERATIONS"]),
+            employee_module_access={"switch_role": True},
+        )
         admin = resolve_hub_features(
             conn,
             org_id=3,
@@ -151,13 +170,42 @@ def test_issues_tile_follows_supervisor_role_not_ordinary_staff():
     assert supervisor["issues"]["allowed"] is True
     assert supervisor["scan_chronology"]["allowed"] is True
     assert supervisor["payroll"]["allowed"] is True
+    for person in (floor_supervisor, operations):
+        assert person["issues"]["allowed"] is True
+        assert person["scan_chronology"]["allowed"] is True
+        assert person["payroll"]["allowed"] is True
+        assert person["ops_dashboard"]["allowed"] is True
+    assert floor_supervisor["cleaning_tasks"]["allowed"] is True
+    assert floor_supervisor["team_status"]["allowed"] is True
     assert admin["issues"]["allowed"] is True
-    hidden = apply_attendance_gates_to_features(
-        {"issues": {"allowed": True}},
+    clocked_out = apply_attendance_gates_to_features(
+        {
+            "issues": {"allowed": True},
+            "scan_chronology": {"allowed": True},
+            "payroll": {"allowed": True},
+            "ops_dashboard": {"allowed": True},
+            "machines": {"allowed": True},
+            "cleaning_task_review": {"allowed": True},
+        },
+        {"on_break": False, "clocked_in": False},
+    )
+    for feature_id in (
+        "issues",
+        "scan_chronology",
+        "payroll",
+        "ops_dashboard",
+        "machines",
+        "cleaning_task_review",
+    ):
+        assert clocked_out[feature_id]["allowed"] is True
+        assert clocked_out[feature_id].get("hidden") is not True
+    on_break = apply_attendance_gates_to_features(
+        {"issues": {"allowed": True}, "inventory": {"allowed": True}},
         {"on_break": True, "clocked_in": True},
     )
-    assert hidden["issues"]["allowed"] is False
-    assert hidden["issues"]["hidden"] is True
+    assert on_break["issues"]["allowed"] is True
+    assert on_break["inventory"]["allowed"] is False
+    assert on_break["inventory"]["hidden"] is True
 
 
 def test_apply_attendance_gates_keeps_role_visible_when_clocked_out():

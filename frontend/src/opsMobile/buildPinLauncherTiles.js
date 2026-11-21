@@ -101,6 +101,26 @@ export const PIN_LAUNCHER_META = {
   },
 };
 
+export const PIN_TILE_GROUP = {
+  ops_dashboard: "management",
+  issues: "management",
+  scan_chronology: "management",
+  payroll: "management",
+  machines: "management",
+  cleaning_task_review: "management",
+  switch_role: "attendance",
+  take_break: "attendance",
+  resume_work: "attendance",
+  clock: "attendance",
+};
+
+export function pinTileGroup(id, features) {
+  if (id === "lost_found_report") {
+    return features?.issues?.allowed ? "management" : "work";
+  }
+  return PIN_TILE_GROUP[id] || "work";
+}
+
 /** Preferred PIN Home order; Clock is appended last by buildPinLauncherTiles. */
 export const PIN_HOME_FEATURE_ORDER = [
   "resume_work",
@@ -212,6 +232,7 @@ export function buildPinLauncherTiles({
       color: meta.color,
       iconKey: meta.iconKey,
       badge: outstanding > 0 ? outstanding : 0,
+      group: pinTileGroup(id, feats),
       helper:
         (tr && helperKey ? tr(helperKey) : null) ||
         (id === "team_status" ? "Who's working today" : "") ||
@@ -243,6 +264,7 @@ export function buildPinLauncherTiles({
       color: PIN_LAUNCHER_META.clock.color,
       iconKey: PIN_LAUNCHER_META.clock.iconKey,
       href: "attendance",
+      group: "attendance",
       disabled: !clockAllowed,
       disabledHelper: clockAllowed
         ? ""

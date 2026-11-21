@@ -12,10 +12,37 @@ from backend.employee_mobile_pin_access import employee_allows_module
 
 HUB_ROLES = frozenset({"ADMIN", "OPS", "MANAGER", "SUPER_ADMIN", "PLATFORM_ADMIN"})
 
+# Floor supervisors use these role codes. They are not ordinary employee roles.
+PIN_MANAGEMENT_ROLES = HUB_ROLES | frozenset({"SUPERVISOR", "OPERATIONS"})
+
 # Supervisor/admin PIN modules. Ordinary employee tiles stay outside this set.
 PIN_MANAGEMENT_MODULES = frozenset(
     {"issues", "scan_chronology", "payroll", "ops_dashboard"}
 )
+
+
+def holds_pin_management_role(roles) -> bool:
+    if isinstance(roles, str):
+        roles = [part for part in roles.split(",") if part.strip()]
+    return bool({str(role).upper() for role in (roles or [])} & PIN_MANAGEMENT_ROLES)
+
+
+def user_holds_pin_management_role(cursor, user_id: int) -> bool:
+    cursor.execute(
+        """
+        SELECT r.code
+        FROM user_roles ur
+        JOIN roles r ON r.id = ur.role_id
+        WHERE ur.user_id = %s
+        """,
+        (int(user_id),),
+    )
+    codes = []
+    for row in cursor.fetchall() or []:
+        code = row.get("code") if isinstance(row, dict) else row[0]
+        if code:
+            codes.append(code)
+    return holds_pin_management_role(codes)
 
 
 def is_pin_management_module(module: str | None) -> bool:

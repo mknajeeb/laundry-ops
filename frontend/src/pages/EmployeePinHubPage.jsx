@@ -49,7 +49,7 @@ import TenantLogo from "../components/TenantLogo";
 import {
   OpsBreakModeScreen,
   OpsLauncherEmpty,
-  OpsLauncherGrid,
+  OpsLauncherSections,
   OpsMobileShell,
   OpsTopBar,
   OPS_MOBILE,
@@ -193,6 +193,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         color: slug === "veewash" ? VEEWASH_BRAND.primary : "#0e7490",
         iconKey: "issue",
         icon: ReportProblemOutlined,
+        group: hub?.features?.issues?.allowed ? "management" : "work",
       };
       const clockAt = tiles.findIndex((tile) => tile.id === "clock");
       tiles.splice(clockAt === -1 ? tiles.length : clockAt, 0, reportTile);
@@ -854,8 +855,9 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
 
           {phase === "menu" &&
             (launcherTiles.length > 0 ? (
-              <OpsLauncherGrid
+              <OpsLauncherSections
                 tiles={launcherTiles}
+                t={t}
                 busyId={featureLoading}
                 disabled={!!featureLoading}
                 onSelect={openFeature}

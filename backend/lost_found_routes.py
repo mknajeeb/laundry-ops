@@ -40,7 +40,7 @@ from backend.lost_found_photos import (
     save_found_item_image,
 )
 from backend.lost_found_rules import ACTIVITY_CODE, LostFoundError
-from backend.management_pin_access import HUB_ROLES, role_set
+from backend.management_pin_access import PIN_MANAGEMENT_ROLES, role_set
 
 
 def _day(raw: Any) -> date | None:
@@ -115,7 +115,7 @@ def register_lost_found_routes(
         me, err_resp, err_code = require_user(cursor)
         if err_resp:
             return None, None, (err_resp, err_code)
-        if not (role_set(me) & HUB_ROLES):
+        if not (role_set(me) & PIN_MANAGEMENT_ROLES):
             return None, None, (jsonify({"error": "Forbidden"}), 403)
         try:
             oid = int(user_org_id(me))

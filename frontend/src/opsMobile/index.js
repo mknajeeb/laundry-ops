@@ -2,7 +2,7 @@ export { default as OpsBreakModeScreen } from "./OpsBreakModeScreen";
 export { OPS_MOBILE, opsMobilePageSx } from "./tokens";
 export { default as OpsMobileShell } from "./OpsMobileShell";
 export { default as OpsLauncherTile } from "./OpsLauncherTile";
-export { default as OpsLauncherGrid } from "./OpsLauncherGrid";
+export { default as OpsLauncherGrid, OpsLauncherSections } from "./OpsLauncherGrid";
 export { default as OpsLauncherEmpty } from "./OpsLauncherEmpty";
 export { default as OpsTopBar } from "./OpsTopBar";
 export { default as OpsBackToPin } from "./OpsBackToPin";

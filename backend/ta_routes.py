@@ -6510,8 +6510,16 @@ def payroll_payout_batches():
 
         oid = _tenant_id()
         if request.method == "GET":
+            from backend.management_pin_access import user_holds_pin_management_role
+
+            role_cursor = conn.cursor(dictionary=True)
+            try:
+                management_reader = user_holds_pin_management_role(role_cursor, int(g.ta_user["id"]))
+            finally:
+                role_cursor.close()
             if not (
-                user_has_perm(conn, g.ta_user["id"], "ta.settings")
+                management_reader
+                or user_has_perm(conn, g.ta_user["id"], "ta.settings")
                 or user_has_perm(conn, g.ta_user["id"], "users.edit")
                 or user_has_perm(conn, g.ta_user["id"], "users.view")
             ):
@@ -6557,7 +6565,6 @@ def payroll_payout_batches():
 
 @ta_bp.route("/payroll/payout-batches/<int:batch_id>", methods=["GET", "PATCH", "DELETE"])
 @require_auth
-@require_any_perm("ta.settings", "users.edit", "users.view")
 def payroll_payout_batch_detail(batch_id):
     conn = get_db()
     try:
@@ -6571,6 +6578,23 @@ def payroll_payout_batch_detail(batch_id):
             update_payout_batch_line,
             update_payout_batch_status,
         )
+
+        uid = int(g.ta_user["id"])
+        has_payroll_perm = any(
+            user_has_perm(conn, uid, key) for key in ("ta.settings", "users.edit", "users.view")
+        )
+        if request.method == "GET":
+            from backend.management_pin_access import user_holds_pin_management_role
+
+            role_cursor = conn.cursor(dictionary=True)
+            try:
+                management_reader = user_holds_pin_management_role(role_cursor, uid)
+            finally:
+                role_cursor.close()
+            if not (has_payroll_perm or management_reader):
+                return jsonify({"error": "Forbidden"}), 403
+        elif not has_payroll_perm:
+            return jsonify({"error": "Forbidden"}), 403
 
         oid = _tenant_id()
         if request.method == "GET":

@@ -370,10 +370,6 @@ def apply_attendance_gates_to_features(
             "checklist",
             "inventory",
             "team_status",
-            "issues",
-            "ops_dashboard",
-            "scan_chronology",
-            "payroll",
             "cleaning_tasks",
             "cleaning_task_review",
             "clock",
@@ -399,10 +395,6 @@ def apply_attendance_gates_to_features(
             "checklist",
             "inventory",
             "team_status",
-            "issues",
-            "ops_dashboard",
-            "scan_chronology",
-            "payroll",
             "cleaning_task_review",
             "clock",
         ):
@@ -483,9 +475,9 @@ def _user_may_use_feature(
     # matched stays deleted so self-service tiles keep failing closed.
     del keys, roles, matched
     if feature_id in ("issues", "ops_dashboard", "scan_chronology", "payroll"):
-        from backend.management_pin_access import HUB_ROLES
+        from backend.management_pin_access import holds_pin_management_role
 
-        return bool(held_roles & HUB_ROLES)
+        return holds_pin_management_role(held_roles)
     if feature_id == "switch_role":
         return bool(is_category_role_tracking_enabled(conn, org_id))
 
@@ -675,7 +667,7 @@ def perform_pin_hub_open(
         attendance = dict(attendance or {})
         attendance["allow_clock_from_hub"] = False
         for fid, feat in list(features.items()):
-            if fid in PIN_MANAGEMENT_MODULES or fid == "machines" or not isinstance(feat, dict) or not feat.get("allowed"):
+            if fid in PIN_MANAGEMENT_MODULES or fid in ("machines", "cleaning_task_review") or not isinstance(feat, dict) or not feat.get("allowed"):
                 continue
             blocked = dict(feat)
             blocked["allowed"] = False

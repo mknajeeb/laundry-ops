@@ -38,6 +38,9 @@ describe("buildPinLauncherTiles", () => {
     const issues = tiles.find((tile) => tile.id === "issues");
     expect(issues?.label).toBe("Issues");
     expect(issues?.badge).toBe(4);
+    expect(issues?.group).toBe("management");
+    expect(tiles.find((tile) => tile.id === "team_status")?.group).toBe("work");
+    expect(tiles.find((tile) => tile.id === "clock")?.group).toBe("attendance");
     const hidden = buildPinLauncherTiles({
       features: { issues: { allowed: false, outstanding: 9 } },
       attendance: { clocked_in: true },

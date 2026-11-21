@@ -23,7 +23,7 @@ from backend.facility_machines import (
     related_issue_reports,
     update_machine,
 )
-from backend.management_pin_access import HUB_ROLES
+from backend.management_pin_access import PIN_MANAGEMENT_ROLES
 from backend.planned_weekly_schedule import normalize_week_start
 from backend.task_catalog import list_task_definitions
 from backend.task_recurrence import (
@@ -51,7 +51,7 @@ def register_facility_operations_routes(app, *, require_user: Callable, user_org
         return user, org_id, conn, cursor, roles
 
     def _manager(roles) -> bool:
-        return bool(roles & HUB_ROLES)
+        return bool(roles & PIN_MANAGEMENT_ROLES)
 
     @app.route("/api/facility-machines", methods=["GET"])
     def facility_machines_list():
