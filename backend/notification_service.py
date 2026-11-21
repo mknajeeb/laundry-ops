@@ -123,6 +123,34 @@ def resolve_recipient_user_ids(cursor, organization_id: int, event_definition_id
     return include - exclude
 
 
+def _excluded_user_ids(cursor, organization_id: int, event_definition_id: int) -> set[int]:
+    """Users removed by exclude rules. Includes are ignored."""
+    from backend.ta_helpers import table_exists
+
+    if not table_exists(cursor, "notification_event_audiences"):
+        return set()
+    cursor.execute(
+        """
+        SELECT target_type, target_id, rule_kind
+        FROM notification_event_audiences
+        WHERE event_definition_id = %s AND organization_id = %s AND rule_kind = 'exclude'
+        """,
+        (int(event_definition_id), int(organization_id)),
+    )
+    excluded: set[int] = set()
+    for r in cursor.fetchall() or []:
+        tt = (r.get("target_type") or "").strip()
+        tid = int(r["target_id"])
+        if tt == "user":
+            if tid == _ALL_USERS_SENTINEL:
+                excluded |= _all_user_ids_in_org(cursor, organization_id)
+            elif _user_in_org(cursor, organization_id, tid):
+                excluded.add(tid)
+        elif tt == "group":
+            excluded |= _group_member_ids(cursor, organization_id, tid)
+    return excluded
+
+
 def get_user_channel_prefs(cursor, user_id: int) -> dict[str, bool]:
     """Defaults favor opted-in outbound channels."""
     from backend.ta_helpers import table_has_column
@@ -165,10 +193,17 @@ def dispatch_notification_event(
     body: str,
     data: dict[str, Any] | None = None,
     channels: list[str] | None = None,
+    url: str | None = None,
+    idempotency_prefix: str | None = None,
+    recipient_user_ids: set[int] | list[int] | None = None,
 ) -> dict[str, Any]:
     """
     Resolve audiences for event_key, then send via enabled channels.
     channels: subset of ['push','email','sms','whatsapp'] — default all that are implemented.
+
+    recipient_user_ids, when set, replaces the include list. Excludes on the event still apply.
+    Future events (claims, task verification, equipment, critical alerts) should call this
+    with their own event_key. Do not add a second delivery client.
     """
     from backend.onesignal_client import external_user_id, send_push_to_external_user_ids
 
@@ -185,7 +220,11 @@ def dispatch_notification_event(
         return {"ok": False, "error": "unknown_or_inactive_event", "sent": 0}
 
     eid = int(ev["id"])
-    user_ids = resolve_recipient_user_ids(cursor, organization_id, eid)
+    if recipient_user_ids is None:
+        user_ids = resolve_recipient_user_ids(cursor, organization_id, eid)
+    else:
+        excluded = _excluded_user_ids(cursor, organization_id, eid)
+        user_ids = {int(uid) for uid in recipient_user_ids if int(uid) > 0} - excluded
     want = set(channels or ["push", "email", "sms", "whatsapp"])
     sent = {"push": 0, "email": 0, "sms": 0, "whatsapp": 0}
     errors: list[str] = []
@@ -193,33 +232,40 @@ def dispatch_notification_event(
     for uid in sorted(user_ids):
         prefs = get_user_channel_prefs(cursor, uid)
         payload = {**(data or {}), "event_key": event_key, "user_id": uid}
+        push_data = {k: v for k, v in payload.items() if k != "user_id"}
 
         if "push" in want and prefs.get("push_out", True):
             eid_str = external_user_id(organization_id, uid)
-            ok, err = send_push_to_external_user_ids([eid_str], title, body, data=payload)
+            idem = None
+            if idempotency_prefix:
+                idem = f"{idempotency_prefix}:{uid}"[:64]
+            ok, err = send_push_to_external_user_ids(
+                [eid_str],
+                title,
+                body,
+                data=push_data,
+                url=url,
+                idempotency_key=idem,
+            )
             if ok:
                 sent["push"] += 1
-                log_delivery(
-                    cursor,
-                    organization_id=organization_id,
-                    event_key=event_key,
-                    user_id=uid,
-                    channel="push",
-                    status="sent",
-                    payload=payload,
-                )
-            else:
+                status = "sent"
+            elif err and "no_subscribed" in str(err):
+                status = "no_subscription"
                 errors.append(f"push:{uid}:{err}")
-                log_delivery(
-                    cursor,
-                    organization_id=organization_id,
-                    event_key=event_key,
-                    user_id=uid,
-                    channel="push",
-                    status="failed",
-                    detail=err,
-                    payload=payload,
-                )
+            else:
+                status = "failed"
+                errors.append(f"push:{uid}:{err}")
+            log_delivery(
+                cursor,
+                organization_id=organization_id,
+                event_key=event_key,
+                user_id=uid,
+                channel="push",
+                status=status,
+                detail=None if ok else err,
+                payload=payload,
+            )
 
         if "email" in want and prefs.get("email_out", True):
             # Provider integration (Resend/SendGrid/SMTP) hooks here.

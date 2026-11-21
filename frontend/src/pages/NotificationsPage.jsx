@@ -33,6 +33,7 @@ import {
   getUsers,
   postNotificationDispatch,
   postNotificationEvent,
+  postNotificationTestSelf,
   postNotificationGroup,
   putNotificationEventAudiences,
   putNotificationGroupMembers,
@@ -48,10 +49,35 @@ const NOTIF_OUTLINE_ACCORDION_SX = {
   boxShadow: "none",
 };
 
-function PrefsSection() {
+const PUSH_REVIEW_ROLES = new Set([
+  "ADMIN",
+  "OPS",
+  "MANAGER",
+  "SUPER_ADMIN",
+  "PLATFORM_ADMIN",
+  "SUPERVISOR",
+  "OPERATIONS",
+  "PAYROLL_ADMIN",
+  "FINANCE",
+]);
+
+function canSendOwnPush(user) {
+  const roles = (user?.roles || []).map((role) => String(role || "").toUpperCase());
+  return roles.some(
+    (role) =>
+      PUSH_REVIEW_ROLES.has(role) ||
+      role.includes("SUPERVISOR") ||
+      role.includes("OPERATIONS") ||
+      role.split(/[\s_]+/).includes("MANAGER"),
+  );
+}
+
+function PrefsSection({ canTest = false }) {
   const { t } = useI18n();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testNote, setTestNote] = useState(null);
   const [err, setErr] = useState("");
   const [prefs, setPrefs] = useState({
     push_out: true,
@@ -97,6 +123,27 @@ function PrefsSection() {
       setErr(e?.response?.data?.error || e?.message || "Save failed");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const sendToThisDevice = async () => {
+    setTesting(true);
+    setTestNote(null);
+    setErr("");
+    try {
+      const res = await postNotificationTestSelf();
+      const status = res.data?.status;
+      const text =
+        status === "sent"
+          ? t("notifications.testSelfOk")
+          : status === "no_subscription"
+            ? t("notifications.testSelfNone")
+            : res.data?.detail || t("notifications.testSelfFail");
+      setTestNote({ severity: status === "sent" ? "success" : "warning", text });
+    } catch (e) {
+      setErr(e?.response?.data?.error || e?.message || t("notifications.testSelfFail"));
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -147,6 +194,17 @@ function PrefsSection() {
       <Button variant="contained" onClick={save} disabled={saving}>
         {saving ? t("common.saving") : t("common.save")}
       </Button>
+      {canTest ? (
+        <>
+          <Typography variant="body2" color="text.secondary">
+            {t("notifications.testSelfHelp")}
+          </Typography>
+          <Button variant="outlined" onClick={sendToThisDevice} disabled={testing}>
+            {testing ? "…" : t("notifications.testSelf")}
+          </Button>
+          {testNote ? <Alert severity={testNote.severity}>{testNote.text}</Alert> : null}
+        </>
+      ) : null}
     </Stack>
   );
 }
@@ -1014,7 +1072,7 @@ export default function NotificationsPage({ user }) {
         {isAdmin && <Tab label={t("notifications.tabGroups")} />}
         {isAdmin && <Tab label={t("notifications.tabEvents")} />}
       </Tabs>
-      {tab === 0 && <PrefsSection />}
+      {tab === 0 && <PrefsSection canTest={canSendOwnPush(user)} />}
       {tab === 1 && isAdmin && <GroupsSection />}
       {tab === 2 && isAdmin && <EventsSection />}
     </Box>

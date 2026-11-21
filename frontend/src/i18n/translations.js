@@ -2235,6 +2235,14 @@ export const TRANSLATIONS = {
     "notifications.dispatchTitle": "Title",
     "notifications.dispatchBody": "Message",
     "notifications.sendTest": "Send",
+    "notifications.testSelf": "Send a test to this device",
+    "notifications.testSelfHelp":
+      "Sends one alert to the account you are signed in with. Other people are not notified.",
+    "notifications.testSelfOk":
+      "Sent. If this phone does not show it, allow notifications for the installed app and open VeeWash once while signed in.",
+    "notifications.testSelfNone":
+      "This account has no subscribed device. Install the app, allow notifications, and open it while signed in.",
+    "notifications.testSelfFail": "The alert could not be sent.",
     "notifications.confirmDeleteEvent": "Delete this event definition?",
     "notifications.tenantUsers": "Users in this organization",
     "notifications.usersLoadError": "Could not load users for this tenant.",
@@ -4630,6 +4638,14 @@ export const TRANSLATIONS = {
     "notifications.dispatchTitle": "Título",
     "notifications.dispatchBody": "Mensaje",
     "notifications.sendTest": "Enviar",
+    "notifications.testSelf": "Enviar una prueba a este dispositivo",
+    "notifications.testSelfHelp":
+      "Envía un aviso solo a la cuenta con la que entró. No avisa a otras personas.",
+    "notifications.testSelfOk":
+      "Enviado. Si este teléfono no lo muestra, permita notificaciones en la app instalada y ábrala con la sesión iniciada.",
+    "notifications.testSelfNone":
+      "Esta cuenta no tiene un dispositivo suscrito. Instale la app, permita notificaciones y ábrala con la sesión iniciada.",
+    "notifications.testSelfFail": "No se pudo enviar el aviso.",
     "notifications.confirmDeleteEvent": "¿Eliminar este evento?",
     "notifications.tenantUsers": "Usuarios de la organización",
     "notifications.usersLoadError": "No se pudieron cargar los usuarios.",

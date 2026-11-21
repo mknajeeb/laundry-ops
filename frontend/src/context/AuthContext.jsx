@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 import { getTaBootstrap, login as apiLogin } from "../api";
-import { clearOneSignalUser, syncOneSignalUser } from "../onesignalUser";
+import { clearOneSignalUser, isSharedKioskPath, syncOneSignalUser } from "../onesignalUser";
 
 const AuthContext = createContext(null);
 
@@ -98,24 +98,22 @@ export function AuthProvider({ children }) {
     refreshMe();
   }, [token, refreshMe]);
 
-  /** Only unlink OneSignal after a real logout / session loss — not on first paint when user is null (avoids SDK errors on /login). */
-  const hadAuthenticatedUserRef = useRef(false);
-
   useEffect(() => {
     if (user?.id) {
-      hadAuthenticatedUserRef.current = true;
       const t = window.setTimeout(() => {
         try {
+          // A closed or expired session must keep the device linked so a later
+          // alert can still arrive. logout() and the PIN handoff unlink explicitly.
+          if (isSharedKioskPath(window.location.pathname)) {
+            clearOneSignalUser();
+            return;
+          }
           syncOneSignalUser(user);
         } catch (e) {
           console.warn("OneSignal sync skipped", e);
         }
       }, 0);
       return () => window.clearTimeout(t);
-    }
-    if (hadAuthenticatedUserRef.current) {
-      hadAuthenticatedUserRef.current = false;
-      clearOneSignalUser();
     }
   }, [user]);
 

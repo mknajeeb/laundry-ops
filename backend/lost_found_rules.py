@@ -200,6 +200,86 @@ def report_category_of(item: Mapping[str, Any] | None) -> str:
     return code if code in REPORT_CATEGORIES else CATEGORY_ORPHAN
 
 
+def push_incident_label(category: str, redry_flags: Mapping[str, Any] | None = None) -> str:
+    """Lock-screen incident name. Missing Item is the re-dry case that is only a missing identifier."""
+    code = str(category or "").strip().lower()
+    flags = redry_flags or {}
+    if code == CATEGORY_REDRY:
+        selected = [name for name in REDRY_FLAGS if flags.get(name)]
+        if selected == [REDRY_FLAG_MISSING_TICKET]:
+            return "Missing Item"
+        return "Re-Dry Issue"
+    return {
+        CATEGORY_ORPHAN: "Found Item",
+        CATEGORY_EQUIPMENT: "Equipment Not Working",
+    }.get(code, "Issue Report")
+
+
+def _push_first_name(name: Any) -> str:
+    text = " ".join(str(name or "").replace("\n", " ").replace("\r", " ").split())
+    if not text:
+        return "An employee"
+    return text.split()[0][:40]
+
+
+def _push_brief(location_label: Any) -> str:
+    """Operational place only. Notes and customer identifiers stay off the lock screen."""
+    text = " ".join(str(location_label or "").replace("\n", " ").replace("\r", " ").split())
+    if not text or "@" in text:
+        return ""
+    if sum(ch.isdigit() for ch in text) >= 10:
+        return ""
+    return text[:60]
+
+
+def compose_issue_push(
+    *,
+    reporter_name: Any,
+    category: str,
+    redry_flags: Mapping[str, Any] | None,
+    location_label: Any,
+    item_id: Any,
+    brand: str = "VeeWash",
+) -> tuple[str, str]:
+    label = push_incident_label(category, redry_flags)
+    who = _push_first_name(reporter_name)
+    brand_name = " ".join(str(brand or "VeeWash").split())[:40] or "VeeWash"
+    title = f"{brand_name} — New {label}"
+    article = "an" if label[:1].lower() in "aeiou" else "a"
+    parts = []
+    brief = _push_brief(location_label)
+    if brief:
+        parts.append(brief)
+    try:
+        ref = int(item_id)
+    except (TypeError, ValueError):
+        ref = 0
+    if ref > 0:
+        parts.append(f"#{ref}")
+    extra = " ".join(parts)
+    sentence = f"{who} submitted {article} {label} report."
+    if extra:
+        body = f"{sentence} {extra}. Tap to review."
+    else:
+        body = f"{sentence} Tap to review."
+    return title, body
+
+
+def pin_issues_open_path(slug: str, item_id: Any) -> str:
+    """PIN pad first, then the existing Issues screen on this report."""
+    from urllib.parse import quote
+
+    try:
+        ref = int(item_id)
+    except (TypeError, ValueError):
+        ref = 0
+    next_path = f"/pin-issues?report=employee:{ref}" if ref > 0 else "/pin-issues"
+    clean = "".join(ch for ch in str(slug or "").strip().lower() if ch.isalnum() or ch == "-")[:64]
+    if not clean:
+        return next_path
+    return f"/pin/{quote(clean)}?next={quote(next_path, safe='')}"
+
+
 def matched_identifier(token: str, allowed: Sequence[Any] | None, *, code: str) -> str:
     """Return the configured number, matching a bare number to a stored prefix.
 

@@ -469,3 +469,71 @@ def register_notification_routes(app):
         finally:
             cursor.close()
             conn.close()
+
+    @app.route("/auth/notifications/test-self", methods=["POST"])
+    def notif_test_self():
+        """One push to the signed-in reviewer's own devices. Does not notify anyone else."""
+        from backend.app import get_db, require_user
+        from backend.lost_found_rules import pin_issues_open_path
+        from backend.management_pin_access import holds_pin_management_role
+        from backend.notification_service import log_delivery
+        from backend.onesignal_client import external_user_id, public_web_url, send_push_to_external_user_ids
+        from backend.ta_helpers import table_exists
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err, st = require_user(cursor)
+            if err is not None:
+                return err, st
+            roles = me.get("roles") or []
+            if not holds_pin_management_role(roles):
+                return jsonify({"error": "Forbidden"}), 403
+            oid, oerr, ost = _notification_org_id(me)
+            if oerr is not None:
+                return oerr, ost
+            uid = int(me.get("user_id") or me.get("id") or 0)
+            if uid < 1:
+                return jsonify({"error": "Forbidden"}), 403
+            slug = ""
+            brand = "VeeWash"
+            if table_exists(cursor, "organizations"):
+                cursor.execute(
+                    "SELECT slug, display_name FROM organizations WHERE id=%s LIMIT 1",
+                    (oid,),
+                )
+                org = cursor.fetchone() or {}
+                slug = str(org.get("slug") or "").strip().lower()
+                brand = str(org.get("display_name") or "").strip() or brand
+            open_path = pin_issues_open_path(slug, 0).split("?")[0]
+            if slug:
+                open_path = f"/pin/{slug}?next=/pin-issues"
+            title = f"{brand} — Test"
+            body = "This device can receive issue alerts. Tap to open Issues."
+            ok, detail = send_push_to_external_user_ids(
+                [external_user_id(oid, uid)],
+                title,
+                body,
+                data={"type": "notification.test_self", "open_path": open_path},
+                url=public_web_url(open_path),
+                idempotency_key=None,
+            )
+            status = "sent" if ok else ("no_subscription" if detail and "no_subscribed" in detail else "failed")
+            log_delivery(
+                cursor,
+                organization_id=oid,
+                event_key="notification.test_self",
+                user_id=uid,
+                channel="push",
+                status=status,
+                detail=None if ok else detail,
+                payload={"open_path": open_path},
+            )
+            conn.commit()
+            return jsonify({"ok": ok, "status": status, "detail": detail, "open_path": open_path})
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()

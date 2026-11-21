@@ -15,6 +15,12 @@ function skipLocalOneSignal() {
   return h === "localhost" || h === "127.0.0.1";
 }
 
+/** Shared kiosk unlock must not keep a management push identity on that device. */
+export function isSharedKioskPath(pathname) {
+  const p = String(pathname || "");
+  return p === "/kiosk" || p.startsWith("/kiosk/");
+}
+
 export function buildOneSignalExternalUserId(user) {
   if (!user || user.id == null || user.id === undefined) return null;
   const org = Number(user.organization_id ?? 1);

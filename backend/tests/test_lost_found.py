@@ -755,7 +755,124 @@ def test_notify_only_the_reporting_organization(monkeypatch):
     assert seen["organization_id"] == 7
     assert seen["channels"] == ["push"]
     assert seen["event_key"] == "lost_found.item_reported"
+    assert seen["title"] == "VeeWash — New Found Item"
+    assert "Ana submitted a Found Item report." in seen["body"]
     assert "Washer W23-30-VW" in seen["body"]
+    assert "#4" in seen["body"]
+    assert seen["data"]["open_path"] == "/pin-issues?report=employee:4"
+    assert "notes" not in seen["body"].lower()
+    assert seen["recipient_user_ids"] == set()
+
+
+def test_notify_names_each_report_type():
+    from backend.lost_found_rules import compose_issue_push, pin_issues_open_path
+
+    title, body = compose_issue_push(
+        reporter_name="Yesenia Lopez",
+        category="equipment",
+        redry_flags={},
+        location_label="Dryer 4",
+        item_id=18,
+        brand="VeeWash",
+    )
+    assert title == "VeeWash — New Equipment Not Working"
+    assert "Yesenia submitted an Equipment Not Working report." in body
+    assert "Dryer 4" in body
+    assert "#18" in body
+    assert "customer" not in body.lower()
+
+    missing_title, missing_body = compose_issue_push(
+        reporter_name="Ana",
+        category="redry",
+        redry_flags={"missing_ticket": True, "mesh_bag": False, "wrong_pocket": False},
+        location_label="",
+        item_id=3,
+    )
+    assert missing_title == "VeeWash — New Missing Item"
+    assert "Ana submitted a Missing Item report. #3." in missing_body
+
+    redry_title, _redry_body = compose_issue_push(
+        reporter_name="Ana",
+        category="redry",
+        redry_flags={"missing_ticket": True, "mesh_bag": True},
+        location_label="Pocket 2",
+        item_id=9,
+    )
+    assert redry_title == "VeeWash — New Re-Dry Issue"
+    secret = compose_issue_push(
+        reporter_name="Ana",
+        category="orphan",
+        redry_flags={},
+        location_label="customer@example.com",
+        item_id=2,
+    )[1]
+    assert "example.com" not in secret
+    assert pin_issues_open_path("veewash", 15) == "/pin/veewash?next=%2Fpin-issues%3Freport%3Demployee%3A15"
+
+
+def test_reviewers_are_management_roles_in_the_same_organization(monkeypatch):
+    from backend.lost_found import issue_reviewer_user_ids
+
+    class Cursor:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        def execute(self, sql, params=None):
+            self.sql = sql
+            self.params = params
+
+        def fetchall(self):
+            if "FROM users" in self.sql:
+                assert self.params == (7,)
+                return [
+                    {"id": 1, "code": "SUPERVISOR", "name": "Supervisor"},
+                    {"id": 2, "code": "RINSE", "name": "Folder"},
+                    {"id": 3, "code": "OPERATIONS", "name": "Operations"},
+                    {"id": 4, "code": "ADMIN", "name": "Admin"},
+                ]
+            if "allow_cleaning_task_review" in self.sql:
+                assert self.params == (7,)
+                return [{"user_id": 5}]
+            return []
+
+    monkeypatch.setattr("backend.lost_found.table_exists", lambda _c, name: True)
+    monkeypatch.setattr("backend.ta_helpers.table_has_column", lambda *_a, **_k: True)
+    chosen = issue_reviewer_user_ids(Cursor(), 7)
+    assert chosen == {1, 3, 4, 5}
+    assert 2 not in chosen
+
+
+def test_notify_failure_does_not_raise(monkeypatch):
+    def boom(*_a, **_k):
+        raise RuntimeError("push down")
+
+    class Cursor:
+        def execute(self, *_a, **_k):
+            return None
+
+        def fetchone(self):
+            return {"id": 1}
+
+        def fetchall(self):
+            return []
+
+    monkeypatch.setattr(
+        "backend.lost_found.table_exists",
+        lambda _c, name: name == "notification_event_definitions",
+    )
+    monkeypatch.setattr("backend.notification_service.dispatch_notification_event", boom)
+    notify_found_item(Cursor(), 7, {"id": 4, "employee_name": "Ana", "report_category": "orphan"})
+
+
+def test_push_result_treats_zero_recipients_as_not_delivered():
+    from backend.onesignal_client import _classify_push_result
+
+    assert _classify_push_result({"id": "abc", "recipients": 1}) == (True, None)
+    assert _classify_push_result({"id": "abc", "recipients": 0}) == (False, "no_subscribed_devices")
+    ok, err = _classify_push_result({"errors": ["All included players are not subscribed"]})
+    assert ok is False
+    assert err == "no_subscribed_devices"
 
 
 def test_photo_storage_is_private_and_org_scoped(tmp_path, monkeypatch):
@@ -934,7 +1051,7 @@ def test_report_submission_is_separate_from_supervisor_review(monkeypatch):
         )
 
     def require_user(_cursor):
-        return {"user_id": 4, "roles": ["SUPERVISOR"], "display_name": "Pat"}, None, None
+        return {"user_id": 4, "roles": ["FOLDER"], "display_name": "Pat"}, None, None
 
     register_lost_found_routes(
         app,
@@ -1091,7 +1208,10 @@ def test_staff_photo_submission_is_saved_and_listed(monkeypatch, tmp_path):
     monkeypatch.setattr("backend.lost_found_routes.report_found_item", _record)
     monkeypatch.setattr("backend.lost_found_routes.add_item_photo", _photo)
     monkeypatch.setattr("backend.lost_found_routes.get_item", lambda *_a, **_k: {"id": 41})
-    monkeypatch.setattr("backend.lost_found_routes.notify_found_item", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "backend.lost_found_routes.schedule_found_item_notification",
+        lambda *_a, **_k: saved.setdefault("notified", True),
+    )
     monkeypatch.setattr(
         "backend.lost_found._hydrate",
         lambda *_a, **_k: [{
@@ -1128,6 +1248,7 @@ def test_staff_photo_submission_is_saved_and_listed(monkeypatch, tmp_path):
     assert saved["report"]["organization_id"] == 3
     assert saved["report"]["reporter_name"] == "Ana Folder"
     assert saved["report"]["report_category"] == "equipment"
+    assert saved["notified"] is True
     assert client.get("/api/lost-found/photos/7").status_code == 403
     assert client.post("/api/lost-found/41/status", json={"status": "resolved", "reason": "fixed"}).status_code == 403
     stored = list(tmp_path.rglob("*.jpg"))

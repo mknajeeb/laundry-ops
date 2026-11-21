@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Alert,
   Box,
@@ -45,6 +46,7 @@ import {
   shiftRange,
   statusesForIssue,
 } from "./pinIssuesRange";
+import { reportKeyFromSearch } from "./pinIssuesDeepLink";
 
 const STATUS_COLOR = {
   open: "#b45309",
@@ -220,6 +222,8 @@ function useIssuePhotos(photos) {
 
 export default function PinIssuesFlow({ onBack, onLock, preview = null }) {
   const { t } = useI18n();
+  const [searchParams] = useSearchParams();
+  const linkedReport = reportKeyFromSearch(searchParams.toString());
   const today = businessTodayYmd();
   const saved = useMemo(() => loadPinIssuesView(), []);
   const [range, setRange] = useState(() =>
@@ -239,8 +243,8 @@ export default function PinIssuesFlow({ onBack, onLock, preview = null }) {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
-  const [view, setView] = useState(saved?.detailKey ? "detail" : "list");
-  const [detailKey, setDetailKey] = useState(saved?.detailKey || "");
+  const [view, setView] = useState(linkedReport || saved?.detailKey ? "detail" : "list");
+  const [detailKey, setDetailKey] = useState(linkedReport || saved?.detailKey || "");
   const [detail, setDetail] = useState(null);
   const [detailError, setDetailError] = useState("");
   const [detailLoading, setDetailLoading] = useState(false);

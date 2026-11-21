@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import date, datetime
 from typing import Any, Mapping, Optional, Sequence
 
@@ -20,11 +21,13 @@ from backend.lost_found_rules import (
     LostFoundError,
     as_day,
     as_dt,
+    compose_issue_push,
     format_et_desktop,
     item_in_completion_scope,
     item_in_equipment_scope,
     item_in_reconciliation_scope,
     item_in_redry_scope,
+    pin_issues_open_path,
     reconciliation_blockers,
     report_category_of,
     matched_identifier,
@@ -46,9 +49,6 @@ EVENTS = "found_item_events"
 ACCOUNTS = "found_item_accounts"
 RECONCILIATIONS = "found_item_reconciliations"
 SNAPSHOTS = "found_item_reconciliation_snapshots"
-
-_SUPERVISOR_ROLES = ("ADMIN", "OPS", "MANAGER", "SUPER_ADMIN", "PLATFORM_ADMIN")
-
 
 def _ensure_table(cursor, name: str, ddl: str) -> bool:
     """Create one Lost & Found table when it is absent. Returns True when created."""
@@ -1783,10 +1783,84 @@ def ensure_lost_found_activity(cursor, organization_id: int) -> None:
     )
 
 
+def issue_reviewer_user_ids(cursor, organization_id: int) -> set[int]:
+    """Active users in this organization who can open PIN Issues.
+
+    Same gate as the Issues tile: management roles (including SUPERVISOR and
+    OPERATIONS) or the Task Review grant. Ordinary employees are not included.
+    """
+    from backend.management_pin_access import holds_pin_management_role
+    from backend.ta_helpers import table_has_column
+
+    chosen: set[int] = set()
+    org_id = int(organization_id)
+    if (
+        table_exists(cursor, "users")
+        and table_exists(cursor, "user_roles")
+        and table_exists(cursor, "roles")
+    ):
+        cursor.execute(
+            """
+            SELECT u.id, r.code, r.name
+            FROM users u
+            LEFT JOIN user_roles ur ON ur.user_id = u.id
+            LEFT JOIN roles r ON r.id = ur.role_id
+            WHERE u.organization_id=%s AND COALESCE(u.active, 1)=1
+            """,
+            (org_id,),
+        )
+        labels: dict[int, list[str]] = {}
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict) or row.get("id") is None:
+                continue
+            uid = int(row["id"])
+            labels.setdefault(uid, [])
+            if row.get("code"):
+                labels[uid].append(str(row["code"]))
+            if row.get("name"):
+                labels[uid].append(str(row["name"]))
+        for uid, names in labels.items():
+            if holds_pin_management_role(names):
+                chosen.add(uid)
+    if table_exists(cursor, "employee_mobile_pin_access") and table_has_column(
+        cursor, "employee_mobile_pin_access", "allow_cleaning_task_review"
+    ):
+        cursor.execute(
+            """
+            SELECT a.user_id
+            FROM employee_mobile_pin_access a
+            JOIN users u ON u.id = a.user_id AND u.organization_id = a.organization_id
+            WHERE a.organization_id=%s
+              AND COALESCE(u.active, 1)=1
+              AND COALESCE(a.allow_cleaning_task_review, 0)=1
+            """,
+            (org_id,),
+        )
+        for row in cursor.fetchall() or []:
+            uid = row.get("user_id") if isinstance(row, dict) else row[0]
+            if uid is not None:
+                chosen.add(int(uid))
+    return chosen
+
+
+def _org_push_identity(cursor, organization_id: int) -> tuple[str, str]:
+    if not table_exists(cursor, "organizations"):
+        return "", "VeeWash"
+    row = _fetch_one(
+        cursor,
+        "SELECT slug, display_name FROM organizations WHERE id=%s LIMIT 1",
+        (int(organization_id),),
+    ) or {}
+    slug = str(row.get("slug") or "").strip().lower()
+    brand = str(row.get("display_name") or "").strip() or "VeeWash"
+    return slug, brand
+
+
 def notify_found_item(cursor, organization_id: int, item: Mapping[str, Any]) -> None:
-    """In-app push to this organization's supervisor audience only."""
+    """Push to this organization's issue reviewers. Never raises into the report save."""
     try:
         if not table_exists(cursor, "notification_event_definitions"):
+            logger.warning("lost found push skipped: notification events are not installed")
             return
         cursor.execute(
             """
@@ -1797,104 +1871,104 @@ def notify_found_item(cursor, organization_id: int, item: Mapping[str, Any]) -> 
             (
                 int(organization_id),
                 NOTIFY_EVENT_KEY,
-                "Lost & Found item reported",
-                "A found item was reported at this facility.",
+                "Issue reported",
+                "Push when an employee files a Lost & Found or equipment report. "
+                "Recipients are current PIN Issues reviewers in this organization. "
+                "Excludes on this event are honored. Other events are not sent from here.",
             ),
         )
         cursor.execute(
             """
             SELECT id FROM notification_event_definitions
-            WHERE organization_id=%s AND event_key=%s LIMIT 1
+            WHERE organization_id=%s AND event_key=%s AND is_active=1 LIMIT 1
             """,
             (int(organization_id), NOTIFY_EVENT_KEY),
         )
         event = cursor.fetchone()
         if not event:
             return
-        event_id = int(event["id"] if isinstance(event, dict) else event[0])
-        _seed_supervisor_audience(cursor, organization_id, event_id)
-        from backend.notification_service import dispatch_notification_event
-
-        when = item.get("reported_at_display") or ""
-        where = _bilingual_location(item)
-        who = item.get("employee_name") or "An employee"
+        reviewers = issue_reviewer_user_ids(cursor, int(organization_id))
+        slug, brand = _org_push_identity(cursor, int(organization_id))
         category = report_category_of(item)
-        if category == "equipment":
-            title = "Equipment not working / Equipo no funciona"
-            body = f"{who} · {where}. {item.get('notes') or ''} {when}".strip()
-        elif category == "redry":
-            flags = item.get("redry_flags") or {}
-            selected = [
-                label
-                for key, label in (
-                    ("missing_ticket", "Missing identification on ticket / Falta identificación en la etiqueta"),
-                    ("mesh_bag", "Mesh bag not used / No se utilizó bolsa de malla"),
-                    ("wrong_pocket", "Wrong pocket / Compartimento incorrecto"),
-                )
-                if flags.get(key)
-            ]
-            title = "Re-Dry issue / Problema de resecado"
-            detail = "; ".join(selected)
-            body = f"{who} · {where}. {detail}. {when}".strip()
-        else:
-            title = "Orphan item / Prenda sin identificar"
-            body = f"{who} reported an orphan item at {where}. {when}".strip()
-        dispatch_notification_event(
+        title, body = compose_issue_push(
+            reporter_name=item.get("employee_name") or item.get("reporter_name"),
+            category=category,
+            redry_flags=item.get("redry_flags") or {},
+            location_label=item.get("location_label"),
+            item_id=item.get("id"),
+            brand=brand,
+        )
+        open_path = pin_issues_open_path(slug, item.get("id"))
+        from backend.notification_service import dispatch_notification_event
+        from backend.onesignal_client import public_web_url
+
+        item_id = item.get("id")
+        result = dispatch_notification_event(
             cursor,
             organization_id=int(organization_id),
             event_key=NOTIFY_EVENT_KEY,
             title=title,
             body=body,
             data={
-                "found_item_id": item.get("id"),
-                "open_path": "/management/lost-found",
-                "location_label": where,
-                "business_date": item.get("business_date"),
+                "type": NOTIFY_EVENT_KEY,
+                "found_item_id": item_id,
+                "report_key": f"employee:{item_id}" if item_id else "",
+                "open_path": open_path,
                 "report_category": category,
-                "redry_flags": item.get("redry_flags") or {},
             },
             channels=["push"],
+            url=public_web_url(open_path),
+            idempotency_prefix=f"lf-{int(organization_id)}-{item_id}",
+            recipient_user_ids=reviewers,
+        )
+        logger.info(
+            "lost found push org=%s item=%s reviewers=%s sent=%s",
+            int(organization_id),
+            item_id,
+            len(reviewers),
+            (result or {}).get("sent"),
         )
     except Exception:
-        logger.debug("lost found notification skipped", exc_info=True)
+        logger.warning("lost found notification skipped", exc_info=True)
 
 
-def _seed_supervisor_audience(cursor, organization_id: int, event_id: int) -> None:
-    if not table_exists(cursor, "notification_event_audiences"):
-        return
-    cursor.execute(
-        """
-        SELECT id FROM notification_event_audiences
-        WHERE event_definition_id=%s AND organization_id=%s LIMIT 1
-        """,
-        (int(event_id), int(organization_id)),
-    )
-    if cursor.fetchone():
-        return
-    if not table_exists(cursor, "user_roles") or not table_exists(cursor, "roles"):
-        return
-    marks = ",".join(["%s"] * len(_SUPERVISOR_ROLES))
-    cursor.execute(
-        f"""
-        SELECT DISTINCT u.id
-        FROM users u
-        JOIN user_roles ur ON ur.user_id = u.id
-        JOIN roles r ON r.id = ur.role_id
-        WHERE u.organization_id=%s
-          AND COALESCE(u.active, 1)=1
-          AND UPPER(r.code) IN ({marks})
-        """,
-        (int(organization_id), *_SUPERVISOR_ROLES),
-    )
-    for row in cursor.fetchall() or []:
-        user_id = row.get("id") if isinstance(row, dict) else row[0]
-        if user_id is None:
-            continue
-        cursor.execute(
-            """
-            INSERT IGNORE INTO notification_event_audiences
-              (event_definition_id, organization_id, target_type, target_id, rule_kind)
-            VALUES (%s,%s,'user',%s,'include')
-            """,
-            (int(event_id), int(organization_id), int(user_id)),
-        )
+def schedule_found_item_notification(organization_id: int, item: Mapping[str, Any]) -> None:
+    """Send after the report commits, on another connection. A push failure cannot roll the report back."""
+    from flask import current_app
+
+    flags = item.get("redry_flags") or {}
+    snapshot = {
+        "id": item.get("id"),
+        "employee_name": item.get("employee_name") or item.get("reporter_name"),
+        "report_category": item.get("report_category"),
+        "location_label": item.get("location_label"),
+        "redry_flags": {
+            "missing_ticket": bool(flags.get("missing_ticket")),
+            "mesh_bag": bool(flags.get("mesh_bag")),
+            "wrong_pocket": bool(flags.get("wrong_pocket")),
+        },
+    }
+    app = current_app._get_current_object()
+
+    def run() -> None:
+        with app.app_context():
+            from backend.db import get_db
+
+            conn = get_db()
+            try:
+                cur = conn.cursor(dictionary=True)
+                notify_found_item(cur, int(organization_id), snapshot)
+                conn.commit()
+            except Exception:
+                logger.warning("lost found notification failed", exc_info=True)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    threading.Thread(target=run, name="lost-found-push", daemon=True).start()

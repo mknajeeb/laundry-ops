@@ -184,6 +184,8 @@ export const putNotificationEventAudiences = (eventId, body) =>
   axios.put(`${API_BASE}/auth/notifications/events/${eventId}/audiences`, body);
 export const postNotificationDispatch = (body) =>
   axios.post(`${API_BASE}/auth/notifications/dispatch`, body);
+export const postNotificationTestSelf = () =>
+  axios.post(`${API_BASE}/auth/notifications/test-self`, {});
 
 /** Single in-flight GET /auth/me (App bootstrap + refresh events can overlap). */
 let _authMeInflight = null;

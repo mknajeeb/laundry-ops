@@ -29,7 +29,7 @@ from backend.lost_found import (
     reporter_name_for_user,
     search_issue_reports,
     location_choices,
-    notify_found_item,
+    schedule_found_item_notification,
     reconciliation_view,
     report_found_item,
     save_designated_redry_pockets,
@@ -255,12 +255,16 @@ def register_lost_found_routes(
                 from backend.lost_found import _hydrate
 
                 item = _hydrate(cursor, int(ctx["org_id"]), [fresh])[0]
-                notify_found_item(cursor, int(ctx["org_id"]), item)
             else:
                 for stored in stored_photos:
                     discard_found_item_image(stored)
                 stored_photos = []
             conn.commit()
+            if created:
+                try:
+                    schedule_found_item_notification(int(ctx["org_id"]), item)
+                except Exception:
+                    pass
             return jsonify({"ok": True, "created": created, "item": item})
         except LostFoundError as exc:
             for stored in stored_photos:
@@ -535,12 +539,16 @@ def register_lost_found_routes(
                 from backend.lost_found import _hydrate
 
                 item = _hydrate(cursor, oid, [fresh])[0]
-                notify_found_item(cursor, oid, item)
             else:
                 for stored in stored_photos:
                     discard_found_item_image(stored)
                 stored_photos = []
             conn.commit()
+            if created:
+                try:
+                    schedule_found_item_notification(oid, item)
+                except Exception:
+                    pass
             return jsonify({"ok": True, "created": created, "item": item})
         except LostFoundError as exc:
             for stored in stored_photos:

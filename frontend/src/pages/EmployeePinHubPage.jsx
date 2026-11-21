@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Alert,
   Box,
@@ -61,6 +61,8 @@ import { SUPERVISOR_PORTAL_PILOT } from "../supervisor/pilotAccess";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 import { applyAttendancePwaManifest } from "../utils/attendancePwaManifest";
 import { saveMtlPinSession } from "../utils/maintenanceTaskListHelpers";
+import { clearOneSignalUser, syncOneSignalUser } from "../onesignalUser";
+import { safePinIssuesPath } from "../opsMobile/pinIssuesDeepLink";
 import {
   clearPinHubAppSession,
   clearPinHubSession,
@@ -150,6 +152,7 @@ function iconForTile(tile) {
 export default function EmployeePinHubPage({ onLoggedIn }) {
   const { t, locale } = useI18n();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { orgSlug: orgSlugParam } = useParams();
   const routeSlug = useMemo(() => sanitizeSlug(orgSlugParam), [orgSlugParam]);
 
@@ -172,6 +175,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
 
   const punchInFlightRef = useRef(false);
   const prevPinLenRef = useRef(0);
+  const nextOpenedRef = useRef(false);
 
   const pinClean = useMemo(() => String(pin || "").replace(/\D/g, "").slice(0, PIN_LEN), [pin]);
   const logoSrc = attendanceLogoSrc(slug, branding?.logo_url);
@@ -300,6 +304,14 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
       };
       savePinHubSession(sess);
       setHub(sess);
+      if (body?.is_system === true || !body?.features?.issues?.allowed) {
+        clearOneSignalUser();
+      } else {
+        syncOneSignalUser({
+          id: body.employee_id,
+          organization_id: body.organization_id,
+        });
+      }
       // Server-authoritative: open shift_breaks → Break Mode, not the normal launcher.
       setPhase(onBreak ? "break" : "menu");
       setPin("");
@@ -400,6 +412,9 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
 
   const lockSession = () => {
     // Clears PIN hub unlock only — does not call punch APIs or change shift data.
+    // Also drops this browser's push identity so a shared phone is not left
+    // subscribed to the person who just locked it.
+    clearOneSignalUser();
     clearPinHubSession();
     clearPinHubAppSession();
     setHub(null);
@@ -571,7 +586,9 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         markPinHubAppSession(slug);
         setAuthSession(payload);
         onLoggedIn?.(payload.user);
-        navigate(managementRoutes[featureId], { replace: true });
+        const destination =
+          featureId === "issues" ? safePinIssuesPath(tile?.destination) : "";
+        navigate(destination || managementRoutes[featureId], { replace: true });
         return;
       }
       if (featureId === "team_status") {
@@ -602,6 +619,21 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
       setFeatureLoading("");
     }
   };
+
+  const returnToReport = safePinIssuesPath(searchParams.get("next"));
+  useEffect(() => {
+    if (
+      nextOpenedRef.current ||
+      !returnToReport ||
+      phase === "pin" ||
+      !hub?.features?.issues?.allowed ||
+      hub?.attendance?.on_break === true
+    ) {
+      return;
+    }
+    nextOpenedRef.current = true;
+    openFeature({ id: "issues", destination: returnToReport });
+  }, [returnToReport, phase, hub]);
 
   const confirmStartBreak = async () => {
     if (!hub || !slug) return;
