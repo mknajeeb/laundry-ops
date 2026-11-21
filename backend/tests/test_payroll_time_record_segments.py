@@ -296,10 +296,18 @@ def test_edit_open_segment_role_and_start(conn):
         )
 
     assert rec["ended_at"] is None
+    assert rec["category_id"] == 1
     assert rec["role_id"] == 5
+    assert rec["category_name"] == "Rinse WF"
+    assert rec["role_name"] == "Sort"
     assert rec["display_label"] == "Rinse WF — Sort"
+    assert rec["session"]["user_id"] == 7
     assert str(rec["session"]["clock_in_at"]).startswith("2026-09-10T05:35:00")
     assert rec["session"]["status"] == "open"
+    update_sql = upd.execute.call_args[0][0]
+    assert "category_id=%s" in update_sql
+    assert "role_id=%s" in update_sql
+    assert "user_id" not in update_sql
     sync.assert_called_once()
     proposed = sync.call_args[0][2]
     open_seg = next(s for s in proposed if s.get("ended_at") is None)
