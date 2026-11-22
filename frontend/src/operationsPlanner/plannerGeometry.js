@@ -1,4 +1,4 @@
-import { clockMinutes, minutesToClock, spanMinutes } from "./plannerModel";
+import { clockMinutes, minutesToClock, shiftHours, spanMinutes } from "./plannerModel";
 
 export function asList(value) {
   if (Array.isArray(value)) return value;
@@ -245,6 +245,79 @@ export function visibleBreaks(entry) {
   const minutes = Number(entry?.break_minutes) || 0;
   if (!minutes) return [];
   return [{ unscheduled: true, minutes, timed: false }];
+}
+
+function clockOf(total) {
+  return minutesToClock(total);
+}
+
+/**
+ * One row per stored role segment, with its own start and end.
+ * A gap that is not a timed break stays "not split" instead of borrowing the combined role name.
+ * A combined role with no stored split lists each name and does not invent a time for each name.
+ */
+export function scheduleCardRows(entry) {
+  const breaks = new Set(visibleBreaks(entry).filter((slot) => slot.start_time).map((slot) => `${slot.start_time}-${slot.end_time}`));
+  const stored = asList(entry?.role_assignments).length ? displaySegments(entry).filter((segment) => segment.allocated) : [];
+  if (stored.length) {
+    const gaps = visualPieces(entry).filter((piece) => !piece.allocated).map((piece) => {
+      const start = clockOf(piece.start);
+      const end = clockOf(piece.end);
+      return { role: "", start_time: start, end_time: end, allocated: false, unsplit: true };
+    }).filter((row) => row.start_time && row.end_time && !breaks.has(`${row.start_time}-${row.end_time}`));
+    return [...stored.map((segment) => ({
+      role: segment.role,
+      start_time: segment.start_time,
+      end_time: segment.end_time,
+      allocated: true,
+      unsplit: false,
+    })), ...gaps].sort((a, b) => String(a.start_time).localeCompare(String(b.start_time)));
+  }
+  const codes = String(entry?.role || "").split(",").map((part) => part.trim()).filter(Boolean);
+  if (codes.length <= 1) {
+    return [{
+      role: codes[0] || "",
+      start_time: String(entry?.start_time || "").slice(0, 5),
+      end_time: String(entry?.end_time || "").slice(0, 5),
+      allocated: false,
+      unsplit: !codes.length,
+    }];
+  }
+  return codes.map((role) => ({ role, start_time: "", end_time: "", allocated: false, unsplit: true }));
+}
+
+/** Day totals from the shifts on that day. Role hours follow stored segments. Gross and net stay on shiftHours. */
+export function dayScheduleSummary(entries, day) {
+  const shifts = (entries || []).filter((entry) => Number(entry.day_of_week) === Number(day));
+  const roles = {};
+  let gross = 0;
+  let net = 0;
+  for (const entry of shifts) {
+    const hours = shiftHours(entry);
+    gross += hours.gross;
+    net += hours.net;
+    const rows = scheduleCardRows(entry);
+    let namedUnsplit = false;
+    for (const row of rows) {
+      if (row.allocated && row.role && row.start_time) {
+        roles[row.role] = (roles[row.role] || 0) + ((spanMinutes(row.start_time, row.end_time) || 0) / 60);
+      } else if (row.unsplit && row.start_time) {
+        roles.unsplit = (roles.unsplit || 0) + ((spanMinutes(row.start_time, row.end_time) || 0) / 60);
+      } else if (!row.unsplit && row.role) {
+        roles[row.role] = (roles[row.role] || 0) + hours.gross;
+      } else if (row.unsplit && !namedUnsplit) {
+        roles.unsplit = (roles.unsplit || 0) + hours.gross;
+        namedUnsplit = true;
+      }
+    }
+  }
+  return {
+    people: new Set(shifts.map((entry) => Number(entry.user_id))).size,
+    shifts: shifts.length,
+    gross,
+    net,
+    roles,
+  };
 }
 
 function shiftClock(start, delta) {

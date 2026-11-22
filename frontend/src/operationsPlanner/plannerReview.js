@@ -1,5 +1,14 @@
 import { DAY_NAMES } from "./plannerModel";
 import { draftOperations } from "./plannerGeometry";
+import { scheduleRoleLabel } from "../components/weeklySchedule/weeklyScheduleRoles";
+
+function roleText(role) {
+  const names = String(role || "").split(",").map((part) => part.trim()).filter(Boolean).map((code) => {
+    const label = scheduleRoleLabel(code);
+    return label && label !== code ? label : code.replaceAll("_", " ");
+  });
+  return names.join(", ") || "no role";
+}
 
 function cellKey(userId, day) {
   return `${Number(userId)}:${Number(day)}`;
@@ -32,7 +41,7 @@ function clockLabel(entry) {
   const slots = Array.isArray(entry.break_slots) ? entry.break_slots : [];
   const timed = slots.filter((slot) => slot?.start_time && slot?.end_time).map((slot) => `${String(slot.start_time).slice(0, 5)}–${String(slot.end_time).slice(0, 5)}`);
   const breakText = timed.length ? `break ${timed.join(", ")}` : (Number(entry.break_minutes) > 0 ? `break ${entry.break_minutes} min, no clock time` : "no break");
-  return `${String(entry.start_time || "").slice(0, 5)}–${String(entry.end_time || "").slice(0, 5)} · ${entry.role || "no role"} · ${breakText}`;
+  return `${String(entry.start_time || "").slice(0, 5)}–${String(entry.end_time || "").slice(0, 5)} · ${roleText(entry.role)} · ${breakText}`;
 }
 
 export function reviewLines(before, after, employees = []) {
@@ -52,7 +61,7 @@ export function reviewLines(before, after, employees = []) {
 function taskDetail(task) {
   if (!task) return "removed";
   const clock = task.timing_mode === "specific_time" && task.start_time ? ` at ${String(task.start_time).slice(0, 5)}` : " · no clock time";
-  return `${task.role || "task"} · employee ${task.user_id} · ${DAY_NAMES[task.day_of_week] || ""}${clock}`;
+  return `${roleText(task.role)} · ${DAY_NAMES[task.day_of_week] || ""}${clock}`;
 }
 
 export function taskChanges(before, after) {

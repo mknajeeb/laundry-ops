@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import week from "./fixtures/veewash-2027-01-04.json";
-import { barBox, displaySegments, draftOperations, placeBreak, relocateShift, resizeBreak, resizeEdge, resizeSegment, roleColor, splitHalves, storedRoleSegments, timelineAxis, visibleBreaks, visualPieces } from "./plannerGeometry";
+import { barBox, dayScheduleSummary, displaySegments, draftOperations, placeBreak, relocateShift, resizeBreak, resizeEdge, resizeSegment, roleColor, scheduleCardRows, splitHalves, storedRoleSegments, timelineAxis, visibleBreaks, visualPieces } from "./plannerGeometry";
 
 describe("planner geometry", () => {
   it("starts the axis at the earliest shift instead of clipping 02:00 to 06:00", () => {
@@ -150,5 +150,42 @@ describe("planner geometry", () => {
     expect(operations[0].id).toBe(5136);
     const removed = draftOperations(saved, []);
     expect(removed).toEqual([{ op: "delete", id: 5136, user_id: jennifer.user_id, day_of_week: jennifer.day_of_week }]);
+  });
+
+  it("gives each stored role its own card row and leaves an unsplit gap unlabeled", () => {
+    const monday = {
+      id: 1,
+      user_id: 7,
+      day_of_week: 1,
+      start_time: "08:00",
+      end_time: "16:00",
+      role: "wash",
+      break_minutes: 30,
+      break_slots: [{ start_time: "12:00", end_time: "12:30", timed: true }],
+      role_assignments: [
+        { role: "wash", start_time: "08:00", end_time: "12:00" },
+        { role: "fold", start_time: "12:30", end_time: "16:00" },
+      ],
+    };
+    expect(scheduleCardRows(monday).map((row) => [row.role, row.start_time, row.end_time])).toEqual([
+      ["wash", "08:00", "12:00"],
+      ["fold", "12:30", "16:00"],
+    ]);
+    const summary = dayScheduleSummary([monday], 1);
+    expect(summary.people).toBe(1);
+    expect(summary.gross).toBe(8);
+    expect(summary.net).toBe(7.5);
+    expect(summary.roles.wash).toBe(4);
+    expect(summary.roles.fold).toBe(3.5);
+    const combined = scheduleCardRows({
+      start_time: "05:00",
+      end_time: "13:00",
+      role: "wash,attendant",
+      break_minutes: 30,
+      break_slots: null,
+      role_assignments: null,
+    });
+    expect(combined.map((row) => row.role)).toEqual(["wash", "attendant"]);
+    expect(combined.every((row) => row.unsplit && !row.start_time)).toBe(true);
   });
 });

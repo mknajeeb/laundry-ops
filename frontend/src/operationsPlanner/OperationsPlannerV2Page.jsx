@@ -32,7 +32,6 @@ import { setScheduleRoleCatalog } from "../components/weeklySchedule/weeklySched
 
 const LENSES = [
   ["schedule", "Schedule"],
-  ["timeline", "Timeline"],
   ["coverage", "Coverage"],
   ["breaks", "Breaks"],
   ["tasks", "Tasks"],
@@ -246,7 +245,7 @@ export default function OperationsPlannerV2Page() {
     const tasks = payload.daily_responsibilities || [];
     setHistory([null]);
     setDraftBundle({ entries: [...base, ...clones], requirements, tasks });
-    setNotice(`Copied ${clones.length} shifts onto the week of ${pendingCopy.target}. Completed tasks were not copied. Review save before anything is written.`);
+    setNotice(`Copied ${clones.length} shifts onto the week of ${pendingCopy.target}. Completed tasks were not copied. Save changes before anything is written.`);
   }, [payload]);
   const visibleEntries = entriesForPeriod(entries, { mode, day });
   const planner = payload?.planner || {};
@@ -677,6 +676,7 @@ export default function OperationsPlannerV2Page() {
           <button type="button" disabled={snapshot} onClick={() => requestWeek(easternMonday())}>Today</button>
         </div>
         <span className={`status-pill ${statusName}`}>{statusName}{planner.revision ? ` · rev ${planner.revision}` : ""}{planner.published_revision ? ` · published ${planner.published_revision}` : ""}</span>
+        {lens === "schedule" ? null : (
         <div className="seg" role="group" aria-label="Calendar span">
           <button type="button" aria-pressed={mode === "week"} onClick={() => setMode("week")}>Week</button>
           <button type="button" aria-pressed={mode === "day"} onClick={() => {
@@ -685,7 +685,8 @@ export default function OperationsPlannerV2Page() {
             setMode("day");
           }}>Day</button>
         </div>
-        {mode === "day" || lens === "coverage" || lens === "tasks" ? (
+        )}
+        {lens !== "schedule" && (mode === "day" || lens === "coverage" || lens === "tasks") ? (
           <div className="days" role="group" aria-label="Day">
             {DAY_ORDER.map((value) => {
               const offset = value === 0 ? 6 : value - 1;
@@ -735,30 +736,22 @@ export default function OperationsPlannerV2Page() {
           ))}
         </nav>
       </header>
-      {payload ? (
-        <div className="metrics" aria-label="Schedule summary">
-          <div className="metric"><b>{entries.length}</b><span>Shifts</span></div>
-          <div className="metric" title="Schedule gross minus the Weekly Schedule break deduction."><b>{labor.scheduleNet.toFixed(1)}</b><span>Schedule net</span></div>
-          <div className="metric"><b>{scheduledCount}</b><span>Scheduled</span></div>
-          <details className="issues">
-            <summary>
-              {(breakTotals.unscheduledCount || unsplitCount || !loadedRequirements.length || labor.overlapHours > 0) ? "Warnings" : "Schedule detail"}
-            </summary>
-            <div className="metric" title="Sum of every shift."><b>{labor.assignmentGross.toFixed(1)}</b><span>Assignment gross</span></div>
-            <div className="metric"><b>{labor.uniqueGross.toFixed(1)}</b><span>Unique working</span></div>
-            <div className="metric"><b>{labor.scheduleGross.toFixed(1)}</b><span>Schedule gross</span></div>
-            <div className="metric"><b>{labor.scheduleBreak.toFixed(1)}</b><span>Schedule breaks</span></div>
-            <div className="metric"><b>{Math.max(0, employees.length - scheduledCount)}</b><span>Unscheduled</span></div>
-            <div className="metric"><b>{coverageLabel}</b><span>Coverage</span></div>
-            <div className="flags">
-              {breakTotals.unscheduledCount ? <p className="flag"><i />{breakTotals.unscheduledCount} breaks have no clock time</p> : null}
-              {unsplitCount ? <p className="flag"><i />{unsplitCount} shifts have no role split</p> : null}
-              {!loadedRequirements.length ? <p className="flag"><i />Staffing need not set</p> : null}
-              {labor.overlapHours > 0 ? <p className="flag"><i />{labor.overlapHours.toFixed(1)}h overlap</p> : null}
-              {snapshot ? <p className="flag"><i />Read-only snapshot</p> : null}
-            </div>
-          </details>
-        </div>
+      {payload && lens === "schedule" ? (
+        <details className="warnings">
+          <summary>{(breakTotals.unscheduledCount || unsplitCount || labor.overlapHours > 0) ? "Warnings" : "Schedule checks"}</summary>
+          <div>
+            <span>{labor.assignmentGross.toFixed(1)}h assignment gross</span>
+            <span>{labor.uniqueGross.toFixed(1)}h unique working</span>
+            <span>{labor.scheduleGross.toFixed(1)}h schedule gross</span>
+            <span>{labor.scheduleNet.toFixed(1)}h schedule net</span>
+            <span>{labor.scheduleBreak.toFixed(1)}h breaks</span>
+            <span>{scheduledCount} scheduled</span>
+            <span>Coverage {coverageLabel}</span>
+            {breakTotals.unscheduledCount ? <span>{breakTotals.unscheduledCount} breaks have no clock time</span> : null}
+            {unsplitCount ? <span>{unsplitCount} shifts have no role split</span> : null}
+            {labor.overlapHours > 0 ? <span>{labor.overlapHours.toFixed(1)}h overlap</span> : null}
+          </div>
+        </details>
       ) : null}
       {flags === null && !error ? <p className="ops-note">Loading the schedule…</p> : null}
       {error ? <p className="ops-note ops-warn">{error}</p> : null}
@@ -795,7 +788,7 @@ export default function OperationsPlannerV2Page() {
           onDuplicate={duplicateShift}
           onSplit={splitShift}
           onRemove={removeShift}
-          onOpenDay={(value) => { setLens("timeline"); setMode("day"); setDay(Number(value)); }}
+          onOpenDay={(value) => { setLens("schedule"); setDay(Number(value)); }}
           onMove={moveDraft}
           onCopyRequest={(kind, target) => {
             const chosen = target?.entry || entries.find((entry) => shiftKey(entry) === selectedKey);
@@ -872,7 +865,7 @@ export default function OperationsPlannerV2Page() {
         <div className="ops-dialog-back">
           <form className="ops-dialog" onSubmit={(event) => { event.preventDefault(); runCopy(copyJob); }}>
             <h2>{copyJob.kind === "week" ? "Copy this week" : copyJob.kind === "day" ? "Copy this day" : copyJob.kind === "employee-week" ? "Copy this employee's week" : copyJob.kind === "employee-day" ? "Copy this employee's day" : "Duplicate this shift"}</h2>
-            <p>The copy is a draft. Completed tasks and pay records are not copied. Nothing is written until Review save.</p>
+            <p>The copy stays in the draft. Completed tasks and pay records are not copied. Nothing is written until you save changes.</p>
             {copyJob.kind !== "week" && copyJob.kind !== "day" ? (
               <label>Employee
                 <select aria-label="Copy target employee" value={String(copyJob.kind === "employee-week" ? copyJob.toUser : copyJob.userId)} onChange={(event) => setCopyJob({ ...copyJob, userId: Number(event.target.value), toUser: Number(event.target.value) })}>
@@ -902,14 +895,14 @@ export default function OperationsPlannerV2Page() {
       {pending ? (
         <div className="ops-dialog-back">
           <form className="ops-dialog" onSubmit={(event) => { event.preventDefault(); if (!snapshot) send("/operations-planner/v2/apply"); }}>
-            <h2>How should this change apply?</h2>
+            <h2>Save changes</h2>
             <p>
               {pending.command.action === "save_staffing_requirements"
                 ? `${(pending.command.requirements || []).length} staffing interval${(pending.command.requirements || []).length === 1 ? "" : "s"}. Hours without an interval stay unconfigured.`
                 : pending.command.action === "assign_tasks"
                   ? `${(pending.command.tasks || []).length} new assignment${(pending.command.tasks || []).length === 1 ? "" : "s"}. Completed records are not rewritten.`
                   : pending.command.action === "apply_shift_set"
-                    ? "Every addition, change, and removal below is saved together. If one half fails, nothing is written."
+                    ? "These draft changes are saved together. Approval and publishing stay separate."
                     : `${pending.command.action} · employee ${pending.command.user_id} · ${DAY_NAMES[pending.command.day_of_week] || ""}`}
             </p>
             {pending.command.action === "apply_shift_set" ? (
@@ -947,9 +940,14 @@ export default function OperationsPlannerV2Page() {
             ) : null}
             {snapshot ? <p>Confirm is off for this snapshot. Cancel restores the loaded week, including fields this edit did not change.</p> : null}
             {pending.command.action === "apply_shift_set" ? (
-              pending.command.scopeMode !== "choice" ? <p>{pending.command.scopeReason}</p> : ["this_week", "this_and_future", "future_only", "selected_weeks"].map((value) => (
+              pending.command.scopeMode !== "choice" ? <p>{pending.command.scopeReason}</p> : [
+                ["this_week", "This week only"],
+                ["this_and_future", "This week and future weeks"],
+                ["future_only", "Future weeks only"],
+                ["selected_weeks", "Selected weeks"],
+              ].map(([value, label]) => (
                 <label key={value} style={{ display: "block", marginBottom: 6 }}>
-                  <input type="radio" name="scope" checked={scope === value} onChange={() => setScope(value)} /> {value.replaceAll("_", " ")}
+                  <input type="radio" name="scope" checked={scope === value} onChange={() => setScope(value)} /> {label}
                 </label>
               ))
             ) : <p>This task or staffing change is saved on the week of {week}.</p>}
@@ -988,8 +986,7 @@ export default function OperationsPlannerV2Page() {
               </label>
             ) : null}
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-              <button type="button" disabled={snapshot} onClick={() => { if (!snapshot) send("/operations-planner/v2/preview"); }}>Review</button>
-              <button type="submit" className="primary" disabled={snapshot}>Confirm</button>
+              <button type="submit" className="primary" disabled={snapshot}>Save changes</button>
               <button type="button" onClick={() => setPending(null)}>Cancel</button>
             </div>
           </form>
