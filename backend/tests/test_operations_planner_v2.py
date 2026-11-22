@@ -766,3 +766,62 @@ def test_new_task_is_stored_on_the_schedule_week_not_the_display_monday(monkeypa
     assert inserts[0][3] == 1
     assert inserts[0][8] == "20:08"
     assert inserts[0][9] == "21:00"
+
+
+def test_repeat_task_save_moves_the_monday_row_and_keeps_the_planned_end(monkeypatch):
+    """A draft saved again must update the row already stored on the display Monday."""
+    from backend.operations_planner_v2_store import add_assignments
+
+    monkeypatch.setattr("backend.operations_planner_v2_store.table_exists", lambda _cursor, _table: True)
+    monkeypatch.setattr(
+        "backend.planned_weekly_schedule_responsibilities.ensure_responsibilities_table",
+        lambda _cursor: None,
+    )
+
+    class Cursor:
+        def __init__(self):
+            self.calls = []
+            self.rowcount = 1
+
+        def execute(self, sql, params=None):
+            self.calls.append((" ".join(str(sql).split()), params))
+
+        def fetchall(self):
+            sql, params = self.calls[-1]
+            if "FROM planned_weekly_schedule_responsibilities" in sql and params and params[1] == date(2026, 11, 23):
+                return [{
+                    "id": 286,
+                    "user_id": 38,
+                    "day_of_week": 1,
+                    "role": "agroup_washer_and_floor_cleaning",
+                    "remarks": None,
+                    "assignment_group_id": None,
+                }]
+            return []
+
+        def fetchone(self):
+            return None
+
+    cursor = Cursor()
+    result = add_assignments(
+        cursor,
+        3,
+        date(2026, 11, 23),
+        [{
+            "user_id": 38,
+            "day_of_week": 1,
+            "role": "agroup_washer_and_floor_cleaning",
+            "timing_mode": "specific_time",
+            "start_time": "20:08",
+            "end_time": "21:00",
+        }],
+    )
+    updates = [params for sql, params in cursor.calls if sql.startswith("UPDATE")]
+    inserts = [params for sql, params in cursor.calls if sql.startswith("INSERT INTO")]
+    assert result["inserted"] == 0
+    assert result["revised_ids"] == [286]
+    assert inserts == []
+    assert updates[0][2] == date(2026, 11, 22)
+    assert updates[0][5] == "20:08"
+    assert updates[0][6] == "21:00"
+    assert updates[0][8] == 286

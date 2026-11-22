@@ -15,6 +15,7 @@ from typing import Any, Mapping, Sequence
 
 from backend.operations_planner_v2 import (
     ACTIVITY_LOCKED,
+    assignment_key,
     empty_state,
     plan_assignment_draft,
     plan_entry_write,
@@ -939,6 +940,24 @@ def add_assignments(cursor, organization_id: int, week_start: date, additions: A
         for row in existing
     ] + safe
     plan = plan_assignment_draft(existing, desired)
+    existing_by: dict[tuple[int, int, str], dict[str, Any]] = {}
+    for row in existing:
+        existing_by.setdefault(assignment_key(row), row)
+    revised = []
+    for item in safe:
+        current = existing_by.get(assignment_key(item))
+        if not current or not current.get("id"):
+            continue
+        status = str(current.get("activity_status") or current.get("status") or "")
+        if status in ACTIVITY_LOCKED:
+            continue
+        update_unlocked_assignment(
+            cursor,
+            organization_id,
+            week_start,
+            {**item, "id": int(current["id"])},
+        )
+        revised.append(int(current["id"]))
     inserted = []
     for item in plan["add"]:
         group = item.get("assignment_group_id") or None
@@ -981,6 +1000,7 @@ def add_assignments(cursor, organization_id: int, week_start: date, additions: A
     return {
         "inserted": len(inserted),
         "inserted_ids": inserted,
+        "revised_ids": revised,
         "preserved_history": [
             row.get("id")
             for row in existing
