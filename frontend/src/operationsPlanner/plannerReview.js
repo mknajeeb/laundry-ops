@@ -1,5 +1,5 @@
 import { DAY_NAMES } from "./plannerModel";
-import { draftOperations } from "./plannerGeometry";
+import { draftOperations, storedRoleSegments } from "./plannerGeometry";
 import { scheduleRoleLabel } from "../components/weeklySchedule/weeklyScheduleRoles";
 
 function roleText(role) {
@@ -41,7 +41,38 @@ function clockLabel(entry) {
   const slots = Array.isArray(entry.break_slots) ? entry.break_slots : [];
   const timed = slots.filter((slot) => slot?.start_time && slot?.end_time).map((slot) => `${String(slot.start_time).slice(0, 5)}–${String(slot.end_time).slice(0, 5)}`);
   const breakText = timed.length ? `break ${timed.join(", ")}` : (Number(entry.break_minutes) > 0 ? `break ${entry.break_minutes} min, no clock time` : "no break");
-  return `${String(entry.start_time || "").slice(0, 5)}–${String(entry.end_time || "").slice(0, 5)} · ${roleText(entry.role)} · ${breakText}`;
+  const segments = storedRoleSegments(entry).map((segment) => `${roleText(segment.role)} ${String(segment.start_time).slice(0, 5)}–${String(segment.end_time).slice(0, 5)}`);
+  const roles = segments.length ? segments.join(", ") : roleText(entry.role);
+  return `${String(entry.start_time || "").slice(0, 5)}–${String(entry.end_time || "").slice(0, 5)} · ${roles} · ${breakText}`;
+}
+
+/** A 2xx with ok is the only path that may say the save landed. Conflicts keep the draft. */
+export function interpretSaveResponse(status, body = {}) {
+  const code = String(body?.code || "");
+  if (status === 409 && code === "confirmation_required") {
+    return { saved: false, reload: false, keepDraft: true, confirm: true, error: "", conflict: code };
+  }
+  if (status === 409 || body?.ok === false) {
+    return {
+      saved: false,
+      reload: false,
+      keepDraft: true,
+      confirm: false,
+      error: body?.error || "This save did not go through.",
+      conflict: code || "conflict",
+    };
+  }
+  if (status >= 400) {
+    return {
+      saved: false,
+      reload: false,
+      keepDraft: true,
+      confirm: false,
+      error: body?.error || "Could not save the schedule.",
+      conflict: code,
+    };
+  }
+  return { saved: true, reload: true, keepDraft: false, confirm: false, error: "", conflict: "" };
 }
 
 export function reviewLines(before, after, employees = []) {
@@ -60,7 +91,9 @@ export function reviewLines(before, after, employees = []) {
 
 function taskDetail(task) {
   if (!task) return "removed";
-  const clock = task.timing_mode === "specific_time" && task.start_time ? ` at ${String(task.start_time).slice(0, 5)}` : " · no clock time";
+  const clock = task.timing_mode === "specific_time" && task.start_time
+    ? ` ${String(task.start_time).slice(0, 5)}${task.end_time ? `–${String(task.end_time).slice(0, 5)}` : ""}`
+    : " · anytime";
   return `${roleText(task.role)} · ${DAY_NAMES[task.day_of_week] || ""}${clock}`;
 }
 

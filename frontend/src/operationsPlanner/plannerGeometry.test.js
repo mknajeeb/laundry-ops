@@ -177,6 +177,28 @@ describe("planner geometry", () => {
     expect(summary.net).toBe(7.5);
     expect(summary.roles.wash).toBe(4);
     expect(summary.roles.fold).toBe(3.5);
+    expect(summary.roleCounts.wash).toBe(1);
+    expect(summary.roleCounts.fold).toBe(1);
+    const overlap = dayScheduleSummary([
+      monday,
+      {
+        ...monday,
+        id: 2,
+        user_id: 7,
+        role_assignments: [
+          { role: "wash", start_time: "08:00", end_time: "10:00" },
+          { role: "wash", start_time: "09:00", end_time: "11:00" },
+        ],
+      },
+      {
+        ...monday,
+        id: 3,
+        user_id: 8,
+        role_assignments: [{ role: "wash", start_time: "08:00", end_time: "10:00" }],
+      },
+    ], 1);
+    expect(overlap.roleCounts.wash).toBe(2);
+    expect(overlap.roles.wash).toBe(6);
     const combined = scheduleCardRows({
       start_time: "05:00",
       end_time: "13:00",

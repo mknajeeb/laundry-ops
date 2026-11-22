@@ -286,12 +286,41 @@ export function scheduleCardRows(entry) {
   return codes.map((role) => ({ role, start_time: "", end_time: "", allocated: false, unsplit: true }));
 }
 
+function mergedRoleHours(pieces) {
+  const byUser = new Map();
+  pieces.forEach(([userId, start, end]) => {
+    const list = byUser.get(userId) || [];
+    list.push([start, end]);
+    byUser.set(userId, list);
+  });
+  let minutes = 0;
+  byUser.forEach((list) => {
+    list.sort((a, b) => a[0] - b[0]);
+    let cursor = null;
+    list.forEach(([start, end]) => {
+      if (!cursor || start > cursor[1]) {
+        if (cursor) minutes += cursor[1] - cursor[0];
+        cursor = [start, end];
+      } else if (end > cursor[1]) cursor[1] = end;
+    });
+    if (cursor) minutes += cursor[1] - cursor[0];
+  });
+  return minutes / 60;
+}
+
 /** Day totals from the shifts on that day. Role hours follow stored segments. Gross and net stay on shiftHours. */
 export function dayScheduleSummary(entries, day) {
   const shifts = (entries || []).filter((entry) => Number(entry.day_of_week) === Number(day));
   const roles = {};
+  const rolePeople = {};
+  const rolePieces = {};
   let gross = 0;
   let net = 0;
+  function countPerson(role, userId) {
+    if (!role) return;
+    rolePeople[role] = rolePeople[role] || new Set();
+    rolePeople[role].add(Number(userId));
+  }
   for (const entry of shifts) {
     const hours = shiftHours(entry);
     gross += hours.gross;
@@ -300,23 +329,47 @@ export function dayScheduleSummary(entries, day) {
     let namedUnsplit = false;
     for (const row of rows) {
       if (row.allocated && row.role && row.start_time) {
-        roles[row.role] = (roles[row.role] || 0) + ((spanMinutes(row.start_time, row.end_time) || 0) / 60);
+        const start = clockMinutes(row.start_time);
+        let end = clockMinutes(row.end_time);
+        if (start == null || end == null) continue;
+        if (end <= start) end += 24 * 60;
+        countPerson(row.role, entry.user_id);
+        rolePieces[row.role] = rolePieces[row.role] || [];
+        rolePieces[row.role].push([Number(entry.user_id), start, end]);
       } else if (row.unsplit && row.start_time) {
         roles.unsplit = (roles.unsplit || 0) + ((spanMinutes(row.start_time, row.end_time) || 0) / 60);
+        countPerson("unsplit", entry.user_id);
       } else if (!row.unsplit && row.role) {
         roles[row.role] = (roles[row.role] || 0) + hours.gross;
+        countPerson(row.role, entry.user_id);
+      } else if (row.unsplit && row.role) {
+        countPerson(row.role, entry.user_id);
+        if (!namedUnsplit) {
+          roles.unsplit = (roles.unsplit || 0) + hours.gross;
+          countPerson("unsplit", entry.user_id);
+          namedUnsplit = true;
+        }
       } else if (row.unsplit && !namedUnsplit) {
         roles.unsplit = (roles.unsplit || 0) + hours.gross;
+        countPerson("unsplit", entry.user_id);
         namedUnsplit = true;
       }
     }
   }
+  Object.entries(rolePieces).forEach(([role, pieces]) => {
+    roles[role] = (roles[role] || 0) + mergedRoleHours(pieces);
+  });
+  const roleCounts = {};
+  Object.entries(rolePeople).forEach(([role, people]) => {
+    roleCounts[role] = people.size;
+  });
   return {
     people: new Set(shifts.map((entry) => Number(entry.user_id))).size,
     shifts: shifts.length,
     gross,
     net,
     roles,
+    roleCounts,
   };
 }
 

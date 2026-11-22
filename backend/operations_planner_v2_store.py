@@ -925,14 +925,18 @@ def add_assignments(cursor, organization_id: int, week_start: date, additions: A
             continue
         mode = str(item.get("timing_mode") or "anytime")
         start = item.get("start_time") if mode == "specific_time" else None
+        end = item.get("end_time") if mode == "specific_time" else None
         execution = "shared" if item.get("shared") or item.get("execution_mode") == "shared" else "individual"
+        from backend.planned_weekly_schedule_responsibilities import ensure_responsibilities_table
+
+        ensure_responsibilities_table(cursor)
         cursor.execute(
             f"""
             INSERT INTO {RESPONSIBILITIES} (
               organization_id, week_start, user_id, day_of_week, role, remarks,
-              assignment_group_id, timing_mode, start_time, execution_mode
+              assignment_group_id, timing_mode, start_time, end_time, execution_mode
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 int(organization_id),
@@ -944,6 +948,7 @@ def add_assignments(cursor, organization_id: int, week_start: date, additions: A
                 group,
                 mode,
                 start,
+                end,
                 execution,
             ),
         )
@@ -961,6 +966,14 @@ def add_assignments(cursor, organization_id: int, week_start: date, additions: A
     }
 
 
+def _fingerprint_text(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, separators=(",", ":"), sort_keys=True, default=str)
+    return str(value)
+
+
 def schedule_fingerprint(cursor, organization_id: int, monday: date) -> str:
     """Identity of the stored shifts for a Monday–Sunday week. A mismatch means another save landed first."""
     import hashlib
@@ -970,7 +983,7 @@ def schedule_fingerprint(cursor, organization_id: int, monday: date) -> str:
         storage = storage_week_for_dow(monday, dow)
         cursor.execute(
             """
-            SELECT id, user_id, day_of_week, start_time, end_time, role, break_minutes
+            SELECT id, user_id, day_of_week, start_time, end_time, role, break_minutes, role_assignments, break_slots
             FROM planned_weekly_schedule_entries
             WHERE organization_id=%s AND week_start=%s AND day_of_week=%s
             ORDER BY id
@@ -989,6 +1002,8 @@ def schedule_fingerprint(cursor, organization_id: int, monday: date) -> str:
                     "end": _clock_text(row.get("end_time")),
                     "role": row.get("role") or "",
                     "break": int(row.get("break_minutes") or 0),
+                    "roles": _fingerprint_text(row.get("role_assignments")),
+                    "breaks": _fingerprint_text(row.get("break_slots")),
                 }
             )
     raw = json.dumps(rows, separators=(",", ":"), sort_keys=True)
@@ -1005,10 +1020,14 @@ def update_unlocked_assignment(cursor, organization_id: int, week_monday: date, 
     storage = storage_week_for_dow(week_monday, day)
     mode = str(item.get("timing_mode") or "anytime")
     start = item.get("start_time") if mode == "specific_time" else None
+    end = item.get("end_time") if mode == "specific_time" else None
+    from backend.planned_weekly_schedule_responsibilities import ensure_responsibilities_table
+
+    ensure_responsibilities_table(cursor)
     cursor.execute(
         f"""
         UPDATE {RESPONSIBILITIES}
-           SET user_id=%s, day_of_week=%s, week_start=%s, role=%s, timing_mode=%s, start_time=%s
+           SET user_id=%s, day_of_week=%s, week_start=%s, role=%s, timing_mode=%s, start_time=%s, end_time=%s
          WHERE organization_id=%s AND id=%s
         """,
         (
@@ -1018,6 +1037,7 @@ def update_unlocked_assignment(cursor, organization_id: int, week_monday: date, 
             str(item.get("role") or "")[:40],
             mode,
             start,
+            end,
             int(organization_id),
             responsibility_id,
         ),

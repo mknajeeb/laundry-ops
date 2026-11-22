@@ -145,7 +145,13 @@ function TaskEdit({ task, tasks, employees, onChange }) {
       <select aria-label={`Reschedule ${task.role}`} value={task.day_of_week} onChange={(event) => onChange(patchTask(tasks, task, { day_of_week: Number(event.target.value) }))}>
         {DAY_ORDER.map((value) => <option key={value} value={value}>{DAY_NAMES[value]}</option>)}
       </select>
-      <input aria-label={`Clock time for ${task.role}`} type="time" step="900" value={String(task.start_time || "").slice(0, 5)} onChange={(event) => onChange(patchTask(tasks, task, { timing_mode: event.target.value ? TASK_TIMING.SPECIFIC : "anytime", start_time: event.target.value || null }))} />
+      <label><input type="checkbox" checked={task.timing_mode !== "specific_time"} onChange={(event) => onChange(patchTask(tasks, task, event.target.checked ? { timing_mode: "anytime", start_time: null, end_time: null } : { timing_mode: TASK_TIMING.SPECIFIC }))} /> Anytime</label>
+      {task.timing_mode === "specific_time" ? (
+        <>
+          <input aria-label={`Planned start for ${task.role}`} type="time" step="900" value={String(task.start_time || "").slice(0, 5)} onChange={(event) => onChange(patchTask(tasks, task, { timing_mode: TASK_TIMING.SPECIFIC, start_time: event.target.value || null }))} />
+          <input aria-label={`Planned end for ${task.role}`} type="time" step="900" value={String(task.end_time || "").slice(0, 5)} onChange={(event) => onChange(patchTask(tasks, task, { timing_mode: TASK_TIMING.SPECIFIC, end_time: event.target.value || null }))} />
+        </>
+      ) : null}
       <button type="button" className="btn" onClick={() => onChange(tasks.map((item) => (item === task || item.id === task.id ? { ...item, remove: true } : item)).filter((item) => !(item.draft && item.remove)))}>
         Remove
       </button>
@@ -167,6 +173,7 @@ export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onC
   const [category, setCategory] = useState("intra_day");
   const [timing, setTiming] = useState(TASK_TIMING.ANYTIME);
   const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
   const [shared, setShared] = useState(false);
   const [query, setQuery] = useState("");
   const visible = (tasks || []).filter((task) => !task.remove);
@@ -186,7 +193,7 @@ export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onC
     event.preventDefault();
     const name = role.trim();
     if (!name || !people.length || !days.length) return;
-    if (timing === TASK_TIMING.SPECIFIC && !start) return;
+    if (timing === TASK_TIMING.SPECIFIC && (!start || !end)) return;
     const group = shared ? `draft-group-${Date.now()}` : null;
     const stamp = Date.now();
     const additions = [];
@@ -201,6 +208,7 @@ export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onC
           category_code: category,
           timing_mode: timing,
           start_time: timing === TASK_TIMING.SPECIFIC ? start : null,
+          end_time: timing === TASK_TIMING.SPECIFIC ? end : null,
           shared,
           assignment_group_id: group,
           status: "assigned",
@@ -237,7 +245,7 @@ export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onC
         <select multiple aria-label="Employees" value={people} onChange={(event) => setPeople([...event.target.selectedOptions].map((option) => option.value))}>
           {employees.map((employee) => <option key={employee.user_id} value={employee.user_id}>{employee.display_name}</option>)}
         </select>
-        <p className="quiet">Hold Command or Ctrl to choose more than one employee. A task can store a start time. The assignment record has no scheduled end time.</p>
+        <p className="quiet">Hold Command or Ctrl to choose more than one employee. Anytime, or a planned start and end. These times are not the PIN timer.</p>
         <div className="pick-row" role="group" aria-label="Days">
           {DAY_ORDER.map((value) => (
             <label key={value}>
@@ -249,10 +257,15 @@ export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onC
         <select aria-label="Task timing" value={timing} onChange={(event) => setTiming(event.target.value)}>
           {TASK_TIMING_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
-        {timing === TASK_TIMING.SPECIFIC ? <input aria-label="Task time" type="time" step="900" value={start} onChange={(event) => setStart(event.target.value)} /> : null}
+        {timing === TASK_TIMING.SPECIFIC ? (
+          <>
+            <input aria-label="Planned start" type="time" step="900" value={start} onChange={(event) => setStart(event.target.value)} required />
+            <input aria-label="Planned end" type="time" step="900" value={end} onChange={(event) => setEnd(event.target.value)} required />
+          </>
+        ) : null}
         <label><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /> Shared group</label>
         <button type="submit" className="btn">Assign</button>
-        <button type="button" className="btn primary" disabled={!(tasks || []).some((task) => task.draft || task.remove)} onClick={onReview}>Review task save</button>
+        <button type="button" className="btn primary" disabled={!(tasks || []).some((task) => task.draft || task.remove || task.changed)} onClick={onReview}>Save task changes</button>
       </form>
       <div className="workload">
         {[...workload.entries()].map(([id, count]) => <span key={id}>{personName(employees, id)} · {count}</span>)}

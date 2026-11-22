@@ -34,13 +34,14 @@ EXECUTION_MODES = frozenset({EXECUTION_INDIVIDUAL, EXECUTION_SHARED})
 
 _COLUMNS = (
     "id, organization_id, week_start, user_id, day_of_week, role, remarks, "
-    "assignment_group_id, timing_mode, start_time, execution_mode, display_order"
+    "assignment_group_id, timing_mode, start_time, end_time, execution_mode, display_order"
 )
 
 _GROUP_COLUMNS = (
     ("assignment_group_id", "VARCHAR(36) NULL DEFAULT NULL"),
     ("timing_mode", "VARCHAR(20) NOT NULL DEFAULT 'anytime'"),
     ("start_time", "TIME NULL DEFAULT NULL"),
+    ("end_time", "TIME NULL DEFAULT NULL"),
     ("execution_mode", "VARCHAR(20) NOT NULL DEFAULT 'individual'"),
     ("display_order", "INT NOT NULL DEFAULT 0"),
 )
@@ -123,10 +124,13 @@ def serialize_responsibility(row: Mapping[str, Any]) -> dict[str, Any]:
     dow = int(row.get("day_of_week") or 0)
     mode = str(row.get("timing_mode") or TIMING_ANYTIME)
     start = None
+    end = None
     if mode == "specific_time" and row.get("start_time"):
         from backend.planned_weekly_schedule import _time_to_str
 
         start = _time_to_str(row.get("start_time"))
+        if row.get("end_time"):
+            end = _time_to_str(row.get("end_time"))
     group_id = str(row.get("assignment_group_id") or "").strip() or None
     user_id = int(row.get("user_id") or 0)
     # Preserve stored mode; annotate_assignment_members applies the 2+ member guard.
@@ -145,6 +149,7 @@ def serialize_responsibility(row: Mapping[str, Any]) -> dict[str, Any]:
         "assignment_group_id": group_id,
         "timing_mode": mode,
         "start_time": start,
+        "end_time": end,
         "timing_label": timing_display(mode, start),
         "execution_mode": execution_mode,
         "display_order": int(row.get("display_order") or 0),
@@ -205,6 +210,7 @@ _CHANGE_FIELDS = (
     "assignment_group_id",
     "timing_mode",
     "start_time",
+    "end_time",
     "execution_mode",
     "display_order",
 )
@@ -592,15 +598,16 @@ def _insert_member(
     timing_mode: str,
     start_time: str | None,
     execution_mode: str = EXECUTION_INDIVIDUAL,
+    end_time: str | None = None,
 ) -> int:
     ensure_responsibilities_table(cursor)
     cursor.execute(
         f"""
         INSERT INTO {TABLE} (
           organization_id, week_start, user_id, day_of_week, role, remarks,
-          assignment_group_id, timing_mode, start_time, execution_mode
+          assignment_group_id, timing_mode, start_time, end_time, execution_mode
         )
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             int(organization_id),
@@ -612,6 +619,7 @@ def _insert_member(
             assignment_group_id,
             timing_mode,
             start_time,
+            end_time,
             str(execution_mode or EXECUTION_INDIVIDUAL),
         ),
     )
@@ -631,8 +639,33 @@ def _update_member_row(
     timing_mode: str,
     start_time: str | None,
     execution_mode: str = EXECUTION_INDIVIDUAL,
+    end_time: str | None = None,
+    write_end: bool = False,
 ) -> None:
     ensure_responsibilities_table(cursor)
+    if write_end:
+        cursor.execute(
+            f"""
+            UPDATE {TABLE}
+            SET user_id=%s, day_of_week=%s, role=%s, remarks=%s,
+                assignment_group_id=%s, timing_mode=%s, start_time=%s, end_time=%s, execution_mode=%s
+            WHERE organization_id=%s AND id=%s
+            """,
+            (
+                int(user_id),
+                int(day_of_week),
+                role,
+                remarks,
+                assignment_group_id,
+                timing_mode,
+                start_time,
+                end_time,
+                str(execution_mode or EXECUTION_INDIVIDUAL),
+                int(organization_id),
+                int(responsibility_id),
+            ),
+        )
+        return
     cursor.execute(
         f"""
         UPDATE {TABLE}
@@ -772,6 +805,7 @@ def create_responsibility(
             assignment_group_id=group_id,
             timing_mode=payload["timing_mode"],
             start_time=payload["start_time"],
+            end_time=payload.get("end_time"),
             execution_mode=payload["execution_mode"],
         )
         if first_id is None:

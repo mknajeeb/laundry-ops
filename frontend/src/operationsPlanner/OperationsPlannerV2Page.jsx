@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { getWashproApiBase } from "../api";
 import "./operationsPlanner.css";
@@ -26,7 +26,7 @@ import PlannerWorkspace from "./PlannerWorkspace";
 import { asList, draftOperations, relocateShift, shiftKey, splitHalves, storedRoleSegments } from "./plannerGeometry";
 import { copyDay, copyEmployeeDay, copyEmployeeWeek, copyWeekShifts, copiedShift } from "./plannerCopy";
 import { laborComparison } from "./plannerLabor";
-import { patternCells, reviewLines, scopeDecision, staffingChanges, taskChanges } from "./plannerReview";
+import { interpretSaveResponse, patternCells, reviewLines, scopeDecision, staffingChanges, taskChanges } from "./plannerReview";
 import { recordDraft, redoDraftHistory, undoDraftHistory } from "./draftHistory";
 import { setScheduleRoleCatalog } from "../components/weeklySchedule/weeklyScheduleRoles";
 
@@ -139,7 +139,11 @@ export default function OperationsPlannerV2Page() {
   const [clipboard, setClipboard] = useState(null);
   const [lifecycle, setLifecycle] = useState(null);
   const [copyJob, setCopyJob] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [conflict, setConflict] = useState("");
   const weekCopyRef = useRef(null);
+  const seenWeekRef = useRef("");
+  const fullscreenScroll = useRef(null);
   const commandRef = useRef(null);
 
   const load = useCallback(async (weekStart) => {
@@ -150,11 +154,12 @@ export default function OperationsPlannerV2Page() {
         const snapshot = await import("./fixtures/veewash-2027-01-04.json");
         setPayload(snapshot.default);
         if (!weekStart) setWeek("2027-01-04");
-      } else {
-        setPayload(previewPayload());
-        if (!weekStart) setWeek("2026-11-09");
+        return snapshot.default;
       }
-      return;
+      const preview = previewPayload();
+      setPayload(preview);
+      if (!weekStart) setWeek("2026-11-09");
+      return preview;
     }
     const status = await api("/operations-planner/v2/status");
     setFlags(status.data.flags);
@@ -165,6 +170,7 @@ export default function OperationsPlannerV2Page() {
     const response = await api("/operations-planner/v2/week", { params: weekStart ? { week_start: weekStart } : {} });
     setPayload(response.data);
     if (!weekStart && response.data?.planner?.week_monday) setWeek(response.data.planner.week_monday);
+    return response.data;
   }, []);
 
   useEffect(() => {
@@ -188,6 +194,46 @@ export default function OperationsPlannerV2Page() {
     else root.removeAttribute("data-ops-planner-fullscreen");
     return () => root.removeAttribute("data-ops-planner-fullscreen");
   }, [full]);
+
+  useLayoutEffect(() => {
+    const mem = fullscreenScroll.current;
+    if (!mem) return undefined;
+    const restore = () => applyFullscreenScroll();
+    restore();
+    const frame = window.requestAnimationFrame(restore);
+    return () => window.cancelAnimationFrame(frame);
+  }, [full]);
+
+  function applyFullscreenScroll() {
+    const mem = fullscreenScroll.current;
+    if (!mem) return;
+    const board = document.querySelector(".ops-v2 .board");
+    const week = document.querySelector('.ops-v2 [aria-label="Week schedule"]');
+    if (board) {
+      board.scrollLeft = mem.x;
+      board.scrollTop = mem.y;
+    }
+    if (week) {
+      week.scrollLeft = mem.weekX;
+      week.scrollTop = mem.weekY;
+    }
+  }
+
+  function toggleFull() {
+    if (!full) {
+      const board = document.querySelector(".ops-v2 .board");
+      const week = document.querySelector('.ops-v2 [aria-label="Week schedule"]');
+      fullscreenScroll.current = {
+        x: board?.scrollLeft || 0,
+        y: board?.scrollTop || 0,
+        weekX: week?.scrollLeft || 0,
+        weekY: week?.scrollTop || 0,
+      };
+    }
+    setFull((value) => !value);
+    window.requestAnimationFrame(() => window.requestAnimationFrame(applyFullscreenScroll));
+    window.setTimeout(applyFullscreenScroll, 80);
+  }
 
   useEffect(() => {
     function onKey(event) {
@@ -230,22 +276,30 @@ export default function OperationsPlannerV2Page() {
   const requirements = draftBundle ? draftBundle.requirements : loadedRequirements;
   const responsibilities = draftBundle ? draftBundle.tasks : loadedTasks;
   useEffect(() => {
+    const monday = payload?.planner?.week_monday || "";
     const pendingCopy = weekCopyRef.current;
-    if (pendingCopy?.applied && payload?.planner?.week_monday === pendingCopy.target) return;
-    setDraftBundle(null);
-    setHistory([]);
-    setFuture([]);
-    setSelectedKey("");
-    setEditorOpen(false);
-    if (!pendingCopy || pendingCopy.applied || payload?.planner?.week_monday !== pendingCopy.target) return;
-    pendingCopy.applied = true;
-    const base = (payload.entries || []).map(entryShift);
-    const clones = copyWeekShifts(pendingCopy.entries);
-    const requirements = payload.planner?.staffing_requirements || [];
-    const tasks = payload.daily_responsibilities || [];
-    setHistory([null]);
-    setDraftBundle({ entries: [...base, ...clones], requirements, tasks });
-    setNotice(`Copied ${clones.length} shifts onto the week of ${pendingCopy.target}. Completed tasks were not copied. Save changes before anything is written.`);
+    if (pendingCopy && !pendingCopy.applied && monday && monday === pendingCopy.target) {
+      pendingCopy.applied = true;
+      const base = (payload.entries || []).map(entryShift);
+      const clones = copyWeekShifts(pendingCopy.entries);
+      setHistory([null]);
+      setDraftBundle({
+        entries: [...base, ...clones],
+        requirements: payload.planner?.staffing_requirements || [],
+        tasks: payload.daily_responsibilities || [],
+      });
+      setNotice(`Copied ${clones.length} shifts onto the week of ${pendingCopy.target}. Completed tasks were not copied. Save changes before anything is written.`);
+      seenWeekRef.current = monday;
+      return;
+    }
+    if (monday && monday !== seenWeekRef.current) {
+      seenWeekRef.current = monday;
+      setDraftBundle(null);
+      setHistory([]);
+      setFuture([]);
+      setSelectedKey("");
+      setEditorOpen(false);
+    }
   }, [payload]);
   const visibleEntries = entriesForPeriod(entries, { mode, day });
   const planner = payload?.planner || {};
@@ -352,7 +406,7 @@ export default function OperationsPlannerV2Page() {
     }
     queueChange({
       action: "assign_tasks",
-      tasks: responsibilities.filter((task) => task.draft || task.remove),
+      tasks: responsibilities.filter((task) => task.draft || task.remove || task.changed),
     });
   }
 
@@ -373,6 +427,7 @@ export default function OperationsPlannerV2Page() {
       cells: patternCells(loadedEntries, entries),
       lines: reviewLines(loadedEntries, entries, employees),
       taskLines: tasks,
+      taskPayload: responsibilities.filter((task) => task.draft || task.remove || task.changed),
       staffingLines: staffing,
       hoursBefore: laborComparison(loadedEntries, employees),
       hoursAfter: laborComparison(entries, employees),
@@ -469,12 +524,64 @@ export default function OperationsPlannerV2Page() {
     setEditorOpen(false);
   }
 
+  function reloadWeek() {
+    setConflict("");
+    setError("");
+    setNotice("");
+    setPending(null);
+    discardDraft();
+    load(week);
+  }
+
+  function tasksKept(data, payload) {
+    const saved = data?.daily_responsibilities || [];
+    const creates = (payload || []).filter((task) => task.draft && !task.remove);
+    const updates = (payload || []).filter((task) => task.changed && !task.draft && !task.remove);
+    const removals = (payload || []).filter((task) => task.remove && !task.draft && task.id);
+    if (removals.some((task) => saved.some((row) => String(row.id) === String(task.id)))) return false;
+    return [...creates, ...updates].every((task) => saved.some((row) => (
+      Number(row.user_id) === Number(task.user_id)
+      && Number(row.day_of_week) === Number(task.day_of_week)
+      && String(row.role) === String(task.role)
+      && (task.timing_mode !== "specific_time" || (
+        String(row.start_time || "").slice(0, 5) === String(task.start_time || "").slice(0, 5)
+        && String(row.end_time || "").slice(0, 5) === String(task.end_time || "").slice(0, 5)
+      ))
+    )));
+  }
+
+  function serverKept(data, operations) {
+    const saved = (data?.entries || []).map(entryShift);
+    return (operations || []).every((op) => {
+      if (op.op === "delete") return !saved.some((entry) => String(entry.id) === String(op.id));
+      const shift = op.shift || {};
+      const match = saved.find((entry) => (op.op === "update"
+        ? String(entry.id) === String(op.id)
+        : Number(entry.user_id) === Number(shift.user_id)
+          && Number(entry.day_of_week) === Number(shift.day_of_week)
+          && String(entry.start_time).slice(0, 5) === String(shift.start_time || "").slice(0, 5)));
+      if (!match) return false;
+      const wantRoles = storedRoleSegments(shift).map((item) => `${item.role}@${item.start_time}-${item.end_time}`).join("|");
+      const gotRoles = storedRoleSegments(match).map((item) => `${item.role}@${item.start_time}-${item.end_time}`).join("|");
+      if (wantRoles !== gotRoles) return false;
+      const wantBreaks = asList(shift.break_slots).map((slot) => `${String(slot.start_time || "").slice(0, 5)}-${String(slot.end_time || "").slice(0, 5)}`).sort().join();
+      const gotBreaks = asList(match.break_slots).map((slot) => `${String(slot.start_time || "").slice(0, 5)}-${String(slot.end_time || "").slice(0, 5)}`).sort().join();
+      if (wantBreaks !== gotBreaks) return false;
+      if (!wantBreaks && Number(match.break_minutes || 0) !== Number(shift.break_minutes || 0)) return false;
+      return true;
+    });
+  }
+
   async function send(path) {
     if (snapshot) {
       setError("This snapshot does not write. Cancel restores the loaded week.");
       return;
     }
+    if (saving) return;
+    setSaving(true);
+    setNotice("");
     const action = pending.command.action;
+    try {
     if (action === "save_staffing_requirements" || action === "assign_tasks") {
       const target = action === "save_staffing_requirements"
         ? { path: "/operations-planner/v2/staffing-requirements", method: "PUT", data: { requirements: pending.command.requirements } }
@@ -489,25 +596,40 @@ export default function OperationsPlannerV2Page() {
           },
         };
       const response = await api(target.path, { method: target.method, data: target.data, validateStatus: () => true });
-      if (response.status >= 400) {
-        setError(response.data?.error || "Could not save the draft");
+      const outcome = interpretSaveResponse(response.status, response.data);
+      if (!outcome.saved) {
+        setNotice("");
+        setError(outcome.error || "This save did not go through.");
+        setConflict(outcome.conflict || "");
         return;
       }
+      setConflict("");
+      const reloadedTasks = await load(week);
+      if (action === "assign_tasks" && !tasksKept(reloadedTasks, pending.command.tasks || [])) {
+        setNotice("");
+        setError("The server task list does not match this edit. Your draft is still here.");
+        setConflict("tasks");
+        return;
+      }
+      setDraftBundle(null);
+      setHistory([]);
+      setFuture([]);
       setPending(null);
       setNotice(action === "assign_tasks"
         ? `Saved ${response.data.inserted || 0} assignment${response.data.inserted === 1 ? "" : "s"}. Completed records were left as stored.`
         : "Saved the staffing requirements.");
-      await load(week);
       return;
     }
     if (action === "apply_shift_set" && scope !== "this_week" && pending.command.scopeMode !== "choice") {
+      setNotice("");
       setError(pending.command.scopeReason || "This save stays on this week.");
       return;
     }
-    const repeating = action === "apply_shift_set" && scope !== "this_week";
+    const operations = pending.command.operations || [];
+    const repeating = action === "apply_shift_set" && scope !== "this_week" && operations.length;
     const body = {
       ...(repeating ? { action: "apply_cell_scopes", cells: pending.command.cells } : pending.command),
-      scope,
+      scope: scope || "this_week",
       week_start: week,
       anchor: week,
       expected_schedule_token: payload?.planner?.schedule_token,
@@ -517,30 +639,69 @@ export default function OperationsPlannerV2Page() {
       replace_later_patterns: laterChoice,
       stop_legacy_template: stopTemplate,
     };
-    const response = await api(path, { method: "POST", data: body, validateStatus: () => true });
-    if (path.endsWith("/preview")) {
-      setPending({ command: pending.command, preview: response.data });
-      setError(response.status >= 400 && response.data?.code !== "confirmation_required" ? (response.data?.error || "Could not review the change") : "");
+    let response = { status: 200, data: { ok: true } };
+    if (operations.length) {
+      response = await api(path, { method: "POST", data: body, validateStatus: () => true });
+      const outcome = interpretSaveResponse(response.status, response.data);
+      if (outcome.confirm) {
+        setPending({ command: pending.command, preview: response.data });
+        setNotice("");
+        setError("");
+        return;
+      }
+      if (!outcome.saved) {
+        setPending(null);
+        setNotice("");
+        setError(outcome.error);
+        setConflict(outcome.conflict || "conflict");
+        return;
+      }
+    }
+    const taskPayload = pending.command.taskPayload || [];
+    if (taskPayload.length) {
+      const taskResponse = await api("/operations-planner/v2/task-assignments", {
+        method: "POST",
+        data: {
+          week_start: week,
+          tasks: taskPayload.filter((task) => task.draft && !task.remove),
+          updates: taskPayload.filter((task) => task.changed && !task.draft && !task.remove && task.id),
+          removals: taskPayload.filter((task) => task.remove && !task.draft && task.id).map((task) => task.id),
+        },
+        validateStatus: () => true,
+      });
+      if (taskResponse.status >= 400 || taskResponse.data?.ok === false) {
+        setPending(null);
+        setNotice("");
+        setError(taskResponse.data?.error || "The shift save finished. The task assignments did not.");
+        setConflict("tasks");
+        return;
+      }
+    }
+    const reloaded = await load(week);
+    if (taskPayload.length && !tasksKept(reloaded, taskPayload)) {
+      setPending(null);
+      setNotice("");
+      setError("The server task list does not match this edit. Your draft is still here.");
+      setConflict("tasks");
       return;
     }
-    if (response.status === 409 && response.data?.code === "confirmation_required") {
-      setPending({ command: pending.command, preview: response.data });
-      setError("");
+    if (operations.length && !serverKept(reloaded, operations)) {
+      setPending(null);
+      setNotice("");
+      setError("The server schedule does not match this edit. Your draft is still here. Reload only if you want to discard it.");
+      setConflict("mismatch");
       return;
     }
-    if (response.status === 409) {
-      setPending({ command: pending.command, preview: response.data });
-      setError(response.data.error || "Choose how far this change applies.");
-      if (response.data?.code === "schedule_changed") await load(week);
-      return;
-    }
-    if (response.status >= 400) {
-      setError(response.data?.error || "Could not save the schedule");
-      return;
-    }
+    setDraftBundle(null);
+    setHistory([]);
+    setFuture([]);
     setPending(null);
-    setNotice(response.data.republish_required?.length ? "Saved. Published weeks went back to draft and need approval." : "Saved.");
-    await load(week);
+    setConflict("");
+    setError("");
+    setNotice(response.data?.republish_required?.length ? "Saved. Published weeks went back to draft and need approval." : "Saved.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   function targetsFor(userId) {
@@ -699,7 +860,8 @@ export default function OperationsPlannerV2Page() {
             })}
           </div>
         ) : null}
-        <button type="button" className="btn" onClick={() => addShift(employees[0]?.user_id, mode === "day" ? day : 1)}>Add shift</button>
+        <button type="button" className="btn primary" onClick={() => addShift(employees[0]?.user_id, mode === "day" ? day : 1)}>Add shift</button>
+        <button type="button" className="btn" onClick={toggleFull}>{full ? "Exit full screen" : "Full screen"}</button>
         <div className="spacer" />
         <details className="menu">
           <summary>Actions</summary>
@@ -721,7 +883,6 @@ export default function OperationsPlannerV2Page() {
             }}>Print</button>
             <label>Week starting <input aria-label="Week starting" type="date" value={monday} disabled={snapshot} onChange={(event) => requestWeek(event.target.value)} /></label>
             <button type="button" onClick={() => setPinOpen(true)}>Employee PIN access</button>
-            <button type="button" onClick={() => setFull((value) => !value)}>{full ? "Exit full screen" : "Expand"}</button>
           </div>
         </details>
         <nav className="tabs" aria-label="Schedule">
@@ -754,7 +915,12 @@ export default function OperationsPlannerV2Page() {
         </details>
       ) : null}
       {flags === null && !error ? <p className="ops-note">Loading the schedule…</p> : null}
-      {error ? <p className="ops-note ops-warn">{error}</p> : null}
+      {error ? (
+        <p className="ops-note ops-warn">
+          {error}
+          {conflict ? <button type="button" className="btn" onClick={reloadWeek}>Reload week</button> : null}
+        </p>
+      ) : null}
       {notice ? <p className="ops-note">{notice}</p> : null}
       {payload ? (
         <PlannerWorkspace
@@ -769,6 +935,7 @@ export default function OperationsPlannerV2Page() {
           planner={planner}
           selectedKey={selectedKey}
           dirty={Boolean(draftBundle)}
+          saving={saving}
           canUndo={history.length > 0}
           canRedo={future.length > 0}
           editorOpen={editorOpen}
