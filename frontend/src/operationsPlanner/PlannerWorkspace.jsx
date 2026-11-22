@@ -968,11 +968,13 @@ export default function PlannerWorkspace({
                           return next;
                         })}>{SHORT[value]} {dayStamp(weekStart, value)}</button>
                         {open ? (
-                          <small>
-                            {summary.people} scheduled · {summary.gross.toFixed(1)}h gross · {summary.net.toFixed(1)}h net
-                            {roleHours.length ? ` · ${roleHours.join(" · ")}` : ""}
-                            {summary.roles.unsplit ? ` · Not split ${summary.roles.unsplit.toFixed(1)}h` : ""}
-                            {shorts.length ? ` · ${shorts.join(" · ")}` : ""}
+                          <small className="day-stats">
+                            {summary.people ? `${summary.people} scheduled` : "No one scheduled"}
+                            {summary.people ? <span>{summary.gross.toFixed(1)}h gross</span> : null}
+                            {summary.people ? <span>{summary.net.toFixed(1)}h net</span> : null}
+                            {roleHours.map((line) => <span key={line}>{line}</span>)}
+                            {summary.roles.unsplit ? <span>Not split {summary.roles.unsplit.toFixed(1)}h</span> : null}
+                            {shorts.map((line) => <span key={line}>{line}</span>)}
                           </small>
                         ) : null}
                       </span>
@@ -1003,18 +1005,19 @@ export default function PlannerWorkspace({
                           {shifts.map((entry) => {
                             const hours = shiftHours(entry);
                             const slots = visibleBreaks(entry);
-                            const breakLabel = slots.length ? slots.map((slot) => (slot.start_time ? `${hm(slot.start_time)}–${hm(slot.end_time)}` : `${slot.minutes} min, no clock`)).join(", ") : "No break";
+                            const breakLabel = slots.map((slot) => (slot.start_time ? `${hm(slot.start_time)}–${hm(slot.end_time)}` : `${slot.minutes} min`)).join(", ");
                             const dayTasks = (tasks || []).filter((task) => !task.remove && Number(task.user_id) === Number(entry.user_id) && Number(task.day_of_week) === Number(entry.day_of_week));
                             const earliest = [...shifts].sort((a, b) => String(a.start_time).localeCompare(String(b.start_time)))[0];
                             const showTasks = shiftKey(earliest) === shiftKey(entry);
                             const rows = scheduleCardRows(entry);
+                            const needsRange = rows.some((row) => !row.start_time);
                             return (
                               <button
                                 key={shiftKey(entry)}
                                 type="button"
                                 draggable
                                 className={`shift-card${peers.some((item) => shiftKey(item) === shiftKey(entry)) ? " is-open" : ""}`}
-                                title={`${personName(employees, entry.user_id)} · ${hm(entry.start_time)}–${hm(entry.end_time)} · ${hours.gross.toFixed(1)}h gross · ${hours.net.toFixed(1)}h net · ${breakLabel}`}
+                                title={`${personName(employees, entry.user_id)} · ${hm(entry.start_time)}–${hm(entry.end_time)} · ${hours.gross.toFixed(1)}h gross · ${hours.net.toFixed(1)}h net${breakLabel ? ` · break ${breakLabel}${slots.some((slot) => !slot.start_time) ? ", no clock time" : ""}` : ""}`}
                                 onDragStart={(event) => {
                                   event.dataTransfer.setData("text/plain", shiftKey(entry));
                                   event.dataTransfer.effectAllowed = "copyMove";
@@ -1023,26 +1026,32 @@ export default function PlannerWorkspace({
                                 onDoubleClick={() => onEdit?.(entry)}
                                 onContextMenu={(event) => openMenu(event, entry, Number(entry.user_id), Number(entry.day_of_week))}
                               >
+                                {needsRange ? <span className="card-range">{hm(entry.start_time)}–{hm(entry.end_time)}</span> : null}
                                 {rows.map((row, index) => (
                                   <span key={`${row.role}-${row.start_time}-${index}`} className={`card-line${row.unsplit ? " is-unsplit" : ""}`}>
                                     <i style={{ background: row.role ? roleColor(row.role) : "#cbd5e1" }} />
                                     <span className="card-name">{row.role ? nice(row.role) : "Not split"}</span>
-                                    <span className="card-time">{row.start_time ? `${hm(row.start_time)}–${hm(row.end_time)}` : "No time"}</span>
+                                    <span className="card-time">{row.start_time ? `${hm(row.start_time)}–${hm(row.end_time)}` : "Not split"}</span>
                                   </span>
                                 ))}
-                                <span className={`card-line is-break${slots.some((slot) => slot.start_time) ? "" : " is-unsplit"}`}>
-                                  <i />
-                                  <span className="card-name">Break</span>
-                                  <span className="card-time">{breakLabel}</span>
-                                </span>
-                                {showTasks ? dayTasks.map((task) => (
-                                  <span key={task.id || task.role} className={`card-line is-task${task.timing_mode === "specific_time" && task.start_time ? "" : " is-unsplit"}`} title={nice(task.role)}>
+                                {slots.length ? (
+                                  <span className={`card-line is-break${slots.some((slot) => slot.start_time) ? "" : " is-unsplit"}`} title={slots.some((slot) => !slot.start_time) ? "Break length with no clock time" : "Timed break"}>
                                     <i />
-                                    <span className="card-name">{nice(task.role)}{task.assignment_group_id ? " · shared" : ""}</span>
-                                    <span className="card-time">{task.timing_mode === "specific_time" && task.start_time ? hm(task.start_time) : "No start"}</span>
+                                    <span className="card-name">Break</span>
+                                    <span className="card-time">{breakLabel}</span>
                                   </span>
-                                )) : null}
-                                <span className="card-foot">{hours.net.toFixed(1)}h net</span>
+                                ) : null}
+                                {showTasks ? dayTasks.map((task) => {
+                                  const scheduled = task.timing_mode === "specific_time" && task.start_time;
+                                  return (
+                                    <span key={task.id || task.role} className={`card-line is-task${scheduled ? "" : " is-unsplit"}`} title={nice(task.role)}>
+                                      <i />
+                                      <span className="card-name">{nice(task.role)}{task.assignment_group_id ? " · shared" : ""}</span>
+                                      <span className="card-time">{scheduled ? hm(task.start_time) : "Anytime"}</span>
+                                    </span>
+                                  );
+                                }) : null}
+                                <span className="card-foot">{hours.net.toFixed(1)}h</span>
                               </button>
                             );
                           })}
