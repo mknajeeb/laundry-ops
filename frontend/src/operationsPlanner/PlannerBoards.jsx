@@ -234,14 +234,10 @@ export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onC
             );
           })}
         </select>
-        <div className="pick-row" role="group" aria-label="Employees">
-          {employees.map((employee) => (
-            <label key={employee.user_id}>
-              <input type="checkbox" checked={people.includes(String(employee.user_id))} onChange={() => setPeople((current) => toggleId(current, employee.user_id))} />
-              {employee.display_name}
-            </label>
-          ))}
-        </div>
+        <select multiple aria-label="Employees" value={people} onChange={(event) => setPeople([...event.target.selectedOptions].map((option) => option.value))}>
+          {employees.map((employee) => <option key={employee.user_id} value={employee.user_id}>{employee.display_name}</option>)}
+        </select>
+        <p className="quiet">Hold Command or Ctrl to choose more than one employee. A task can store a start time. The assignment record has no scheduled end time.</p>
         <div className="pick-row" role="group" aria-label="Days">
           {DAY_ORDER.map((value) => (
             <label key={value}>

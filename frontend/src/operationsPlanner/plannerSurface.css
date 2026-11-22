@@ -264,9 +264,10 @@
 .ops-v2 .task-table th { color: var(--faint); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
 
 .ops-v2 .drawer {
-  position: absolute; top: 0; right: 0; bottom: 0; z-index: 30;
-  width: min(560px, 100%); border-left: 1px solid var(--line); background: var(--bg);
-  display: flex; flex-direction: column; min-height: 0; box-shadow: -16px 0 40px rgba(16,24,40,.12);
+  position: fixed; z-index: 70; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: min(720px, calc(100vw - 24px)); height: min(860px, calc(100vh - 24px));
+  border: 1px solid var(--line); border-radius: 16px; background: var(--bg);
+  display: flex; flex-direction: column; min-height: 0; box-shadow: 0 24px 64px rgba(15, 23, 42, .22);
 }
 .ops-v2 .drawer header { padding: 14px 14px 10px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; align-items: flex-start; background: #fff; color: var(--ink); position: static; }
 .ops-v2 .drawer header .avatar { width: 32px; height: 32px; font-size: 12px; }
@@ -479,8 +480,14 @@
 .ops-v2 .role-day .cell { position: relative; min-height: 36px; border: 1px solid var(--line); border-radius: 8px; }
 .ops-v2 .shift-actions .ops-warn { color: #9f2d20; font-size: 12px; font-weight: 650; }
 
+.ops-v2 .week-head small, .ops-v2 .week-row strong small, .ops-v2 .week-chip small { display: block; font-weight: 550; color: var(--muted); font-size: 11px; }
+.ops-v2 .week-chip { align-items: flex-start; }
+.ops-v2 .week-chip span { display: block; text-align: left; }
+.ops-v2 .week-add { color: var(--accent); font-weight: 650; padding: 6px; }
+.ops-v2 .board-tools { display: flex; gap: 12px; align-items: center; padding: 10px 16px; }
+.ops-v2 .task-form select[multiple] { min-width: 220px; min-height: 120px; }
 @media (max-width: 900px) {
-  .ops-v2 .drawer { top: auto; height: 58vh; width: 100%; border-left: 0; border-top: 1px solid var(--line); }
-  .ops-v2 .week-head, .ops-v2 .week-row { grid-template-columns: 120px repeat(7, minmax(108px, 1fr)); }
+  .ops-v2 .drawer { width: calc(100vw - 12px); height: calc(100vh - 12px); }
+  .ops-v2 .week-head, .ops-v2 .week-row { grid-template-columns: 120px repeat(7, minmax(140px, 1fr)); }
   .ops-v2 .role-day { grid-template-columns: 1fr; }
 }

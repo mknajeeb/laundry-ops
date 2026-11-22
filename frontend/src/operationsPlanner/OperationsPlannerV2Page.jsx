@@ -31,8 +31,9 @@ import { recordDraft, redoDraftHistory, undoDraftHistory } from "./draftHistory"
 import { setScheduleRoleCatalog } from "../components/weeklySchedule/weeklyScheduleRoles";
 
 const LENSES = [
-  ["employees", "Employees"],
-  ["roles", "Roles"],
+  ["schedule", "Schedule"],
+  ["timeline", "Timeline"],
+  ["coverage", "Coverage"],
   ["breaks", "Breaks"],
   ["tasks", "Tasks"],
 ];
@@ -113,7 +114,7 @@ export default function OperationsPlannerV2Page() {
   const [flags, setFlags] = useState(null);
   const [week, setWeek] = useState("");
   const [mode, setMode] = useState("week");
-  const [lens, setLens] = useState("employees");
+  const [lens, setLens] = useState("schedule");
   const [day, setDay] = useState(1);
   const [payload, setPayload] = useState(null);
   const [error, setError] = useState("");
@@ -422,7 +423,7 @@ export default function OperationsPlannerV2Page() {
     }], "Added a draft shift. Not saved.");
     setSelectedKey(String(id));
     setDay(chosenDay);
-    setMode("day");
+    setEditorOpen(true);
   }
 
   function copyShift(entry) {
@@ -684,7 +685,7 @@ export default function OperationsPlannerV2Page() {
             setMode("day");
           }}>Day</button>
         </div>
-        {mode === "day" || lens === "roles" || lens === "breaks" || lens === "tasks" ? (
+        {mode === "day" || lens === "coverage" || lens === "tasks" ? (
           <div className="days" role="group" aria-label="Day">
             {DAY_ORDER.map((value) => {
               const offset = value === 0 ? 6 : value - 1;
@@ -725,7 +726,7 @@ export default function OperationsPlannerV2Page() {
         <nav className="tabs" aria-label="Schedule">
           {LENSES.map(([id, label]) => (
             <button key={id} type="button" aria-pressed={lens === id} onClick={() => {
-              if (id === "roles" || id === "breaks" || id === "tasks") {
+              if (id === "coverage" || id === "tasks") {
                 const chosen = entries.find((entry) => shiftKey(entry) === selectedKey);
                 if (chosen) setDay(Number(chosen.day_of_week));
               }
@@ -794,7 +795,7 @@ export default function OperationsPlannerV2Page() {
           onDuplicate={duplicateShift}
           onSplit={splitShift}
           onRemove={removeShift}
-          onOpenDay={(value) => { setLens("employees"); setMode("day"); setDay(Number(value)); }}
+          onOpenDay={(value) => { setLens("timeline"); setMode("day"); setDay(Number(value)); }}
           onMove={moveDraft}
           onCopyRequest={(kind, target) => {
             const chosen = target?.entry || entries.find((entry) => shiftKey(entry) === selectedKey);

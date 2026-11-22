@@ -8,8 +8,10 @@ import {
   minutesToClock,
   overlappingBreakCount,
   pointerToMinutes,
+  shiftHours,
   spanMinutes,
 } from "./plannerModel";
+import { copiedShift } from "./plannerCopy";
 import {
   asList,
   relocateShift,
@@ -26,7 +28,7 @@ import {
   visualPieces,
 } from "./plannerGeometry";
 import { scheduleRoleCatalog, scheduleRoleLabel } from "../components/weeklySchedule/weeklyScheduleRoles";
-import { BreakImpact, CoverageBoard, TaskPlanner } from "./PlannerBoards";
+import { CoverageBoard, TaskPlanner } from "./PlannerBoards";
 
 const SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -415,19 +417,26 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, canUndo, canRedo, co
   const [segStart, setSegStart] = useState(range ? minutesToClock(range.start) : "");
   const [segEnd, setSegEnd] = useState(range ? minutesToClock(Math.min(range.end, range.start + 60)) : "");
   const [breakStart, setBreakStart] = useState("");
+  const [breakEnd, setBreakEnd] = useState("");
   const [breakMinutes, setBreakMinutes] = useState("30");
+  const [editorBreakMode, setEditorBreakMode] = useState("timed");
   const [taskCode, setTaskCode] = useState("");
   const [shared, setShared] = useState(false);
   const [taskQuery, setTaskQuery] = useState("");
   useLayoutEffect(() => {
+    if (!entry) return;
     const next = shiftRange(entry);
     const stored = storedSegments(entry);
     const last = stored[stored.length - 1];
     const start = last ? clockMinutes(last.end_time) : next?.start;
     setSegStart(start == null ? "" : minutesToClock(start));
     setSegEnd(next && start != null ? minutesToClock(Math.min(next.end, start + 60)) : "");
+    const slots = visibleBreaks(entry).filter((slot) => slot.start_time);
+    setEditorBreakMode(slots.length ? "timed" : "untimed");
+    setBreakStart(slots[0]?.start_time ? String(slots[0].start_time).slice(0, 5) : "");
+    setBreakEnd(slots[0]?.end_time ? String(slots[0].end_time).slice(0, 5) : "");
+    setBreakMinutes(String(visibleBreaks(entry).find((slot) => slot.unscheduled)?.minutes || entry?.break_minutes || 30));
     setRoleCode("");
-    setBreakStart("");
     setTaskCode("");
   }, [entry?.id]);
   if (!entry) return null;
@@ -528,33 +537,27 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, canUndo, canRedo, co
           </div>
         </div>
         <div className="sec">
-          <h3>Breaks</h3>
-          {unscheduled ? <p className="quiet">{unscheduled.minutes} minutes with no clock time. It stays unpaid by the existing break rule and does not sit on the timeline.</p> : null}
-          <ul className="segs">
-            {timed.map((slot, index) => (
-              <li key={`${slot.start_time}-${slot.end_time}-${index}`}>
-                <b>Timed</b>
-                <input aria-label={`Break ${index + 1} start`} type="time" step="900" value={hm(slot.start_time)} onChange={(event) => patch(writeBreaks(entry, timed.map((item, itemIndex) => itemIndex === index ? { ...item, start_time: event.target.value } : item)), "Proposed a break time. Not saved.")} />
-                <input aria-label={`Break ${index + 1} end`} type="time" step="900" value={hm(slot.end_time)} onChange={(event) => patch(writeBreaks(entry, timed.map((item, itemIndex) => itemIndex === index ? { ...item, end_time: event.target.value } : item)), "Proposed a break time. Not saved.")} />
-                <button type="button" className="btn" onClick={() => patch(writeBreaks(entry, timed.filter((_, itemIndex) => itemIndex !== index)), "Proposed removing a break. Not saved.")}>Remove</button>
-              </li>
-            ))}
-          </ul>
-          {!timed.length && !unscheduled ? <p className="quiet">No break on this shift.</p> : null}
-          <div className="segment-add">
-            <input aria-label="New break start" type="time" step="900" value={breakStart} onChange={(event) => setBreakStart(event.target.value)} />
-            <label className="field">Minutes
-              <input aria-label="Break minutes" type="number" min="5" step="5" value={breakMinutes} onChange={(event) => setBreakMinutes(event.target.value)} />
-            </label>
-            <button type="button" className="btn" onClick={() => {
-              const start = clockMinutes(breakStart);
-              const minutes = Number(breakMinutes);
-              if (start == null || !minutes) return;
-              const end = minutesToClock(start + minutes);
-              patch(writeBreaks(entry, [...timed, { start_time: breakStart, end_time: end }]), "Proposed a break. Not saved.");
-            }}>Add timed break</button>
-            <button type="button" className="btn" onClick={() => patch(unscheduleBreak(entry), "Proposed an untimed break. Not saved.")}>Keep duration, clear clock</button>
+          <h3>Break</h3>
+          <div className="pick-row">
+            <label><input type="radio" name="editor-break" checked={editorBreakMode === "timed"} onChange={() => setEditorBreakMode("timed")} /> Timed</label>
+            <label><input type="radio" name="editor-break" checked={editorBreakMode === "untimed"} onChange={() => setEditorBreakMode("untimed")} /> Untimed</label>
           </div>
+          {editorBreakMode === "timed" ? (
+            <div className="segment-add">
+              <input aria-label="Break start" type="time" step="900" value={breakStart} onChange={(event) => setBreakStart(event.target.value)} />
+              <input aria-label="Break end" type="time" step="900" value={breakEnd} onChange={(event) => setBreakEnd(event.target.value)} />
+              <button type="button" className="btn" onClick={() => patch(writeBreaks(entry, [{ start_time: breakStart, end_time: breakEnd }]), "Proposed a timed break. Not saved.")}>Save break</button>
+              <button type="button" className="btn" onClick={() => patch(writeBreaks(entry, []), "Removed the break. Not saved.")}>Remove</button>
+            </div>
+          ) : (
+            <div className="segment-add">
+              <label className="field">Minutes
+                <input aria-label="Untimed break minutes" type="number" min="5" step="5" value={breakMinutes} onChange={(event) => setBreakMinutes(event.target.value)} />
+              </label>
+              <button type="button" className="btn" onClick={() => patch({ ...unscheduleBreak(entry), break_minutes: Number(breakMinutes) || 0, break_slots: [] }, "Proposed an untimed break. Not saved.")}>Save break</button>
+              <button type="button" className="btn" onClick={() => patch({ ...entry, break_minutes: 0, break_slots: [] }, "Removed the break. Not saved.")}>Remove</button>
+            </div>
+          )}
         </div>
         <div className="sec">
           <h3>Tasks</h3>
@@ -656,6 +659,14 @@ export default function PlannerWorkspace({
   const scrollMem = useRef({});
   const scrollKey = useRef(`${lens}:${mode}`);
   const [menu, setMenu] = useState(null);
+  const [dropChoice, setDropChoice] = useState(null);
+  const [breakOpen, setBreakOpen] = useState(false);
+  const [breakPeople, setBreakPeople] = useState([]);
+  const [breakDays, setBreakDays] = useState([String(day)]);
+  const [breakMode, setBreakMode] = useState("timed");
+  const [breakAt, setBreakAt] = useState("12:00");
+  const [breakLen, setBreakLen] = useState("30");
+  const [replaceBreaks, setReplaceBreaks] = useState(false);
   useEffect(() => {
     if (!menu) return undefined;
     function close(event) {
@@ -895,25 +906,13 @@ export default function PlannerWorkspace({
           <button type="button" className="btn primary" onClick={() => onReview()}>Review save</button>
         </div>
       ) : null}
-      {selected && lens !== "tasks" ? (
-        <div className="shift-actions">
-          <strong>{personName(employees, selected.user_id)}</strong>
-          <span className="when">{SHORT[selected.day_of_week]} {hm(selected.start_time)}–{hm(selected.end_time)} · {nice(selected.role || "No role")}</span>
-          {peers.length ? <span className="ops-warn">Overlaps another shift</span> : null}
-          {peers.map((entry) => (
-            <button key={shiftKey(entry)} type="button" onClick={() => onSelect(shiftKey(entry))}>{nice(entry.role || "shift")} {hm(entry.start_time)}–{hm(entry.end_time)}</button>
-          ))}
-          {!selected.role ? <span className="ops-warn">Missing role</span> : null}
-          <button type="button" className="btn" onClick={() => onEdit?.(selected)}>Edit</button>
-          <button type="button" className="btn" onClick={() => onOpenDay(selected.day_of_week)}>Open day</button>
-          <button type="button" className="btn" onClick={() => onCopy(selected)}>Copy</button>
-          {canPaste ? <button type="button" className="btn" onClick={() => onPaste(Number(selected.user_id), Number(selected.day_of_week))}>Paste</button> : null}
-          <button type="button" className="btn" onClick={() => onDuplicate(selected)}>Duplicate</button>
-          <button type="button" className="btn" onClick={() => onSplit(selected)}>Split</button>
-          <button type="button" className="btn danger" onClick={() => onRemove(selected)}>Delete</button>
+      {lens === "breaks" ? (
+        <div className="board-tools">
+          <button type="button" className="btn primary" onClick={() => setBreakOpen(true)}>Assign breaks</button>
+          <span className="when">{breaks.unscheduledCount ? `${breaks.unscheduledCount} untimed` : "Timed breaks are on the board."} Overlap {overlap}.</span>
         </div>
       ) : null}
-      {lens === "breaks" && mode !== "day" ? (
+      {lens === "breaks" ? (
         <div className="week-board" role="table" aria-label="Breaks for the week">
           <div className="week-head"><span>Employee</span>{DAY_ORDER.map((value) => <span key={value}>{SHORT[value]}</span>)}</div>
           {employees.map((employee) => (
@@ -941,37 +940,9 @@ export default function PlannerWorkspace({
           ))}
         </div>
       ) : null}
-      {lens === "breaks" ? (
-        <div className="break-queue">
-          <p>Timed breaks stay on the timeline. Open a shift to place or move a break. Break rules and payroll deductions are unchanged.</p>
-          {entries.some((entry) => untimed(entry) && (mode !== "day" || Number(entry.day_of_week) === Number(day))) ? (
-            <div className="picks">
-              {entries.filter((entry) => untimed(entry) && (mode !== "day" || Number(entry.day_of_week) === Number(day))).map((entry) => (
-                <button key={shiftKey(entry)} type="button" onClick={() => onEdit?.(entry)}>
-                  {personName(employees, entry.user_id)} · {SHORT[entry.day_of_week]} · {entry.break_minutes} min, no clock time
-                </button>
-              ))}
-            </div>
-          ) : <span className="when">Every stored break on this view has a clock time.</span>}
-        </div>
-      ) : null}
-          {lens === "breaks" ? (
-        <>
-        <BreakImpact entries={entries} day={day} unscheduledCount={entries.filter((entry) => untimed(entry) && (mode !== "day" || Number(entry.day_of_week) === Number(day))).length} />
-        <div className="inspect">
-          <span className="when">
-            {overlap > BREAK_OVERLAP_CAP
-              ? `${overlap} people have a timed break at the same time. The limit is ${BREAK_OVERLAP_CAP}.`
-              : breaks.overlapKnown
-                ? `Timed break overlap is ${overlap}. Every stored break has a clock time.`
-                : `Timed break overlap is ${overlap}. ${breaks.unscheduledCount} breaks have no clock time, so overlap cannot be fully determined.`}
-          </span>
-        </div>
-        </>
-      ) : null}
       <div className="workspace">
         <div className="board" ref={boardRef} onScroll={rememberScroll}>
-          {lens === "employees" || lens === "breaks" ? (
+          {lens === "timeline" ? (
             <div className={`sheet${mode === "day" ? " day-layout" : ""}`} style={{ "--cols": String(days.length), "--colmin": `${Math.round(168 * zoom)}px`, "--name": "240px" }}>
               <div className="filters">
                 <select aria-label="Employee roster" value={roster} onChange={(event) => setRoster(event.target.value)}>
@@ -1006,33 +977,77 @@ export default function PlannerWorkspace({
               {!rosterEmployees.length ? <div className="empty"><div><h2>{roster === "unscheduled" ? "Every eligible employee has a shift" : "No employees"}</h2><p>The roster is the same eligible list Weekly Schedule uses.</p></div></div> : null}
             </div>
           ) : null}
-          {lens === "roles" ? (
+          {lens === "schedule" ? (
             <div className="sheet roles-sheet">
               <div className="filters">
                 <span className="legend">{roleNames.map((role) => <span key={role}><i style={{ background: roleColor(role) }} />{nice(role)}</span>)}</span>
-                {requirements?.length ? <button type="button" className="staff-review" onClick={() => onReviewBundle("requirements")}>Review staffing</button> : null}
               </div>
-              <div className="week-board" role="table" aria-label="Roles for the week">
-                <div className="week-head"><span>Employee</span>{DAY_ORDER.map((value) => <span key={value}>{SHORT[value]}</span>)}</div>
-                {employees.map((employee) => (
+              <div className="week-board" role="table" aria-label="Week schedule">
+                <div className="week-head"><span>Employee</span>{DAY_ORDER.map((value) => {
+                  const shifts = entries.filter((entry) => Number(entry.day_of_week) === Number(value));
+                  const gross = shifts.reduce((sum, entry) => sum + shiftHours(entry).gross, 0);
+                  const net = shifts.reduce((sum, entry) => sum + shiftHours(entry).net, 0);
+                  const people = new Set(shifts.map((entry) => Number(entry.user_id))).size;
+                  return <span key={value}>{SHORT[value]}<small>{people} · {net.toFixed(1)}h net</small><small>{gross.toFixed(1)}h gross</small></span>;
+                })}</div>
+                {employees.map((employee) => {
+                  const weekShifts = entries.filter((entry) => Number(entry.user_id) === Number(employee.user_id));
+                  const weekNet = weekShifts.reduce((sum, entry) => sum + shiftHours(entry).net, 0);
+                  const weekGross = weekShifts.reduce((sum, entry) => sum + shiftHours(entry).gross, 0);
+                  return (
                   <div className="week-row" key={employee.user_id}>
-                    <strong>{employee.display_name}</strong>
+                    <strong>{employee.display_name}<small>{weekShifts.length ? `${weekNet.toFixed(1)}h net · ${weekGross.toFixed(1)}h gross` : "Not scheduled"}</small></strong>
                     {DAY_ORDER.map((value) => {
-                      const shifts = entries.filter((entry) => Number(entry.user_id) === Number(employee.user_id) && Number(entry.day_of_week) === Number(value));
+                      const shifts = weekShifts.filter((entry) => Number(entry.day_of_week) === Number(value));
                       return (
-                        <div key={value}>
-                          {shifts.map((entry) => (
-                            <button key={shiftKey(entry)} type="button" className="week-chip" onClick={() => onEdit?.(entry)}>
-                              <i style={{ background: roleColor(entry.role) }} />
-                              {nice(entry.role)} {hm(entry.start_time)}–{hm(entry.end_time)}
-                            </button>
-                          ))}
+                        <div
+                          key={value}
+                          onDragOver={(event) => event.preventDefault()}
+                          onDrop={(event) => {
+                            const key = event.dataTransfer.getData("text/plain");
+                            const moving = entries.find((entry) => shiftKey(entry) === key);
+                            if (!moving) return;
+                            if (Number(moving.user_id) === Number(employee.user_id) && Number(moving.day_of_week) === Number(value)) return;
+                            setDropChoice({ entry: moving, userId: Number(employee.user_id), day: Number(value) });
+                          }}
+                        >
+                          {shifts.map((entry) => {
+                            const hours = shiftHours(entry);
+                            const slots = visibleBreaks(entry);
+                            const breakLabel = slots.length ? slots.map((slot) => (slot.start_time ? `${hm(slot.start_time)}–${hm(slot.end_time)}` : `${slot.minutes}m untimed`)).join(", ") : "No break";
+                            const taskCount = (tasks || []).filter((task) => !task.remove && Number(task.user_id) === Number(entry.user_id) && Number(task.day_of_week) === Number(entry.day_of_week)).length;
+                            const pieces = [...new Set(visualPieces(entry).map((piece) => nice(piece.role)))].join(" · ");
+                            return (
+                              <button
+                                key={shiftKey(entry)}
+                                type="button"
+                                draggable
+                                className={`week-chip${peers.some((item) => shiftKey(item) === shiftKey(entry)) ? " is-open" : ""}`}
+                                title={`${personName(employees, entry.user_id)} · ${pieces} · ${hm(entry.start_time)}–${hm(entry.end_time)} · ${hours.net.toFixed(1)}h net · ${breakLabel} · ${taskCount} tasks`}
+                                onDragStart={(event) => {
+                                  event.dataTransfer.setData("text/plain", shiftKey(entry));
+                                  event.dataTransfer.effectAllowed = "copyMove";
+                                }}
+                                onClick={() => onEdit?.(entry)}
+                                onContextMenu={(event) => openMenu(event, entry, Number(entry.user_id), Number(entry.day_of_week))}
+                              >
+                                <i style={{ background: roleColor(entry.role) }} />
+                                <span>{pieces || "No role"}<small>{hm(entry.start_time)}–{hm(entry.end_time)} · {breakLabel}{taskCount ? ` · ${taskCount} tasks` : ""}</small></span>
+                              </button>
+                            );
+                          })}
+                          {!shifts.length ? <button type="button" className="week-add" onClick={() => onAdd(Number(employee.user_id), Number(value))}>Add</button> : null}
                         </div>
                       );
                     })}
                   </div>
-                ))}
+                  );
+                })}
               </div>
+            </div>
+          ) : null}
+          {lens === "coverage" ? (
+            <div className="sheet roles-sheet">
               <CoverageBoard
                 entries={entries}
                 requirements={requirements}
@@ -1041,42 +1056,7 @@ export default function PlannerWorkspace({
                 days={mode === "day" ? [day] : DAY_ORDER}
                 onOpenGap={openCoverage}
               />
-              <details className="role-blocks">
-                <summary>Shift blocks for {SHORT[day]}</summary>
-                <div className="roles-body">
-                  {roles.map(([role, items]) => {
-                    const column = pack(items.filter((item) => Number(item.entry.day_of_week) === Number(day)));
-                    return (
-                      <section key={role} className="role role-day">
-                        <div className="role-id">
-                          <span className="swatch" style={{ background: roleColor(role) }} />
-                          <strong>{nice(role)}</strong>
-                          <div className="meta">{column.placed.length} on {SHORT[day]}</div>
-                          <RequirementEditor role={role} day={day} requirements={requirements} axis={axis} onChange={(next, label) => onCommit({ requirements: next }, label)} />
-                        </div>
-                        <div className="cell">
-                          <div className="track" style={{ height: Math.max(28, 8 + column.lanes * 24) }}>
-                            {column.placed.map((item) => (
-                              <button
-                                key={`${shiftKey(item.entry)}-${item.start}`}
-                                type="button"
-                                className="shift"
-                                title={`${personName(employees, item.entry.user_id)} · ${hm(item.entry.start_time)}–${hm(item.entry.end_time)}`}
-                                style={{ left: `${leftOf(item.start, axis)}%`, width: `${widthOf(item.start, item.end, axis)}%`, top: 2 + item.lane * 24, height: 22, background: roleColor(role) }}
-                                onClick={() => onSelect(shiftKey(item.entry))}
-                                onDoubleClick={() => onEdit?.(item.entry)}
-                              >
-                                <span className="txt">{personName(employees, item.entry.user_id)}</span>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      </section>
-                    );
-                  })}
-                  {!roles.length ? <div className="empty"><div><h2>No roles on this day</h2><p>Add a shift and a role. Coverage stays “Not set” until a staffing interval is saved.</p></div></div> : null}
-                </div>
-              </details>
+              {requirements?.length ? <button type="button" className="staff-review" onClick={() => onReviewBundle("requirements")}>Review staffing</button> : null}
             </div>
           ) : null}
           {lens === "tasks" ? (
@@ -1132,6 +1112,64 @@ export default function PlannerWorkspace({
           <button type="button" role="menuitem" onClick={() => { onCopyRequest?.("day", menu); setMenu(null); }}>Copy day</button>
           <button type="button" role="menuitem" onClick={() => { onCopyRequest?.("week", menu); setMenu(null); }}>Copy week</button>
           {menu.entry ? <button type="button" role="menuitem" className="danger" onClick={() => { onRemove(menu.entry); setMenu(null); }}>Delete</button> : null}
+        </div>
+      ) : null}
+      {dropChoice ? (
+        <div className="ops-dialog-back">
+          <div className="ops-dialog" role="dialog" aria-label="Move or copy shift">
+            <h2>{nice(dropChoice.entry.role)} · {hm(dropChoice.entry.start_time)}–{hm(dropChoice.entry.end_time)}</h2>
+            <p>Place this shift on {personName(employees, dropChoice.userId)} · {SHORT[dropChoice.day]}. Copy does not bring completed task history.</p>
+            <div className="footer-row">
+              <button type="button" className="btn" onClick={() => setDropChoice(null)}>Cancel</button>
+              <button type="button" className="btn" onClick={() => {
+                onCommit([...entries, copiedShift(dropChoice.entry, { userId: dropChoice.userId, dayOfWeek: dropChoice.day })], "Copied the shift. Not saved.");
+                setDropChoice(null);
+              }}>Copy</button>
+              <button type="button" className="btn primary" onClick={() => { onMove?.(dropChoice.entry, dropChoice.userId, dropChoice.day); setDropChoice(null); }}>Move</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {breakOpen ? (
+        <div className="ops-dialog-back">
+          <form className="ops-dialog" onSubmit={(event) => {
+            event.preventDefault();
+            const minutes = Number(breakLen);
+            if (!breakPeople.length || !breakDays.length || !minutes) return;
+            const next = entries.map((entry) => {
+              if (!breakPeople.includes(String(entry.user_id)) || !breakDays.includes(String(entry.day_of_week))) return entry;
+              const hasBreak = visibleBreaks(entry).length > 0 || Number(entry.break_minutes) > 0;
+              if (hasBreak && !replaceBreaks) return entry;
+              if (breakMode === "untimed") return { ...entry, break_slots: [], break_minutes: minutes };
+              const start = clockMinutes(breakAt);
+              if (start == null) return entry;
+              return writeBreaks(entry, [{ start_time: breakAt, end_time: minutesToClock(start + minutes) }]);
+            });
+            onCommit(next, "Proposed breaks for the selected shifts. Existing breaks were left in place unless replace was chosen. Not saved.");
+            setBreakOpen(false);
+          }}>
+            <h2>Assign breaks</h2>
+            <p>Shifts that already have a break are skipped unless you choose to replace them.</p>
+            <select multiple aria-label="Employees for breaks" value={breakPeople} onChange={(event) => setBreakPeople([...event.target.selectedOptions].map((option) => option.value))}>
+              {employees.map((employee) => <option key={employee.user_id} value={employee.user_id}>{employee.display_name}</option>)}
+            </select>
+            <div className="pick-row">
+              {DAY_ORDER.map((value) => (
+                <label key={value}><input type="checkbox" checked={breakDays.includes(String(value))} onChange={() => setBreakDays((current) => current.includes(String(value)) ? current.filter((item) => item !== String(value)) : [...current, String(value)])} />{SHORT[value]}</label>
+              ))}
+            </div>
+            <div className="pick-row">
+              <label><input type="radio" name="break-mode" checked={breakMode === "timed"} onChange={() => setBreakMode("timed")} /> Timed</label>
+              <label><input type="radio" name="break-mode" checked={breakMode === "untimed"} onChange={() => setBreakMode("untimed")} /> Untimed</label>
+            </div>
+            {breakMode === "timed" ? <label>Starts <input aria-label="Break start" type="time" step="900" value={breakAt} onChange={(event) => setBreakAt(event.target.value)} /></label> : null}
+            <label>Minutes <input aria-label="Break length" type="number" min="5" step="5" value={breakLen} onChange={(event) => setBreakLen(event.target.value)} /></label>
+            <label><input type="checkbox" checked={replaceBreaks} onChange={(event) => setReplaceBreaks(event.target.checked)} /> Replace a break that is already on the shift</label>
+            <div className="footer-row">
+              <button type="button" className="btn" onClick={() => setBreakOpen(false)}>Cancel</button>
+              <button type="submit" className="btn primary">Apply to draft</button>
+            </div>
+          </form>
         </div>
       ) : null}
       {tip ? <div className="tip" style={{ left: tip.left, top: tip.top }}><b>{tip.name}</b><span>{tip.detail}</span></div> : null}
