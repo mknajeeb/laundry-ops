@@ -2434,15 +2434,34 @@ def build_week_payload(
     )
     from backend.weekly_schedule_template import display_schedule_template_payload, schedule_template_payload
 
+    responsibility_weeks = storage_weeks
+    if display_monday is not None and display_monday not in storage_weeks:
+        # A task save briefly stored rows on the display Monday. Those rows are
+        # the same calendar day; the week reader has to see them.
+        responsibility_weeks = (*storage_weeks, display_monday)
     loaded_responsibilities: list[dict[str, Any]] = []
-    for storage in storage_weeks:
-        loaded_responsibilities.extend(
-            list_week_responsibilities(cursor, organization_id, week_start=storage)
-        )
+    seen_responsibility_ids: set[int] = set()
+    for storage in responsibility_weeks:
+        for row in list_week_responsibilities(cursor, organization_id, week_start=storage):
+            row_id = int(row.get("id") or 0)
+            if row_id in seen_responsibility_ids:
+                continue
+            seen_responsibility_ids.add(row_id)
+            loaded_responsibilities.append(row)
     if display_monday is not None:
-        loaded_responsibilities = [
-            row for row in loaded_responsibilities if row_in_display_week(row, display_monday)
-        ]
+        def _task_visible(row: Mapping[str, Any]) -> bool:
+            if row_in_display_week(row, display_monday):
+                return True
+            stored = parse_schedule_date(row.get("week_start"))
+            try:
+                dow = int(row.get("day_of_week"))
+            except (TypeError, ValueError):
+                return False
+            return stored == display_monday and storage_week_for_dow(display_monday, dow) != display_monday
+
+        from backend.weekly_schedule_week import parse_schedule_date, storage_week_for_dow
+
+        loaded_responsibilities = [row for row in loaded_responsibilities if _task_visible(row)]
     responsibilities = annotate_responsibility_activity(
         cursor,
         organization_id,

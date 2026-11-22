@@ -886,11 +886,35 @@ def load_assignment_rows(cursor, organization_id: int, week_start: date) -> list
     return rows
 
 
+def _assignment_week_keys(week_monday: date) -> tuple[date, ...]:
+    """Storage Sundays for the display week, plus the Monday key used by the bad task insert."""
+    from backend.weekly_schedule_week import display_week_storage
+
+    mon_sat, sunday = display_week_storage(week_monday)
+    keys = [mon_sat, sunday]
+    if week_monday not in keys:
+        keys.append(week_monday)
+    return tuple(keys)
+
+
 def add_assignments(cursor, organization_id: int, week_start: date, additions: Any) -> dict[str, Any]:
-    """Insert new assignment rows. Existing rows, including completed history, are not updated."""
+    """Insert new assignment rows on the same storage week as the schedule.
+
+    ``week_start`` is the display Monday. Monday–Saturday tasks are stored on the
+    Sunday before that Monday. Writing the Monday itself hides the row from the
+    week reload. Existing rows, including completed history, are not removed.
+    """
     if not table_exists(cursor, RESPONSIBILITIES):
         raise PlannerSchemaNotApplied([RESPONSIBILITIES])
-    existing = load_assignment_rows(cursor, organization_id, week_start)
+    existing: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
+    for key in _assignment_week_keys(week_start):
+        for row in load_assignment_rows(cursor, organization_id, key):
+            row_id = int(row.get("id") or 0)
+            if row_id in seen_ids:
+                continue
+            seen_ids.add(row_id)
+            existing.append(row)
     locked_groups = {
         str(row.get("assignment_group_id"))
         for row in existing
@@ -927,6 +951,7 @@ def add_assignments(cursor, organization_id: int, week_start: date, additions: A
         start = item.get("start_time") if mode == "specific_time" else None
         end = item.get("end_time") if mode == "specific_time" else None
         execution = "shared" if item.get("shared") or item.get("execution_mode") == "shared" else "individual"
+        storage = storage_week_for_dow(week_start, int(item["day_of_week"]))
         from backend.planned_weekly_schedule_responsibilities import ensure_responsibilities_table
 
         ensure_responsibilities_table(cursor)
@@ -940,7 +965,7 @@ def add_assignments(cursor, organization_id: int, week_start: date, additions: A
             """,
             (
                 int(organization_id),
-                week_start,
+                storage,
                 int(item["user_id"]),
                 int(item["day_of_week"]),
                 str(item.get("role") or "")[:40],

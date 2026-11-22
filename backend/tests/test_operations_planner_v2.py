@@ -716,3 +716,53 @@ def test_repeating_scope_keeps_two_shifts_on_one_day():
     assert accepted["ok"] is True
     assert cell_shift(accepted["state"], 7, 1, NEXT)["start_time"] == "08:00"
     assert "2026-11-09" in accepted["preview"]["dates"]
+
+
+def test_new_task_is_stored_on_the_schedule_week_not_the_display_monday(monkeypatch):
+    """Monday Nov 23 is shown as that date and stored on Sunday Nov 22.
+
+    Inserting the task on Nov 23 makes the week reload miss it, which is the
+    production 'task list does not match' failure.
+    """
+    from backend.operations_planner_v2_store import add_assignments
+
+    monkeypatch.setattr("backend.operations_planner_v2_store.table_exists", lambda _cursor, _table: True)
+    monkeypatch.setattr(
+        "backend.planned_weekly_schedule_responsibilities.ensure_responsibilities_table",
+        lambda _cursor: None,
+    )
+
+    class Cursor:
+        def __init__(self):
+            self.calls = []
+            self.lastrowid = 286
+
+        def execute(self, sql, params=None):
+            self.calls.append((" ".join(str(sql).split()), params))
+
+        def fetchall(self):
+            return []
+
+        def fetchone(self):
+            return None
+
+    cursor = Cursor()
+    result = add_assignments(
+        cursor,
+        3,
+        date(2026, 11, 23),
+        [{
+            "user_id": 38,
+            "day_of_week": 1,
+            "role": "agroup_washer_and_floor_cleaning",
+            "timing_mode": "specific_time",
+            "start_time": "20:08",
+            "end_time": "21:00",
+        }],
+    )
+    inserts = [params for sql, params in cursor.calls if sql.startswith("INSERT INTO")]
+    assert result["inserted"] == 1
+    assert inserts[0][1] == date(2026, 11, 22)
+    assert inserts[0][3] == 1
+    assert inserts[0][8] == "20:08"
+    assert inserts[0][9] == "21:00"

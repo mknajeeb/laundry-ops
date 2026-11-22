@@ -203,7 +203,9 @@ def test_staffing_and_task_drafts_persist_without_touching_schedule_or_history()
         assert reloaded[1]["day_of_week"] == 1
         assert reloaded[1]["start_time"] == "05:00"
         assert _completed(cursor, responsibility_id) == before
-        rows = load_assignment_rows(cursor, ORG, WEEK)
+        from backend.weekly_schedule_week import storage_week_for_dow
+
+        rows = load_assignment_rows(cursor, ORG, storage_week_for_dow(WEEK, 1))
         added = [row for row in rows if row["id"] != responsibility_id]
         assert len(added) == 1
         assert added[0]["role"] == "trash"
