@@ -1,15 +1,15 @@
 .ops-planner.ops-v2 {
   overflow: hidden;
   max-width: 100%;
-  --ink: #16181d;
-  --muted: #667085;
-  --faint: #98a2b3;
-  --line: #e6e8ee;
-  --line-strong: #d8dce3;
-  --bg: #f5f6f8;
+  --ink: #0f172a;
+  --muted: #475569;
+  --faint: #64748b;
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+  --bg: #f6fafb;
   --paper: #fff;
-  --accent: #0e4d92;
-  --accent-soft: #e8f0fa;
+  --accent: #0097b2;
+  --accent-soft: #e6f5f8;
   --amber: #9a6700;
   --amber-bg: #fff6e5;
   --name: 228px;
@@ -401,9 +401,9 @@
 .ops-v2 .hour-chip { min-width: 64px; border: 0; border-radius: 8px; padding: 4px 6px; display: flex; flex-direction: column; font-size: 11px; text-align: left; }
 .ops-v2 .hour-chip b { font-variant-numeric: tabular-nums; }
 .ops-v2 .hour-chip.short { background: #fde8e6; color: #9f2d20; }
-.ops-v2 .hour-chip.extra { background: #e8f0fa; color: #0e4d92; }
+.ops-v2 .hour-chip.extra { background: var(--accent-soft); color: var(--accent); }
 .ops-v2 .hour-chip.ok { background: #e7f6ee; color: #067647; }
-.ops-v2 .hour-chip.unset { background: #f2f4f7; color: #667085; }
+.ops-v2 .hour-chip.unset { background: var(--bg); color: var(--muted); }
 .ops-v2 .task-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .ops-v2 .task-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .ops-v2 .task-list li { display: flex; flex-direction: column; gap: 2px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
