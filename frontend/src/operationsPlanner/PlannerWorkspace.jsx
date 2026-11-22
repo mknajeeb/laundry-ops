@@ -11,9 +11,7 @@ import {
   spanMinutes,
 } from "./plannerModel";
 import {
-  addRoleSegment,
   asList,
-  placeBreak,
   relocateShift,
   removeRoleSegment,
   resizeBreak,
@@ -27,6 +25,7 @@ import {
   visibleBreaks,
   visualPieces,
 } from "./plannerGeometry";
+import { scheduleRoleCatalog, scheduleRoleLabel } from "../components/weeklySchedule/weeklyScheduleRoles";
 import { BreakImpact, CoverageBoard, TaskPlanner } from "./PlannerBoards";
 
 const SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -41,7 +40,19 @@ function initials(name) {
 }
 
 function nice(role) {
-  return String(role || "No role").replaceAll("_", " ");
+  const text = String(role || "");
+  if (!text) return "No role";
+  if (text.includes(",")) return text.split(",").map((part) => nice(part.trim())).join(" · ");
+  const label = scheduleRoleLabel(text);
+  return label === text ? text.replaceAll("_", " ") : label;
+}
+
+function staffingRoles() {
+  return scheduleRoleCatalog().filter((role) => role.active !== false && role.uses_time_slots !== false);
+}
+
+function taskRoles() {
+  return scheduleRoleCatalog().filter((role) => role.active !== false && role.uses_time_slots === false);
 }
 
 function hm(value) {
@@ -378,24 +389,59 @@ function RequirementEditor({ role, day, requirements, axis, onChange }) {
   );
 }
 
-function Drawer({ entry, employees, tasks, dayLabel, dirty, canUndo, canRedo, conflict, missingRole, badBreak, onClose, onCommit, onReview, onUndo, onRedo, onDiscard, onAdd, onCopy, onDuplicate, onSplit, onRemove }) {
-  const timed = visibleBreaks(entry || {}).filter((slot) => slot.start_time);
-  const unscheduled = visibleBreaks(entry || {}).find((slot) => slot.unscheduled);
-  const [breakStart, setBreakStart] = useState(timed[0]?.start_time || "");
-  const [breakEnd, setBreakEnd] = useState(timed[0]?.end_time || "");
+function writeBreaks(entry, slots) {
+  const clean = (slots || []).filter((slot) => slot?.start_time && slot?.end_time);
+  const minutes = clean.reduce((sum, slot) => sum + (spanMinutes(slot.start_time, slot.end_time) || 0), 0);
+  return {
+    ...entry,
+    break_slots: clean.map((slot) => ({ start_time: String(slot.start_time).slice(0, 5), end_time: String(slot.end_time).slice(0, 5), timed: true })),
+    break_minutes: minutes,
+  };
+}
+
+function appendSegment(entry, role, start, end) {
+  const name = String(role || "").trim();
+  if (!name || !spanMinutes(start, end)) return entry;
+  return {
+    ...entry,
+    role: entry.role || name,
+    role_assignments: [...storedSegments(entry), { role: name, start_time: start, end_time: end }],
+  };
+}
+
+function Drawer({ entry, employees, tasks, dayLabel, dirty, canUndo, canRedo, conflict, missingRole, badBreak, onClose, onCommit, onTasks, onReview, onUndo, onRedo, onDiscard, onCopy, onDuplicate, onSplit, onRemove }) {
+  const range = entry ? shiftRange(entry) : null;
+  const [roleCode, setRoleCode] = useState("");
+  const [segStart, setSegStart] = useState(range ? minutesToClock(range.start) : "");
+  const [segEnd, setSegEnd] = useState(range ? minutesToClock(Math.min(range.end, range.start + 60)) : "");
+  const [breakStart, setBreakStart] = useState("");
+  const [breakMinutes, setBreakMinutes] = useState("30");
+  const [taskCode, setTaskCode] = useState("");
+  const [shared, setShared] = useState(false);
+  const [taskQuery, setTaskQuery] = useState("");
   useLayoutEffect(() => {
-    setBreakStart(timed[0]?.start_time || "");
-    setBreakEnd(timed[0]?.end_time || "");
-  }, [entry?.id, timed[0]?.start_time, timed[0]?.end_time, unscheduled?.minutes]);
+    const next = shiftRange(entry);
+    const stored = storedSegments(entry);
+    const last = stored[stored.length - 1];
+    const start = last ? clockMinutes(last.end_time) : next?.start;
+    setSegStart(start == null ? "" : minutesToClock(start));
+    setSegEnd(next && start != null ? minutesToClock(Math.min(next.end, start + 60)) : "");
+    setRoleCode("");
+    setBreakStart("");
+    setTaskCode("");
+  }, [entry?.id]);
   if (!entry) return null;
   const person = personName(employees, entry.user_id);
   const pieces = visualPieces(entry);
-  const range = shiftRange(entry);
   const hours = range ? (range.end - range.start) / 60 : 0;
   const stored = storedSegments(entry);
   const allocated = stored.reduce((sum, segment) => sum + ((spanMinutes(segment.start_time, segment.end_time) || 0) / 60), 0);
   const kept = Math.max(0, hours - (stored.length ? allocated : hours));
-  const mine = (tasks || []).filter((task) => Number(task.user_id) === Number(entry.user_id) && Number(task.day_of_week) === Number(entry.day_of_week));
+  const mine = (tasks || []).filter((task) => !task.remove && Number(task.user_id) === Number(entry.user_id) && Number(task.day_of_week) === Number(entry.day_of_week));
+  const timed = visibleBreaks(entry).filter((slot) => slot.start_time);
+  const unscheduled = visibleBreaks(entry).find((slot) => slot.unscheduled);
+  const roles = staffingRoles();
+  const tasksAvailable = taskRoles().filter((item) => `${item.name || ""} ${item.code}`.toLowerCase().includes(taskQuery.toLowerCase()));
   function patch(next, label) {
     onCommit({ ...entry, ...next, id: entry.id }, label);
   }
@@ -405,7 +451,7 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, canUndo, canRedo, co
         <span className="avatar">{initials(person)}</span>
         <div>
           <h2>{person}</h2>
-          <p>{dayLabel} · {entry.role || "No role"}</p>
+          <p>{dayLabel} · {nice(entry.role)}</p>
         </div>
         <button type="button" className="close" aria-label="Close" onClick={onClose}>×</button>
       </header>
@@ -414,9 +460,9 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, canUndo, canRedo, co
         {missingRole ? <p className="ops-warn">This shift has no role.</p> : null}
         {badBreak ? <p className="ops-warn">A break sits outside the shift, or its start and end are the same.</p> : null}
         <div className="facts">
-          <div><b>{hours.toFixed(1)}h</b><span>Shift on the timeline</span></div>
-          <div><b>{(stored.length ? allocated : hours).toFixed(1)}h</b><span>{stored.length ? "Allocated to roles" : "No role split"}</span></div>
-          <div><b>{((unscheduled?.minutes || 0) / 60).toFixed(1)}h</b><span>{unscheduled ? "Break, not on the bar" : "No break"}</span></div>
+          <div><b>{hours.toFixed(1)}h</b><span>Gross</span></div>
+          <div><b>{Math.max(0, hours - (Number(entry.break_minutes) || 0) / 60).toFixed(1)}h</b><span>Net after breaks</span></div>
+          <div><b>{(stored.length ? allocated : hours).toFixed(1)}h</b><span>{stored.length ? "In role segments" : "One role"}</span></div>
         </div>
         <div className="sec">
           <h3>Assignment</h3>
@@ -443,60 +489,117 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, canUndo, canRedo, co
           <div className="key"><span><i />Start and end</span><span><i className="split" />Role split</span></div>
         </div>
         <div className="sec">
-          <h3>Role time</h3>
-          <input className="role-field" aria-label="Shift role" value={entry.role || ""} onChange={(event) => patch({ role: event.target.value }, "Proposed a role label change. Not saved.")} />
-          {String(entry.role || "").includes(",") && !stored.length ? <p className="quiet">This combined role has no timed split. It stays combined until you know how the time is divided.</p> : (
-            <div className="break-times">
-              <input aria-label="New role segment" placeholder="Role" id={`segment-role-${entry.id}`} />
-              <button type="button" className="btn" onClick={() => {
-                const field = document.getElementById(`segment-role-${entry.id}`);
-                const name = field?.value || "";
-                const range = shiftRange(entry);
-                if (!range || !name.trim()) return;
-                const start = minutesToClock(range.start);
-                const end = minutesToClock(Math.min(range.end, range.start + 60));
-                patch(addRoleSegment(entry, name.trim(), start, end), "Proposed a role segment. Not saved.");
-              }}>Add segment</button>
-            </div>
-          )}
+          <h3>Role assignments</h3>
+          {!stored.length ? (
+            <label className="field">Primary role
+              <select aria-label="Primary role" value={entry.role || ""} onChange={(event) => patch({ role: event.target.value }, "Proposed a role. Not saved.")}>
+                <option value="">Choose a role</option>
+                {entry.role && !roles.some((role) => role.code === entry.role) ? <option value={entry.role}>{nice(entry.role)}</option> : null}
+                {roles.map((role) => <option key={role.code} value={role.code}>{scheduleRoleLabel(role.code)}</option>)}
+              </select>
+            </label>
+          ) : null}
           <ul className="segs">
-            {pieces.map((piece) => {
-              const span = ((piece.end - piece.start) / 60).toFixed(1);
-              const note = String(piece.role).includes(",") && !piece.allocated ? " · combined role" : "";
-              return (
-                <li key={`${piece.role}-${piece.start}`}>
-                  <span className="swatch" style={{ background: roleColor(piece.role) }} />
-                  <b>{nice(piece.role)}</b>
-                  <em>{minutesToClock(piece.start)}–{minutesToClock(piece.end)} · {span}h{note}</em>
-                  {piece.allocated ? <button type="button" className="btn" onClick={() => patch(removeRoleSegment(entry, stored.findIndex((segment) => segment.role === piece.role && clockMinutes(segment.start_time) === piece.start)), "Proposed removing a role segment. Not saved.")}>Remove</button> : null}
-                </li>
-              );
-            })}
+            {stored.map((segment, index) => (
+              <li key={`${segment.role}-${segment.start_time}-${index}`}>
+                <span className="swatch" style={{ background: roleColor(segment.role) }} />
+                <b>{scheduleRoleLabel(segment.role)}</b>
+                <input aria-label={`${scheduleRoleLabel(segment.role)} start`} type="time" step="900" value={hm(segment.start_time)} onChange={(event) => {
+                  const next = stored.map((item, itemIndex) => (itemIndex === index ? { ...item, start_time: event.target.value } : item));
+                  patch({ role_assignments: next }, "Proposed a role time. Not saved.");
+                }} />
+                <input aria-label={`${scheduleRoleLabel(segment.role)} end`} type="time" step="900" value={hm(segment.end_time)} onChange={(event) => {
+                  const next = stored.map((item, itemIndex) => (itemIndex === index ? { ...item, end_time: event.target.value } : item));
+                  patch({ role_assignments: next }, "Proposed a role time. Not saved.");
+                }} />
+                <button type="button" className="btn" onClick={() => patch(removeRoleSegment(entry, index), "Proposed removing a role segment. Not saved.")}>Remove</button>
+              </li>
+            ))}
           </ul>
-          {kept > 0.05 ? <p className="quiet">{kept.toFixed(1)}h stays on the combined role. It is not assigned to {nice(String(entry.role).split(",")[0])}.</p> : null}
+          {kept > 0.05 && stored.length ? <p className="quiet">{kept.toFixed(1)}h of this shift is not inside a role segment.</p> : null}
+          <div className="segment-add">
+            <select aria-label="Role to add" value={roleCode} onChange={(event) => setRoleCode(event.target.value)}>
+              <option value="">Add a role</option>
+              {roles.map((role) => <option key={role.code} value={role.code}>{scheduleRoleLabel(role.code)}</option>)}
+            </select>
+            <input aria-label="Segment start" type="time" step="900" value={segStart} onChange={(event) => setSegStart(event.target.value)} />
+            <input aria-label="Segment end" type="time" step="900" value={segEnd} onChange={(event) => setSegEnd(event.target.value)} />
+            <button type="button" className="btn" onClick={() => patch(appendSegment(entry, roleCode, segStart, segEnd), "Proposed a role segment. Not saved.")}>Add role</button>
+          </div>
         </div>
         <div className="sec">
-          <h3>Break</h3>
-          {unscheduled ? (
-            <div className="note"><div><strong>{unscheduled.minutes} min · no clock time</strong>Marked by the gold line. It does not shorten the {hours.toFixed(1)}h bar.</div></div>
-          ) : timed.length ? timed.map((slot) => <p key={`${slot.start_time}-${slot.end_time}`} className="quiet">Timed break {slot.start_time}–{slot.end_time}. It is on the bar.</p>) : <p className="quiet">No break on this shift.</p>}
-          <div className="break-times">
-            <input aria-label="Break start time" type="time" step="900" value={breakStart} onChange={(event) => { setBreakStart(event.target.value); if (event.target.value && breakEnd) onCommit(placeBreak(entry, event.target.value, breakEnd), "Proposed a break time. Not saved."); }} />
-            <input aria-label="Break end time" type="time" step="900" value={breakEnd} onChange={(event) => { setBreakEnd(event.target.value); if (breakStart && event.target.value) onCommit(placeBreak(entry, breakStart, event.target.value), "Proposed a break time. Not saved."); }} />
+          <h3>Breaks</h3>
+          {unscheduled ? <p className="quiet">{unscheduled.minutes} minutes with no clock time. It stays unpaid by the existing break rule and does not sit on the timeline.</p> : null}
+          <ul className="segs">
+            {timed.map((slot, index) => (
+              <li key={`${slot.start_time}-${slot.end_time}-${index}`}>
+                <b>Timed</b>
+                <input aria-label={`Break ${index + 1} start`} type="time" step="900" value={hm(slot.start_time)} onChange={(event) => patch(writeBreaks(entry, timed.map((item, itemIndex) => itemIndex === index ? { ...item, start_time: event.target.value } : item)), "Proposed a break time. Not saved.")} />
+                <input aria-label={`Break ${index + 1} end`} type="time" step="900" value={hm(slot.end_time)} onChange={(event) => patch(writeBreaks(entry, timed.map((item, itemIndex) => itemIndex === index ? { ...item, end_time: event.target.value } : item)), "Proposed a break time. Not saved.")} />
+                <button type="button" className="btn" onClick={() => patch(writeBreaks(entry, timed.filter((_, itemIndex) => itemIndex !== index)), "Proposed removing a break. Not saved.")}>Remove</button>
+              </li>
+            ))}
+          </ul>
+          {!timed.length && !unscheduled ? <p className="quiet">No break on this shift.</p> : null}
+          <div className="segment-add">
+            <input aria-label="New break start" type="time" step="900" value={breakStart} onChange={(event) => setBreakStart(event.target.value)} />
+            <label className="field">Minutes
+              <input aria-label="Break minutes" type="number" min="5" step="5" value={breakMinutes} onChange={(event) => setBreakMinutes(event.target.value)} />
+            </label>
+            <button type="button" className="btn" onClick={() => {
+              const start = clockMinutes(breakStart);
+              const minutes = Number(breakMinutes);
+              if (start == null || !minutes) return;
+              const end = minutesToClock(start + minutes);
+              patch(writeBreaks(entry, [...timed, { start_time: breakStart, end_time: end }]), "Proposed a break. Not saved.");
+            }}>Add timed break</button>
+            <button type="button" className="btn" onClick={() => patch(unscheduleBreak(entry), "Proposed an untimed break. Not saved.")}>Keep duration, clear clock</button>
           </div>
         </div>
         <div className="sec">
           <h3>Tasks</h3>
-          {mine.length ? mine.map((task) => (
-            <p key={task.id || task.role} className="quiet">{task.role} · {task.draft ? "Draft assignment · not saved" : (task.activity_status || task.status || "pending")}</p>
-          )) : <p className="quiet">No task assigned on this shift.</p>}
+          <ul className="segs">
+            {mine.map((task) => {
+              const locked = ["in_progress", "pending_approval", "approved", "rejected", "completed"].includes(String(task.activity_status || task.status || ""));
+              return (
+                <li key={task.id || task.role}>
+                  <b>{nice(task.role)}</b>
+                  <em>{task.draft ? "Draft" : (task.activity_status || task.status || "assigned")}{task.assignment_group_id ? " · shared" : ""}</em>
+                  {locked ? null : <button type="button" className="btn" onClick={() => onTasks?.((tasks || []).map((item) => (item === task || item.id === task.id ? { ...item, remove: true } : item)).filter((item) => !(item.draft && item.remove)))}>Remove</button>}
+                </li>
+              );
+            })}
+          </ul>
+          {!mine.length ? <p className="quiet">No task on this employee and day.</p> : null}
+          <div className="segment-add">
+            <input aria-label="Find a task" value={taskQuery} placeholder="Find a task" onChange={(event) => setTaskQuery(event.target.value)} />
+            <select aria-label="Task to assign" value={taskCode} onChange={(event) => setTaskCode(event.target.value)}>
+              <option value="">Add a task</option>
+              {tasksAvailable.map((item) => <option key={item.code} value={item.code}>{String(item.code).startsWith("agroup_") ? "Activity · " : ""}{item.name || scheduleRoleLabel(item.code)}</option>)}
+            </select>
+            <label><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /> Shared activity group</label>
+            <button type="button" className="btn" onClick={() => {
+              if (!taskCode) return;
+              onTasks?.([...(tasks || []), {
+                id: `draft-task-${Date.now()}`,
+                draft: true,
+                user_id: Number(entry.user_id),
+                day_of_week: Number(entry.day_of_week),
+                role: taskCode,
+                timing_mode: "anytime",
+                shared,
+                assignment_group_id: shared ? `draft-group-${Date.now()}` : null,
+                status: "assigned",
+              }]);
+              setTaskCode("");
+            }}>Add task</button>
+          </div>
         </div>
         <div className="actions">
-          <button type="button" className="btn" onClick={() => onAdd(Number(entry.user_id), Number(entry.day_of_week))}>Add shift</button>
           <button type="button" className="btn" onClick={() => onCopy(entry)}>Copy</button>
           <button type="button" className="btn" onClick={() => onDuplicate(entry)}>Duplicate</button>
           <button type="button" className="btn" onClick={() => onSplit(entry)}>Split</button>
-          <button type="button" className="btn danger" onClick={() => onRemove(entry)}>Remove</button>
+          <button type="button" className="btn danger" onClick={() => onRemove(entry)}>Delete</button>
         </div>
       </div>
       <footer>
@@ -670,7 +773,7 @@ export default function PlannerWorkspace({
       return pack(shifts.map((entry) => ({ ...shiftRange(entry), entry })).filter((item) => item.start != null));
     });
     const lanes = Math.max(1, ...byDay.map((column) => (column.placed.length ? column.lanes : 1)));
-    const bar = mode === "day" ? 26 : 18;
+    const bar = mode === "day" ? 32 : 28;
     const height = 6 + lanes * bar + (lanes - 1) * 3;
     return (
       <div className={`person${open ? " is-open" : ""}${picked ? " is-pick" : ""}`} key={employee.user_id}>
@@ -810,6 +913,34 @@ export default function PlannerWorkspace({
           <button type="button" className="btn danger" onClick={() => onRemove(selected)}>Delete</button>
         </div>
       ) : null}
+      {lens === "breaks" && mode !== "day" ? (
+        <div className="week-board" role="table" aria-label="Breaks for the week">
+          <div className="week-head"><span>Employee</span>{DAY_ORDER.map((value) => <span key={value}>{SHORT[value]}</span>)}</div>
+          {employees.map((employee) => (
+            <div className="week-row" key={employee.user_id}>
+              <strong>{employee.display_name}</strong>
+              {DAY_ORDER.map((value) => {
+                const shifts = entries.filter((entry) => Number(entry.user_id) === Number(employee.user_id) && Number(entry.day_of_week) === Number(value));
+                return (
+                  <div key={value}>
+                    {shifts.map((entry) => {
+                      const slots = visibleBreaks(entry);
+                      const label = slots.length
+                        ? slots.map((slot) => (slot.start_time ? `${hm(slot.start_time)}–${hm(slot.end_time)}` : `${slot.minutes} min untimed`)).join(", ")
+                        : "No break";
+                      return (
+                        <button key={shiftKey(entry)} type="button" className={`week-chip${slots.some((slot) => !slot.start_time) ? " is-open" : ""}`} onClick={() => onEdit?.(entry)}>
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      ) : null}
       {lens === "breaks" ? (
         <div className="break-queue">
           <p>Timed breaks stay on the timeline. Open a shift to place or move a break. Break rules and payroll deductions are unchanged.</p>
@@ -841,7 +972,7 @@ export default function PlannerWorkspace({
       <div className="workspace">
         <div className="board" ref={boardRef} onScroll={rememberScroll}>
           {lens === "employees" || lens === "breaks" ? (
-            <div className={`sheet${mode === "day" ? " day-layout" : ""}`} style={{ "--cols": String(days.length), "--colmin": `${Math.round(96 * zoom)}px` }}>
+            <div className={`sheet${mode === "day" ? " day-layout" : ""}`} style={{ "--cols": String(days.length), "--colmin": `${Math.round(168 * zoom)}px`, "--name": "240px" }}>
               <div className="filters">
                 <select aria-label="Employee roster" value={roster} onChange={(event) => setRoster(event.target.value)}>
                   <option value="all">All</option>
@@ -851,7 +982,7 @@ export default function PlannerWorkspace({
                 <input aria-label="Find employee" value={query} placeholder="Find employee" onChange={(event) => setQuery(event.target.value)} />
                 <select aria-label="Role filter" value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>
                   <option value="">All roles</option>
-                  {roleNames.map((role) => <option key={role} value={role}>{role}</option>)}
+                  {roleNames.map((role) => <option key={role} value={role}>{nice(role)}</option>)}
                 </select>
                 <select aria-label="Sort employees" value={sort} onChange={(event) => setSort(event.target.value)}>
                   <option value="name">Name</option>
@@ -862,7 +993,7 @@ export default function PlannerWorkspace({
                   <option value="1.4">Wider</option>
                   <option value="1.8">Widest</option>
                 </select>
-                <span className="legend">{roleNames.slice(0, 8).map((role) => <span key={role}><i style={{ background: roleColor(role) }} />{nice(role)}</span>)}</span>
+                <span className="legend">{roleNames.map((role) => <span key={role}><i style={{ background: roleColor(role) }} />{nice(role)}</span>)}</span>
               </div>
               <div className="head">
                 <div className="who">
@@ -881,11 +1012,33 @@ export default function PlannerWorkspace({
                 <span className="legend">{roleNames.map((role) => <span key={role}><i style={{ background: roleColor(role) }} />{nice(role)}</span>)}</span>
                 {requirements?.length ? <button type="button" className="staff-review" onClick={() => onReviewBundle("requirements")}>Review staffing</button> : null}
               </div>
+              <div className="week-board" role="table" aria-label="Roles for the week">
+                <div className="week-head"><span>Employee</span>{DAY_ORDER.map((value) => <span key={value}>{SHORT[value]}</span>)}</div>
+                {employees.map((employee) => (
+                  <div className="week-row" key={employee.user_id}>
+                    <strong>{employee.display_name}</strong>
+                    {DAY_ORDER.map((value) => {
+                      const shifts = entries.filter((entry) => Number(entry.user_id) === Number(employee.user_id) && Number(entry.day_of_week) === Number(value));
+                      return (
+                        <div key={value}>
+                          {shifts.map((entry) => (
+                            <button key={shiftKey(entry)} type="button" className="week-chip" onClick={() => onEdit?.(entry)}>
+                              <i style={{ background: roleColor(entry.role) }} />
+                              {nice(entry.role)} {hm(entry.start_time)}–{hm(entry.end_time)}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
               <CoverageBoard
-                entries={mode === "day" ? entries.filter((entry) => Number(entry.day_of_week) === Number(day)) : entries}
+                entries={entries}
                 requirements={requirements}
                 employees={employees}
                 day={day}
+                days={mode === "day" ? [day] : DAY_ORDER}
                 onOpenGap={openCoverage}
               />
               <details className="role-blocks">
@@ -962,6 +1115,7 @@ export default function PlannerWorkspace({
             onDuplicate={onDuplicate}
             onSplit={onSplit}
             onRemove={onRemove}
+            onTasks={(next) => onCommit({ tasks: next }, "Updated the task draft. Not saved.")}
           />
         ) : null}
       </div>

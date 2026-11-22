@@ -28,6 +28,7 @@ import { copyDay, copyEmployeeDay, copyEmployeeWeek, copyWeekShifts, copiedShift
 import { laborComparison } from "./plannerLabor";
 import { patternCells, reviewLines, scopeDecision, staffingChanges, taskChanges } from "./plannerReview";
 import { recordDraft, redoDraftHistory, undoDraftHistory } from "./draftHistory";
+import { setScheduleRoleCatalog } from "../components/weeklySchedule/weeklyScheduleRoles";
 
 const LENSES = [
   ["employees", "Employees"],
@@ -165,6 +166,10 @@ export default function OperationsPlannerV2Page() {
     setPayload(response.data);
     if (!weekStart && response.data?.planner?.week_monday) setWeek(response.data.planner.week_monday);
   }, []);
+
+  useEffect(() => {
+    setScheduleRoleCatalog(payload?.role_catalog || null);
+  }, [payload]);
 
   useEffect(() => {
     load(week).catch((err) => {
@@ -732,21 +737,26 @@ export default function OperationsPlannerV2Page() {
       {payload ? (
         <div className="metrics" aria-label="Schedule summary">
           <div className="metric"><b>{entries.length}</b><span>Shifts</span></div>
-          <div className="metric" title="Sum of every shift. Overlapping shifts for the same person are counted in each shift."><b>{labor.assignmentGross.toFixed(1)}</b><span>Assignment gross</span></div>
-          <div className="metric" title="Each person's overlapping shifts are counted once. The larger break on an overlap is kept. This is time on the clock, not the Weekly Schedule role split."><b>{labor.uniqueGross.toFixed(1)}</b><span>Unique working</span></div>
-          <div className="metric" title="Weekly Schedule's role timeline. Overlap is counted once, then hours are split by role. A break that is not placed on a role is left out of that split."><b>{labor.scheduleGross.toFixed(1)}</b><span>Schedule gross</span></div>
-          <div className="metric" title="Break deducted by the Weekly Schedule role timeline."><b>{labor.scheduleBreak.toFixed(1)}</b><span>Schedule breaks</span></div>
           <div className="metric" title="Schedule gross minus the Weekly Schedule break deduction."><b>{labor.scheduleNet.toFixed(1)}</b><span>Schedule net</span></div>
           <div className="metric"><b>{scheduledCount}</b><span>Scheduled</span></div>
-          <div className="metric"><b>{Math.max(0, employees.length - scheduledCount)}</b><span>Unscheduled</span></div>
-          <div className="metric"><b>{coverageLabel}</b><span>Coverage</span></div>
-          <div className="flags">
-            {breakTotals.unscheduledCount ? <p className="flag"><i />{breakTotals.unscheduledCount} breaks have no clock time</p> : null}
-            {unsplitCount ? <p className="flag"><i />{unsplitCount} shifts have no role split</p> : null}
-            {!loadedRequirements.length ? <p className="flag"><i />Staffing need not set</p> : null}
-            {labor.overlapHours > 0 ? <p className="flag" title="Assignment gross adds every shift. Schedule gross is the Weekly Schedule total: overlapping time is counted once, then breaks follow that screen's role rules."><i />{labor.overlapHours.toFixed(1)}h overlap</p> : null}
-            {snapshot ? <p className="flag" title="Draft edits stay in this browser. Nothing is written."><i />Read-only snapshot</p> : null}
-          </div>
+          <details className="issues">
+            <summary>
+              {(breakTotals.unscheduledCount || unsplitCount || !loadedRequirements.length || labor.overlapHours > 0) ? "Warnings" : "Schedule detail"}
+            </summary>
+            <div className="metric" title="Sum of every shift."><b>{labor.assignmentGross.toFixed(1)}</b><span>Assignment gross</span></div>
+            <div className="metric"><b>{labor.uniqueGross.toFixed(1)}</b><span>Unique working</span></div>
+            <div className="metric"><b>{labor.scheduleGross.toFixed(1)}</b><span>Schedule gross</span></div>
+            <div className="metric"><b>{labor.scheduleBreak.toFixed(1)}</b><span>Schedule breaks</span></div>
+            <div className="metric"><b>{Math.max(0, employees.length - scheduledCount)}</b><span>Unscheduled</span></div>
+            <div className="metric"><b>{coverageLabel}</b><span>Coverage</span></div>
+            <div className="flags">
+              {breakTotals.unscheduledCount ? <p className="flag"><i />{breakTotals.unscheduledCount} breaks have no clock time</p> : null}
+              {unsplitCount ? <p className="flag"><i />{unsplitCount} shifts have no role split</p> : null}
+              {!loadedRequirements.length ? <p className="flag"><i />Staffing need not set</p> : null}
+              {labor.overlapHours > 0 ? <p className="flag"><i />{labor.overlapHours.toFixed(1)}h overlap</p> : null}
+              {snapshot ? <p className="flag"><i />Read-only snapshot</p> : null}
+            </div>
+          </details>
         </div>
       ) : null}
       {flags === null && !error ? <p className="ops-note">Loading the schedule…</p> : null}

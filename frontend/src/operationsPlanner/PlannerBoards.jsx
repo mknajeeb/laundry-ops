@@ -2,6 +2,7 @@ import { useState } from "react";
 import { DAY_NAMES, DAY_ORDER, breakLoad, clockMinutes, staffingHours, taskWindow } from "./plannerModel";
 import { roleColor, visibleBreaks } from "./plannerGeometry";
 import { DEFAULT_CATEGORY_TABS } from "../components/tasks/taskDashboardLabels";
+import { scheduleRoleCatalog, scheduleRoleLabel } from "../components/weeklySchedule/weeklyScheduleRoles";
 import { TASK_TIMING, TASK_TIMING_OPTIONS } from "../components/weeklySchedule/weeklyScheduleTaskTiming";
 
 function personName(employees, userId) {
@@ -41,47 +42,64 @@ export function taskConflicts(task, entries) {
   return notes;
 }
 
-export function CoverageBoard({ entries, requirements, employees, day, onOpenGap }) {
+function roleTitle(role) {
+  const text = String(role || "");
+  if (!text) return "No role";
+  if (text.includes(",")) return text.split(",").map((part) => scheduleRoleLabel(part.trim())).join(" · ");
+  return scheduleRoleLabel(text);
+}
+
+export function CoverageBoard({ entries, requirements, employees, day, days, onOpenGap }) {
+  const shown = (days && days.length ? days : [day]);
+  const [picked, setPicked] = useState(null);
   const roles = [...new Set((entries || []).flatMap((entry) => {
     const segments = (entry.role_assignments || []).map((item) => item.role).filter(Boolean);
-    return segments.length ? segments : [entry.role].filter(Boolean);
+    const codes = segments.length ? segments : String(entry.role || "").split(",").map((item) => item.trim()).filter(Boolean);
+    return codes.filter((code) => !String(code).includes(","));
   }))];
   return (
     <section className="coverage-board" aria-label="Hourly staffing">
       <header>
-        <h2>{DAY_NAMES[day]} coverage</h2>
-        <p>Each number is employees still working that role after timed breaks. A requirement shows scheduled/required. An hour with no requirement shows how many are scheduled.</p>
+        <h2>Staffing coverage</h2>
+        <p>A colored hour is people still working after timed breaks. A requirement shows scheduled/required. An hour with no requirement is not a shortage.</p>
       </header>
-      {roles.map((role) => {
-        const rows = staffingHours(entries, requirements, role, day);
-        return (
-          <div key={role} className="coverage-role">
-            <strong><i style={{ background: roleColor(role) }} />{String(role).replaceAll("_", " ")}</strong>
-            <div className="hour-row">
-              {rows.map((row) => (
-                <button
-                  key={row.hour}
-                  type="button"
-                  className={`hour-chip ${row.status}`}
-                  onClick={() => onOpenGap(day, role, row.hour)}
-                  title={row.assignments === row.scheduled ? "" : `${row.assignments} role assignments, ${row.scheduled} employees`}
-                >
-                  <b>{String(row.hour).padStart(2, "0")}</b>
-                  <span>{row.required == null ? `${row.scheduled} scheduled` : `${row.scheduled}/${row.required}`}</span>
-                </button>
-              ))}
-              {!rows.length ? <span className="quiet">No scheduled time and no requirement.</span> : null}
-            </div>
-            {rows.filter((row) => row.status === "short").map((row) => (
-              <p key={`gap-${row.hour}`} className="quiet">
-                Short {row.required - row.scheduled} at {String(row.hour).padStart(2, "0")}:00.
-                Working: {row.userIds.map((id) => personName(employees, id)).join(", ") || "nobody"}.
-              </p>
-            ))}
-          </div>
-        );
-      })}
-      {!roles.length ? <p className="quiet">No roles are scheduled. Set a requirement from a role row after a shift has a role.</p> : null}
+      {shown.map((value) => (
+        <div key={value} className="cov-day">
+          <h3>{DAY_NAMES[value]}</h3>
+          {roles.map((role) => {
+            const rows = staffingHours(entries, requirements, role, value);
+            if (!rows.length) return null;
+            return (
+              <div key={`${value}-${role}`} className="cov-row">
+                <div className="cov-name"><i style={{ background: roleColor(role) }} />{roleTitle(role)}</div>
+                <div className="cov-hours">
+                  {rows.map((row) => (
+                    <button
+                      key={row.hour}
+                      type="button"
+                      className={`cov-cell ${row.status}${picked && picked.day === value && picked.role === role && picked.hour === row.hour ? " is-on" : ""}`}
+                      onClick={() => {
+                        setPicked({ day: value, role, hour: row.hour, row });
+                        onOpenGap?.(value, role, row.hour);
+                      }}
+                    >
+                      <b>{String(row.hour).padStart(2, "0")}</b>
+                      <span>{row.required == null ? row.scheduled : `${row.scheduled}/${row.required}`}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+      {picked ? (
+        <p className="cov-detail">
+          {DAY_NAMES[picked.day]} {String(picked.hour).padStart(2, "0")}:00 · {roleTitle(picked.role)} · {picked.row.required == null ? `${picked.row.scheduled} scheduled, no requirement` : `${picked.row.scheduled} scheduled, ${picked.row.required} required`}.
+          {" "}{picked.row.userIds.map((id) => personName(employees, id)).join(", ") || "Nobody scheduled."}
+        </p>
+      ) : null}
+      {!roles.length ? <p className="quiet">No roles are scheduled.</p> : null}
     </section>
   );
 }
@@ -135,16 +153,29 @@ function TaskEdit({ task, tasks, employees, onChange }) {
   );
 }
 
+const SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function toggleId(list, value) {
+  const text = String(value);
+  return list.includes(text) ? list.filter((item) => item !== text) : [...list, text];
+}
+
 export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onChange, onReview }) {
-  const [userId, setUserId] = useState(employees[0] ? String(employees[0].user_id) : "");
+  const [people, setPeople] = useState(employees[0] ? [String(employees[0].user_id)] : []);
+  const [days, setDays] = useState([String(day)]);
   const [role, setRole] = useState("");
   const [category, setCategory] = useState("intra_day");
   const [timing, setTiming] = useState(TASK_TIMING.ANYTIME);
   const [start, setStart] = useState("");
   const [shared, setShared] = useState(false);
-  const visible = (tasks || []).filter((task) => !task.remove && (mode !== "day" || Number(task.day_of_week) === Number(day)));
-  const taskRoles = (catalog || []).filter((item) => item.uses_time_slots === false && item.active !== false);
-  const choices = taskRoles.length ? taskRoles : [];
+  const [query, setQuery] = useState("");
+  const visible = (tasks || []).filter((task) => !task.remove);
+  const source = catalog && catalog.length ? catalog : scheduleRoleCatalog();
+  const taskRoles = source.filter((item) => item.uses_time_slots === false && item.active !== false);
+  const choices = taskRoles.filter((item) => {
+    const label = `${item.name || ""} ${item.code || ""}`.toLowerCase();
+    return !query || label.includes(query.toLowerCase());
+  });
   const workload = new Map();
   visible.forEach((task) => {
     const key = Number(task.user_id);
@@ -154,21 +185,29 @@ export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onC
   function add(event) {
     event.preventDefault();
     const name = role.trim();
-    if (!name || !userId) return;
+    if (!name || !people.length || !days.length) return;
     if (timing === TASK_TIMING.SPECIFIC && !start) return;
-    onChange([...tasks, {
-      id: `draft-task-${Date.now()}`,
-      draft: true,
-      user_id: Number(userId),
-      day_of_week: day,
-      role: name,
-      category_code: category,
-      timing_mode: timing,
-      start_time: timing === TASK_TIMING.SPECIFIC ? start : null,
-      shared,
-      assignment_group_id: shared ? `draft-group-${Date.now()}` : null,
-      status: "assigned",
-    }]);
+    const group = shared ? `draft-group-${Date.now()}` : null;
+    const stamp = Date.now();
+    const additions = [];
+    people.forEach((userId) => {
+      days.forEach((value) => {
+        additions.push({
+          id: `draft-task-${stamp}-${userId}-${value}`,
+          draft: true,
+          user_id: Number(userId),
+          day_of_week: Number(value),
+          role: name,
+          category_code: category,
+          timing_mode: timing,
+          start_time: timing === TASK_TIMING.SPECIFIC ? start : null,
+          shared,
+          assignment_group_id: group,
+          status: "assigned",
+        });
+      });
+    });
+    onChange([...tasks, ...additions]);
   }
 
   return (
@@ -181,17 +220,36 @@ export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onC
         <select aria-label="Task category" value={category} onChange={(event) => setCategory(event.target.value)}>
           {DEFAULT_CATEGORY_TABS.map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}
         </select>
-        <select aria-label="Task employee" value={userId} onChange={(event) => setUserId(event.target.value)}>
-          {employees.map((employee) => <option key={employee.user_id} value={employee.user_id}>{employee.display_name}</option>)}
+        <input aria-label="Find a task" value={query} placeholder="Find a task" onChange={(event) => setQuery(event.target.value)} />
+        <select aria-label="Task" value={role} onChange={(event) => setRole(event.target.value)} required>
+          <option value="">Choose a task or activity group</option>
+          {choices.map((item) => {
+            const frequency = item.recurrence?.weekly_frequency || item.weekly_frequency;
+            const recurring = item.recurrence?.mode === "recurring";
+            return (
+              <option key={item.code} value={item.code}>
+                {String(item.code || "").startsWith("agroup_") ? "Activity · " : ""}{item.name || scheduleRoleLabel(item.code)}
+                {recurring && frequency ? ` · ${frequency}/week` : ""}
+              </option>
+            );
+          })}
         </select>
-        {choices.length ? (
-          <select aria-label="Task" value={role} onChange={(event) => setRole(event.target.value)}>
-            <option value="">Choose a task</option>
-            {choices.map((item) => <option key={item.code} value={item.code}>{item.name || item.code}</option>)}
-          </select>
-        ) : (
-          <input aria-label="Task name" value={role} onChange={(event) => setRole(event.target.value)} placeholder="Task name" />
-        )}
+        <div className="pick-row" role="group" aria-label="Employees">
+          {employees.map((employee) => (
+            <label key={employee.user_id}>
+              <input type="checkbox" checked={people.includes(String(employee.user_id))} onChange={() => setPeople((current) => toggleId(current, employee.user_id))} />
+              {employee.display_name}
+            </label>
+          ))}
+        </div>
+        <div className="pick-row" role="group" aria-label="Days">
+          {DAY_ORDER.map((value) => (
+            <label key={value}>
+              <input type="checkbox" checked={days.includes(String(value))} onChange={() => setDays((current) => toggleId(current, value))} />
+              {SHORT[value]}
+            </label>
+          ))}
+        </div>
         <select aria-label="Task timing" value={timing} onChange={(event) => setTiming(event.target.value)}>
           {TASK_TIMING_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
@@ -203,17 +261,39 @@ export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onC
       <div className="workload">
         {[...workload.entries()].map(([id, count]) => <span key={id}>{personName(employees, id)} · {count}</span>)}
       </div>
+      {mode !== "day" ? (
+        <div className="week-board" role="table" aria-label="Tasks for the week">
+          <div className="week-head"><span>Employee</span>{DAY_ORDER.map((value) => <span key={value}>{SHORT[value]}</span>)}</div>
+          {employees.map((employee) => (
+            <div className="week-row" key={employee.user_id}>
+              <strong>{employee.display_name}</strong>
+              {DAY_ORDER.map((value) => {
+                const mine = visible.filter((task) => Number(task.user_id) === Number(employee.user_id) && Number(task.day_of_week) === Number(value));
+                return (
+                  <div key={value}>
+                    {mine.map((task) => (
+                      <em key={task.id || task.role} className={lockedTask(task) ? "is-locked" : ""}>
+                        {roleTitle(task.role)} · {task.draft ? "Draft" : (task.activity_status || task.status || "assigned")}
+                      </em>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div className="task-columns">
         <div>
           <h3>On the timeline</h3>
           <ul className="task-list">
-            {visible.filter((task) => taskWindow(task).scheduled).map((task) => {
+            {visible.filter((task) => (mode !== "day" || Number(task.day_of_week) === Number(day)) && taskWindow(task).scheduled).map((task) => {
               const window = taskWindow(task);
               const notes = taskConflicts(task, entries);
               return (
                 <li key={task.id || `${task.user_id}-${task.role}-${window.label}`}>
                   <b>{personName(employees, task.user_id)}</b>
-                  <span>{task.role} · {window.label}</span>
+                  <span>{roleTitle(task.role)} · {window.label}</span>
                   <em>{task.draft ? "Draft" : (task.activity_status || task.status || "assigned")}{task.verification_status ? ` · verification ${task.verification_status}` : ""}</em>
                   {notes.length ? <em className="warn">{notes.join(". ")}</em> : null}
                   <TaskEdit task={task} tasks={tasks} employees={employees} onChange={onChange} />
@@ -225,10 +305,10 @@ export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onC
         <div>
           <h3>No clock time</h3>
           <ul className="task-list">
-            {visible.filter((task) => !taskWindow(task).scheduled).map((task) => (
+            {visible.filter((task) => (mode !== "day" || Number(task.day_of_week) === Number(day)) && !taskWindow(task).scheduled).map((task) => (
               <li key={task.id || `${task.user_id}-${task.role}`}>
                 <b>{personName(employees, task.user_id)}</b>
-                <span>{task.role} · {taskWindow(task).label.replaceAll("_", " ")}</span>
+                <span>{roleTitle(task.role)} · {taskWindow(task).label.replaceAll("_", " ")}</span>
                 <em>{task.draft ? "Draft" : (task.activity_status || task.status || "assigned")}{task.assignment_group_id ? " · shared" : ""}</em>
                 <TaskEdit task={task} tasks={tasks} employees={employees} onChange={onChange} />
               </li>
