@@ -27,11 +27,12 @@ import { asList, draftOperations, relocateShift, shiftKey, splitHalves, storedRo
 import { copyDay, copyEmployeeDay, copyEmployeeWeek, copyWeekShifts, copiedShift } from "./plannerCopy";
 import { laborComparison } from "./plannerLabor";
 import { patternCells, reviewLines, scopeDecision, staffingChanges, taskChanges } from "./plannerReview";
+import { recordDraft, redoDraftHistory, undoDraftHistory } from "./draftHistory";
 
 const LENSES = [
   ["employees", "Employees"],
   ["roles", "Roles"],
-  ["breaks", "Break planner"],
+  ["breaks", "Breaks"],
   ["tasks", "Tasks"],
 ];
 
@@ -129,12 +130,16 @@ export default function OperationsPlannerV2Page() {
   const [pickedEmployees, setPickedEmployees] = useState([]);
   const [draftBundle, setDraftBundle] = useState(null);
   const [history, setHistory] = useState([]);
+  const [future, setFuture] = useState([]);
   const [selectedKey, setSelectedKey] = useState("");
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [leavePrompt, setLeavePrompt] = useState("");
   const [pinOpen, setPinOpen] = useState(false);
   const [clipboard, setClipboard] = useState(null);
   const [lifecycle, setLifecycle] = useState(null);
   const [copyJob, setCopyJob] = useState(null);
   const weekCopyRef = useRef(null);
+  const commandRef = useRef(null);
 
   const load = useCallback(async (weekStart) => {
     const previewMode = new URLSearchParams(window.location.search).get("preview");
@@ -179,6 +184,39 @@ export default function OperationsPlannerV2Page() {
     return () => root.removeAttribute("data-ops-planner-fullscreen");
   }, [full]);
 
+  useEffect(() => {
+    function onKey(event) {
+      const cmd = commandRef.current;
+      if (!cmd || cmd.blocked) return;
+      const tag = String(event.target?.tagName || "");
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || event.target?.isContentEditable) return;
+      const meta = event.metaKey || event.ctrlKey;
+      const key = event.key.toLowerCase();
+      const chosen = cmd.entries.find((entry) => shiftKey(entry) === cmd.selectedKey);
+      if (meta && key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        cmd.undoDraft();
+      } else if (meta && (key === "y" || (key === "z" && event.shiftKey))) {
+        event.preventDefault();
+        cmd.redoDraft();
+      } else if (meta && key === "c" && chosen) {
+        event.preventDefault();
+        cmd.copyShift(chosen);
+      } else if (meta && key === "v" && cmd.clipboard) {
+        event.preventDefault();
+        cmd.pasteShift(
+          chosen ? Number(chosen.user_id) : cmd.employees[0]?.user_id,
+          chosen ? Number(chosen.day_of_week) : cmd.day,
+        );
+      } else if ((event.key === "Delete" || event.key === "Backspace") && chosen) {
+        event.preventDefault();
+        cmd.removeShift(chosen);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const employees = payload?.employees || [];
   const loadedEntries = useMemo(() => (payload?.entries || []).map(entryShift), [payload]);
   const loadedRequirements = payload?.planner?.staffing_requirements || [];
@@ -191,14 +229,16 @@ export default function OperationsPlannerV2Page() {
     if (pendingCopy?.applied && payload?.planner?.week_monday === pendingCopy.target) return;
     setDraftBundle(null);
     setHistory([]);
+    setFuture([]);
     setSelectedKey("");
+    setEditorOpen(false);
     if (!pendingCopy || pendingCopy.applied || payload?.planner?.week_monday !== pendingCopy.target) return;
     pendingCopy.applied = true;
     const base = (payload.entries || []).map(entryShift);
     const clones = copyWeekShifts(pendingCopy.entries);
     const requirements = payload.planner?.staffing_requirements || [];
     const tasks = payload.daily_responsibilities || [];
-    setHistory([{ entries: base, requirements, tasks }]);
+    setHistory([null]);
     setDraftBundle({ entries: [...base, ...clones], requirements, tasks });
     setNotice(`Copied ${clones.length} shifts onto the week of ${pendingCopy.target}. Completed tasks were not copied. Review save before anything is written.`);
   }, [payload]);
@@ -246,32 +286,58 @@ export default function OperationsPlannerV2Page() {
     return { entries, requirements, tasks: responsibilities };
   }
 
-  function applyDraft(next, label) {
-    const patch = Array.isArray(next) ? { entries: next } : next;
-    const current = currentBundle();
-    setHistory((stack) => [...stack, current]);
-    setDraftBundle({ ...current, ...patch });
-    setNotice(label || "Draft updated. Nothing is saved.");
+  function applyHistory(step, label) {
+    setHistory(step.history);
+    setFuture(step.future);
+    setDraftBundle(step.draft);
+    if (label) setNotice(label);
     setError("");
   }
 
+  function applyDraft(next, label) {
+    const patch = Array.isArray(next) ? { entries: next } : next;
+    const current = currentBundle();
+    applyHistory(
+      recordDraft(history, future, draftBundle ? current : null, { ...current, ...patch }),
+      label || "Draft updated. Nothing is saved.",
+    );
+  }
+
   function undoDraft() {
-    setHistory((stack) => {
-      if (!stack.length) return stack;
-      const previous = stack[stack.length - 1];
-      const rest = stack.slice(0, -1);
-      setDraftBundle(rest.length ? previous : null);
-      return rest;
-    });
-    setNotice("Undid the last draft change.");
+    if (!history.length) return;
+    applyHistory(undoDraftHistory(history, future, draftBundle), "Undid the last draft change.");
+  }
+
+  function redoDraft() {
+    if (!future.length) return;
+    applyHistory(redoDraftHistory(history, future, draftBundle), "Redid the draft change.");
   }
 
   function discardDraft() {
     setDraftBundle(null);
     setHistory([]);
+    setFuture([]);
     setPending(null);
     setSelectedKey("");
+    setEditorOpen(false);
     setNotice("");
+  }
+
+  function requestWeek(next) {
+    if (snapshot) return;
+    if (!next || next === (week || planner.week_monday || "")) return;
+    if (draftBundle) {
+      setLeavePrompt(next);
+      return;
+    }
+    setWeek(next);
+  }
+
+  function openEditor(entry) {
+    if (!entry) return;
+    setSelectedKey(shiftKey(entry));
+    setDay(Number(entry.day_of_week));
+    setEditorOpen(true);
   }
 
   function reviewBundle(kind) {
@@ -395,6 +461,7 @@ export default function OperationsPlannerV2Page() {
   function removeShift(entry) {
     applyDraft(entries.filter((item) => shiftKey(item) !== shiftKey(entry)), "Removed the shift from the draft. Not saved.");
     setSelectedKey("");
+    setEditorOpen(false);
   }
 
   async function send(path) {
@@ -573,6 +640,19 @@ export default function OperationsPlannerV2Page() {
   const coverageLabel = loadedRequirements.length ? "Set" : "Not set";
   const statusName = snapshot ? "snapshot" : (planner.status || "draft");
   const monday = week || planner.week_monday || "";
+  commandRef.current = {
+    undoDraft,
+    redoDraft,
+    copyShift,
+    pasteShift,
+    removeShift,
+    entries,
+    selectedKey,
+    clipboard,
+    employees,
+    day,
+    blocked: Boolean(pending || copyJob || lifecycle || leavePrompt || pinOpen || snapshot),
+  };
 
   return (
     <div className={`ops-planner ops-v2 ${full ? "fullscreen" : ""}`}>
@@ -585,10 +665,10 @@ export default function OperationsPlannerV2Page() {
           <em>VeeWash</em>
         </div>
         <div className="when-week">
-          <button type="button" aria-label="Previous week" disabled={snapshot} onClick={() => setWeek(shiftIso(monday, -7))}>‹</button>
+          <button type="button" aria-label="Previous week" disabled={snapshot} onClick={() => requestWeek(shiftIso(monday, -7))}>‹</button>
           <span>{payload?.week_label || period}</span>
-          <button type="button" aria-label="Next week" disabled={snapshot} onClick={() => setWeek(shiftIso(monday, 7))}>›</button>
-          <button type="button" disabled={snapshot} onClick={() => setWeek(easternMonday())}>Today</button>
+          <button type="button" aria-label="Next week" disabled={snapshot} onClick={() => requestWeek(shiftIso(monday, 7))}>›</button>
+          <button type="button" disabled={snapshot} onClick={() => requestWeek(easternMonday())}>Today</button>
         </div>
         <span className={`status-pill ${statusName}`}>{statusName}{planner.revision ? ` · rev ${planner.revision}` : ""}{planner.published_revision ? ` · published ${planner.published_revision}` : ""}</span>
         <div className="seg" role="group" aria-label="Calendar span">
@@ -632,14 +712,20 @@ export default function OperationsPlannerV2Page() {
               popup.focus();
               popup.print();
             }}>Print</button>
-            <label>Week starting <input aria-label="Week starting" type="date" value={monday} disabled={snapshot} onChange={(event) => { if (!snapshot) setWeek(event.target.value); }} /></label>
+            <label>Week starting <input aria-label="Week starting" type="date" value={monday} disabled={snapshot} onChange={(event) => requestWeek(event.target.value)} /></label>
             <button type="button" onClick={() => setPinOpen(true)}>Employee PIN access</button>
             <button type="button" onClick={() => setFull((value) => !value)}>{full ? "Exit full screen" : "Expand"}</button>
           </div>
         </details>
         <nav className="tabs" aria-label="Schedule">
           {LENSES.map(([id, label]) => (
-            <button key={id} type="button" aria-pressed={lens === id} onClick={() => setLens(id)}>{label}</button>
+            <button key={id} type="button" aria-pressed={lens === id} onClick={() => {
+              if (id === "roles" || id === "breaks" || id === "tasks") {
+                const chosen = entries.find((entry) => shiftKey(entry) === selectedKey);
+                if (chosen) setDay(Number(chosen.day_of_week));
+              }
+              setLens(id);
+            }}>{label}</button>
           ))}
         </nav>
       </header>
@@ -680,9 +766,14 @@ export default function OperationsPlannerV2Page() {
           selectedKey={selectedKey}
           dirty={Boolean(draftBundle)}
           canUndo={history.length > 0}
+          canRedo={future.length > 0}
+          editorOpen={editorOpen}
           onSelect={setSelectedKey}
+          onEdit={openEditor}
+          onCloseEditor={() => setEditorOpen(false)}
           onCommit={applyDraft}
           onUndo={undoDraft}
+          onRedo={redoDraft}
           onDiscard={discardDraft}
           onReview={reviewDraft}
           onReviewBundle={reviewBundle}
@@ -695,16 +786,18 @@ export default function OperationsPlannerV2Page() {
           onRemove={removeShift}
           onOpenDay={(value) => { setLens("employees"); setMode("day"); setDay(Number(value)); }}
           onMove={moveDraft}
-          onCopyRequest={(kind) => {
-            const chosen = entries.find((entry) => shiftKey(entry) === selectedKey);
+          onCopyRequest={(kind, target) => {
+            const chosen = target?.entry || entries.find((entry) => shiftKey(entry) === selectedKey);
             if (!chosen && kind !== "week" && kind !== "day") return;
+            const fromDay = Number.isFinite(Number(target?.day)) ? Number(target.day) : (chosen ? Number(chosen.day_of_week) : day);
+            const userId = Number(target?.userId) || (chosen ? Number(chosen.user_id) : employees[0]?.user_id);
             setCopyJob({
               kind,
               entry: chosen,
-              userId: chosen ? Number(chosen.user_id) : employees[0]?.user_id,
-              fromDay: chosen ? Number(chosen.day_of_week) : day,
-              toDay: chosen ? DAY_ORDER[(DAY_ORDER.indexOf(Number(chosen.day_of_week)) + 1) % 7] : day,
-              toUser: employees.find((employee) => Number(employee.user_id) !== Number(chosen?.user_id))?.user_id || "",
+              userId,
+              fromDay,
+              toDay: DAY_ORDER[(DAY_ORDER.indexOf(fromDay) + 1) % 7],
+              toUser: employees.find((employee) => Number(employee.user_id) !== Number(userId))?.user_id || "",
               target: shiftIso(monday, 7),
             });
           }}
@@ -727,6 +820,29 @@ export default function OperationsPlannerV2Page() {
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
               <button type="button" onClick={() => setLifecycle(null)}>Cancel</button>
               <button type="submit" className="primary">Confirm {lifecycle}</button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+      {leavePrompt ? (
+        <div className="ops-dialog-back">
+          <form className="ops-dialog" onSubmit={(event) => {
+            event.preventDefault();
+            const next = leavePrompt;
+            setLeavePrompt("");
+            setDraftBundle(null);
+            setHistory([]);
+            setFuture([]);
+            setPending(null);
+            setEditorOpen(false);
+            setWeek(next);
+            setNotice("Discarded unsaved edits and opened the other week.");
+          }}>
+            <h2>Keep the unsaved schedule?</h2>
+            <p>This week has edits that are not saved. Opening another week leaves those edits here until you discard them.</p>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button type="button" onClick={() => setLeavePrompt("")}>Stay on this week</button>
+              <button type="submit" className="primary">Discard and switch</button>
             </div>
           </form>
         </div>

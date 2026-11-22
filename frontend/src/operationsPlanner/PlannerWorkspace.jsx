@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   BREAK_OVERLAP_CAP,
   DAY_NAMES,
@@ -205,7 +205,20 @@ function coverageBands(role, dow, placed, requirements, axis) {
   return bands;
 }
 
-function ShiftFace({ entry, axis, lane, bar, stacked, selected, peer, showGrips, muted, onSelect, onCommit, onHover, onDragShift }) {
+function breakOutside(entry) {
+  const range = shiftRange(entry);
+  if (!range) return false;
+  return visibleBreaks(entry).some((slot) => {
+    if (!slot.start_time) return false;
+    const start = clockMinutes(slot.start_time);
+    let end = clockMinutes(slot.end_time);
+    if (start == null || end == null || end === start) return true;
+    if (end <= start) end += 24 * 60;
+    return start < range.start || end > range.end;
+  });
+}
+
+function ShiftFace({ entry, axis, lane, bar, stacked, selected, peer, showGrips, muted, onSelect, onCommit, onHover, onDragShift, onEdit, onMenu }) {
   const range = shiftRange(entry);
   if (!range) return null;
   const pieces = visualPieces(entry);
@@ -234,8 +247,19 @@ function ShiftFace({ entry, axis, lane, bar, stacked, selected, peer, showGrips,
         onDragShift?.(entry);
       }}
       onClick={() => onSelect(entry)}
+      onDoubleClick={(event) => {
+        event.preventDefault();
+        onEdit?.(entry);
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onSelect(entry);
+        onMenu?.(event, entry);
+      }}
       onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") onSelect(entry);
+        if (event.key === "Enter") onEdit?.(entry);
+        else if (event.key === " ") onSelect(entry);
       }}
       onMouseEnter={(event) => onHover(entry, event.currentTarget.getBoundingClientRect())}
       onMouseLeave={() => onHover(null)}
@@ -354,7 +378,7 @@ function RequirementEditor({ role, day, requirements, axis, onChange }) {
   );
 }
 
-function Drawer({ entry, employees, tasks, dayLabel, dirty, canUndo, onClose, onCommit, onReview, onUndo, onDiscard, onAdd, onCopy, onDuplicate, onSplit, onRemove }) {
+function Drawer({ entry, employees, tasks, dayLabel, dirty, canUndo, canRedo, conflict, missingRole, badBreak, onClose, onCommit, onReview, onUndo, onRedo, onDiscard, onAdd, onCopy, onDuplicate, onSplit, onRemove }) {
   const timed = visibleBreaks(entry || {}).filter((slot) => slot.start_time);
   const unscheduled = visibleBreaks(entry || {}).find((slot) => slot.unscheduled);
   const [breakStart, setBreakStart] = useState(timed[0]?.start_time || "");
@@ -385,7 +409,10 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, canUndo, onClose, on
         </div>
         <button type="button" className="close" aria-label="Close" onClick={onClose}>×</button>
       </header>
-      <div className="body">
+        <div className="body">
+        {conflict ? <p className="ops-warn">This shift overlaps another shift for the same employee.</p> : null}
+        {missingRole ? <p className="ops-warn">This shift has no role.</p> : null}
+        {badBreak ? <p className="ops-warn">A break sits outside the shift, or its start and end are the same.</p> : null}
         <div className="facts">
           <div><b>{hours.toFixed(1)}h</b><span>Shift on the timeline</span></div>
           <div><b>{(stored.length ? allocated : hours).toFixed(1)}h</b><span>{stored.length ? "Allocated to roles" : "No role split"}</span></div>
@@ -474,9 +501,10 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, canUndo, onClose, on
       </div>
       <footer>
         <p className={`state${dirty ? " dirty" : ""}`}><i />{dirty ? "Unsaved changes" : "No unsaved changes"}</p>
-        <p className="hint">Undo and Discard stay off until a field changes. Review save is required before anything is written.</p>
+        <p className="hint">Undo and redo stay on unsaved edits. Review save is required before anything is written.</p>
         <div className="footer-row">
           <button type="button" className="btn" onClick={onUndo} disabled={!canUndo}>Undo</button>
+          <button type="button" className="btn" onClick={onRedo} disabled={!canRedo}>Redo</button>
           <button type="button" className="btn" onClick={onDiscard} disabled={!dirty}>Discard</button>
           <button type="button" className="btn primary" onClick={() => onReview()}>Review save</button>
         </div>
@@ -497,9 +525,14 @@ export default function PlannerWorkspace({
   selectedKey,
   dirty,
   canUndo,
+  canRedo,
+  editorOpen,
   onSelect,
+  onEdit,
+  onCloseEditor,
   onCommit,
   onUndo,
+  onRedo,
   onDiscard,
   onReview,
   requirements,
@@ -517,6 +550,18 @@ export default function PlannerWorkspace({
   catalog,
 }) {
   const boardRef = useRef(null);
+  const scrollMem = useRef({});
+  const scrollKey = useRef(`${lens}:${mode}`);
+  const [menu, setMenu] = useState(null);
+  useEffect(() => {
+    if (!menu) return undefined;
+    function close(event) {
+      if (event.target?.closest?.(".context-menu")) return;
+      setMenu(null);
+    }
+    window.addEventListener("mousedown", close);
+    return () => window.removeEventListener("mousedown", close);
+  }, [menu]);
   const [roster, setRoster] = useState("all");
   const [query, setQuery] = useState("");
   const [roleFilter, setRoleFilter] = useState("");
@@ -552,7 +597,43 @@ export default function PlannerWorkspace({
   const addTarget = selected ? Number(selected.user_id) : Number(rosterEmployees[0]?.user_id || employees[0]?.user_id || 0);
   const breaks = breakAccounting(entries);
   const overlap = overlappingBreakCount(entries.filter((entry) => mode !== "day" || Number(entry.day_of_week) === Number(day)));
-  const showDrawer = mode === "day" && (lens === "employees" || lens === "breaks") && selected && Number(selected.day_of_week) === Number(day);
+  const showDrawer = Boolean(editorOpen && selected && lens !== "tasks");
+
+  function rememberScroll() {
+    const node = boardRef.current;
+    if (!node) return;
+    scrollMem.current[scrollKey.current] = { x: node.scrollLeft, y: node.scrollTop };
+  }
+
+  useLayoutEffect(() => {
+    const node = boardRef.current;
+    const nextKey = `${lens}:${mode}`;
+    if (!node || scrollKey.current === nextKey) return;
+    const mem = scrollMem.current[nextKey] || { x: 0, y: 0 };
+    node.scrollLeft = mem.x;
+    node.scrollTop = mem.y;
+    scrollKey.current = nextKey;
+  }, [lens, mode]);
+
+  function openMenu(event, entry, userId, dayOfWeek) {
+    setMenu({
+      x: Math.min(event.clientX, window.innerWidth - 220),
+      y: Math.min(event.clientY, window.innerHeight - 280),
+      entry,
+      userId,
+      day: dayOfWeek,
+    });
+  }
+
+  function openCoverage(dayValue, role, hour) {
+    const minute = Number(hour) * 60;
+    const match = entries.find((entry) => {
+      if (Number(entry.day_of_week) !== Number(dayValue)) return false;
+      return visualPieces(entry).some((piece) => piece.role === role && piece.start < minute + 60 && piece.end > minute);
+    });
+    if (match) onEdit?.(match);
+    else onOpenDay(dayValue);
+  }
 
   function commit(next, label) {
     onCommit(entries.map((entry) => (shiftKey(entry) === shiftKey(next) ? { ...entry, ...next } : entry)), label);
@@ -603,6 +684,11 @@ export default function PlannerWorkspace({
               className={`cell${value === 6 || value === 0 ? " is-end" : ""}`}
               style={{ "--guides": guides }}
               onDragOver={(event) => event.preventDefault()}
+              onContextMenu={(event) => {
+                if (event.target.closest(".shift")) return;
+                event.preventDefault();
+                openMenu(event, null, Number(employee.user_id), Number(value));
+              }}
               onDrop={(event) => {
                 const key = event.dataTransfer.getData("text/plain");
                 const moving = entries.find((entry) => shiftKey(entry) === key);
@@ -630,6 +716,8 @@ export default function PlannerWorkspace({
                     onCommit={commit}
                     onHover={hover}
                     onDragShift={() => onSelect(shiftKey(item.entry))}
+                    onEdit={onEdit}
+                    onMenu={(event, entry) => openMenu(event, entry, Number(entry.user_id), Number(entry.day_of_week))}
                   />
                 ))}
                 {lens === "breaks" ? column.placed.flatMap((item) => visibleBreaks(item.entry).filter((slot) => slot.start_time).map((slot) => {
@@ -699,54 +787,41 @@ export default function PlannerWorkspace({
         <div className="draft-bar">
           <p className="state dirty"><i />Unsaved changes</p>
           <button type="button" className="btn" onClick={onUndo} disabled={!canUndo}>Undo</button>
+          <button type="button" className="btn" onClick={onRedo} disabled={!canRedo}>Redo</button>
           <button type="button" className="btn" onClick={onDiscard}>Discard</button>
           <button type="button" className="btn primary" onClick={() => onReview()}>Review save</button>
-        </div>
-      ) : null}
-      {mode === "week" && selected && lens !== "tasks" ? (
-        <div className="inspect">
-          <strong>{personName(employees, selected.user_id)}</strong>
-          <span className="when">{SHORT[selected.day_of_week]} {dayStamp(weekStart, selected.day_of_week)} · {nice(selected.role || "No role")} · {hm(selected.start_time)}–{hm(selected.end_time)}</span>
-          <div className="picks">
-            <button type="button" aria-pressed="true" onClick={() => onSelect(shiftKey(selected))}>{nice(selected.role || "shift")} {hm(selected.start_time)}–{hm(selected.end_time)}</button>
-            {peers.map((entry) => (
-              <button key={shiftKey(entry)} type="button" aria-pressed="false" onClick={() => onSelect(shiftKey(entry))}>{nice(entry.role || "shift")} {hm(entry.start_time)}–{hm(entry.end_time)}</button>
-            ))}
-          </div>
-          <button type="button" className="open-day" onClick={() => onOpenDay(selected.day_of_week)}>Open {SHORT[selected.day_of_week]}</button>
         </div>
       ) : null}
       {selected && lens !== "tasks" ? (
         <div className="shift-actions">
           <strong>{personName(employees, selected.user_id)}</strong>
           <span className="when">{SHORT[selected.day_of_week]} {hm(selected.start_time)}–{hm(selected.end_time)} · {nice(selected.role || "No role")}</span>
-          <button type="button" className="btn" onClick={() => onOpenDay(selected.day_of_week)}>Edit</button>
+          {peers.length ? <span className="ops-warn">Overlaps another shift</span> : null}
+          {peers.map((entry) => (
+            <button key={shiftKey(entry)} type="button" onClick={() => onSelect(shiftKey(entry))}>{nice(entry.role || "shift")} {hm(entry.start_time)}–{hm(entry.end_time)}</button>
+          ))}
+          {!selected.role ? <span className="ops-warn">Missing role</span> : null}
+          <button type="button" className="btn" onClick={() => onEdit?.(selected)}>Edit</button>
+          <button type="button" className="btn" onClick={() => onOpenDay(selected.day_of_week)}>Open day</button>
           <button type="button" className="btn" onClick={() => onCopy(selected)}>Copy</button>
+          {canPaste ? <button type="button" className="btn" onClick={() => onPaste(Number(selected.user_id), Number(selected.day_of_week))}>Paste</button> : null}
           <button type="button" className="btn" onClick={() => onDuplicate(selected)}>Duplicate</button>
           <button type="button" className="btn" onClick={() => onSplit(selected)}>Split</button>
           <button type="button" className="btn danger" onClick={() => onRemove(selected)}>Delete</button>
-          {canPaste ? <button type="button" className="btn" onClick={() => onPaste(Number(selected.user_id), Number(selected.day_of_week))}>Paste here</button> : null}
-          <button type="button" className="btn" onClick={() => onCopyRequest?.("employee-day")}>Copy employee day</button>
-          <button type="button" className="btn" onClick={() => onCopyRequest?.("employee-week")}>Copy employee week</button>
-          <button type="button" className="btn" onClick={() => onCopyRequest?.("day")}>Copy day</button>
-          <button type="button" className="btn" onClick={() => onCopyRequest?.("week")}>Copy week</button>
         </div>
       ) : null}
       {lens === "breaks" ? (
         <div className="break-queue">
-          <p>Working time is faded. Timed breaks are the amber blocks. Breaks without a clock time are listed here and are not placed on the timeline.</p>
-          <ul>
-            {entries.filter((entry) => untimed(entry) && (mode !== "day" || Number(entry.day_of_week) === Number(day))).map((entry) => (
-              <li key={shiftKey(entry)}>
-                <span>{personName(employees, entry.user_id)} · {SHORT[entry.day_of_week]} · {entry.break_minutes} min, no clock time</span>
-                <input aria-label={`Clock time for ${personName(employees, entry.user_id)}`} type="time" step="900" onChange={(event) => {
-                  if (!event.target.value) return;
-                  const end = minutesToClock(clockMinutes(event.target.value) + Number(entry.break_minutes || 0));
-                  commit(placeBreak(entry, event.target.value, end), "Proposed a clock time for this break. Not saved.");
-                }} />
-              </li>
-            ))}
-          </ul>
+          <p>Timed breaks stay on the timeline. Open a shift to place or move a break. Break rules and payroll deductions are unchanged.</p>
+          {entries.some((entry) => untimed(entry) && (mode !== "day" || Number(entry.day_of_week) === Number(day))) ? (
+            <div className="picks">
+              {entries.filter((entry) => untimed(entry) && (mode !== "day" || Number(entry.day_of_week) === Number(day))).map((entry) => (
+                <button key={shiftKey(entry)} type="button" onClick={() => onEdit?.(entry)}>
+                  {personName(employees, entry.user_id)} · {SHORT[entry.day_of_week]} · {entry.break_minutes} min, no clock time
+                </button>
+              ))}
+            </div>
+          ) : <span className="when">Every stored break on this view has a clock time.</span>}
         </div>
       ) : null}
           {lens === "breaks" ? (
@@ -764,7 +839,7 @@ export default function PlannerWorkspace({
         </>
       ) : null}
       <div className="workspace">
-        <div className="board" ref={boardRef}>
+        <div className="board" ref={boardRef} onScroll={rememberScroll}>
           {lens === "employees" || lens === "breaks" ? (
             <div className={`sheet${mode === "day" ? " day-layout" : ""}`} style={{ "--cols": String(days.length), "--colmin": `${Math.round(96 * zoom)}px` }}>
               <div className="filters">
@@ -801,59 +876,54 @@ export default function PlannerWorkspace({
             </div>
           ) : null}
           {lens === "roles" ? (
-            <div className="sheet" style={{ "--cols": String(days.length) }}>
-              <div className="head">
-                <div className="who">Role {requirements?.length ? <button type="button" className="staff-review" onClick={() => onReviewBundle("requirements")}>Review staffing</button> : null}</div>
-                {head}
+            <div className="sheet roles-sheet">
+              <div className="filters">
+                <span className="legend">{roleNames.map((role) => <span key={role}><i style={{ background: roleColor(role) }} />{nice(role)}</span>)}</span>
+                {requirements?.length ? <button type="button" className="staff-review" onClick={() => onReviewBundle("requirements")}>Review staffing</button> : null}
               </div>
-              <div className="roles-body">
-                {roles.map(([role, items]) => {
-                  const columns = days.map((value) => pack(items.filter((item) => Number(item.entry.day_of_week) === Number(value))));
-                  const laneCount = Math.max(...columns.map((column) => (column.placed.length ? column.lanes : 1)));
-                  return (
-                    <section key={role} className="role" style={{ "--w": Math.max(1, laneCount), "--min": `${Math.max(58, 22 + laneCount * 24)}px` }}>
-                      <div className="role-id">
-                        <span className="swatch" style={{ background: roleColor(role) }} />
-                        <strong>{nice(role)}</strong>
-                        <div className="meta">{items.length} assignments</div>
-                        <RequirementEditor role={role} day={day} requirements={requirements} axis={axis} onChange={(next, label) => onCommit({ requirements: next }, label)} />
-                      </div>
-                      {columns.map((column, index) => {
-                        const value = days[index];
-                        const bands = coverageBands(role, value, column.placed, requirements, axis);
-                        return (
-                          <div key={value} className={`cell${value === 6 || value === 0 ? " is-end" : ""}`} style={{ "--guides": guides }}>
-                            <div className="count" title={column.placed.length ? `${column.placed.length} scheduled` : ""}>{column.placed.length || ""}</div>
-                            <div className="guides" />
-                            {bands.map((band) => <i key={band.key} className={`band ${band.kind}`} style={band.style} title={band.title} />)}
-                            <div className="track">
-                              {column.placed.map((item) => (
-                                <button
-                                  key={`${shiftKey(item.entry)}-${item.start}`}
-                                  type="button"
-                                  className={`shift${untimed(item.entry) ? " has-break" : ""}${String(role).includes(",") ? " is-combined" : ""}`}
-                                  title={`${personName(employees, item.entry.user_id)} · ${nice(role)} · ${hm(item.entry.start_time)}–${hm(item.entry.end_time)}`}
-                                  style={{ left: `${leftOf(item.start, axis)}%`, width: `${widthOf(item.start, item.end, axis)}%`, top: 2 + item.lane * 24, height: 22, background: roleColor(role) }}
-                                  onClick={() => onSelect(shiftKey(item.entry))}
-                                >
-                                  <span className="txt" data-full={personName(employees, item.entry.user_id)} data-short="">{personName(employees, item.entry.user_id)}</span>
-                                </button>
-                              ))}
-                            </div>
+              <CoverageBoard
+                entries={mode === "day" ? entries.filter((entry) => Number(entry.day_of_week) === Number(day)) : entries}
+                requirements={requirements}
+                employees={employees}
+                day={day}
+                onOpenGap={openCoverage}
+              />
+              <details className="role-blocks">
+                <summary>Shift blocks for {SHORT[day]}</summary>
+                <div className="roles-body">
+                  {roles.map(([role, items]) => {
+                    const column = pack(items.filter((item) => Number(item.entry.day_of_week) === Number(day)));
+                    return (
+                      <section key={role} className="role role-day">
+                        <div className="role-id">
+                          <span className="swatch" style={{ background: roleColor(role) }} />
+                          <strong>{nice(role)}</strong>
+                          <div className="meta">{column.placed.length} on {SHORT[day]}</div>
+                          <RequirementEditor role={role} day={day} requirements={requirements} axis={axis} onChange={(next, label) => onCommit({ requirements: next }, label)} />
+                        </div>
+                        <div className="cell">
+                          <div className="track" style={{ height: Math.max(28, 8 + column.lanes * 24) }}>
+                            {column.placed.map((item) => (
+                              <button
+                                key={`${shiftKey(item.entry)}-${item.start}`}
+                                type="button"
+                                className="shift"
+                                title={`${personName(employees, item.entry.user_id)} · ${hm(item.entry.start_time)}–${hm(item.entry.end_time)}`}
+                                style={{ left: `${leftOf(item.start, axis)}%`, width: `${widthOf(item.start, item.end, axis)}%`, top: 2 + item.lane * 24, height: 22, background: roleColor(role) }}
+                                onClick={() => onSelect(shiftKey(item.entry))}
+                                onDoubleClick={() => onEdit?.(item.entry)}
+                              >
+                                <span className="txt">{personName(employees, item.entry.user_id)}</span>
+                              </button>
+                            ))}
                           </div>
-                        );
-                      })}
-                    </section>
-                  );
-                })}
-                <CoverageBoard
-                  entries={entries}
-                  requirements={requirements}
-                  employees={employees}
-                  day={day}
-                  onOpenGap={(value) => onOpenDay(value)}
-                />
-              </div>
+                        </div>
+                      </section>
+                    );
+                  })}
+                  {!roles.length ? <div className="empty"><div><h2>No roles on this day</h2><p>Add a shift and a role. Coverage stays “Not set” until a staffing interval is saved.</p></div></div> : null}
+                </div>
+              </details>
             </div>
           ) : null}
           {lens === "tasks" ? (
@@ -877,10 +947,15 @@ export default function PlannerWorkspace({
             dayLabel={`${SHORT[selected.day_of_week]} ${dayStamp(weekStart, selected.day_of_week)}`}
             dirty={dirty}
             canUndo={canUndo}
-            onClose={() => onSelect("")}
+            canRedo={canRedo}
+            conflict={peers.length > 0}
+            missingRole={!selected.role && !storedSegments(selected).length}
+            badBreak={breakOutside(selected)}
+            onClose={onCloseEditor}
             onCommit={commit}
             onReview={onReview}
             onUndo={onUndo}
+            onRedo={onRedo}
             onDiscard={onDiscard}
             onAdd={onAdd}
             onCopy={onCopy}
@@ -890,6 +965,21 @@ export default function PlannerWorkspace({
           />
         ) : null}
       </div>
+      {menu ? (
+        <div className="context-menu" role="menu" style={{ left: menu.x, top: menu.y }} onMouseDown={(event) => event.stopPropagation()}>
+          {menu.entry ? <button type="button" role="menuitem" onClick={() => { onEdit?.(menu.entry); setMenu(null); }}>Edit</button> : null}
+          {menu.entry ? <button type="button" role="menuitem" onClick={() => { onCopy(menu.entry); setMenu(null); }}>Copy</button> : null}
+          {canPaste ? <button type="button" role="menuitem" onClick={() => { onPaste(menu.userId, menu.day); setMenu(null); }}>Paste</button> : null}
+          {menu.entry ? <button type="button" role="menuitem" onClick={() => { onDuplicate(menu.entry); setMenu(null); }}>Duplicate</button> : null}
+          {menu.entry ? <button type="button" role="menuitem" onClick={() => { onSplit(menu.entry); setMenu(null); }}>Split</button> : null}
+          <button type="button" role="menuitem" onClick={() => { onAdd(menu.userId, menu.day); setMenu(null); }}>Add shift</button>
+          {menu.entry ? <button type="button" role="menuitem" onClick={() => { onCopyRequest?.("employee-day", menu); setMenu(null); }}>Copy employee day</button> : null}
+          {menu.entry ? <button type="button" role="menuitem" onClick={() => { onCopyRequest?.("employee-week", menu); setMenu(null); }}>Copy employee week</button> : null}
+          <button type="button" role="menuitem" onClick={() => { onCopyRequest?.("day", menu); setMenu(null); }}>Copy day</button>
+          <button type="button" role="menuitem" onClick={() => { onCopyRequest?.("week", menu); setMenu(null); }}>Copy week</button>
+          {menu.entry ? <button type="button" role="menuitem" className="danger" onClick={() => { onRemove(menu.entry); setMenu(null); }}>Delete</button> : null}
+        </div>
+      ) : null}
       {tip ? <div className="tip" style={{ left: tip.left, top: tip.top }}><b>{tip.name}</b><span>{tip.detail}</span></div> : null}
       {planner?.legacy_template ? null : null}
     </div>

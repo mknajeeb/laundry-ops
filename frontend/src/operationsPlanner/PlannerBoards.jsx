@@ -50,7 +50,7 @@ export function CoverageBoard({ entries, requirements, employees, day, onOpenGap
     <section className="coverage-board" aria-label="Hourly staffing">
       <header>
         <h2>{DAY_NAMES[day]} coverage</h2>
-        <p>Each number is employees working that role, after timed breaks. Role assignments are counted separately when one employee holds more than one segment. Hours without a requirement say Not set.</p>
+        <p>Each number is employees still working that role after timed breaks. A requirement shows scheduled/required. An hour with no requirement shows how many are scheduled.</p>
       </header>
       {roles.map((role) => {
         const rows = staffingHours(entries, requirements, role, day);
@@ -67,7 +67,7 @@ export function CoverageBoard({ entries, requirements, employees, day, onOpenGap
                   title={row.assignments === row.scheduled ? "" : `${row.assignments} role assignments, ${row.scheduled} employees`}
                 >
                   <b>{String(row.hour).padStart(2, "0")}</b>
-                  <span>{row.required == null ? "Not set" : `${row.scheduled}/${row.required}`}</span>
+                  <span>{row.required == null ? `${row.scheduled} scheduled` : `${row.scheduled}/${row.required}`}</span>
                 </button>
               ))}
               {!rows.length ? <span className="quiet">No scheduled time and no requirement.</span> : null}
