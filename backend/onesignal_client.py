@@ -76,21 +76,29 @@ def public_web_url(path: str | None) -> str | None:
 
 
 def _classify_push_result(parsed: dict | None) -> tuple[bool, str | None]:
-    """Map a OneSignal create-notification body to delivered-or-not. Does not treat a bare accept as a device receipt when recipients is 0."""
+    """Map a OneSignal create-notification body to sent-or-not.
+
+    A non-empty id means at least one subscribed device was sent the message.
+    invalid_aliases lists opted-out subscriptions and does not cancel that send.
+    An empty id with those aliases means nothing was subscribed.
+    """
     if not isinstance(parsed, dict):
         return False, "empty_response"
     errors = parsed.get("errors")
     if errors in ([], {}, ""):
         errors = None
     recipients = parsed.get("recipients")
-    if errors:
-        text = str(errors)
-        if "not subscribed" in text.lower():
-            return False, "no_subscribed_devices"
-        return False, text[:500]
+    note_id = str(parsed.get("id") or "").strip()
     if recipients == 0:
         return False, "no_subscribed_devices"
-    if parsed.get("id") or (isinstance(recipients, int) and recipients > 0):
+    if note_id:
+        return True, None
+    if errors:
+        text = str(errors)
+        if "invalid_aliases" in text or "not subscribed" in text.lower():
+            return False, "no_subscribed_devices"
+        return False, text[:500]
+    if isinstance(recipients, int) and recipients > 0:
         return True, None
     return False, "unconfirmed_delivery"
 

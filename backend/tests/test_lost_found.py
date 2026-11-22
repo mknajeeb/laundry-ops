@@ -885,6 +885,13 @@ def test_push_result_treats_zero_recipients_as_not_delivered():
 
     assert _classify_push_result({"id": "abc", "recipients": 1}) == (True, None)
     assert _classify_push_result({"id": "abc", "recipients": 0}) == (False, "no_subscribed_devices")
+    # Opted-out subscriptions are listed once each. A real id means the rest were sent.
+    assert _classify_push_result(
+        {"id": "abc", "errors": {"invalid_aliases": {"external_id": ["lo-3-15", "lo-3-15"]}}}
+    ) == (True, None)
+    assert _classify_push_result(
+        {"id": "", "errors": {"invalid_aliases": {"external_id": ["lo-3-15"]}}}
+    ) == (False, "no_subscribed_devices")
     ok, err = _classify_push_result({"errors": ["All included players are not subscribed"]})
     assert ok is False
     assert err == "no_subscribed_devices"

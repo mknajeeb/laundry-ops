@@ -35,6 +35,14 @@ if (typeof window !== "undefined" && onesignalActive && !window.__laundryOpsOneS
     try {
       const notes = OneSignal.Notifications;
       if (notes && typeof notes.addEventListener === "function") {
+        // An open VeeWash page must still show the banner. Older workers waited
+        // forever for this answer and the lock screen stayed empty.
+        notes.addEventListener("foregroundWillDisplay", (event) => {
+          const notification = event?.notification;
+          if (notification && typeof notification.display === "function") {
+            notification.display();
+          }
+        });
         notes.addEventListener("click", (event) => {
           const n = event?.notification;
           const data = n?.additionalData || n?.data || {};
