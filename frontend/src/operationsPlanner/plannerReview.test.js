@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { affectedShiftCount, explainSaveError, interpretSaveResponse } from "./plannerReview";
+import { affectedShiftCount, explainSaveError, incompleteShiftLines, interpretSaveResponse, patternCells } from "./plannerReview";
 
 describe("interpretSaveResponse", () => {
   it("treats a committed save as the only success", () => {
@@ -36,6 +36,27 @@ describe("interpretSaveResponse", () => {
     expect(explainSaveError("a role is required")).toMatch(/hours and break stay/);
     expect(explainSaveError(rejected.error)).toMatch(/draft is still here/);
     expect(explainSaveError("the same role cannot overlap itself on one shift")).toMatch(/Remove the extra row/);
+  });
+
+  it("names a partial add and leaves it out of a day that also has a valid change", () => {
+    const monday = { id: 11, user_id: 7, day_of_week: 1, start_time: "06:00", end_time: "14:00", role: "fold", break_minutes: 0, break_slots: [], role_assignments: [] };
+    const blank = { id: "draft-blank", user_id: 9, day_of_week: 1, start_time: "", end_time: "", role: "", break_minutes: 0, break_slots: [], role_assignments: [] };
+    const partial = { id: "draft-partial", user_id: 38, day_of_week: 1, start_time: "10:00", end_time: "", role: "fold", break_minutes: 30, break_slots: [], role_assignments: [] };
+    const changed = { ...monday, end_time: "15:00" };
+    const employees = [{ user_id: 38, display_name: "Amna" }];
+    const after = [changed, blank, partial];
+    const cells = patternCells([monday], after);
+    expect(cells).toHaveLength(1);
+    expect(cells[0].shifts.map((shift) => shift.id)).toEqual([11]);
+    expect(incompleteShiftLines(after, employees)).toEqual([
+      { employee: "Amna", day: "Monday", detail: "Needs a start and end" },
+    ]);
+    expect(affectedShiftCount({
+      scope: "this_and_future",
+      cells,
+      anchor: "2026-11-23",
+      today: "2026-11-22",
+    }).shifts).toBe(16);
   });
 
   it("asks again only when the server needs a scope confirmation", () => {

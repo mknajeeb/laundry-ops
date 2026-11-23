@@ -152,10 +152,18 @@
 .ops-v2 .dayhead.is-end { background: #faf9f6; }
 .ops-v2 .dayhead strong { font-size: 12px; font-weight: 650; letter-spacing: -0.01em; }
 .ops-v2 .dayhead.is-on strong { color: var(--accent); }
-.ops-v2 .axis { position: relative; height: 14px; }
+.ops-v2 .axis { position: relative; height: 16px; }
+.ops-v2 .break-load { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 8px; font-size: 12px; }
+.ops-v2 .break-load ul { display: flex; flex-wrap: wrap; gap: 4px; list-style: none; margin: 0; padding: 0; }
+.ops-v2 .break-load li { display: flex; gap: 6px; align-items: baseline; padding: 2px 8px; border-radius: 99px; background: #f4f5f7; }
+.ops-v2 .break-load li.is-hot { background: #fff4e5; color: #9a3412; }
+.ops-v2 .break-load li span { color: var(--muted); }
+.ops-v2 .task-group { margin: 0 0 14px; }
+.ops-v2 .task-group h4 { margin: 0 0 6px; font-size: 13px; }
 .ops-v2 .axis b {
   position: absolute; top: 0; transform: translateX(-50%);
   font-weight: 500; font-size: 10px; color: var(--faint); font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .ops-v2 .axis b:first-child { transform: none; }
 .ops-v2 .person { border-bottom: 1px solid #f0f1f4; }

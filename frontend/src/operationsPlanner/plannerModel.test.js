@@ -8,6 +8,7 @@ import {
   roleCoverage,
   snapMinutes,
   breakAccounting,
+  breakOverlapBands,
   overlappingBreakCount,
   placePopover,
   requirementFor,
@@ -79,6 +80,15 @@ describe("planner period and coverage", () => {
   it("warns above three overlapping timed breaks", () => {
     const crowd = [1, 2, 3, 4].map((user_id) => ({ ...fold, user_id }));
     expect(overlappingBreakCount(crowd)).toBe(4);
+    const bands = breakOverlapBands([
+      fold,
+      { ...fold, user_id: 2 },
+      { ...fold, user_id: 3, break_slots: [{ start_time: "12:00", end_time: "12:15", timed: true }] },
+    ]);
+    expect(bands.map((band) => [minutesToClock(band.start), minutesToClock(band.end), band.count])).toEqual([
+      ["12:00", "12:15", 3],
+      ["12:15", "12:30", 2],
+    ]);
   });
 
   it("counts a shared task group once", () => {

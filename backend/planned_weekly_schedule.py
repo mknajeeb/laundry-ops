@@ -1298,8 +1298,12 @@ def get_entry(
     entry_id: int,
     *,
     conn=None,
+    context: ScheduleWriteContext | None = None,
 ) -> dict[str, Any] | None:
-    ensure_planned_weekly_schedule_table(cursor)
+    if context is not None:
+        context.ensure_schema()
+    else:
+        ensure_planned_weekly_schedule_table(cursor)
     cursor.execute(
         """
         SELECT id, organization_id, week_start, user_id, day_of_week,
@@ -1314,12 +1318,16 @@ def get_entry(
     row = cursor.fetchone()
     if not row or not isinstance(row, dict):
         return None
-    end_time_enabled = _schedule_end_time_enabled(cursor, organization_id)
-    org_slug = None
-    if conn is not None:
-        from backend.payroll_employer_affiliation import _organization_slug
+    if context is not None:
+        end_time_enabled = context.end_time_enabled()
+        org_slug = context.slug()
+    else:
+        end_time_enabled = _schedule_end_time_enabled(cursor, organization_id)
+        org_slug = None
+        if conn is not None:
+            from backend.payroll_employer_affiliation import _organization_slug
 
-        org_slug = _organization_slug(conn, organization_id)
+            org_slug = _organization_slug(conn, organization_id)
     return serialize_entry(
         row,
         schedule_end_time_enabled=end_time_enabled,
@@ -1637,23 +1645,89 @@ def default_new_shift_employer_affiliation(
     return default_shift_employer_affiliation(worker, organization_slug=organization_slug)
 
 
-def _assert_worker_in_org(conn, organization_id: int, user_id: int) -> str | None:
-    from backend.payroll_schedule import worker_exists_in_schedule_grid
+class ScheduleWriteContext:
+    """Reuse the worker list, role catalog, and schema checks for one save.
 
-    if not worker_exists_in_schedule_grid(conn, organization_id, int(user_id)):
+    A recurring save writes the same employees across many weeks. Loading the
+    whole worker grid inside every insert turns that into one round trip per
+    employee per row.
+    """
+
+    def __init__(self, conn, cursor, organization_id: int) -> None:
+        self.conn = conn
+        self.cursor = cursor
+        self.organization_id = int(organization_id)
+        self._ensured = False
+        self._end_time: bool | None = None
+        self._slug: str | None = None
+        self._slug_loaded = False
+        self._catalog: dict[str, dict[str, Any]] | None = None
+        self._workers: dict[int, dict[str, Any]] | None = None
+        self._members: dict[int, bool] = {}
+
+    def ensure_schema(self) -> None:
+        if self._ensured:
+            return
+        ensure_planned_weekly_schedule_table(self.cursor)
+        self._ensured = True
+
+    def end_time_enabled(self) -> bool:
+        if self._end_time is None:
+            self._end_time = _schedule_end_time_enabled(self.cursor, self.organization_id)
+        return self._end_time
+
+    def slug(self) -> str | None:
+        if not self._slug_loaded:
+            from backend.payroll_employer_affiliation import _organization_slug
+
+            self._slug = _organization_slug(self.conn, self.organization_id)
+            self._slug_loaded = True
+        return self._slug
+
+    def catalog(self) -> dict[str, dict[str, Any]]:
+        if self._catalog is None:
+            self._catalog = _load_role_catalog_index(self.cursor, self.organization_id)
+        return self._catalog
+
+    def workers(self) -> dict[int, dict[str, Any]]:
+        if self._workers is None:
+            self._workers = _workers_index(_load_workers(self.conn, self.organization_id))
+        return self._workers
+
+    def worker_in_org(self, user_id: int) -> bool:
+        uid = int(user_id)
+        if uid not in self._members:
+            from backend.payroll_schedule import worker_exists_in_schedule_grid
+
+            self._members[uid] = worker_exists_in_schedule_grid(self.conn, self.organization_id, uid)
+        return self._members[uid]
+
+
+def _assert_worker_in_org(conn, organization_id: int, user_id: int, context: ScheduleWriteContext | None = None) -> str | None:
+    if context is not None:
+        found = context.worker_in_org(user_id)
+    else:
+        from backend.payroll_schedule import worker_exists_in_schedule_grid
+
+        found = worker_exists_in_schedule_grid(conn, organization_id, int(user_id))
+    if not found:
         return "worker not found in payroll profiles"
     return None
 
 
-def _assert_worker_schedulable(conn, organization_id: int, user_id: int) -> str | None:
+def _assert_worker_schedulable(conn, organization_id: int, user_id: int, context: ScheduleWriteContext | None = None) -> str | None:
     from backend.payroll_employer_affiliation import (
         EMPLOYER_AFFILIATION_NONE,
         _organization_slug,
         employer_affiliation_from_flags,
     )
 
-    org_slug = _organization_slug(conn, organization_id)
-    worker = _workers_index(_load_workers(conn, organization_id)).get(int(user_id))
+    if context is not None:
+        org_slug = context.slug()
+        worker = context.workers().get(int(user_id))
+    else:
+        org_slug = _organization_slug(conn, organization_id)
+        worker = _workers_index(_load_workers(conn, organization_id)).get(int(user_id))
     if employer_affiliation_from_flags(worker, organization_slug=org_slug) == EMPLOYER_AFFILIATION_NONE:
         return "worker is not assigned to a schedule entity (affiliation none)"
     return None
@@ -1667,30 +1741,42 @@ def create_entry(
     week_start: date,
     data: Mapping[str, Any],
     preserve_assignments: Sequence[Mapping[str, Any]] | None = None,
+    context: ScheduleWriteContext | None = None,
+    read_back: bool = True,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """``preserve_assignments`` (copy flows) keeps roles/remarks valid even if since deactivated."""
-    ensure_planned_weekly_schedule_table(cursor)
-    end_time_enabled = _schedule_end_time_enabled(cursor, organization_id)
-    from backend.payroll_employer_affiliation import _organization_slug
+    if context is not None:
+        context.ensure_schema()
+        end_time_enabled = context.end_time_enabled()
+        org_slug = context.slug()
+        catalog = context.catalog()
+    else:
+        ensure_planned_weekly_schedule_table(cursor)
+        end_time_enabled = _schedule_end_time_enabled(cursor, organization_id)
+        from backend.payroll_employer_affiliation import _organization_slug
 
-    org_slug = _organization_slug(conn, organization_id)
+        org_slug = _organization_slug(conn, organization_id)
+        catalog = _load_role_catalog_index(cursor, organization_id)
     payload, err = _validate_entry_payload(
         data,
         schedule_end_time_enabled=end_time_enabled,
         organization_slug=org_slug,
-        role_catalog=_load_role_catalog_index(cursor, organization_id),
+        role_catalog=catalog,
         existing_assignments=preserve_assignments or [],
     )
     if err:
         return None, err
-    worker_err = _assert_worker_in_org(conn, organization_id, payload["user_id"])
+    worker_err = _assert_worker_in_org(conn, organization_id, payload["user_id"], context)
     if worker_err:
         return None, worker_err
-    schedulable_err = _assert_worker_schedulable(conn, organization_id, payload["user_id"])
+    schedulable_err = _assert_worker_schedulable(conn, organization_id, payload["user_id"], context)
     if schedulable_err:
         return None, schedulable_err
     if "employer_affiliation" not in payload:
-        worker = _workers_index(_load_workers(conn, organization_id)).get(int(payload["user_id"]))
+        if context is not None:
+            worker = context.workers().get(int(payload["user_id"]))
+        else:
+            worker = _workers_index(_load_workers(conn, organization_id)).get(int(payload["user_id"]))
         payload["employer_affiliation"] = default_new_shift_employer_affiliation(
             worker,
             organization_slug=org_slug,
@@ -1718,7 +1804,9 @@ def create_entry(
         ),
     )
     entry_id = int(cursor.lastrowid or 0)
-    return get_entry(cursor, organization_id, entry_id, conn=conn), None
+    if not read_back:
+        return {"id": entry_id}, None
+    return get_entry(cursor, organization_id, entry_id, conn=conn, context=context), None
 
 
 def update_entry(
@@ -1727,9 +1815,15 @@ def update_entry(
     organization_id: int,
     entry_id: int,
     data: Mapping[str, Any],
+    *,
+    context: ScheduleWriteContext | None = None,
+    read_back: bool = True,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    ensure_planned_weekly_schedule_table(cursor)
-    existing = get_entry(cursor, organization_id, entry_id, conn=conn)
+    if context is not None:
+        context.ensure_schema()
+    else:
+        ensure_planned_weekly_schedule_table(cursor)
+    existing = get_entry(cursor, organization_id, entry_id, conn=conn, context=context)
     if not existing:
         return None, "schedule entry not found"
     existing_assignments = existing.get("assignments") or []
@@ -1747,15 +1841,21 @@ def update_entry(
         merged["assignments"] = existing_assignments
     if "employer_affiliation" not in merged and existing.get("employer_affiliation"):
         merged["employer_affiliation"] = existing.get("employer_affiliation")
-    end_time_enabled = _schedule_end_time_enabled(cursor, organization_id)
-    from backend.payroll_employer_affiliation import _organization_slug
+    if context is not None:
+        end_time_enabled = context.end_time_enabled()
+        org_slug = context.slug()
+        catalog = context.catalog()
+    else:
+        end_time_enabled = _schedule_end_time_enabled(cursor, organization_id)
+        from backend.payroll_employer_affiliation import _organization_slug
 
-    org_slug = _organization_slug(conn, organization_id)
+        org_slug = _organization_slug(conn, organization_id)
+        catalog = _load_role_catalog_index(cursor, organization_id)
     payload, err = _validate_entry_payload(
         merged,
         schedule_end_time_enabled=end_time_enabled,
         organization_slug=org_slug,
-        role_catalog=_load_role_catalog_index(cursor, organization_id),
+        role_catalog=catalog,
         existing_assignments=existing_assignments,
     )
     if err:
@@ -1803,7 +1903,9 @@ def update_entry(
                 """,
                 (new_storage, int(organization_id), int(entry_id)),
             )
-    return get_entry(cursor, organization_id, entry_id, conn=conn), None
+    if not read_back:
+        return {"id": int(entry_id)}, None
+    return get_entry(cursor, organization_id, entry_id, conn=conn, context=context), None
 
 
 def delete_entry(

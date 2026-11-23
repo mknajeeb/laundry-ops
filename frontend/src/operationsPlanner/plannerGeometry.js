@@ -148,6 +148,37 @@ function persistentId(entry) {
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
+function clockFilled(value) {
+  return Boolean(String(value || "").trim());
+}
+
+/** A manager typed a time, role, break, or role segment. Employee and day alone are the Add defaults. */
+export function shiftHasUserInput(entry) {
+  if (!entry) return false;
+  if (clockFilled(entry.start_time) || clockFilled(entry.end_time)) return true;
+  if (String(entry.role || "").trim()) return true;
+  if (Number(entry.break_minutes) > 0) return true;
+  if (asList(entry.break_slots).length > 0) return true;
+  if (storedRoleSegments(entry).length > 0) return true;
+  return false;
+}
+
+/** A new shift with both clock times can be saved. A stored row stays in the queue even when its times are cleared. */
+export function saveableShift(entry) {
+  if (persistentId(entry)) return true;
+  return clockFilled(entry?.start_time) && clockFilled(entry?.end_time);
+}
+
+/** Add that was closed before any time, role, or break was entered. */
+export function untouchedAdd(entry) {
+  return !persistentId(entry) && !shiftHasUserInput(entry);
+}
+
+/** Add that has some entered data but still cannot be saved. */
+export function incompleteNewShift(entry) {
+  return !persistentId(entry) && shiftHasUserInput(entry) && !saveableShift(entry);
+}
+
 function stamp(entry) {
   return JSON.stringify({
     user_id: Number(entry?.user_id),
@@ -169,6 +200,7 @@ export function draftOperations(before, after) {
   for (const [key, entry] of next) {
     const id = persistentId(entry);
     const saved = prior.get(key);
+    if (!id && !saveableShift(entry)) continue;
     if (!saved || !id) {
       operations.push({ op: "create", user_id: Number(entry.user_id), day_of_week: Number(entry.day_of_week), shift: entry });
     } else if (stamp(saved) !== stamp(entry)) {

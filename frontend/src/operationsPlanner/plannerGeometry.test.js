@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import week from "./fixtures/veewash-2027-01-04.json";
-import { applyRoleEdits, barBox, breakAssignment, canonicalSchedule, copyBreaksOnto, copyTaskAssignments, dayScheduleSummary, displaySegments, draftOperations, moveBreakTo, moveTaskTo, operationsWereSaved, persistedRoleSignature, placeBreak, proposeBreak, relocateShift, removeBreak, resizeBreak, resizeEdge, resizeSegment, roleColor, scheduleCardRows, scheduledRoleHours, slideBreak, splitHalves, staffingFigures, storedRoleSegments, timelineAxis, visibleBreaks, visualPieces } from "./plannerGeometry";
+import { applyRoleEdits, barBox, breakAssignment, canonicalSchedule, copyBreaksOnto, copyTaskAssignments, dayScheduleSummary, displaySegments, draftOperations, incompleteNewShift, moveBreakTo, moveTaskTo, operationsWereSaved, persistedRoleSignature, placeBreak, proposeBreak, relocateShift, removeBreak, resizeBreak, resizeEdge, resizeSegment, roleColor, scheduleCardRows, scheduledRoleHours, slideBreak, splitHalves, staffingFigures, storedRoleSegments, timelineAxis, untouchedAdd, visibleBreaks, visualPieces } from "./plannerGeometry";
 
 describe("planner geometry", () => {
   it("starts the axis at the earliest shift instead of clipping 02:00 to 06:00", () => {
@@ -149,6 +149,23 @@ describe("planner geometry", () => {
     expect(operations[0].id).toBe(5136);
     const removed = draftOperations(saved, []);
     expect(removed).toEqual([{ op: "delete", id: 5136, user_id: jennifer.user_id, day_of_week: jennifer.day_of_week }]);
+  });
+
+  it("keeps a canceled blank add and a partial add out of the save queue", () => {
+    const monday = { id: 11, user_id: 7, day_of_week: 1, start_time: "06:00", end_time: "14:00", role: "fold", break_minutes: 0, break_slots: [], role_assignments: [] };
+    const tuesday = { id: 12, user_id: 8, day_of_week: 2, start_time: "08:00", end_time: "16:00", role: "wash", break_minutes: 0, break_slots: [], role_assignments: [] };
+    const blank = { id: "draft-blank", user_id: 9, day_of_week: 1, start_time: "", end_time: "", role: "", break_minutes: 0, break_slots: [], role_assignments: [] };
+    const partial = { id: "draft-partial", user_id: 9, day_of_week: 3, start_time: "", end_time: "15:00", role: "fold", break_minutes: 0, break_slots: [], role_assignments: [] };
+    const added = { id: "draft-ready", user_id: 9, day_of_week: 4, start_time: "09:00", end_time: "17:00", role: "fold", break_minutes: 0, break_slots: [], role_assignments: [] };
+    const changed = { ...monday, end_time: "15:00" };
+    expect(untouchedAdd(blank)).toBe(true);
+    expect(incompleteNewShift(partial)).toBe(true);
+    expect(untouchedAdd(partial)).toBe(false);
+    expect(incompleteNewShift(added)).toBe(false);
+    const operations = draftOperations([monday, tuesday], [changed, tuesday, blank, partial, added]);
+    expect(operations.map((item) => item.op)).toEqual(["update", "create"]);
+    expect(operations[0].id).toBe(11);
+    expect(operations[1].shift.id).toBe("draft-ready");
   });
 
   it("gives each stored role its own card row and leaves an unsplit gap unlabeled", () => {

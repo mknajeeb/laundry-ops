@@ -1,5 +1,5 @@
 import { DAY_NAMES } from "./plannerModel";
-import { draftOperations, storedRoleSegments } from "./plannerGeometry";
+import { draftOperations, incompleteNewShift, saveableShift, storedRoleSegments } from "./plannerGeometry";
 import { scheduleRoleLabel } from "../components/weeklySchedule/weeklyScheduleRoles";
 
 function roleText(role) {
@@ -82,7 +82,7 @@ export function patternCells(before, after) {
   const keys = [...new Set(decision.operations.map((op) => cellKey(op.user_id, op.day_of_week)))];
   return keys.map((key) => {
     const [userId, day] = key.split(":").map(Number);
-    const shifts = (after || []).filter((entry) => cellKey(entry.user_id, entry.day_of_week) === key);
+    const shifts = (after || []).filter((entry) => cellKey(entry.user_id, entry.day_of_week) === key && saveableShift(entry));
     return { user_id: userId, day_of_week: day, shift: shifts[0] || null, shifts };
   });
 }
@@ -144,6 +144,15 @@ export function interpretSaveResponse(status, body = {}) {
     };
   }
   return { saved: true, reload: true, keepDraft: false, confirm: false, error: "", conflict: "" };
+}
+
+export function incompleteShiftLines(entries, employees = []) {
+  const nameOf = (userId) => employees.find((employee) => Number(employee.user_id) === Number(userId))?.display_name || `Employee ${userId}`;
+  return (entries || []).filter(incompleteNewShift).map((entry) => ({
+    employee: nameOf(entry.user_id),
+    day: DAY_NAMES[entry.day_of_week] || "",
+    detail: "Needs a start and end",
+  }));
 }
 
 export function reviewLines(before, after, employees = []) {

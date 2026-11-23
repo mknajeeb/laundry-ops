@@ -967,3 +967,43 @@ def test_repeat_task_save_moves_the_monday_row_and_keeps_the_planned_end(monkeyp
     assert updates[0][5] == "20:08"
     assert updates[0][6] == "21:00"
     assert updates[0][8] == 286
+
+
+def test_identical_stored_shift_is_recognized_without_a_rewrite():
+    from backend.operations_planner_v2_store import shift_already_stored
+
+    stored = {
+        "start_time": "06:00:00",
+        "end_time": "16:00:00",
+        "role": "fold",
+        "break_minutes": 30,
+        "break_slots": '[{"start_time":"10:30","end_time":"11:00"}]',
+        "role_assignments": None,
+    }
+    same = {
+        "start_time": "06:00",
+        "end_time": "16:00",
+        "role": "fold",
+        "break_minutes": "30",
+        "break_slots": [{"start_time": "10:30", "end_time": "11:00", "timed": True}],
+        "role_assignments": [],
+    }
+    assert shift_already_stored(stored, same) is True
+    changed = {**same, "end_time": "17:00"}
+    assert shift_already_stored(stored, changed) is False
+
+
+def test_write_context_loads_the_worker_grid_once(monkeypatch):
+    from backend.planned_weekly_schedule import ScheduleWriteContext
+
+    calls = {"n": 0}
+
+    def fake_workers(_conn, _org):
+        calls["n"] += 1
+        return [{"user_id": 7, "can_work_rinse": 1, "can_work_drop_off": 0, "can_work_both": 0}]
+
+    monkeypatch.setattr("backend.planned_weekly_schedule._load_workers", fake_workers)
+    context = ScheduleWriteContext(object(), object(), 1)
+    assert context.workers()[7]["user_id"] == 7
+    context.workers()
+    assert calls["n"] == 1

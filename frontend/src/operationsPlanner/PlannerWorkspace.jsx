@@ -6,6 +6,7 @@ import {
   breakAccounting,
   clockMinutes,
   minutesToClock,
+  breakOverlapBands,
   overlappingBreakCount,
   pointerToMinutes,
   spanMinutes,
@@ -127,18 +128,26 @@ function widthOf(start, end, axis) {
   return Math.max(((end - start) / axis.span) * 100, 0.6);
 }
 
-function guideImage(axis) {
-  return [6, 10, 14, 18].map((hour) => {
-    const at = ((hour * 60 - axis.startMin) / axis.span) * 100;
-    if (at <= 0 || at >= 100) return "";
-    return `linear-gradient(to right, transparent calc(${at}% - .5px), #eef0f3 calc(${at}% - .5px), #eef0f3 calc(${at}% + .5px), transparent calc(${at}% + .5px))`;
-  }).filter(Boolean).join(",");
+function hourLabel(minute, compact) {
+  const hour = Math.floor(minute / 60) % 24;
+  const shown = hour % 12 || 12;
+  if (compact) return `${shown}${hour < 12 ? "a" : "p"}`;
+  return `${shown} ${hour < 12 ? "AM" : "PM"}`;
 }
 
-function ticks(axis) {
+function ticks(axis, step) {
   const marks = [];
-  for (let minute = axis.startMin; minute <= Math.min(axis.endMin, 18 * 60); minute += 240) marks.push(minute);
+  const first = Math.ceil(axis.startMin / 60) * 60;
+  for (let minute = first; minute <= axis.endMin; minute += step) marks.push(minute);
   return marks;
+}
+
+function guideImage(axis, marks) {
+  return marks.map((minute) => {
+    const at = ((minute - axis.startMin) / axis.span) * 100;
+    if (at <= 0 || at >= 100) return "";
+    return `linear-gradient(to right, transparent calc(${at}% - .5px), #e7eaee calc(${at}% - .5px), #e7eaee calc(${at}% + .5px), transparent calc(${at}% + .5px))`;
+  }).filter(Boolean).join(",");
 }
 
 function untimed(entry) {
@@ -309,14 +318,10 @@ function ShiftFace({ entry, axis, lane, bar, stacked, selected, peer, showGrips,
               width: `${((piece.end - piece.start) / span) * 100}%`,
               background: roleColor(piece.role),
             }}
-          >
-            {shown}
-          </span>
+          />
         );
       }) : (
-        <span className={`txt${String(entry.role || "").includes(",") ? " is-combined" : ""}`} title={`${nice(labelRole)} ${hm(entry.start_time)}–${hm(entry.end_time)}`} style={{ background: roleColor(entry.role) }}>
-          {nice(labelRole)} {hm(entry.start_time)}–{hm(entry.end_time)}
-        </span>
+        <span className={`txt${String(entry.role || "").includes(",") ? " is-combined" : ""}`} title={`${nice(labelRole)} ${hm(entry.start_time)}–${hm(entry.end_time)}`} style={{ background: roleColor(entry.role) }} />
       )}
       {timed.map((slot) => {
         const start = clockMinutes(slot.start_time);
@@ -684,6 +689,29 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, saving, canUndo, can
   );
 }
 
+function BreakLoad({ entries, employees, day, mode }) {
+  const days = mode === "day" ? [Number(day)] : DAY_ORDER;
+  const bands = days.flatMap((value) => breakOverlapBands(
+    (entries || []).filter((entry) => Number(entry.day_of_week) === Number(value)),
+  ).map((band) => ({ ...band, day: value })));
+  const peak = bands.reduce((max, band) => Math.max(max, band.count), 0);
+  const overlaps = bands.filter((band) => band.count > 1);
+  if (!bands.length) return <p className="break-load">No timed breaks {mode === "day" ? "on this day" : "this week"}.</p>;
+  return (
+    <div className="break-load" aria-label="Employees on break at the same time">
+      <strong>Peak {peak} on break</strong>
+      <ul>
+        {(overlaps.length ? overlaps : bands).slice(0, 8).map((band) => (
+          <li key={`${band.day}-${band.start}-${band.end}`} className={band.count > 1 ? "is-hot" : ""}>
+            {mode === "day" ? "" : `${SHORT[band.day]} `}{minutesToClock(band.start)}–{minutesToClock(band.end)} · {band.count}
+            <span>{band.userIds.map((id) => personName(employees, id)).join(", ")}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export default function PlannerWorkspace({
   lens,
   mode,
@@ -760,7 +788,8 @@ export default function PlannerWorkspace({
   useEffect(() => { setTip(null); }, [lens]);
   const axis = useMemo(() => timelineAxis(entries), [entries]);
   const days = mode === "day" ? [day] : DAY_ORDER;
-  const guides = guideImage(axis);
+  const hourMarks = ticks(axis, mode === "day" ? 60 : 240);
+  const guides = guideImage(axis, ticks(axis, mode === "day" ? 60 : 120));
   const selected = entries.find((entry) => shiftKey(entry) === selectedKey) || null;
   const peers = entries.filter((entry) => overlaps(entry, selected));
   const scheduledIds = new Set(entries.map((entry) => Number(entry.user_id)));
@@ -861,7 +890,11 @@ export default function PlannerWorkspace({
   const head = days.map((value) => (
     <div key={value} className={`dayhead${value === 6 || value === 0 ? " is-end" : ""}${mode === "day" ? " is-on" : ""}`}>
       <strong>{SHORT[value]} {dayStamp(weekStart, value)}</strong>
-      <div className="axis">{ticks(axis).map((minute) => <b key={minute} style={{ left: `${leftOf(minute, axis)}%` }}>{String(minute / 60).padStart(2, "0")}</b>)}</div>
+      <div className="axis">{hourMarks.map((minute, index) => {
+        const at = leftOf(minute, axis);
+        const shift = index === hourMarks.length - 1 || at > 88 ? "translateX(-100%)" : index === 0 || at < 8 ? "none" : "translateX(-50%)";
+        return <b key={minute} style={{ left: `${at}%`, transform: shift }}>{hourLabel(minute, mode !== "day")}</b>;
+      })}</div>
     </div>
   ));
 
@@ -998,9 +1031,7 @@ export default function PlannerWorkspace({
                           if (next === item.entry || !kept) setBoardNote("The break stays inside the shift.");
                           else commit(next, event.shiftKey ? "Changed a break end. Not saved." : "Moved a break. Not saved.");
                         }}
-                      >
-                      Break {hm(slot.start_time)}–{hm(slot.end_time)}
-                      </span>
+                      />
                       <button
                         type="button"
                         className="break-grip"
@@ -1086,7 +1117,6 @@ export default function PlannerWorkspace({
                         });
                       }}
                     >
-                      {nice(task.role)}
                     </span>
                   );
                 })}
@@ -1126,19 +1156,22 @@ export default function PlannerWorkspace({
           <button type="button" className="btn primary" onClick={() => onReview()}>Save changes</button>
         </div>
       ) : null}
+      {lens === "breaks" || lens === "timeline" ? (
+        <BreakLoad entries={entries} employees={employees} day={day} mode={mode} />
+      ) : null}
       {lens === "breaks" ? (
         <div className="board-tools">
           <button type="button" className="btn" onClick={() => setBreakOpen(true)}>Assign Breaks & Tasks</button>
-          <span className="when">{breaks.unscheduledCount ? `${breaks.unscheduledCount} untimed` : "Timed breaks are on the board."} Overlap {overlap}.</span>
+          <span className="when">{breaks.unscheduledCount ? `${breaks.unscheduledCount} untimed, not placed on the clock.` : "Timed breaks are on the board."} Peak overlap {overlap}.</span>
         </div>
       ) : null}
       {lens === "breaks" ? (
         <div className="week-board" role="table" aria-label="Breaks for the week">
-          <div className="week-head"><span>Employee</span>{DAY_ORDER.map((value) => <span key={value}>{SHORT[value]}</span>)}</div>
+          <div className="week-head"><span>Employee</span>{days.map((value) => <span key={value}>{SHORT[value]}</span>)}</div>
           {employees.map((employee) => (
             <div className="week-row" key={employee.user_id}>
               <strong>{employee.display_name}</strong>
-              {DAY_ORDER.map((value) => {
+              {days.map((value) => {
                 const shifts = entries.filter((entry) => Number(entry.user_id) === Number(employee.user_id) && Number(entry.day_of_week) === Number(value));
                 return (
                   <div key={value}>
@@ -1164,7 +1197,7 @@ export default function PlannerWorkspace({
         <div className="board" ref={boardRef} onScroll={rememberScroll}>
           {lens === "timeline" ? (
             <div className="sheet" style={{ "--cols": days.length, "--name": "168px" }}>
-              <p className="when">Breaks are marked on the shift. Overlap {overlap}. A task bar is an assignment, not time away from the floor.</p>
+              <p className="when">Colored bars are shifts. Amber bars are timed breaks. Blue bars are tasks. Peak overlap {overlap}.</p>
               <div className="head"><div className="who">Employee</div>{head}</div>
               {employeeRows}
             </div>
@@ -1177,7 +1210,7 @@ export default function PlannerWorkspace({
                     Employee
                     <button type="button" className="day-toggle" onClick={() => setOpenDays(openDays.size ? new Set() : new Set(DAY_ORDER))}>{openDays.size ? "Collapse days" : "Expand days"}</button>
                   </span>
-                  {DAY_ORDER.map((value) => {
+                  {days.map((value) => {
                     const summary = dayScheduleSummary(entries, value);
                     const open = openDays.has(value);
                     const counted = [...new Set([...DAY_ROLES, ...Object.keys(summary.roleCounts || {})])].filter((role) => role !== "unsplit" && (summary.roleCounts?.[role] || summary.roles[role]));
@@ -1223,7 +1256,7 @@ export default function PlannerWorkspace({
                   return (
                   <div className="week-row" key={employee.user_id}>
                     <strong>{employee.display_name}<small>{weekShifts.length ? `${weekNet.toFixed(1)}h net · ${weekGross.toFixed(1)}h total` : "Not scheduled"}</small></strong>
-                    {DAY_ORDER.map((value) => {
+                    {days.map((value) => {
                       const shifts = weekShifts.filter((entry) => Number(entry.day_of_week) === Number(value));
                       const dayTasks = (tasks || []).filter((task) => !task.remove && Number(task.user_id) === Number(employee.user_id) && Number(task.day_of_week) === Number(value));
                       return (

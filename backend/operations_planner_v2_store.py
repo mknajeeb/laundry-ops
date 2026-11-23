@@ -353,6 +353,79 @@ def _day_index(value: Any) -> int:
     return day if 0 <= day <= 6 else -1
 
 
+def _clock_pair(value: Any) -> str:
+    return _clock_text(value)
+
+
+def _slot_pairs(raw: Any) -> list[tuple]:
+    if raw in (None, ""):
+        return []
+    data = raw
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(data, list):
+        return []
+    pairs = []
+    for item in data:
+        if not isinstance(item, Mapping):
+            continue
+        if item.get("start_time") and item.get("end_time"):
+            pairs.append(("t", _clock_pair(item.get("start_time")), _clock_pair(item.get("end_time"))))
+        elif item.get("minutes") not in (None, ""):
+            try:
+                pairs.append(("m", int(item.get("minutes") or 0)))
+            except (TypeError, ValueError):
+                return []
+    return pairs
+
+
+def _segment_pairs(raw: Any) -> list[tuple]:
+    if raw in (None, ""):
+        return []
+    data = raw
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(data, list):
+        return []
+    pairs = []
+    for item in data:
+        if not isinstance(item, Mapping) or item.get("full_shift") is True:
+            continue
+        start = item.get("start_time")
+        end = item.get("end_time")
+        if not start or not end:
+            continue
+        pairs.append((str(item.get("role") or ""), _clock_pair(start), _clock_pair(end), item.get("remarks") or None))
+    return pairs
+
+
+def shift_already_stored(stored: Mapping[str, Any], body: Mapping[str, Any]) -> bool:
+    """True when a rewrite would store the same clocks, role, breaks, and segments."""
+    if not _same_clock(stored.get("start_time"), body.get("start_time")):
+        return False
+    if not _same_clock(stored.get("end_time"), body.get("end_time")):
+        return False
+    if str(stored.get("role") or "") != str(body.get("role") or ""):
+        return False
+    try:
+        if int(stored.get("break_minutes") or 0) != int(body.get("break_minutes") or 0):
+            return False
+    except (TypeError, ValueError):
+        return False
+    if _slot_pairs(stored.get("break_slots")) != _slot_pairs(body.get("break_slots")):
+        return False
+    incoming = body.get("role_assignments")
+    if incoming is None:
+        incoming = body.get("assignments")
+    return _segment_pairs(stored.get("role_assignments")) == _segment_pairs(incoming)
+
+
 def materialize_shift_set(
     conn,
     cursor,
@@ -366,11 +439,12 @@ def materialize_shift_set(
     only that id. Any other shift for the same employee and day stays as stored.
     """
     from backend.operations_planner_v2 import plan_shift_set
-    from backend.planned_weekly_schedule import create_entry, delete_entry, update_entry
+    from backend.planned_weekly_schedule import ScheduleWriteContext, create_entry, delete_entry, update_entry
 
     planned = plan_shift_set(operations)
     if not planned.get("ok"):
         raise ValueError(planned.get("error") or "could not save the shifts")
+    context = ScheduleWriteContext(conn, cursor, organization_id)
     created: list[int] = []
     updated: list[int] = []
     deleted: list[int] = []
@@ -398,7 +472,7 @@ def materialize_shift_set(
             entry_id = int(decision["entry_id"])
             if _shift_row(cursor, organization_id, entry_id) is None:
                 raise ValueError(f"shift {entry_id} was not saved")
-            saved, err = update_entry(conn, cursor, organization_id, entry_id, shift)
+            saved, err = update_entry(conn, cursor, organization_id, entry_id, shift, context=context, read_back=False)
             if err or not saved:
                 raise ValueError(err or f"shift {entry_id} was not saved")
             row = _shift_row(cursor, organization_id, entry_id)
@@ -411,7 +485,7 @@ def materialize_shift_set(
             updated.append(entry_id)
             continue
         storage = storage_week_for_dow(monday, day)
-        saved, err = create_entry(conn, cursor, organization_id, week_start=storage, data=shift)
+        saved, err = create_entry(conn, cursor, organization_id, week_start=storage, data=shift, context=context, read_back=False)
         if err or not saved or not saved.get("id"):
             raise ValueError(err or "the new shift was not saved")
         entry_id = int(saved["id"])
@@ -435,35 +509,103 @@ def materialize_shift_set(
     return {"created_ids": created, "updated_ids": updated, "deleted_ids": deleted}
 
 
-def _replace_cell_shifts(conn, cursor, organization_id: int, storage: date, user_id: int, day: int, shifts: Sequence[Mapping[str, Any]]) -> None:
+def _prefetch_cell_rows(cursor, organization_id: int, plans: Sequence[Mapping[str, Any]]) -> dict[tuple, list[dict[str, Any]]]:
+    """One read for every employee-day the save is about to rewrite."""
+    keys: list[tuple] = []
+    weeks: list[date] = []
+    users: list[int] = []
+    for plan in plans:
+        monday = parse_schedule_date(plan.get("week_monday"))
+        if monday is None:
+            continue
+        try:
+            user_id = int(plan["user_id"])
+            day = int(plan["day_of_week"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        storage = storage_week_for_dow(monday, day)
+        keys.append((storage, user_id, day))
+        weeks.append(storage)
+        users.append(user_id)
+    if not weeks:
+        return {}
+    week_marks = ",".join(["%s"] * len(set(weeks)))
+    user_marks = ",".join(["%s"] * len(set(users)))
+    cursor.execute(
+        f"""
+        SELECT id, week_start, user_id, day_of_week, role, start_time, end_time,
+               break_minutes, break_slots, role_assignments
+        FROM planned_weekly_schedule_entries
+        WHERE organization_id=%s AND week_start IN ({week_marks}) AND user_id IN ({user_marks})
+        ORDER BY id
+        """,
+        (int(organization_id), *sorted(set(weeks)), *sorted(set(users))),
+    )
+    grouped: dict[tuple, list[dict[str, Any]]] = {key: [] for key in keys}
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        storage = row.get("week_start")
+        if isinstance(storage, datetime):
+            storage = storage.date()
+        elif not isinstance(storage, date):
+            storage = parse_schedule_date(storage)
+        key = (storage, int(row.get("user_id") or 0), int(row.get("day_of_week") or 0))
+        if key in grouped:
+            grouped[key].append(row)
+    return grouped
+
+
+def _replace_cell_shifts(
+    conn,
+    cursor,
+    organization_id: int,
+    storage: date,
+    user_id: int,
+    day: int,
+    shifts: Sequence[Mapping[str, Any]],
+    *,
+    existing: Sequence[Mapping[str, Any]] | None = None,
+    context=None,
+) -> None:
     """Write every shift on one employee-day. Extra stored rows are removed. Missing rows are created."""
     from backend.planned_weekly_schedule import create_entry, delete_entry, update_entry
 
-    existing = _entry_rows(cursor, organization_id, storage, user_id, day)
+    rows = list(existing) if existing is not None else _entry_rows(cursor, organization_id, storage, user_id, day)
     for index, shift in enumerate(shifts):
         body = dict(shift)
         body["user_id"] = user_id
         body["day_of_week"] = day
         if "assignments" not in body and "role_assignments" in body:
             body["assignments"] = planner_shift_assignments(body)
-        if index < len(existing):
-            updated, err = update_entry(conn, cursor, organization_id, int(existing[index]["id"]), body)
+        if index < len(rows):
+            stored = rows[index]
+            if shift_already_stored(stored, body):
+                continue
+            updated, err = update_entry(
+                conn, cursor, organization_id, int(stored["id"]), body, context=context, read_back=False
+            )
             if err or not updated:
                 raise ValueError(err or "could not update the shift")
             continue
-        created, err = create_entry(conn, cursor, organization_id, week_start=storage, data=body)
+        created, err = create_entry(
+            conn, cursor, organization_id, week_start=storage, data=body, context=context, read_back=False
+        )
         if err or not created:
             raise ValueError(err or "could not create the shift")
-    for row in existing[len(list(shifts)) :]:
+    for row in rows[len(list(shifts)) :]:
         if not delete_entry(cursor, organization_id, int(row["id"])):
             raise ValueError("could not remove the extra shift")
 
 
 def materialize_plans(conn, cursor, organization_id: int, plans: list[Mapping[str, Any]]) -> None:
     """Write planned entries for the cells a confirmed change named."""
-    from backend.planned_weekly_schedule import create_entry, delete_entry, update_entry
+    from backend.planned_weekly_schedule import ScheduleWriteContext, create_entry, delete_entry, update_entry
 
     require_schema(cursor)
+    context = ScheduleWriteContext(conn, cursor, organization_id)
+    context.ensure_schema()
+    prefetched = _prefetch_cell_rows(cursor, organization_id, plans)
     for plan in plans:
         monday = parse_schedule_date(plan.get("week_monday"))
         if monday is None:
@@ -471,9 +613,14 @@ def materialize_plans(conn, cursor, organization_id: int, plans: list[Mapping[st
         user_id = int(plan["user_id"])
         day = int(plan["day_of_week"])
         storage = storage_week_for_dow(monday, day)
-        existing = _entry_rows(cursor, organization_id, storage, user_id, day)
+        existing = prefetched.get((storage, user_id, day))
+        if existing is None:
+            existing = _entry_rows(cursor, organization_id, storage, user_id, day)
         if isinstance(plan.get("shifts"), list):
-            _replace_cell_shifts(conn, cursor, organization_id, storage, user_id, day, plan.get("shifts") or [])
+            _replace_cell_shifts(
+                conn, cursor, organization_id, storage, user_id, day, plan.get("shifts") or [],
+                existing=existing, context=context,
+            )
             continue
         decision = plan_entry_write(existing, plan.get("shift"))
         if not decision.get("ok"):
@@ -490,12 +637,16 @@ def materialize_plans(conn, cursor, organization_id: int, plans: list[Mapping[st
             body["user_id"] = user_id
             body["day_of_week"] = day
             if action == "create":
-                created, err = create_entry(conn, cursor, organization_id, week_start=storage, data=body)
+                created, err = create_entry(
+                    conn, cursor, organization_id, week_start=storage, data=body, context=context, read_back=False
+                )
                 if err or not created:
                     raise ValueError(err or "could not create the shift")
                 entry_id = created.get("id")
             else:
-                updated, err = update_entry(conn, cursor, organization_id, int(entry_id), body)
+                updated, err = update_entry(
+                    conn, cursor, organization_id, int(entry_id), body, context=context, read_back=False
+                )
                 if err or not updated:
                     raise ValueError(err or "could not update the shift")
         cursor.execute(

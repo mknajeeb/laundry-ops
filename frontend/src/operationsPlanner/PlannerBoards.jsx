@@ -233,6 +233,43 @@ function toggleId(list, value) {
   return list.includes(text) ? list.filter((item) => item !== text) : [...list, text];
 }
 
+function TaskGroups({ title, tasks, employees, entries, allTasks, onChange, timed = false }) {
+  const groups = new Map();
+  tasks.forEach((task) => {
+    const key = task.assignment_group_id ? `shared:${task.assignment_group_id}` : `task:${task.role}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(task);
+  });
+  return (
+    <div>
+      <h3>{title}</h3>
+      {[...groups.entries()].map(([key, items]) => (
+        <section key={key} className="task-group">
+          <h4>
+            {roleTitle(items[0].role)} · {items.length}
+            {items[0].assignment_group_id ? " · shared activity" : ""}
+          </h4>
+          <ul className="task-list">
+            {items.map((task) => {
+              const window = taskWindow(task);
+              const notes = timed ? taskConflicts(task, entries) : [];
+              return (
+                <li key={task.id || `${task.user_id}-${task.role}-${window.label}`}>
+                  <b>{personName(employees, task.user_id)}</b>
+                  <span>{SHORT[Number(task.day_of_week)] || ""} · {window.label.replaceAll("_", " ")}</span>
+                  <em>{task.draft ? "Draft" : (task.activity_status || task.status || "assigned")}{task.verification_status ? ` · verification ${task.verification_status}` : ""}</em>
+                  {notes.length ? <em className="warn">{notes.join(". ")}</em> : null}
+                  <TaskEdit task={task} tasks={allTasks} employees={employees} onChange={onChange} />
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ))}
+    </div>
+  );
+}
+
 export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onChange, onReview }) {
   const [people, setPeople] = useState(employees[0] ? [String(employees[0].user_id)] : []);
   const [days, setDays] = useState([String(day)]);
@@ -374,37 +411,23 @@ export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onC
         </div>
       ) : null}
       <div className="task-columns">
-        <div>
-          <h3>On the timeline</h3>
-          <ul className="task-list">
-            {visible.filter((task) => (mode !== "day" || Number(task.day_of_week) === Number(day)) && taskWindow(task).scheduled).map((task) => {
-              const window = taskWindow(task);
-              const notes = taskConflicts(task, entries);
-              return (
-                <li key={task.id || `${task.user_id}-${task.role}-${window.label}`}>
-                  <b>{personName(employees, task.user_id)}</b>
-                  <span>{roleTitle(task.role)} · {window.label}</span>
-                  <em>{task.draft ? "Draft" : (task.activity_status || task.status || "assigned")}{task.verification_status ? ` · verification ${task.verification_status}` : ""}</em>
-                  {notes.length ? <em className="warn">{notes.join(". ")}</em> : null}
-                  <TaskEdit task={task} tasks={tasks} employees={employees} onChange={onChange} />
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-        <div>
-          <h3>No clock time</h3>
-          <ul className="task-list">
-            {visible.filter((task) => (mode !== "day" || Number(task.day_of_week) === Number(day)) && !taskWindow(task).scheduled).map((task) => (
-              <li key={task.id || `${task.user_id}-${task.role}`}>
-                <b>{personName(employees, task.user_id)}</b>
-                <span>{roleTitle(task.role)} · {taskWindow(task).label.replaceAll("_", " ")}</span>
-                <em>{task.draft ? "Draft" : (task.activity_status || task.status || "assigned")}{task.assignment_group_id ? " · shared" : ""}</em>
-                <TaskEdit task={task} tasks={tasks} employees={employees} onChange={onChange} />
-              </li>
-            ))}
-          </ul>
-        </div>
+        <TaskGroups
+          title="On the timeline"
+          tasks={visible.filter((task) => (mode !== "day" || Number(task.day_of_week) === Number(day)) && taskWindow(task).scheduled)}
+          employees={employees}
+          entries={entries}
+          allTasks={tasks}
+          onChange={onChange}
+          timed
+        />
+        <TaskGroups
+          title="No clock time"
+          tasks={visible.filter((task) => (mode !== "day" || Number(task.day_of_week) === Number(day)) && !taskWindow(task).scheduled)}
+          employees={employees}
+          entries={entries}
+          allTasks={tasks}
+          onChange={onChange}
+        />
       </div>
     </section>
   );

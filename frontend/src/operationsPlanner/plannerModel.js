@@ -273,29 +273,43 @@ export function roleCoverage(entries, role, hour, required) {
   };
 }
 
-export function overlappingBreakCount(entries) {
+/** Timed breaks only. Untimed breaks are not placed on a clock. Adjacent slices with the same people are one band. */
+export function breakOverlapBands(entries) {
   const pieces = [];
   for (const entry of entries || []) {
     for (const slot of entry.break_slots || []) {
-      if (slot?.timed === false) continue;
+      if (slot?.timed === false || !slot?.start_time || !slot?.end_time) continue;
       const start = clockMinutes(slot.start_time);
       let end = clockMinutes(slot.end_time);
       if (start == null || end == null) continue;
       if (end <= start) end += 24 * 60;
-      pieces.push({ user: entry.user_id, start, end });
+      pieces.push({ user: Number(entry.user_id), start, end });
     }
   }
   const points = [...new Set(pieces.flatMap((piece) => [piece.start, piece.end]))].sort((a, b) => a - b);
-  let max = 0;
+  const raw = [];
   for (let index = 0; index < points.length - 1; index += 1) {
-    const left = points[index];
-    const right = points[index + 1];
-    const users = new Set(
-      pieces.filter((piece) => piece.start <= left && piece.end >= right).map((piece) => piece.user),
-    );
-    max = Math.max(max, users.size);
+    const start = points[index];
+    const end = points[index + 1];
+    if (end <= start) continue;
+    const userIds = [...new Set(
+      pieces.filter((piece) => piece.start <= start && piece.end >= end).map((piece) => piece.user),
+    )].sort((a, b) => a - b);
+    if (!userIds.length) continue;
+    raw.push({ start, end, count: userIds.length, userIds });
   }
-  return max;
+  const merged = [];
+  for (const band of raw) {
+    const key = band.userIds.join(",");
+    const last = merged[merged.length - 1];
+    if (last && last.userIds.join(",") === key && last.end === band.start) last.end = band.end;
+    else merged.push({ ...band });
+  }
+  return merged;
+}
+
+export function overlappingBreakCount(entries) {
+  return breakOverlapBands(entries).reduce((max, band) => Math.max(max, band.count), 0);
 }
 
 function taskBucket(status) {
