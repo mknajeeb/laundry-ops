@@ -35,6 +35,27 @@ function deferredPush(fn) {
 }
 
 /**
+ * PIN identity decides the push association.
+ * A reviewer replaces the previous external id. An employee who cannot review
+ * issues unlinks the device. Lock and session expiry do not call this.
+ */
+export function pinPushAssociation(body) {
+  if (body?.features?.issues?.allowed !== true) return { action: "clear" };
+  const id = Number(body?.employee_id);
+  const org = Number(body?.organization_id);
+  if (!Number.isFinite(id) || id <= 0 || !Number.isFinite(org) || org <= 0) {
+    return { action: "clear" };
+  }
+  return { action: "link", user: { id, organization_id: org } };
+}
+
+export function applyPinPushAssociation(body) {
+  const decision = pinPushAssociation(body);
+  if (decision.action === "link") syncOneSignalUser(decision.user);
+  else clearOneSignalUser();
+}
+
+/**
  * After TA user is known (post login / refreshMe). Links this browser to the DB user for targeted push.
  */
 export function syncOneSignalUser(user) {

@@ -61,7 +61,7 @@ import { SUPERVISOR_PORTAL_PILOT } from "../supervisor/pilotAccess";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 import { applyAttendancePwaManifest } from "../utils/attendancePwaManifest";
 import { saveMtlPinSession } from "../utils/maintenanceTaskListHelpers";
-import { clearOneSignalUser, syncOneSignalUser } from "../onesignalUser";
+import { applyPinPushAssociation } from "../onesignalUser";
 import { safePinIssuesPath } from "../opsMobile/pinIssuesDeepLink";
 import {
   clearPinHubAppSession,
@@ -304,14 +304,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
       };
       savePinHubSession(sess);
       setHub(sess);
-      if (body?.is_system === true || !body?.features?.issues?.allowed) {
-        clearOneSignalUser();
-      } else {
-        syncOneSignalUser({
-          id: body.employee_id,
-          organization_id: body.organization_id,
-        });
-      }
+      applyPinPushAssociation(body);
       // Server-authoritative: open shift_breaks → Break Mode, not the normal launcher.
       setPhase(onBreak ? "break" : "menu");
       setPin("");
@@ -412,9 +405,8 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
 
   const lockSession = () => {
     // Clears PIN hub unlock only — does not call punch APIs or change shift data.
-    // Also drops this browser's push identity so a shared phone is not left
-    // subscribed to the person who just locked it.
-    clearOneSignalUser();
+    // The reviewer's push association stays so alerts still arrive after Lock.
+    // A different PIN replaces it, and an employee who cannot review issues removes it.
     clearPinHubSession();
     clearPinHubAppSession();
     setHub(null);

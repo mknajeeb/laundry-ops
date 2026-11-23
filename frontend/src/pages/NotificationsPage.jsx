@@ -39,7 +39,9 @@ import {
   putNotificationGroupMembers,
   putNotificationPreferences,
 } from "../api";
+import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
+import { clearOneSignalUser, syncOneSignalUser } from "../onesignalUser";
 
 const NOTIF_OUTLINE_ACCORDION_SX = {
   border: 1,
@@ -74,6 +76,7 @@ function canSendOwnPush(user) {
 
 function PrefsSection({ canTest = false }) {
   const { t } = useI18n();
+  const { user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -119,6 +122,8 @@ function PrefsSection({ canTest = false }) {
         sms_out: prefs.sms_out,
         whatsapp_out: prefs.whatsapp_out,
       });
+      if (!prefs.push_out) clearOneSignalUser();
+      else if (user?.id) syncOneSignalUser(user);
     } catch (e) {
       setErr(e?.response?.data?.error || e?.message || "Save failed");
     } finally {
