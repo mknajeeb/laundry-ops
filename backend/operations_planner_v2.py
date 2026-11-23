@@ -26,6 +26,17 @@ BREAK_OVERLAP_CAP = 3
 DAY_NAMES = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
 
 
+def _day_index(value: Any) -> int:
+    """Sunday is 0. A missing value is not Sunday."""
+    if value is None or value is False or value == "":
+        return -1
+    try:
+        day = int(value)
+    except (TypeError, ValueError):
+        return -1
+    return day if 0 <= day <= 6 else -1
+
+
 def empty_state() -> dict[str, Any]:
     return {
         "patterns": [],
@@ -372,7 +383,7 @@ def active_pattern(
     for pattern in state.get("patterns") or []:
         if int(pattern.get("user_id") or 0) != int(user_id):
             continue
-        if int(pattern.get("day_of_week") or -1) != int(day_of_week):
+        if _day_index(pattern.get("day_of_week")) != int(day_of_week):
             continue
         if not _pattern_covers(pattern, monday):
             continue
@@ -390,7 +401,7 @@ def find_exception(
     for row in state.get("exceptions") or []:
         if int(row.get("user_id") or 0) != int(user_id):
             continue
-        if int(row.get("day_of_week") or -1) != int(day_of_week):
+        if _day_index(row.get("day_of_week")) != int(day_of_week):
             continue
         if row.get("week_monday") == monday:
             return row
@@ -510,7 +521,7 @@ def _pattern_start(scope: str, anchor: date) -> date | None:
 
 
 def _same_cell(pattern: Mapping[str, Any], user_id: int, day_of_week: int) -> bool:
-    return int(pattern.get("user_id") or 0) == int(user_id) and int(pattern.get("day_of_week") or -1) == int(day_of_week)
+    return int(pattern.get("user_id") or 0) == int(user_id) and _day_index(pattern.get("day_of_week")) == int(day_of_week)
 
 
 def _pattern_is_open(pattern: Mapping[str, Any]) -> bool:
@@ -544,7 +555,11 @@ def _close_covering_patterns(
     day_of_week: int,
     start: date,
 ) -> list[dict[str, Any]]:
-    """End the pattern that covers ``start``. Leave later effective dates alone."""
+    """End the pattern that covers ``start``, including one that already starts that day.
+
+    A second save for the same cell replaces that generation instead of leaving
+    two open patterns. Later effective dates stay in force.
+    """
     closed: list[dict[str, Any]] = []
     for pattern in patterns:
         row = dict(pattern)
@@ -553,7 +568,7 @@ def _close_covering_patterns(
         if (
             _same_cell(row, user_id, day_of_week)
             and isinstance(begin, date)
-            and begin < start
+            and begin <= start
             and (end is None or (isinstance(end, date) and end > start))
         ):
             row["effective_until"] = start
@@ -593,7 +608,7 @@ def _put_exception(
         for row in exceptions
         if not (
             int(row.get("user_id") or 0) == int(user_id)
-            and int(row.get("day_of_week") or -1) == int(day_of_week)
+            and _day_index(row.get("day_of_week")) == int(day_of_week)
             and row.get("week_monday") == monday
         )
     ]
@@ -623,7 +638,7 @@ def _drop_exception(
         for row in exceptions
         if not (
             int(row.get("user_id") or 0) == int(user_id)
-            and int(row.get("day_of_week") or -1) == int(day_of_week)
+            and _day_index(row.get("day_of_week")) == int(day_of_week)
             and row.get("week_monday") == monday
         )
     ]
@@ -832,7 +847,7 @@ def plan_cell_scopes(state: Mapping[str, Any], command: Mapping[str, Any]) -> di
         draft = result["state"]
         written_weeks = []
         for plan in result.get("cell_plans") or []:
-            if int(plan.get("user_id") or 0) == user_id and int(plan.get("day_of_week") or -1) == day:
+            if int(plan.get("user_id") or 0) == user_id and _day_index(plan.get("day_of_week")) == day:
                 monday = parse_schedule_date(plan.get("week_monday"))
                 if monday is not None:
                     written_weeks.append(monday)
@@ -847,7 +862,7 @@ def plan_cell_scopes(state: Mapping[str, Any], command: Mapping[str, Any]) -> di
                 weeks=written_weeks,
             )
         for plan in result.get("cell_plans") or []:
-            if int(plan.get("user_id") or 0) != user_id or int(plan.get("day_of_week") or -1) != day:
+            if int(plan.get("user_id") or 0) != user_id or _day_index(plan.get("day_of_week")) != day:
                 collected.append(plan)
                 continue
             monday = parse_schedule_date(plan.get("week_monday"))
@@ -1521,7 +1536,7 @@ def patterns_overlap(state: Mapping[str, Any]) -> bool:
             return True
         if isinstance(end, date) and end <= start:
             continue
-        key = (int(pattern.get("user_id") or 0), int(pattern.get("day_of_week") or -1))
+        key = (int(pattern.get("user_id") or 0), _day_index(pattern.get("day_of_week")))
         grouped.setdefault(key, []).append(pattern)
     for rows in grouped.values():
         rows.sort(key=lambda row: row["effective_from"])

@@ -33,6 +33,103 @@ export function persistedRoleSignature(entry) {
   return role;
 }
 
+function clockKey(value) {
+  return String(value || "").slice(0, 5);
+}
+
+/** The schedule a save still shows after the server stores a full-span role on the shift itself. */
+export function canonicalSchedule(entry) {
+  const start = clockKey(entry?.start_time);
+  const end = clockKey(entry?.end_time);
+  const segments = storedRoleSegments(entry);
+  const partial = [];
+  const spanned = [];
+  segments.forEach((segment) => {
+    const role = String(segment?.role || "").trim();
+    if (!role) return;
+    const segStart = clockKey(segment.start_time);
+    const segEnd = clockKey(segment.end_time);
+    if (segStart === start && segEnd === end) spanned.push(role);
+    else partial.push(`${role}@${segStart}-${segEnd}`);
+  });
+  const full = String(entry?.role || "")
+    .split(",")
+    .map((role) => role.trim())
+    .filter((role) => role && !partial.some((item) => item.startsWith(`${role}@`)));
+  spanned.forEach((role) => {
+    if (!full.includes(role)) full.push(role);
+  });
+  const slots = asList(entry?.break_slots);
+  const timed = slots
+    .filter((slot) => slot?.start_time && slot?.end_time)
+    .map((slot) => `${clockKey(slot.start_time)}-${clockKey(slot.end_time)}`)
+    .sort();
+  const untimedSlots = slots.filter((slot) => !slot?.start_time && Number(slot?.minutes) > 0);
+  let untimed = 0;
+  if (untimedSlots.length) {
+    const same = untimedSlots.every((slot) => Number(slot.minutes) === Number(untimedSlots[0].minutes));
+    untimed = same && untimedSlots.length > 1
+      ? Number(untimedSlots[0].minutes)
+      : untimedSlots.reduce((sum, slot) => sum + Number(slot.minutes), 0);
+  } else if (!timed.length) {
+    untimed = Number(entry?.break_minutes) || 0;
+  } else {
+    const timedMinutes = timed.reduce((sum, slot) => {
+      const [from, to] = slot.split("-");
+      return sum + (spanMinutes(from, to) || 0);
+    }, 0);
+    untimed = Math.max(0, (Number(entry?.break_minutes) || 0) - timedMinutes);
+  }
+  return {
+    user: Number(entry?.user_id),
+    day: Number(entry?.day_of_week),
+    start,
+    end,
+    full: [...new Set(full)].sort(),
+    partial: partial.slice().sort(),
+    timed,
+    untimed,
+  };
+}
+
+function sameSavedShift(left, right) {
+  return JSON.stringify(canonicalSchedule(left)) === JSON.stringify(canonicalSchedule(right));
+}
+
+/**
+ * A save can give a new row a new id and store a full-span role without its segment.
+ * Those are the same schedule. Each stored row can satisfy only one change.
+ */
+export function operationsWereSaved(entries, operations, knownIds = []) {
+  const saved = entries || [];
+  const claimed = new Set();
+  const known = new Set((knownIds || []).map((id) => String(id)));
+  const missing = [];
+  (operations || []).forEach((op) => {
+    if (op?.op === "delete") {
+      if (saved.some((entry) => String(entry.id) === String(op.id))) missing.push(op);
+      return;
+    }
+    const shift = op?.shift || {};
+    if (op?.op === "update") {
+      const match = saved.find((entry) => String(entry.id) === String(op.id));
+      if (!match || !sameSavedShift(shift, match)) missing.push(op);
+      else claimed.add(String(match.id));
+      return;
+    }
+    const match = saved.find((entry) => (
+      !claimed.has(String(entry.id))
+      && !known.has(String(entry.id))
+      && Number(entry.user_id) === Number(shift.user_id)
+      && Number(entry.day_of_week) === Number(shift.day_of_week)
+      && sameSavedShift(shift, entry)
+    ));
+    if (!match) missing.push(op);
+    else claimed.add(String(match.id));
+  });
+  return { ok: missing.length === 0, missing };
+}
+
 /** Segments a manager actually stored. A full-shift placeholder is not a split. */
 export function storedRoleSegments(entry) {
   const explicit = entry?.role_assignments;

@@ -342,6 +342,17 @@ def _same_clock(stored: Any, expected: Any) -> bool:
     return _clock_text(stored) == _clock_text(expected)
 
 
+def _day_index(value: Any) -> int:
+    """Sunday is 0. A missing value is not Sunday."""
+    if value is None or value is False or value == "":
+        return -1
+    try:
+        day = int(value)
+    except (TypeError, ValueError):
+        return -1
+    return day if 0 <= day <= 6 else -1
+
+
 def materialize_shift_set(
     conn,
     cursor,
@@ -408,7 +419,7 @@ def materialize_shift_set(
         if (
             row is None
             or int(row.get("user_id") or 0) != user_id
-            or int(row.get("day_of_week") or -1) != day
+            or _day_index(row.get("day_of_week")) != day
             or not _same_clock(row.get("start_time"), shift.get("start_time"))
             or not _same_clock(row.get("end_time"), shift.get("end_time"))
         ):
@@ -526,7 +537,7 @@ def _sync_cell_tasks(conn, cursor, organization_id: int, *, storage_week: date, 
     existing = [
         item
         for item in list_week_responsibilities(cursor, organization_id, week_start=storage_week)
-        if int(item.get("user_id") or 0) == int(user_id) and int(item.get("day_of_week") or -1) == int(day_of_week)
+        if int(item.get("user_id") or 0) == int(user_id) and _day_index(item.get("day_of_week")) == int(day_of_week)
     ]
     existing = annotate_responsibility_activity(cursor, organization_id, existing)
     decision = plan_task_links(existing, tasks)

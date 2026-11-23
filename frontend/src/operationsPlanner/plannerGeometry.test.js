@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import week from "./fixtures/veewash-2027-01-04.json";
-import { applyRoleEdits, barBox, breakAssignment, copyBreaksOnto, copyTaskAssignments, dayScheduleSummary, displaySegments, draftOperations, moveBreakTo, moveTaskTo, persistedRoleSignature, placeBreak, proposeBreak, relocateShift, removeBreak, resizeBreak, resizeEdge, resizeSegment, roleColor, scheduleCardRows, scheduledRoleHours, slideBreak, splitHalves, staffingFigures, storedRoleSegments, timelineAxis, visibleBreaks, visualPieces } from "./plannerGeometry";
+import { applyRoleEdits, barBox, breakAssignment, canonicalSchedule, copyBreaksOnto, copyTaskAssignments, dayScheduleSummary, displaySegments, draftOperations, moveBreakTo, moveTaskTo, operationsWereSaved, persistedRoleSignature, placeBreak, proposeBreak, relocateShift, removeBreak, resizeBreak, resizeEdge, resizeSegment, roleColor, scheduleCardRows, scheduledRoleHours, slideBreak, splitHalves, staffingFigures, storedRoleSegments, timelineAxis, visibleBreaks, visualPieces } from "./plannerGeometry";
 
 describe("planner geometry", () => {
   it("starts the axis at the earliest shift instead of clipping 02:00 to 06:00", () => {
@@ -404,5 +404,43 @@ describe("planner geometry", () => {
     expect(keptGroup.tasks[0]).toEqual(shared);
     expect(keptGroup.note).toMatch(/shared activity/);
     expect(breakAssignment(stored, [{ minutes: 30 }, { minutes: 30 }]).break_minutes).toBe(30);
+  });
+
+  it("treats a stored full-span role as the same schedule the editor sent", () => {
+    const sent = {
+      id: 12,
+      user_id: 34,
+      day_of_week: 0,
+      start_time: "06:00",
+      end_time: "16:00",
+      role: "fold",
+      break_minutes: 30,
+      break_slots: [{ start_time: "10:30", end_time: "11:00", timed: true }],
+      role_assignments: [{ role: "fold", start_time: "06:00", end_time: "16:00" }],
+    };
+    const stored = {
+      id: 12,
+      user_id: 34,
+      day_of_week: 0,
+      start_time: "06:00",
+      end_time: "16:00",
+      role: "fold",
+      break_minutes: 30,
+      break_slots: [{ start_time: "10:30", end_time: "11:00" }],
+      assignments: [{ role: "fold", start_time: "06:00", end_time: "16:00", full_shift: true }],
+    };
+    expect(canonicalSchedule(sent)).toEqual(canonicalSchedule(stored));
+    const saved = operationsWereSaved([stored], [{ op: "update", id: 12, day_of_week: 0, shift: sent }], []);
+    expect(saved.ok).toBe(true);
+    const created = operationsWereSaved(
+      [stored, { ...stored, id: 90 }],
+      [{ op: "create", day_of_week: 0, shift: { ...sent, id: "draft-1" } }],
+      [12],
+    );
+    expect(created.ok).toBe(true);
+    expect(created.missing).toEqual([]);
+    const absent = operationsWereSaved([], [{ op: "create", day_of_week: 0, user_id: 34, shift: sent }], []);
+    expect(absent.ok).toBe(false);
+    expect(absent.missing).toHaveLength(1);
   });
 });

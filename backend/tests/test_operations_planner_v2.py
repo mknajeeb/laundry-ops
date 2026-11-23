@@ -820,6 +820,42 @@ def test_repeating_scope_keeps_two_shifts_on_one_day():
     assert "2026-11-09" in accepted["preview"]["dates"]
 
 
+def test_sunday_repeating_save_is_written_and_replaced_in_place():
+    """Sunday is day 0. Treating 0 as missing dropped the shift after the pattern was saved."""
+    shift = {
+        "start_time": "06:00",
+        "end_time": "16:00",
+        "break_minutes": 30,
+        "break_slots": [{"start_time": "10:30", "end_time": "11:00", "timed": True}],
+        "role": "fold",
+        "role_assignments": [],
+    }
+    command = {
+        "scope": "this_and_future",
+        "anchor": ANCHOR,
+        "today": TODAY,
+        "include_published": False,
+        "replace_exceptions": True,
+        "horizon_weeks": 3,
+        "cells": [{"user_id": 34, "day_of_week": 0, "shifts": [shift]}],
+    }
+    first = plan_cell_scopes(empty_state(), command)
+    assert first["ok"] is True
+    assert first["cell_plans"][0]["shifts"][0]["start_time"] == "06:00"
+    assert cell_shifts(first["state"], 34, 0, ANCHOR)[0]["end_time"] == "16:00"
+    assert patterns_overlap(first["state"]) is False
+
+    again = plan_cell_scopes(first["state"], command)
+    assert again["ok"] is True
+    open_patterns = [
+        row for row in again["state"]["patterns"]
+        if row["day_of_week"] == 0 and row["effective_until"] is None
+    ]
+    assert len(open_patterns) == 1
+    assert cell_shifts(again["state"], 34, 0, ANCHOR)[0]["start_time"] == "06:00"
+    assert patterns_overlap(again["state"]) is False
+
+
 def test_new_task_is_stored_on_the_schedule_week_not_the_display_monday(monkeypatch):
     """Monday Nov 23 is shown as that date and stored on Sunday Nov 22.
 

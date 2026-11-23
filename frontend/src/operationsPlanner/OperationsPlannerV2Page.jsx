@@ -23,7 +23,7 @@ import {
 } from "./plannerModel";
 import { printDocumentHtml, scheduleCardSvg, scheduleCsv, schedulePdf } from "./scheduleExport";
 import PlannerWorkspace from "./PlannerWorkspace";
-import { asList, draftOperations, persistedRoleSignature, relocateShift, shiftKey, splitHalves, storedRoleSegments } from "./plannerGeometry";
+import { asList, draftOperations, operationsWereSaved, relocateShift, shiftKey, splitHalves, storedRoleSegments } from "./plannerGeometry";
 import { copyDay, copyEmployeeDay, copyEmployeeWeek, copyWeekShifts, copiedShift } from "./plannerCopy";
 import { laborComparison } from "./plannerLabor";
 import { affectedShiftCount, explainSaveError, interpretSaveResponse, patternCells, reviewLines, scopeDecision, staffingChanges, taskChanges } from "./plannerReview";
@@ -562,23 +562,7 @@ export default function OperationsPlannerV2Page() {
   }
 
   function serverKept(data, operations) {
-    const saved = (data?.entries || []).map(entryShift);
-    return (operations || []).every((op) => {
-      if (op.op === "delete") return !saved.some((entry) => String(entry.id) === String(op.id));
-      const shift = op.shift || {};
-      const match = saved.find((entry) => (op.op === "update"
-        ? String(entry.id) === String(op.id)
-        : Number(entry.user_id) === Number(shift.user_id)
-          && Number(entry.day_of_week) === Number(shift.day_of_week)
-          && String(entry.start_time).slice(0, 5) === String(shift.start_time || "").slice(0, 5)));
-      if (!match) return false;
-      if (persistedRoleSignature(shift) !== persistedRoleSignature(match)) return false;
-      const wantBreaks = asList(shift.break_slots).map((slot) => `${String(slot.start_time || "").slice(0, 5)}-${String(slot.end_time || "").slice(0, 5)}`).sort().join();
-      const gotBreaks = asList(match.break_slots).map((slot) => `${String(slot.start_time || "").slice(0, 5)}-${String(slot.end_time || "").slice(0, 5)}`).sort().join();
-      if (wantBreaks !== gotBreaks) return false;
-      if (!wantBreaks && Number(match.break_minutes || 0) !== Number(shift.break_minutes || 0)) return false;
-      return true;
-    });
+    return operationsWereSaved(data?.entries, operations, loadedEntries.map((entry) => entry.id));
   }
 
   async function send(path) {
@@ -694,10 +678,12 @@ export default function OperationsPlannerV2Page() {
       setConflict("tasks");
       return;
     }
-    if (operations.length && !serverKept(reloaded, operations)) {
+    const kept = serverKept(reloaded, operations);
+    if (operations.length && !kept.ok) {
+      const days = [...new Set(kept.missing.map((op) => DAY_NAMES[Number(op.day_of_week)] || "A shift"))];
       setPending(null);
       setNotice("");
-      setError("The server schedule does not match this edit. Your draft is still here. Reload only if you want to discard it.");
+      setError(`${days.join(", ")} did not come back on the saved week. Your draft is still here. Reload only if you want to discard it.`);
       setConflict("mismatch");
       return;
     }
