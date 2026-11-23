@@ -682,7 +682,7 @@ def plan_shift_set(operations: Sequence[Mapping[str, Any]] | None) -> dict[str, 
                     return {
                         "ok": False,
                         "code": "invalid_shift",
-                        "error": "Add a role with a start and end before saving this shift.",
+                        "error": "Add a start and end before saving this shift.",
                     }
                 shift["start_time"], shift["end_time"] = bounds
             normalized, err = normalize_shift(shift)

@@ -101,8 +101,11 @@ function clockLabel(entry) {
 export function explainSaveError(error) {
   const text = String(error || "").trim();
   if (!text) return "This save did not go through. Nothing was saved, and the draft is still here.";
-  if (text.includes("start_time and end_time") || text.includes("needs a start and end") || text.includes("Add a role with a start and end")) {
-    return "This shift needs a start and end. Add a role with its own start and end, then save again. Nothing was saved, and the draft is still here.";
+  if (text.includes("a role is required") || text.includes("at least one role")) {
+    return "Add a role for this shift. The hours and break stay as entered. Nothing was saved, and the draft is still here.";
+  }
+  if (text.includes("start_time and end_time") || text.includes("needs a start and end") || text.includes("Add a start and end")) {
+    return "This shift needs a start and end. Nothing was saved, and the draft is still here.";
   }
   if (text.includes("same role cannot overlap")) {
     return "The same role is entered more than once for overlapping times. Remove the extra row, then save again. Nothing was saved, and the draft is still here.";

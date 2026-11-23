@@ -32,6 +32,7 @@ import { setScheduleRoleCatalog } from "../components/weeklySchedule/weeklySched
 
 const LENSES = [
   ["schedule", "Schedule"],
+  ["timeline", "Day"],
   ["coverage", "Coverage"],
   ["breaks", "Breaks"],
   ["tasks", "Tasks"],
@@ -855,7 +856,7 @@ export default function OperationsPlannerV2Page() {
           }}>Day</button>
         </div>
         )}
-        {lens !== "schedule" && (mode === "day" || lens === "coverage" || lens === "tasks") ? (
+        {lens !== "schedule" && (mode === "day" || lens === "coverage" || lens === "tasks" || lens === "timeline") ? (
           <div className="days" role="group" aria-label="Day">
             {DAY_ORDER.map((value) => {
               const offset = value === 0 ? 6 : value - 1;
@@ -896,10 +897,11 @@ export default function OperationsPlannerV2Page() {
         <nav className="tabs" aria-label="Schedule">
           {LENSES.map(([id, label]) => (
             <button key={id} type="button" aria-pressed={lens === id} onClick={() => {
-              if (id === "coverage" || id === "tasks") {
+              if (id === "coverage" || id === "tasks" || id === "timeline") {
                 const chosen = entries.find((entry) => shiftKey(entry) === selectedKey);
                 if (chosen) setDay(Number(chosen.day_of_week));
               }
+              if (id === "timeline") setMode("day");
               setLens(id);
             }}>{label}</button>
           ))}
@@ -923,7 +925,7 @@ export default function OperationsPlannerV2Page() {
         </details>
       ) : null}
       {flags === null && !error ? <p className="ops-note">Loading the schedule…</p> : null}
-      {error ? (
+      {error && !editorOpen ? (
         <p className="ops-note ops-warn">
           {error}
           {conflict ? <button type="button" className="btn" onClick={reloadWeek}>Reload week</button> : null}

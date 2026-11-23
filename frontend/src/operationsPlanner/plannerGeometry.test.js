@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import week from "./fixtures/veewash-2027-01-04.json";
-import { applyRoleEdits, barBox, breakAssignment, dayScheduleSummary, displaySegments, draftOperations, persistedRoleSignature, placeBreak, proposeBreak, relocateShift, resizeBreak, resizeEdge, resizeSegment, roleColor, scheduleCardRows, scheduledRoleHours, splitHalves, staffingFigures, storedRoleSegments, timelineAxis, visibleBreaks, visualPieces } from "./plannerGeometry";
+import { applyRoleEdits, barBox, breakAssignment, copyBreaksOnto, copyTaskAssignments, dayScheduleSummary, displaySegments, draftOperations, persistedRoleSignature, placeBreak, proposeBreak, relocateShift, removeBreak, resizeBreak, resizeEdge, resizeSegment, roleColor, scheduleCardRows, scheduledRoleHours, splitHalves, staffingFigures, storedRoleSegments, timelineAxis, visibleBreaks, visualPieces } from "./plannerGeometry";
 
 describe("planner geometry", () => {
   it("starts the axis at the earliest shift instead of clipping 02:00 to 06:00", () => {
@@ -362,6 +362,25 @@ describe("planner geometry", () => {
     expect(kept.entry.break_slots).toEqual([{ minutes: 30 }]);
     const replaced = proposeBreak(added.entry, { mode: "timed", minutes: 30, start: "12:00", replace: true });
     expect(replaced.entry.break_slots).toEqual([{ start_time: "12:00", end_time: "12:30", timed: true }]);
+    const removed = removeBreak(replaced.entry, 0);
+    expect(removed.break_slots).toEqual([]);
+    expect(removed.break_minutes).toBe(0);
+    expect(removed.start_time).toBe(replaced.entry.start_time);
+    const monday = { user_id: 7, day_of_week: 1, start_time: "06:00", end_time: "16:00", role: "fold", break_slots: [{ start_time: "10:00", end_time: "10:30", timed: true }], break_minutes: 30 };
+    const tuesday = { user_id: 7, day_of_week: 2, start_time: "06:00", end_time: "16:00", role: "fold", break_slots: [], break_minutes: 0 };
+    const other = { user_id: 8, day_of_week: 2, start_time: "12:00", end_time: "15:00", role: "wash", break_slots: [], break_minutes: 0 };
+    const copied = copyBreaksOnto([monday, tuesday, other], monday, [7, 8], [2]);
+    expect(copied[0].break_slots).toEqual(monday.break_slots);
+    expect(copied[1].break_slots).toEqual([{ start_time: "10:00", end_time: "10:30", timed: true }]);
+    expect(copied[2].break_slots).toEqual([]);
+    expect(copyBreaksOnto(copied, monday, [7], [2])[1].break_slots).toHaveLength(1);
+    const shared = { id: 4, user_id: 7, day_of_week: 1, role: "agroup_floor", timing_mode: "anytime", assignment_group_id: "g1", status: "completed" };
+    const copies = copyTaskAssignments([shared], shared, [8], [1]);
+    expect(copies[0]).toEqual(shared);
+    expect(copies[1].assignment_group_id).toBeNull();
+    expect(copies[1].timing_mode).toBe("anytime");
+    expect(copies[1].status).toBe("assigned");
+    expect(copies[1].user_id).toBe(8);
     expect(breakAssignment(stored, [{ minutes: 30 }, { minutes: 30 }]).break_minutes).toBe(30);
   });
 });

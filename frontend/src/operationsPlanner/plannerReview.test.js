@@ -31,6 +31,9 @@ describe("interpretSaveResponse", () => {
     expect(rejected.saved).toBe(false);
     expect(rejected.keepDraft).toBe(true);
     expect(explainSaveError(rejected.error)).toMatch(/needs a start and end/);
+    expect(explainSaveError(rejected.error)).not.toMatch(/Add a role/);
+    expect(explainSaveError("a role is required")).toMatch(/Add a role/);
+    expect(explainSaveError("a role is required")).toMatch(/hours and break stay/);
     expect(explainSaveError(rejected.error)).toMatch(/draft is still here/);
     expect(explainSaveError("the same role cannot overlap itself on one shift")).toMatch(/Remove the extra row/);
   });

@@ -328,7 +328,7 @@ def test_a_new_shift_takes_its_envelope_from_the_role_interval():
         [{"op": "create", "user_id": 12, "day_of_week": 1, "shift": {"start_time": "", "end_time": "", "role_assignments": []}}]
     )
     assert empty["ok"] is False
-    assert "Add a role" in empty["error"]
+    assert "Add a start and end" in empty["error"]
     edited = plan_shift_set(
         [
             {
@@ -347,6 +347,26 @@ def test_a_new_shift_takes_its_envelope_from_the_role_interval():
     )
     assert edited["ok"] is False
     assert "saved hours were left unchanged" in edited["error"]
+    unallocated = plan_shift_set(
+        [
+            {
+                "op": "update",
+                "id": 91,
+                "user_id": 12,
+                "day_of_week": 1,
+                "shift": {
+                    "start_time": "06:00",
+                    "end_time": "15:00",
+                    "role": "",
+                    "break_minutes": 30,
+                    "break_slots": [{"start_time": "10:00", "end_time": "10:30", "timed": True}],
+                    "role_assignments": [],
+                },
+            }
+        ]
+    )
+    assert unallocated["ok"] is False
+    assert "role is required" in unallocated["error"]
 
 
 def test_duplicate_entry_is_an_update_not_a_second_insert():

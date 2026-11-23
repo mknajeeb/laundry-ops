@@ -794,6 +794,77 @@ export function removeRoleSegment(entry, index) {
   return { ...entry, role_assignments: segments };
 }
 
+/** Remove one break record. The shift envelope and tasks stay as they are. */
+export function removeBreak(entry, index) {
+  const slots = visibleBreaks(entry).filter((_, itemIndex) => itemIndex !== index);
+  return breakAssignment(entry, slots);
+}
+
+function breakIdentity(slot) {
+  if (slot?.start_time && slot?.end_time) return `t:${String(slot.start_time).slice(0, 5)}-${String(slot.end_time).slice(0, 5)}`;
+  if (Number(slot?.minutes) > 0) return `u:${Number(slot.minutes)}`;
+  return "";
+}
+
+function breakInsideShift(entry, slot) {
+  if (!slot?.start_time) return true;
+  const span = clockRange(entry?.start_time, entry?.end_time);
+  const piece = clockRange(slot.start_time, slot.end_time);
+  if (!span || !piece) return false;
+  return piece[0] >= span[0] && piece[1] <= span[1];
+}
+
+/**
+ * Copy break records onto existing shifts for the chosen employees and days.
+ * An identical break is not added again. A timed break outside the target shift is skipped.
+ * Tasks are not copied.
+ */
+export function copyBreaksOnto(entries, source, userIds, days) {
+  const breaks = visibleBreaks(source).filter((slot) => slot?.start_time || Number(slot?.minutes) > 0);
+  const people = new Set((userIds || []).map(Number));
+  const chosen = new Set((days || []).map(Number));
+  if (!breaks.length) return entries || [];
+  return (entries || []).map((entry) => {
+    if (!people.has(Number(entry.user_id)) || !chosen.has(Number(entry.day_of_week))) return entry;
+    const existing = visibleBreaks(entry);
+    const seen = new Set(existing.map(breakIdentity));
+    const additions = breaks.filter((slot) => breakInsideShift(entry, slot) && !seen.has(breakIdentity(slot)));
+    if (!additions.length) return entry;
+    return breakAssignment(entry, [...existing, ...additions]);
+  });
+}
+
+/**
+ * Copy one assignment onto other employees and days as a new individual draft.
+ * The source record, its group, and any completed or verified history stay unchanged.
+ * An Anytime assignment stays Anytime.
+ */
+export function copyTaskAssignments(tasks, source, userIds, days) {
+  if (!source?.role) return tasks || [];
+  const timed = source.timing_mode === "specific_time" && source.start_time;
+  const stamp = Date.now();
+  const additions = [];
+  (userIds || []).forEach((userId) => {
+    (days || []).forEach((day) => {
+      if (Number(userId) === Number(source.user_id) && Number(day) === Number(source.day_of_week)) return;
+      additions.push({
+        id: `draft-task-${stamp}-${userId}-${day}`,
+        draft: true,
+        user_id: Number(userId),
+        day_of_week: Number(day),
+        role: source.role,
+        timing_mode: timed ? "specific_time" : "anytime",
+        start_time: timed ? String(source.start_time).slice(0, 5) : null,
+        end_time: timed && source.end_time ? String(source.end_time).slice(0, 5) : null,
+        execution_mode: "individual",
+        assignment_group_id: null,
+        status: "assigned",
+      });
+    });
+  });
+  return [...(tasks || []), ...additions];
+}
+
 /** A manager placing both ends creates a timed break. An empty field does not invent one. */
 export function placeBreak(entry, start, end) {
   const startTime = String(start || "").slice(0, 5);
