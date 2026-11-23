@@ -10,6 +10,8 @@ Two modes:
 
 Both replace planned rows only (shifts, partial role ranges, tasks, instructions, breaks,
 exclusions). Attendance, payroll, and weeks on or before the source/current week are never touched.
+A stored schedule_reset_on date stops automatic copies into weeks that include that date,
+and those weeks do not have their tasks deleted or copied.
 """
 
 from __future__ import annotations
@@ -251,6 +253,8 @@ def _delete_display_slices(cursor, organization_id: int, monday: date) -> tuple[
     from backend.planned_weekly_schedule_responsibilities import delete_responsibility, list_week_responsibilities
     from backend.weekly_schedule_week import display_week_storage
 
+    from backend.schedule_reset import reset_blocks_week
+
     mon_sat, sunday = display_week_storage(monday)
     entries_deleted = 0
     tasks_deleted = 0
@@ -258,6 +262,8 @@ def _delete_display_slices(cursor, organization_id: int, monday: date) -> tuple[
         for row in list(list_week_entries(cursor, organization_id, week_start=storage)):
             if keep(int(row.get("day_of_week") or -1)) and delete_entry(cursor, organization_id, int(row["id"])):
                 entries_deleted += 1
+        if reset_blocks_week(cursor, organization_id, storage):
+            continue
         for row in list(list_week_responsibilities(cursor, organization_id, week_start=storage)):
             if keep(int(row.get("day_of_week") or -1)) and delete_responsibility(
                 cursor, organization_id, int(row["id"])
@@ -317,7 +323,11 @@ def _enable_display_template(
     mon_copy, sun_copy = _snapshot_display_copy(conn, cursor, organization_id, monday)
     if not week_copy_has_content(mon_copy) and not week_copy_has_content(sun_copy):
         return None, "this week has no schedule to use as the template"
-    weeks = _display_mondays_after(cursor, organization_id, monday)
+    from backend.schedule_reset import weeks_open_for_automatic_copy
+
+    weeks = weeks_open_for_automatic_copy(
+        cursor, organization_id, _display_mondays_after(cursor, organization_id, monday)
+    )
     results = [_replace_display_week(cursor, organization_id, week, mon_copy, sun_copy) for week in weeks]
     _save_template(cursor, organization_id, enabled=True, source=monday, user_id=user_id)
     return {"mode": "template", "source_week_start": str(monday), "weeks": results}, None
@@ -391,7 +401,11 @@ def enable_template(
     copy = build_week_copy(conn, cursor, organization_id, source_week_start=source, seed_sunday_from_saturday=False)
     if not week_copy_has_content(copy):
         return None, "this week has no schedule to use as the template"
-    weeks = _content_weeks_after(cursor, organization_id, source)
+    from backend.schedule_reset import weeks_open_for_automatic_copy
+
+    weeks = weeks_open_for_automatic_copy(
+        cursor, organization_id, _content_weeks_after(cursor, organization_id, source)
+    )
     results = [_replace_week(cursor, organization_id, week, copy) for week in weeks]
     _save_template(cursor, organization_id, enabled=True, source=source, user_id=user_id)
     return {"mode": "template", "source_week_start": str(source), "weeks": results}, None
@@ -414,7 +428,11 @@ def propagate_template_if_source(conn, cursor, organization_id: int, week_start:
         if storage not in (mon_sat, sunday):
             return None
         mon_copy, sun_copy = _snapshot_display_copy(conn, cursor, organization_id, source)
-        weeks = _display_mondays_after(cursor, organization_id, source)
+        from backend.schedule_reset import weeks_open_for_automatic_copy
+
+        weeks = weeks_open_for_automatic_copy(
+            cursor, organization_id, _display_mondays_after(cursor, organization_id, source)
+        )
         return {
             "source_week_start": str(source),
             "weeks": [_replace_display_week(cursor, organization_id, week, mon_copy, sun_copy) for week in weeks],
@@ -422,7 +440,11 @@ def propagate_template_if_source(conn, cursor, organization_id: int, week_start:
     week = normalize_week_start(week_start)
     if not source or week != source:
         return None
-    weeks = _content_weeks_after(cursor, organization_id, source)
+    from backend.schedule_reset import weeks_open_for_automatic_copy
+
+    weeks = weeks_open_for_automatic_copy(
+        cursor, organization_id, _content_weeks_after(cursor, organization_id, source)
+    )
     return {"source_week_start": str(source), "weeks": _copy_to_weeks(conn, cursor, organization_id, source=source, weeks=weeks)}
 
 

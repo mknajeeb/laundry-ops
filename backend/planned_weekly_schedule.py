@@ -2012,7 +2012,11 @@ def clear_week_schedule(
         (oid, week_start),
     )
     exclusions_deleted = int(cursor.rowcount or 0)
-    responsibilities_deleted = clear_week_responsibilities(cursor, oid, week_start=week_start)
+    from backend.schedule_reset import reset_blocks_week
+
+    responsibilities_deleted = 0
+    if not reset_blocks_week(cursor, oid, week_start):
+        responsibilities_deleted = clear_week_responsibilities(cursor, oid, week_start=week_start)
     return {
         "entries_deleted": entries_deleted,
         "exclusions_deleted": exclusions_deleted,
@@ -2162,12 +2166,16 @@ def apply_week_copy(
         payloads=entries,
         organization_slug=copy.get("organization_slug"),
     )
-    responsibilities_copied = insert_responsibility_rows(
-        cursor,
-        oid,
-        week_start=target_week_start,
-        rows=copy.get("responsibilities") or [],
-    )
+    from backend.schedule_reset import reset_blocks_week
+
+    responsibilities_copied = 0
+    if not reset_blocks_week(cursor, oid, target_week_start):
+        responsibilities_copied = insert_responsibility_rows(
+            cursor,
+            oid,
+            week_start=target_week_start,
+            rows=copy.get("responsibilities") or [],
+        )
     exclusions = list(copy.get("exclusions") or [])
     if exclusions:
         ensure_planned_weekly_schedule_exclusions_table(cursor)
@@ -2217,8 +2225,11 @@ def ensure_week_schedule_carried_forward(
     week_start: date,
 ) -> dict[str, Any] | None:
     """If target week has no schedule yet, seed it from the active template or the latest prior week."""
+    from backend.schedule_reset import reset_blocks_week
     from backend.weekly_schedule_template import template_source_for_week
 
+    if reset_blocks_week(cursor, organization_id, week_start):
+        return None
     if week_has_schedule_content(cursor, organization_id, week_start=week_start):
         return None
     template_source = template_source_for_week(cursor, organization_id, week_start)
