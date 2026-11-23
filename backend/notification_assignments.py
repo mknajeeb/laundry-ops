@@ -197,11 +197,18 @@ def management_catalog(cursor, organization_id: int) -> dict[str, Any]:
 
     recipients: dict[str, list[dict[str, Any]]] = {}
     if table_exists(cursor, RECIPIENT_TABLE):
+        payroll_name = ""
+        payroll_join = ""
+        if table_exists(cursor, "payroll_profiles"):
+            payroll_name = ", pp.first_name, pp.last_name"
+            payroll_join = "LEFT JOIN payroll_profiles pp ON pp.user_id = u.id"
         cursor.execute(
             f"""
             SELECT r.event_key, r.user_id, u.username, u.display_name, u.active
+                   {payroll_name}
             FROM {RECIPIENT_TABLE} r
             JOIN users u ON u.id = r.user_id AND u.organization_id = r.organization_id
+            {payroll_join}
             WHERE r.organization_id=%s
             ORDER BY u.display_name, u.username, u.id
             """,
@@ -213,6 +220,7 @@ def management_catalog(cursor, organization_id: int) -> dict[str, Any]:
                     "id": int(row["user_id"]),
                     "username": row.get("username") or "",
                     "display_name": row.get("display_name") or "",
+                    "employee_name": employee_name(row.get("first_name"), row.get("last_name")),
                     "active": bool(row.get("active", 1)),
                 }
             )
@@ -318,24 +326,56 @@ def set_routing_active(
     }
 
 
+def employee_name(first_name: Any, last_name: Any) -> str:
+    return " ".join(part for part in (str(first_name or "").strip(), str(last_name or "").strip()) if part)
+
+
 def search_active_users(cursor, organization_id: int, query: str) -> list[dict[str, Any]]:
-    like = f"%{(query or '').strip()}%"
-    cursor.execute(
-        """
-        SELECT id, username, display_name
-        FROM users
-        WHERE organization_id=%s AND COALESCE(active, 1)=1
-          AND (username LIKE %s OR display_name LIKE %s OR %s='')
-        ORDER BY display_name, username, id
-        LIMIT 20
-        """,
-        (int(organization_id), like, like, (query or "").strip()),
-    )
+    """Active application users in one organization.
+
+    Payroll names are searchable, but a payroll row never creates an account
+    and never becomes a recipient by itself. Roles and module access are ignored.
+    """
+    from backend.ta_helpers import table_exists
+
+    needle = (query or "").strip()
+    like = f"%{needle}%"
+    if table_exists(cursor, "payroll_profiles"):
+        cursor.execute(
+            """
+            SELECT u.id, u.username, u.display_name, pp.first_name, pp.last_name
+            FROM users u
+            LEFT JOIN payroll_profiles pp ON pp.user_id = u.id
+            WHERE u.organization_id=%s AND COALESCE(u.active, 1)=1
+              AND (
+                %s=''
+                OR u.username LIKE %s
+                OR u.display_name LIKE %s
+                OR pp.first_name LIKE %s
+                OR pp.last_name LIKE %s
+                OR CONCAT(TRIM(COALESCE(pp.first_name, '')), ' ', TRIM(COALESCE(pp.last_name, ''))) LIKE %s
+              )
+            ORDER BY u.display_name, u.username, u.id
+            """,
+            (int(organization_id), needle, like, like, like, like, like),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT id, username, display_name
+            FROM users
+            WHERE organization_id=%s AND COALESCE(active, 1)=1
+              AND (%s='' OR username LIKE %s OR display_name LIKE %s)
+            ORDER BY display_name, username, id
+            """,
+            (int(organization_id), needle, like, like),
+        )
     return [
         {
             "id": int(row["id"]),
             "username": row.get("username") or "",
             "display_name": row.get("display_name") or "",
+            "employee_name": employee_name(row.get("first_name"), row.get("last_name")),
         }
         for row in cursor.fetchall() or []
     ]

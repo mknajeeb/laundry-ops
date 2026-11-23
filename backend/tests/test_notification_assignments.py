@@ -409,3 +409,66 @@ def test_assignment_migration_does_not_touch_existing_records():
     assert 'MIGRATION_FILE = "backend/sql/notification_assignments_v1.sql"' in assignments
     assert "MIGRATION_FILE" in routes
     assert routes.count("require_admin(cursor)") >= 3
+
+
+class SearchCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.sql = ""
+        self.params = ()
+
+    def execute(self, sql, params=None):
+        self.sql = " ".join(sql.split())
+        self.params = tuple(params or ())
+
+    def fetchall(self):
+        return list(self.rows)
+
+
+def test_directory_search_includes_payroll_names_and_every_active_user(monkeypatch):
+    from backend.notification_assignments import search_active_users
+
+    monkeypatch.setattr("backend.ta_helpers.table_exists", lambda _cursor, name: name == "payroll_profiles")
+    cursor = SearchCursor(
+        [
+            {
+                "id": 28,
+                "username": "singh",
+                "display_name": "Singh",
+                "first_name": "Jasanpreet",
+                "last_name": "Singh",
+            }
+        ]
+    )
+    found = search_active_users(cursor, 3, "Jasanpreet")
+    assert found == [
+        {
+            "id": 28,
+            "username": "singh",
+            "display_name": "Singh",
+            "employee_name": "Jasanpreet Singh",
+        }
+    ]
+    compact = cursor.sql
+    assert "pp.first_name LIKE" in compact
+    assert "pp.last_name LIKE" in compact
+    assert "CONCAT(TRIM(COALESCE(pp.first_name, '')), ' ', TRIM(COALESCE(pp.last_name, ''))) LIKE" in compact
+    assert "u.organization_id=%s" in compact
+    assert "COALESCE(u.active, 1)=1" in compact
+    assert "LIMIT 20" not in compact
+    assert "LIMIT" not in compact
+    for blocked in ("user_roles", "employee_mobile_pin_access", "attendance_pin", "INSERT", "UPDATE", "DELETE"):
+        assert blocked not in compact
+    assert cursor.params[0] == 3
+    assert cursor.params[1] == "Jasanpreet"
+
+
+def test_directory_search_without_payroll_still_returns_application_users(monkeypatch):
+    from backend.notification_assignments import search_active_users
+
+    monkeypatch.setattr("backend.ta_helpers.table_exists", lambda *_args: False)
+    cursor = SearchCursor([{"id": 58, "username": "Martha", "display_name": "Martha"}])
+    found = search_active_users(cursor, 3, "")
+    assert found == [{"id": 58, "username": "Martha", "display_name": "Martha", "employee_name": ""}]
+    assert "payroll_profiles" not in cursor.sql
+    assert "LIMIT" not in cursor.sql

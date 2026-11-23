@@ -26,10 +26,22 @@ import {
   putNotificationManagementRouting,
 } from "../api";
 
-function personLabel(person) {
-  const name = person.display_name || "Unnamed user";
+function compactName(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+export function personLabel(person) {
   const account = person.username || `user ${person.id}`;
-  return `${name} · ${account}`;
+  const display = compactName(person.display_name);
+  const employee = compactName(person.employee_name);
+  const primary = employee || display || "Unnamed user";
+  const same = display.localeCompare(primary, undefined, { sensitivity: "accent" }) === 0;
+  return same || !display ? `${primary} · ${account}` : `${primary} · ${display} · ${account}`;
+}
+
+export function addRecipient(selected, person) {
+  if (selected.some((row) => row.id === person.id)) return selected;
+  return [...selected, { ...person, active: true }];
 }
 
 function CategoryEditor({ category, onSaved }) {
@@ -127,21 +139,30 @@ function CategoryEditor({ category, onSaved }) {
         label="Search active users"
         value={query}
         onChange={(event) => setQuery(event.target.value)}
-        placeholder="Name or username"
+        placeholder="Name, payroll name, or username"
       />
-      <Stack spacing={0.5}>
+      <Stack
+        spacing={0.5}
+        data-testid="assignment-user-results"
+        sx={{ maxHeight: { xs: "40vh", sm: 320 }, overflowY: "auto" }}
+      >
         {matches
           .filter((person) => !selectedIds.has(person.id))
           .map((person) => (
             <Button
               key={person.id}
               variant="text"
-              sx={{ justifyContent: "flex-start" }}
-              onClick={() => setSelected((rows) => [...rows, { ...person, active: true }])}
+              sx={{ justifyContent: "flex-start", textAlign: "left" }}
+              onClick={() => setSelected((rows) => addRecipient(rows, person))}
             >
               {personLabel(person)}
             </Button>
           ))}
+        {query.trim() && matches.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">
+            No matching users
+          </Typography>
+        ) : null}
       </Stack>
       {error ? <Alert severity="error">{error}</Alert> : null}
       <Stack direction="row" spacing={1}>
