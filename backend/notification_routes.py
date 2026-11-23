@@ -538,10 +538,17 @@ def register_notification_routes(app):
             cursor.close()
             conn.close()
 
+    def _assignment_schema_required(cursor):
+        from backend.notification_assignments import MIGRATION_FILE, assignment_tables_ready
+
+        if assignment_tables_ready(cursor):
+            return None
+        return jsonify({"error": f"Run {MIGRATION_FILE}"}), 503
+
     @app.route("/auth/notifications/management", methods=["GET"])
     def notif_management_catalog():
         from backend.app import get_db, require_admin
-        from backend.notification_assignments import ensure_assignment_tables, management_catalog
+        from backend.notification_assignments import management_catalog
 
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
@@ -552,12 +559,11 @@ def register_notification_routes(app):
             oid, oerr, ost = _notification_org_id(me)
             if oerr is not None:
                 return oerr, ost
-            ensure_assignment_tables(cursor)
-            payload = management_catalog(cursor, oid)
-            conn.commit()
-            return jsonify(payload)
+            missing = _assignment_schema_required(cursor)
+            if missing is not None:
+                return missing
+            return jsonify(management_catalog(cursor, oid))
         except Exception as e:
-            conn.rollback()
             return jsonify({"error": str(e)}), 500
         finally:
             cursor.close()
@@ -582,12 +588,49 @@ def register_notification_routes(app):
             cursor.close()
             conn.close()
 
+    @app.route("/auth/notifications/management/routing", methods=["PUT"])
+    def notif_management_routing():
+        from backend.app import get_db, require_admin
+        from backend.notification_assignments import NotificationAssignmentError, set_routing_active
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err, st = require_admin(cursor)
+            if err is not None:
+                return err, st
+            oid, oerr, ost = _notification_org_id(me)
+            if oerr is not None:
+                return oerr, ost
+            missing = _assignment_schema_required(cursor)
+            if missing is not None:
+                return missing
+            body = request.json or {}
+            result = set_routing_active(
+                cursor,
+                organization_id=oid,
+                active=bool(body.get("active")),
+                actor_user_id=int(me["user_id"]),
+                confirm_incomplete=bool(body.get("confirm_incomplete")),
+            )
+            conn.commit()
+            return jsonify({"ok": True, **result})
+        except NotificationAssignmentError as ex:
+            conn.rollback()
+            status = 409 if ex.code == "incomplete_configuration" else 400
+            return jsonify({"error": ex.code, **ex.details}), status
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/auth/notifications/management/<event_key>", methods=["PUT"])
     def notif_management_save(event_key: str):
         from backend.app import get_db, require_admin
         from backend.notification_assignments import (
             NotificationAssignmentError,
-            ensure_assignment_tables,
             save_management_assignment,
         )
 
@@ -601,7 +644,9 @@ def register_notification_routes(app):
             if oerr is not None:
                 return oerr, ost
             body = request.json or {}
-            ensure_assignment_tables(cursor)
+            missing = _assignment_schema_required(cursor)
+            if missing is not None:
+                return missing
             saved = save_management_assignment(
                 cursor,
                 organization_id=oid,
@@ -615,7 +660,7 @@ def register_notification_routes(app):
         except NotificationAssignmentError as ex:
             conn.rollback()
             status = 404 if ex.code == "unknown_category" else 400
-            return jsonify({"error": ex.code}), status
+            return jsonify({"error": ex.code, **ex.details}), status
         except Exception as e:
             conn.rollback()
             return jsonify({"error": str(e)}), 500

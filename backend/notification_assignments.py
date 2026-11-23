@@ -22,63 +22,22 @@ ROUTING_TABLE = "notification_routing_activation"
 SETTINGS_TABLE = "notification_category_settings"
 RECIPIENT_TABLE = "notification_category_recipients"
 AUDIT_TABLE = "notification_assignment_audit"
+ASSIGNMENT_TABLES = (ROUTING_TABLE, SETTINGS_TABLE, RECIPIENT_TABLE, AUDIT_TABLE)
+MIGRATION_FILE = "backend/sql/notification_assignments_v1.sql"
 
 
 class NotificationAssignmentError(Exception):
-    def __init__(self, code: str):
+    def __init__(self, code: str, **details):
         super().__init__(code)
         self.code = code
+        self.details = details
 
 
-def ensure_assignment_tables(cursor) -> None:
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {ROUTING_TABLE} (
-          organization_id INT NOT NULL PRIMARY KEY,
-          management_routing_active TINYINT(1) NOT NULL DEFAULT 0,
-          updated_by_user_id INT NULL,
-          updated_at DATETIME NULL
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {SETTINGS_TABLE} (
-          organization_id INT NOT NULL,
-          event_key VARCHAR(64) NOT NULL,
-          enabled TINYINT(1) NOT NULL DEFAULT 1,
-          updated_by_user_id INT NULL,
-          updated_at DATETIME NOT NULL,
-          PRIMARY KEY (organization_id, event_key)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {RECIPIENT_TABLE} (
-          organization_id INT NOT NULL,
-          event_key VARCHAR(64) NOT NULL,
-          user_id INT NOT NULL,
-          assigned_by_user_id INT NULL,
-          assigned_at DATETIME NOT NULL,
-          PRIMARY KEY (organization_id, event_key, user_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {AUDIT_TABLE} (
-          id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-          organization_id INT NOT NULL,
-          event_key VARCHAR(64) NOT NULL,
-          action VARCHAR(32) NOT NULL,
-          actor_user_id INT NULL,
-          detail_json TEXT NULL,
-          created_at DATETIME NOT NULL,
-          KEY idx_notif_assign_audit_org (organization_id, id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
+def assignment_tables_ready(cursor) -> bool:
+    """True only when the controlled migration has already created the tables."""
+    from backend.ta_helpers import table_exists
+
+    return all(table_exists(cursor, name) for name in ASSIGNMENT_TABLES)
 
 
 def routing_is_active(cursor, organization_id: int) -> bool:
@@ -283,11 +242,79 @@ def management_catalog(cursor, organization_id: int) -> dict[str, Any]:
                 "recipients": people,
             }
         )
+    modules_out = list(modules.values())
+    empty_categories = []
+    for module in modules_out:
+        for category in module["categories"]:
+            active_people = [person for person in category["recipients"] if person.get("active", True)]
+            if not active_people:
+                empty_categories.append(
+                    {
+                        "event_key": category["event_key"],
+                        "label": f"{module['label']} — {category['label']}",
+                    }
+                )
     return {
         "management_routing_active": routing_is_active(cursor, organization_id),
-        "modules": list(modules.values()),
+        "category_count": len(MANAGEMENT_CATEGORIES),
+        "empty_categories": empty_categories,
+        "modules": modules_out,
         "automatic": list(AUTOMATIC_NOTIFICATIONS),
         "unsupported_modules": ["Scheduling", "Performance", "Quality"],
+    }
+
+
+def set_routing_active(
+    cursor,
+    *,
+    organization_id: int,
+    active: bool,
+    actor_user_id: int | None,
+    confirm_incomplete: bool = False,
+) -> dict[str, Any]:
+    """Turn explicit routing on or off for one organization. Audited and reversible."""
+    catalog = management_catalog(cursor, organization_id)
+    empty_categories = catalog["empty_categories"]
+    if active and empty_categories and not confirm_incomplete:
+        raise NotificationAssignmentError(
+            "incomplete_configuration",
+            empty_categories=empty_categories,
+        )
+    cursor.execute(
+        f"""
+        INSERT INTO {ROUTING_TABLE}
+          (organization_id, management_routing_active, updated_by_user_id, updated_at)
+        VALUES (%s,%s,%s, NOW())
+        ON DUPLICATE KEY UPDATE
+          management_routing_active=VALUES(management_routing_active),
+          updated_by_user_id=VALUES(updated_by_user_id),
+          updated_at=NOW()
+        """,
+        (int(organization_id), 1 if active else 0, actor_user_id),
+    )
+    cursor.execute(
+        f"""
+        INSERT INTO {AUDIT_TABLE}
+          (organization_id, event_key, action, actor_user_id, detail_json, created_at)
+        VALUES (%s,%s,%s,%s,%s, NOW())
+        """,
+        (
+            int(organization_id),
+            "*",
+            "routing_activated" if active else "routing_deactivated",
+            actor_user_id,
+            json.dumps(
+                {
+                    "management_routing_active": bool(active),
+                    "confirm_incomplete": bool(confirm_incomplete),
+                    "empty_categories": [row["event_key"] for row in empty_categories],
+                }
+            ),
+        ),
+    )
+    return {
+        "management_routing_active": bool(active),
+        "empty_categories": empty_categories,
     }
 
 

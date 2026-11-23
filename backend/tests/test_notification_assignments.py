@@ -1,9 +1,12 @@
 """Management notification recipients are explicit, and inactive routing stays legacy."""
 
+from pathlib import Path
+
 from backend.notification_assignments import (
     management_dispatch_recipients,
     resolve_assigned_recipients,
     save_management_assignment,
+    set_routing_active,
 )
 from backend.notification_catalog import LEGACY_ROUTING, management_event
 
@@ -45,6 +48,35 @@ class Mem:
             key = (params[0], params[1])
             if key in self.settings:
                 self._one = {"enabled": self.settings[key]}
+        elif text.startswith("SELECT r.event_key"):
+            org = params[0]
+            rows = []
+            for (row_org, event), people in self.recipients.items():
+                if row_org != org:
+                    continue
+                for uid in people:
+                    user = self.users.get(uid)
+                    if not user or user["organization_id"] != org:
+                        continue
+                    rows.append(
+                        {
+                            "event_key": event,
+                            "user_id": uid,
+                            "username": user["username"],
+                            "display_name": user["display_name"],
+                            "active": user["active"],
+                        }
+                    )
+            self._all = rows
+        elif text.startswith("SELECT event_key, enabled"):
+            org = params[0]
+            self._all = [
+                {"event_key": event, "enabled": enabled}
+                for (row_org, event), enabled in self.settings.items()
+                if row_org == org
+            ]
+        elif text.startswith("INSERT INTO notification_routing_activation"):
+            self.activation[params[0]] = params[1]
         elif text.startswith("SELECT r.user_id"):
             org, event = params
             rows = []
@@ -53,6 +85,20 @@ class Mem:
                 if user and user["organization_id"] == org and user["active"]:
                     rows.append({"user_id": uid})
             self._all = rows
+        elif text.startswith("SELECT id, username, display_name"):
+            org = params[0]
+            needle = str(params[3] or "").lower()
+            self._all = [
+                {"id": uid, "username": user["username"], "display_name": user["display_name"]}
+                for uid, user in self.users.items()
+                if user["organization_id"] == org
+                and user["active"]
+                and (
+                    not needle
+                    or needle in user["username"].lower()
+                    or needle in user["display_name"].lower()
+                )
+            ][:20]
         elif text.startswith("SELECT id, active FROM users"):
             org, ids = params[0], params[1:]
             self._all = [
@@ -289,3 +335,77 @@ def test_activated_lost_found_uses_assignments_not_roles(monkeypatch):
     notify_found_item(Cursor(), 3, {"id": 8, "employee_name": "Ana", "report_category": "orphan"})
     assert seen["recipient_user_ids"] == {15}
     assert seen["organization_id"] == 3
+
+
+def test_routing_activation_is_explicit_reversible_and_isolated(monkeypatch):
+    from backend.notification_assignments import management_catalog
+
+    monkeypatch.setattr("backend.ta_helpers.table_exists", _tables_exist)
+    mem = Mem()
+    save_management_assignment(
+        mem, organization_id=3, event_key=LOST, user_ids=[15], enabled=True, actor_user_id=15
+    )
+    assert management_dispatch_recipients(mem, 3, LOST) is LEGACY_ROUTING
+    try:
+        set_routing_active(mem, organization_id=3, active=True, actor_user_id=15, confirm_incomplete=False)
+        refused = False
+    except Exception as ex:
+        refused = ex.code == "incomplete_configuration"
+        assert any(row["label"] == "PIN Issues — Issue Reported" for row in ex.details["empty_categories"]) is False
+        assert ex.details["empty_categories"]
+    assert refused
+    assert management_dispatch_recipients(mem, 3, LOST) is LEGACY_ROUTING
+
+    set_routing_active(mem, organization_id=3, active=True, actor_user_id=15, confirm_incomplete=True)
+    assert resolve_assigned_recipients(mem, 3, LOST) == {15}
+    assert 41 not in resolve_assigned_recipients(mem, 3, LOST)
+    assert management_dispatch_recipients(mem, 9, LOST) is LEGACY_ROUTING
+
+    save_management_assignment(
+        mem, organization_id=3, event_key=LOST, user_ids=[], enabled=True, actor_user_id=15
+    )
+    assert resolve_assigned_recipients(mem, 3, LOST) == set()
+    save_management_assignment(
+        mem, organization_id=3, event_key=LOST, user_ids=[15, 16], enabled=False, actor_user_id=15
+    )
+    assert resolve_assigned_recipients(mem, 3, LOST) == set()
+
+    set_routing_active(mem, organization_id=3, active=False, actor_user_id=15)
+    assert management_dispatch_recipients(mem, 3, LOST) is LEGACY_ROUTING
+    actions = [row["action"] for row in mem.audit]
+    assert "routing_activated" in actions
+    assert "routing_deactivated" in actions
+    assert all(row["actor_user_id"] == 15 for row in mem.audit if row["action"].startswith("routing_"))
+    assert mem.delivery == [{"id": 67, "user_id": 41}]
+    catalog = management_catalog(mem, 3)
+    assert catalog["management_routing_active"] is False
+    issue = next(
+        category
+        for module in catalog["modules"]
+        if module["label"] == "PIN Issues"
+        for category in module["categories"]
+    )
+    assert issue["label"] == "Issue Reported"
+    assert "Equipment" in issue["description"]
+
+
+def test_assignment_migration_does_not_touch_existing_records():
+    sql = Path("backend/sql/notification_assignments_v1.sql").read_text(encoding="utf-8")
+    executable = "\n".join(
+        line for line in sql.splitlines() if line.strip() and not line.strip().startswith("--")
+    )
+    assert executable.count("CREATE TABLE IF NOT EXISTS") == 4
+    assert "DROP TABLE" not in executable.upper()
+    assert "user_roles" not in executable
+    assert "user_notification_preferences" not in executable
+    assert "notification_delivery_log" not in executable
+    assert "employee_mobile_pin_access" not in executable
+    routes = Path("backend/notification_routes.py").read_text(encoding="utf-8")
+    assignments = Path("backend/notification_assignments.py").read_text(encoding="utf-8")
+    assert "ensure_assignment_tables" not in routes
+    assert "ensure_assignment_tables" not in assignments
+    assert "CREATE TABLE" not in routes
+    assert "CREATE TABLE" not in assignments
+    assert 'MIGRATION_FILE = "backend/sql/notification_assignments_v1.sql"' in assignments
+    assert "MIGRATION_FILE" in routes
+    assert routes.count("require_admin(cursor)") >= 3

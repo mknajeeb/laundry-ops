@@ -9,6 +9,10 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   FormControlLabel,
   Stack,
   Switch,
@@ -19,6 +23,7 @@ import {
   getNotificationManagement,
   getNotificationManagementUsers,
   putNotificationManagementCategory,
+  putNotificationManagementRouting,
 } from "../api";
 
 function personLabel(person) {
@@ -151,11 +156,22 @@ function CategoryEditor({ category, onSaved }) {
   );
 }
 
+function categoryTitle(module, category) {
+  return `${module.label} — ${category.label}`;
+}
+
+function activeRecipientCount(category) {
+  return (category.recipients || []).filter((person) => person.active !== false).length;
+}
+
 export default function NotificationAssignments() {
   const [data, setData] = useState(null);
   const [filter, setFilter] = useState("");
   const [error, setError] = useState("");
   const [open, setOpen] = useState("");
+  const [routingIntent, setRoutingIntent] = useState("");
+  const [routingError, setRoutingError] = useState("");
+  const [routingBusy, setRoutingBusy] = useState(false);
 
   const load = useCallback(async () => {
     const res = await getNotificationManagement();
@@ -194,13 +210,133 @@ export default function NotificationAssignments() {
   if (error) return <Alert severity="error">{error}</Alert>;
   if (!data) return <CircularProgress size={28} />;
 
+  const categories = (data.modules || []).flatMap((module) =>
+    (module.categories || []).map((category) => ({ module, category }))
+  );
+  const emptyCategories = data.empty_categories || [];
+  const routingActive = Boolean(data.management_routing_active);
+
+  const confirmRouting = async () => {
+    setRoutingBusy(true);
+    setRoutingError("");
+    try {
+      await putNotificationManagementRouting({
+        active: routingIntent === "activate",
+        confirm_incomplete: routingIntent === "activate" && emptyCategories.length > 0,
+      });
+      setRoutingIntent("");
+      await load();
+    } catch (err) {
+      const names = (err?.response?.data?.empty_categories || []).map((row) => row.label).filter(Boolean);
+      setRoutingError(
+        names.length
+          ? `These categories have no recipients: ${names.join(", ")}.`
+          : err?.response?.data?.error || err?.message || "Could not change routing.",
+      );
+    } finally {
+      setRoutingBusy(false);
+    }
+  };
+
   return (
     <Stack spacing={2}>
-      <Alert severity={data.management_routing_active ? "success" : "info"}>
-        {data.management_routing_active
-          ? "Management routing is active. Alerts go only to the people assigned below."
-          : "Management routing is not active. Assignments are saved, and current alerts still use the previous rules until activation is approved."}
-      </Alert>
+      <Box
+        sx={{
+          border: 1,
+          borderColor: "divider",
+          borderRadius: 1,
+          p: 2,
+          display: "grid",
+          gap: 1,
+        }}
+      >
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" } }}>
+          <Chip
+            data-testid="routing-status"
+            label={routingActive ? "Routing Active" : "Routing Inactive"}
+            color={routingActive ? "success" : "default"}
+          />
+          <Typography variant="body2">
+            {data.category_count || categories.length} notification categories
+          </Typography>
+        </Stack>
+        {categories.map(({ module, category }) => (
+          <Typography key={category.event_key} variant="body2" color="text.secondary">
+            {categoryTitle(module, category)} —{" "}
+            {category.enabled === false
+              ? "Disabled"
+              : activeRecipientCount(category) === 0
+                ? "No recipients"
+                : `${activeRecipientCount(category)} recipient${activeRecipientCount(category) === 1 ? "" : "s"}`}
+          </Typography>
+        ))}
+        <Typography variant="body2">
+          Categories with no recipients:{" "}
+          {emptyCategories.length ? emptyCategories.map((row) => row.label).join(", ") : "None"}
+        </Typography>
+        <Alert severity="warning">
+          Activating routing replaces legacy role-based notification distribution. A role such as
+          Finance, Supervisor, or Admin does not receive a management alert unless that person is
+          assigned below.
+        </Alert>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+          <Button
+            data-testid="activate-routing"
+            variant="contained"
+            disabled={routingActive}
+            onClick={() => {
+              setRoutingError("");
+              setRoutingIntent("activate");
+            }}
+          >
+            Activate Routing
+          </Button>
+          <Button
+            data-testid="deactivate-routing"
+            variant="outlined"
+            disabled={!routingActive}
+            onClick={() => {
+              setRoutingError("");
+              setRoutingIntent("deactivate");
+            }}
+          >
+            Deactivate Routing
+          </Button>
+        </Stack>
+      </Box>
+      <Dialog open={Boolean(routingIntent)} onClose={() => (routingBusy ? null : setRoutingIntent(""))} fullWidth>
+        <DialogTitle>{routingIntent === "activate" ? "Activate routing?" : "Deactivate routing?"}</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ pt: 1 }}>
+            {routingIntent === "activate" ? (
+              <>
+                <Typography variant="body2">
+                  Management alerts will go only to the people assigned here. Role access will no longer add recipients.
+                </Typography>
+                {emptyCategories.length ? (
+                  <Alert severity="warning">
+                    These categories have no recipients and will send nothing:{" "}
+                    {emptyCategories.map((row) => row.label).join(", ")}.
+                  </Alert>
+                ) : null}
+              </>
+            ) : (
+              <Typography variant="body2">
+                Management alerts return to the previous role and audience rules. Saved recipients stay in place.
+              </Typography>
+            )}
+            {routingError ? <Alert severity="error">{routingError}</Alert> : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ flexDirection: { xs: "column", sm: "row" }, alignItems: "stretch" }}>
+          <Button onClick={() => setRoutingIntent("")} disabled={routingBusy}>
+            Cancel
+          </Button>
+          <Button data-testid="confirm-routing" variant="contained" onClick={confirmRouting} disabled={routingBusy}>
+            {routingBusy ? "Saving…" : routingIntent === "activate" ? "Activate Routing" : "Deactivate Routing"}
+          </Button>
+        </DialogActions>
+      </Dialog>
       <TextField
         size="small"
         label="Search modules or categories"
@@ -214,18 +350,29 @@ export default function NotificationAssignments() {
           </AccordionSummary>
           <AccordionDetails>
             {module.categories.map((category) => {
-              const count = (category.recipients || []).filter((person) => person.active !== false).length;
+              const count = activeRecipientCount(category);
               const expanded = open === category.event_key;
               return (
                 <Box key={category.event_key} sx={{ borderTop: 1, borderColor: "divider", py: 0.5 }}>
                   <Button
                     fullWidth
-                    sx={{ justifyContent: "space-between", textTransform: "none", color: "text.primary" }}
+                    data-testid={`category-${category.event_key}`}
+                    sx={{
+                      justifyContent: "space-between",
+                      textTransform: "none",
+                      color: "text.primary",
+                      flexWrap: "wrap",
+                      gap: 0.5,
+                    }}
                     onClick={() => setOpen(expanded ? "" : category.event_key)}
                   >
-                    <span>{category.label}</span>
+                    <span>{categoryTitle(module, category)}</span>
                     <Typography variant="body2" color="text.secondary">
-                      {category.enabled === false ? "Disabled" : `${count} recipient${count === 1 ? "" : "s"}`}
+                      {category.enabled === false
+                        ? "Disabled"
+                        : count === 0
+                          ? "No recipients"
+                          : `${count} recipient${count === 1 ? "" : "s"}`}
                     </Typography>
                   </Button>
                   {expanded ? <CategoryEditor category={category} onSaved={load} /> : null}

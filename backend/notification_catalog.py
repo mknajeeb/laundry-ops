@@ -19,10 +19,11 @@ MANAGEMENT_CATEGORIES: tuple[dict[str, Any], ...] = (
         "module_key": "pin_issues",
         "module_label": "PIN Issues",
         "event_key": "lost_found.item_reported",
-        "label": "Issue reported",
+        "label": "Issue Reported",
         "description": (
-            "A Found Item, Missing Item, Re-Dry, or Equipment report was filed. "
-            "One category covers those reports because the app sends one event."
+            "PIN Issues — Issue Reported covers Found Item, Missing Item, Re-Dry, "
+            "Equipment, and any other issue type. This stays one category until the "
+            "app sends a separate event for each type."
         ),
         "kind": "management",
         "targeting": "assignment",
