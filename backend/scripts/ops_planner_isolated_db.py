@@ -120,6 +120,12 @@ def apply_statements(cursor, script: str) -> None:
             pending = []
             if statement:
                 cursor.execute(statement)
+                while True:
+                    if getattr(cursor, "with_rows", False):
+                        cursor.fetchall()
+                    nxt = getattr(cursor, "nextset", None)
+                    if not nxt or not nxt():
+                        break
 
 
 def prepare() -> None:
@@ -130,6 +136,11 @@ def prepare() -> None:
     conn = connect()
     cursor = conn.cursor()
     apply_statements(cursor, PLANNER_SQL.read_text(encoding="utf-8"))
+    from backend.weekly_schedule_roles import ensure_weekly_schedule_roles_table
+
+    ensure_weekly_schedule_roles_table(cursor)
+    short_code_sql = PLANNER_SQL.parent / "weekly_schedule_roles_short_code_v1.sql"
+    apply_statements(cursor, short_code_sql.read_text(encoding="utf-8"))
     apply_statements(cursor, SEED)
     cursor.execute(
         """
@@ -183,6 +194,38 @@ def build_app():
     @app.get("/health")
     def health():
         return {"ok": True, "database": DATABASE, "host": HOST, "port": PORT}
+
+    @app.get("/rinse/shift-analysis/weekly-schedule")
+    def isolated_weekly_schedule():
+        from datetime import date
+
+        from flask import jsonify, request
+
+        from backend.business_time import business_today
+        from backend.rinse_scan_time import json_safe_rinse
+        from backend.rinse_shift_analysis_routes import _display_week_payload
+        from backend.weekly_schedule_week import (
+            current_schedule_monday,
+            parse_schedule_date,
+            schedule_monday_containing,
+        )
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            raw_week = (request.args.get("week_start") or "").strip()
+            if not raw_week:
+                week_start = current_schedule_monday(business_today())
+            else:
+                parsed_week = parse_schedule_date(raw_week)
+                week_start = schedule_monday_containing(parsed_week) if parsed_week else None
+            if not isinstance(week_start, date):
+                return jsonify({"error": "week_start must be YYYY-MM-DD"}), 400
+            payload = _display_week_payload(conn, cursor, 1, week_start, ["ADMIN", "OPS"])
+            return jsonify(json_safe_rinse(payload))
+        finally:
+            cursor.close()
+            conn.close()
 
     return app
 

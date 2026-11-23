@@ -377,15 +377,10 @@ def reorder_role_groups(cursor, organization_id: int, codes: Sequence[str]) -> s
     return None
 
 
-def _ensure_short_code_column(cursor) -> None:
-    ensure_weekly_schedule_roles_table(cursor)
+def _has_short_code_column(cursor) -> bool:
+    """True when the explicit short_code migration has been applied. Never alters the table."""
     cursor.execute("SHOW COLUMNS FROM weekly_schedule_roles LIKE 'short_code'")
-    if cursor.fetchone():
-        return
-    cursor.execute(
-        "ALTER TABLE weekly_schedule_roles ADD COLUMN short_code CHAR(3) NULL DEFAULT NULL"
-    )
-    invalidate_schema_cache()
+    return cursor.fetchone() is not None
 
 
 def list_role_catalog(cursor, organization_id: int) -> list[dict[str, Any]]:
@@ -393,10 +388,13 @@ def list_role_catalog(cursor, organization_id: int) -> list[dict[str, Any]]:
     by_code: dict[str, dict[str, Any]] = {
         item["code"]: _role_record(item, builtin=True) for item in BUILTIN_ROLE_DEFAULTS
     }
-    _ensure_short_code_column(cursor)
+    ensure_weekly_schedule_roles_table(cursor)
+    columns = "code, name, role_group, display_order, active, uses_time_slots, remarks_enabled"
+    if _has_short_code_column(cursor):
+        columns = f"{columns}, short_code"
     cursor.execute(
-        """
-        SELECT code, name, role_group, display_order, active, uses_time_slots, remarks_enabled, short_code
+        f"""
+        SELECT {columns}
         FROM weekly_schedule_roles
         WHERE organization_id = %s
         """,
@@ -562,33 +560,51 @@ def _validate_role_fields(
 
 
 def _upsert_role(cursor, organization_id: int, role: Mapping[str, Any]) -> None:
-    _ensure_short_code_column(cursor)
+    ensure_weekly_schedule_roles_table(cursor)
+    values = [
+        int(organization_id),
+        role["code"],
+        role["name"],
+        role.get("role_group"),
+        int(role.get("display_order") or 0),
+        1 if role.get("active", True) else 0,
+        1 if role.get("uses_time_slots", True) else 0,
+        1 if role.get("remarks_enabled") else 0,
+    ]
+    if _has_short_code_column(cursor):
+        cursor.execute(
+            """
+            INSERT INTO weekly_schedule_roles (
+                organization_id, code, name, role_group, display_order,
+                active, uses_time_slots, remarks_enabled, short_code
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE
+                name=VALUES(name),
+                role_group=VALUES(role_group),
+                display_order=VALUES(display_order),
+                active=VALUES(active),
+                uses_time_slots=VALUES(uses_time_slots),
+                remarks_enabled=VALUES(remarks_enabled),
+                short_code=VALUES(short_code)
+            """,
+            (*values, normalize_short_code(role.get("short_code"))),
+        )
+        return
     cursor.execute(
         """
         INSERT INTO weekly_schedule_roles (
             organization_id, code, name, role_group, display_order,
-            active, uses_time_slots, remarks_enabled, short_code
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            active, uses_time_slots, remarks_enabled
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
         ON DUPLICATE KEY UPDATE
             name=VALUES(name),
             role_group=VALUES(role_group),
             display_order=VALUES(display_order),
             active=VALUES(active),
             uses_time_slots=VALUES(uses_time_slots),
-            remarks_enabled=VALUES(remarks_enabled),
-            short_code=VALUES(short_code)
+            remarks_enabled=VALUES(remarks_enabled)
         """,
-        (
-            int(organization_id),
-            role["code"],
-            role["name"],
-            role.get("role_group"),
-            int(role.get("display_order") or 0),
-            1 if role.get("active", True) else 0,
-            1 if role.get("uses_time_slots", True) else 0,
-            1 if role.get("remarks_enabled") else 0,
-            normalize_short_code(role.get("short_code")),
-        ),
+        tuple(values),
     )
 
 
@@ -646,5 +662,7 @@ def update_role(
     role, err = _validate_role_fields(data, current, catalog, list_role_groups(cursor, organization_id))
     if err or role is None:
         return None, err
+    if "short_code" in data and not _has_short_code_column(cursor):
+        return None, "Apply the role code migration before saving a role code"
     _upsert_role(cursor, organization_id, role)
     return _role_record(role, builtin=bool(_builtin_default(key))), None

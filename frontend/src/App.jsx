@@ -711,6 +711,7 @@ function AppShell() {
   if (
     authLoading &&
     pathname !== "/dev/operations-planner" &&
+    pathname !== "/dev/weekly-schedule" &&
     !isLoginRoute(pathname) &&
     !isPublicPinSurface(pathname) &&
     !isPartnerRosterRoute(pathname) &&
@@ -736,10 +737,11 @@ function AppShell() {
     );
   }
 
-  if (import.meta.env.DEV && pathname === "/dev/operations-planner") {
+  if (import.meta.env.DEV && (pathname === "/dev/operations-planner" || pathname === "/dev/weekly-schedule")) {
     return (
       <Routes>
         <Route path="/dev/operations-planner" element={<DevPlannerShell />} />
+        <Route path="/dev/weekly-schedule" element={<WeeklySchedulePage />} />
       </Routes>
     );
   }
