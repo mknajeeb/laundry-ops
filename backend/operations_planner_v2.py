@@ -134,7 +134,14 @@ def normalize_shift(raw: Mapping[str, Any] | None) -> tuple[dict[str, Any] | Non
         slot_end = _hhmm(item.get("end_time"))
         piece = _interval(slot_start, slot_end) if slot_start and slot_end else None
         if piece is None:
-            return None, "each break needs a start and end"
+            try:
+                minutes = int(item.get("minutes") or 0)
+            except (TypeError, ValueError):
+                minutes = 0
+            if minutes <= 0:
+                return None, "each break needs a start and end"
+            slots.append({"minutes": minutes})
+            continue
         if piece[0] < window[0] or piece[1] > window[1]:
             return None, "breaks must sit inside the shift"
         timed = item.get("timed")
@@ -147,13 +154,6 @@ def normalize_shift(raw: Mapping[str, Any] | None) -> tuple[dict[str, Any] | Non
                 "timed": bool(timed),
             }
         )
-    timed_pieces = [_interval(slot["start_time"], slot["end_time"]) for slot in slots if slot["timed"]]
-    for index, piece in enumerate(timed_pieces):
-        if piece is None:
-            continue
-        for other in timed_pieces[index + 1 :]:
-            if other is not None and _overlaps(piece, other):
-                return None, "timed breaks cannot overlap"
 
     assignments: list[dict[str, str]] = []
     for item in raw.get("role_assignments") or []:
@@ -173,9 +173,11 @@ def normalize_shift(raw: Mapping[str, Any] | None) -> tuple[dict[str, Any] | Non
         if piece is None:
             continue
         for other in assignments[index + 1 :]:
+            if other["role"] != item["role"]:
+                continue
             other_piece = _interval(other["start_time"], other["end_time"])
             if other_piece is not None and _overlaps(piece, other_piece):
-                return None, "role segments cannot overlap for the same employee"
+                return None, "the same role cannot overlap itself on one shift"
 
     role = str(raw.get("role") or (assignments[0]["role"] if assignments else "")).strip()
     if not role:

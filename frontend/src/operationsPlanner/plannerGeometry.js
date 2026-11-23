@@ -1,4 +1,4 @@
-import { clockMinutes, minutesToClock, shiftHours, spanMinutes } from "./plannerModel";
+import { clockMinutes, minutesToClock, spanMinutes } from "./plannerModel";
 
 export function asList(value) {
   if (Array.isArray(value)) return value;
@@ -11,6 +11,26 @@ export function asList(value) {
     }
   }
   return [];
+}
+
+/**
+ * The schedule the server will still show after a save.
+ * One role that fills the envelope is stored on the shift itself, so the
+ * segment list comes back empty and the role plus its times are the schedule.
+ */
+export function persistedRoleSignature(entry) {
+  const stored = storedRoleSegments(entry);
+  if (stored.length) {
+    return stored
+      .map((item) => `${item.role}@${String(item.start_time || "").slice(0, 5)}-${String(item.end_time || "").slice(0, 5)}`)
+      .sort()
+      .join("|");
+  }
+  const role = String(entry?.role || "").trim();
+  const start = String(entry?.start_time || "").slice(0, 5);
+  const end = String(entry?.end_time || "").slice(0, 5);
+  if (role && !role.includes(",") && start && end) return `${role}@${start}-${end}`;
+  return role;
 }
 
 /** Segments a manager actually stored. A full-shift placeholder is not a split. */
@@ -179,28 +199,292 @@ export function pieceBox(shift, piece) {
  * string, including a combined label. It is not assigned to the first role.
  */
 export function visualPieces(entry) {
-  const start = clockMinutes(entry?.start_time);
-  let end = clockMinutes(entry?.end_time);
-  if (start == null || end == null) return [];
-  if (end <= start) end += 24 * 60;
   const label = String(entry?.role || "").trim();
-  const assigned = asList(entry?.role_assignments).map((segment) => {
+  const assigned = storedRoleSegments(entry).map((segment) => {
     const segStart = clockMinutes(segment.start_time);
     let segEnd = clockMinutes(segment.end_time);
     if (segStart == null || segEnd == null) return null;
     if (segEnd <= segStart) segEnd += 24 * 60;
     return { role: segment.role || label, start: segStart, end: segEnd, allocated: true };
   }).filter(Boolean).sort((a, b) => a.start - b.start);
-  if (!assigned.length) return [{ role: label, start, end, allocated: false }];
+  if (assigned.length) return assigned;
+  const start = clockMinutes(entry?.start_time);
+  let end = clockMinutes(entry?.end_time);
+  if (start == null || end == null) return [];
+  if (end <= start) end += 24 * 60;
+  return [{ role: label || "Unassigned", start, end, allocated: false }];
+}
+
+function mergeRanges(ranges) {
+  const merged = [];
+  ranges.filter((range) => range && range[1] > range[0]).sort((a, b) => a[0] - b[0]).forEach(([start, end]) => {
+    const last = merged[merged.length - 1];
+    if (!last || start > last[1]) merged.push([start, end]);
+    else if (end > last[1]) last[1] = end;
+  });
+  return merged;
+}
+
+function rangeMinutes(ranges) {
+  return mergeRanges(ranges).reduce((sum, [start, end]) => sum + (end - start), 0);
+}
+
+/** Role intervals are the schedule. A legacy row with no stored split uses its one span. */
+export function roleIntervals(entry) {
   const pieces = [];
-  let cursor = start;
-  for (const segment of assigned) {
-    if (segment.start > cursor + 1) pieces.push({ role: label, start: cursor, end: segment.start, allocated: false });
-    pieces.push(segment);
-    cursor = Math.max(cursor, segment.end);
+  storedRoleSegments(entry).forEach((segment) => {
+    const start = clockMinutes(segment.start_time);
+    let end = clockMinutes(segment.end_time);
+    if (start == null || end == null || start === end) return;
+    if (end <= start) end += 24 * 60;
+    pieces.push([start, end]);
+  });
+  if (pieces.length) return pieces;
+  const start = clockMinutes(entry?.start_time);
+  let end = clockMinutes(entry?.end_time);
+  if (start == null || end == null || start === end) return [];
+  if (end <= start) end += 24 * 60;
+  return [[start, end]];
+}
+
+function breakCutMinutes(entries, intervals) {
+  const timed = [];
+  let untimed = 0;
+  let sawTimed = false;
+  entries.forEach((entry) => {
+    const slots = visibleBreaks(entry).filter((slot) => slot.start_time);
+    if (slots.length) {
+      sawTimed = true;
+      slots.forEach((slot) => {
+        const start = clockMinutes(slot.start_time);
+        let end = clockMinutes(slot.end_time);
+        if (start == null || end == null || start === end) return;
+        if (end <= start) end += 24 * 60;
+        timed.push([start, end]);
+      });
+      return;
+    }
+    untimed = Math.max(untimed, Math.max(0, Number(entry?.break_minutes) || 0));
+  });
+  const work = mergeRanges(intervals);
+  const offs = mergeRanges(timed);
+  let cut = 0;
+  work.forEach(([start, end]) => {
+    offs.forEach(([breakStart, breakEnd]) => {
+      const left = Math.max(start, breakStart);
+      const right = Math.min(end, breakEnd);
+      if (right > left) cut += right - left;
+    });
+  });
+  if (!sawTimed) cut += untimed;
+  return Math.min(rangeMinutes(work), cut);
+}
+
+/**
+ * Gross is the union of role intervals for each employee and day.
+ * A timed break is removed only where it overlaps that union, and only once.
+ * The stored shift start and end are not added on top.
+ */
+export function scheduledRoleHours(entries) {
+  const list = Array.isArray(entries) ? entries : [entries];
+  const groups = new Map();
+  list.forEach((entry) => {
+    const key = `${entry?.user_id}:${Number(entry?.day_of_week)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(entry);
+  });
+  let grossMin = 0;
+  let breakMin = 0;
+  groups.forEach((group) => {
+    const intervals = group.flatMap((entry) => roleIntervals(entry));
+    const gross = rangeMinutes(intervals);
+    grossMin += gross;
+    breakMin += breakCutMinutes(group, intervals);
+  });
+  const round = (minutes) => Math.round((minutes / 60) * 10000) / 10000;
+  return {
+    gross: round(grossMin),
+    net: round(Math.max(0, grossMin - breakMin)),
+    timedBreak: round(breakMin),
+  };
+}
+
+function clockRange(start, end) {
+  const open = clockMinutes(start);
+  let close = clockMinutes(end);
+  if (open == null || close == null || open === close) return null;
+  if (close <= open) close += 24 * 60;
+  return [open, close];
+}
+
+function allocatedRanges(entry) {
+  const pieces = [];
+  storedRoleSegments(entry).forEach((segment) => {
+    const span = clockRange(segment.start_time, segment.end_time);
+    if (span) pieces.push(span);
+  });
+  if (pieces.length) return pieces;
+  const role = String(entry?.role || "").trim();
+  const span = clockRange(entry?.start_time, entry?.end_time);
+  if (role && span) return [span];
+  return [];
+}
+
+function subtractRanges(spans, covered) {
+  let free = mergeRanges(spans).map((span) => [...span]);
+  mergeRanges(covered).forEach(([cutStart, cutEnd]) => {
+    const next = [];
+    free.forEach(([start, end]) => {
+      if (cutEnd <= start || cutStart >= end) next.push([start, end]);
+      else {
+        if (cutStart > start) next.push([start, cutStart]);
+        if (cutEnd < end) next.push([cutEnd, end]);
+      }
+    });
+    free = next;
+  });
+  return free;
+}
+
+function rangesOverlap(left, right) {
+  if (!left || !right) return true;
+  return left[0] < right[1] && right[0] < left[1];
+}
+
+function untimedDeduction(records) {
+  const pending = records.map((record) => ({ ...record }));
+  let minutes = 0;
+  let review = false;
+  while (pending.length) {
+    const cluster = [pending.shift()];
+    for (let index = 0; index < pending.length;) {
+      if (cluster.some((item) => rangesOverlap(item.span, pending[index].span))) cluster.push(pending.splice(index, 1)[0]);
+      else index += 1;
+    }
+    const amounts = cluster.map((item) => item.minutes).filter((value) => value > 0);
+    if (!amounts.length) continue;
+    if (cluster.length > 1) review = true;
+    if (amounts.every((value) => value === amounts[0])) minutes += amounts[0];
+    else minutes += amounts.reduce((sum, value) => sum + value, 0);
   }
-  if (end > cursor + 1) pieces.push({ role: label, start: cursor, end, allocated: false });
-  return pieces;
+  return { minutes, review };
+}
+
+/**
+ * Role-hours are the union of allocated role intervals.
+ * Unallocated staffing is the stored span minus that union.
+ * Total is the union of stored spans. Net subtracts break overlap once.
+ * Identical untimed breaks on overlapping shifts stay separate and deduct once.
+ */
+export function staffingFigures(entries) {
+  const list = Array.isArray(entries) ? entries : [entries];
+  const groups = new Map();
+  list.filter(Boolean).forEach((entry) => {
+    const key = `${entry?.user_id}:${Number(entry?.day_of_week)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(entry);
+  });
+  const round = (minutes) => Math.round((minutes / 60) * 10000) / 10000;
+  let roleMin = 0;
+  let totalMin = 0;
+  let breakMin = 0;
+  let review = false;
+  groups.forEach((group) => {
+    const spans = group.map((entry) => clockRange(entry?.start_time, entry?.end_time)).filter(Boolean);
+    const roles = group.flatMap((entry) => allocatedRanges(entry));
+    const total = rangeMinutes(spans);
+    const role = rangeMinutes(roles);
+    totalMin += total;
+    roleMin += role;
+    const timed = [];
+    const untimed = [];
+    group.forEach((entry) => {
+      const span = clockRange(entry?.start_time, entry?.end_time);
+      visibleBreaks(entry).forEach((slot) => {
+        if (slot.start_time) {
+          const range = clockRange(slot.start_time, slot.end_time);
+          if (range) timed.push(range);
+        } else if (slot.minutes) untimed.push({ minutes: Number(slot.minutes), span });
+      });
+    });
+    let cut = 0;
+    mergeRanges(spans).forEach(([start, end]) => {
+      mergeRanges(timed).forEach(([breakStart, breakEnd]) => {
+        const left = Math.max(start, breakStart);
+        const right = Math.min(end, breakEnd);
+        if (right > left) cut += right - left;
+      });
+    });
+    const duration = untimedDeduction(untimed);
+    if (duration.review) review = true;
+    breakMin += Math.min(total, cut + duration.minutes);
+  });
+  const unallocated = Math.max(0, totalMin - roleMin);
+  return {
+    role: round(roleMin),
+    unallocated: round(unallocated),
+    total: round(totalMin),
+    net: round(Math.max(0, totalMin - breakMin)),
+    review,
+  };
+}
+
+/** Keep the stored envelope unless the manager confirms a trim or an extension. */
+export function applyRoleEdits(entry, segments, mode) {
+  const clean = (segments || []).filter((segment) => segment?.role && spanMinutes(segment.start_time, segment.end_time));
+  const names = [];
+  clean.forEach((segment) => {
+    if (segment.role && !names.includes(segment.role)) names.push(segment.role);
+  });
+  const stored = clockRange(entry?.start_time, entry?.end_time);
+  let needStart = null;
+  let needEnd = null;
+  clean.forEach((segment) => {
+    const span = clockRange(segment.start_time, segment.end_time);
+    if (!span) return;
+    if (needStart == null || span[0] < needStart) needStart = span[0];
+    if (needEnd == null || span[1] > needEnd) needEnd = span[1];
+  });
+  const draft = {
+    ...entry,
+    role: names.join(","),
+    role_assignments: clean.map((segment) => ({
+      role: segment.role,
+      start_time: String(segment.start_time).slice(0, 5),
+      end_time: String(segment.end_time).slice(0, 5),
+    })),
+  };
+  if (mode === "trim" && needStart != null) {
+    return { entry: { ...draft, start_time: minutesToClock(needStart), end_time: minutesToClock(needEnd) } };
+  }
+  if (mode === "extend" && needStart != null && stored) {
+    return {
+      entry: {
+        ...draft,
+        start_time: minutesToClock(Math.min(stored[0], needStart)),
+        end_time: minutesToClock(Math.max(stored[1], needEnd)),
+      },
+    };
+  }
+  const outside = stored && needStart != null && (needStart < stored[0] || needEnd > stored[1]);
+  if (outside) {
+    const extended = {
+      ...draft,
+      start_time: minutesToClock(Math.min(stored[0], needStart)),
+      end_time: minutesToClock(Math.max(stored[1], needEnd)),
+    };
+    return {
+      entry,
+      confirm: {
+        kind: "extend",
+        segments: draft.role_assignments,
+        before: staffingFigures(entry).total,
+        after: staffingFigures(extended).total,
+        end: extended.end_time,
+      },
+    };
+  }
+  return { entry: { ...draft, start_time: entry?.start_time, end_time: entry?.end_time } };
 }
 
 /** Stored segments only. A missing list stays missing; the display label is not written back. */
@@ -231,24 +515,60 @@ export function displaySegments(entry) {
   }];
 }
 
-/** Timed slots stay on the clock. break_minutes alone is an unscheduled duration, not a guessed time. */
+/** Timed slots stay on the clock. A minutes-only slot is its own untimed record, not a guessed time. */
 export function visibleBreaks(entry) {
-  const slots = asList(entry?.break_slots).filter((slot) => slot?.start_time && slot?.end_time);
-  if (slots.length) {
-    return slots.map((slot) => ({
-      start_time: String(slot.start_time).slice(0, 5),
-      end_time: String(slot.end_time).slice(0, 5),
-      timed: slot.timed !== false,
-      unscheduled: false,
-    }));
-  }
+  const raw = asList(entry?.break_slots);
+  const timed = raw.filter((slot) => slot?.start_time && slot?.end_time).map((slot) => ({
+    start_time: String(slot.start_time).slice(0, 5),
+    end_time: String(slot.end_time).slice(0, 5),
+    timed: true,
+    unscheduled: false,
+  }));
+  const untimed = raw.filter((slot) => !slot?.start_time && Number(slot?.minutes) > 0).map((slot) => ({
+    unscheduled: true,
+    minutes: Number(slot.minutes),
+    timed: false,
+  }));
+  if (timed.length || untimed.length) return [...timed, ...untimed];
   const minutes = Number(entry?.break_minutes) || 0;
   if (!minutes) return [];
   return [{ unscheduled: true, minutes, timed: false }];
 }
 
-function clockOf(total) {
-  return minutesToClock(total);
+/** Persist timed slots and minutes-only records. Identical untimed lengths deduct once. */
+export function breakAssignment(entry, slots) {
+  const timed = (slots || []).filter((slot) => slot?.start_time && slot?.end_time);
+  const untimed = (slots || []).filter((slot) => !slot?.start_time && Number(slot?.minutes) > 0);
+  const timedMinutes = timed.reduce((sum, slot) => sum + (spanMinutes(slot.start_time, slot.end_time) || 0), 0);
+  const sameUntimed = untimed.length > 1 && untimed.every((slot) => Number(slot.minutes) === Number(untimed[0].minutes));
+  const untimedMinutes = sameUntimed ? Number(untimed[0].minutes) : untimed.reduce((sum, slot) => sum + Number(slot.minutes), 0);
+  return {
+    ...entry,
+    break_slots: [
+      ...timed.map((slot) => ({ start_time: String(slot.start_time).slice(0, 5), end_time: String(slot.end_time).slice(0, 5), timed: true })),
+      ...untimed.map((slot) => ({ minutes: Number(slot.minutes) })),
+    ],
+    break_minutes: timedMinutes + untimedMinutes,
+  };
+}
+
+/**
+ * Propose one break for a shift.
+ * A shift that already has a break is left unchanged unless the manager chooses replace.
+ * Replace is explicit. It does not merge records on its own and it does not touch tasks.
+ */
+export function proposeBreak(entry, { mode = "timed", minutes = 30, start = "12:00", replace = false } = {}) {
+  const existing = visibleBreaks(entry);
+  if ((existing.length || Number(entry?.break_minutes) > 0) && !replace) return { entry, skipped: true };
+  const length = Number(minutes);
+  if (!length) return { entry, skipped: true };
+  if (mode === "untimed") return { entry: breakAssignment(entry, [{ minutes: length }]), skipped: false };
+  const begin = clockMinutes(start);
+  if (begin == null) return { entry, skipped: true };
+  return {
+    entry: breakAssignment(entry, [{ start_time: String(start).slice(0, 5), end_time: minutesToClock(begin + length) }]),
+    skipped: false,
+  };
 }
 
 /**
@@ -257,21 +577,15 @@ function clockOf(total) {
  * A combined role with no stored split lists each name and does not invent a time for each name.
  */
 export function scheduleCardRows(entry) {
-  const breaks = new Set(visibleBreaks(entry).filter((slot) => slot.start_time).map((slot) => `${slot.start_time}-${slot.end_time}`));
-  const stored = asList(entry?.role_assignments).length ? displaySegments(entry).filter((segment) => segment.allocated) : [];
+  const stored = storedRoleSegments(entry).filter((segment) => segment.start_time && segment.end_time);
   if (stored.length) {
-    const gaps = visualPieces(entry).filter((piece) => !piece.allocated).map((piece) => {
-      const start = clockOf(piece.start);
-      const end = clockOf(piece.end);
-      return { role: "", start_time: start, end_time: end, allocated: false, unsplit: true };
-    }).filter((row) => row.start_time && row.end_time && !breaks.has(`${row.start_time}-${row.end_time}`));
-    return [...stored.map((segment) => ({
+    return stored.map((segment) => ({
       role: segment.role,
-      start_time: segment.start_time,
-      end_time: segment.end_time,
+      start_time: String(segment.start_time).slice(0, 5),
+      end_time: String(segment.end_time).slice(0, 5),
       allocated: true,
       unsplit: false,
-    })), ...gaps].sort((a, b) => String(a.start_time).localeCompare(String(b.start_time)));
+    })).sort((a, b) => String(a.start_time).localeCompare(String(b.start_time)));
   }
   const codes = String(entry?.role || "").split(",").map((part) => part.trim()).filter(Boolean);
   if (codes.length <= 1) {
@@ -308,23 +622,22 @@ function mergedRoleHours(pieces) {
   return minutes / 60;
 }
 
-/** Day totals from the shifts on that day. Role hours follow stored segments. Gross and net stay on shiftHours. */
+/** Day totals from role intervals. Overlapping roles for one person count once. */
 export function dayScheduleSummary(entries, day) {
   const shifts = (entries || []).filter((entry) => Number(entry.day_of_week) === Number(day));
   const roles = {};
   const rolePeople = {};
   const rolePieces = {};
-  let gross = 0;
-  let net = 0;
+  const booked = scheduledRoleHours(shifts);
+  const gross = booked.gross;
+  const net = booked.net;
   function countPerson(role, userId) {
     if (!role) return;
     rolePeople[role] = rolePeople[role] || new Set();
     rolePeople[role].add(Number(userId));
   }
   for (const entry of shifts) {
-    const hours = shiftHours(entry);
-    gross += hours.gross;
-    net += hours.net;
+    const hours = scheduledRoleHours(entry);
     const rows = scheduleCardRows(entry);
     let namedUnsplit = false;
     for (const row of rows) {
@@ -370,6 +683,7 @@ export function dayScheduleSummary(entries, day) {
     net,
     roles,
     roleCounts,
+    scheduled: staffingFigures(shifts),
   };
 }
 

@@ -23,7 +23,7 @@ import {
 } from "./plannerModel";
 import { printDocumentHtml, scheduleCardSvg, scheduleCsv, schedulePdf } from "./scheduleExport";
 import PlannerWorkspace from "./PlannerWorkspace";
-import { asList, draftOperations, relocateShift, shiftKey, splitHalves, storedRoleSegments } from "./plannerGeometry";
+import { asList, draftOperations, persistedRoleSignature, relocateShift, shiftKey, splitHalves, storedRoleSegments } from "./plannerGeometry";
 import { copyDay, copyEmployeeDay, copyEmployeeWeek, copyWeekShifts, copiedShift } from "./plannerCopy";
 import { laborComparison } from "./plannerLabor";
 import { affectedShiftCount, interpretSaveResponse, patternCells, reviewLines, scopeDecision, staffingChanges, taskChanges } from "./plannerReview";
@@ -478,8 +478,8 @@ export default function OperationsPlannerV2Page() {
       id,
       user_id: chosen,
       day_of_week: chosenDay,
-      start_time: "08:00",
-      end_time: "16:00",
+      start_time: "",
+      end_time: "",
       role: "",
       break_minutes: 0,
       break_slots: [],
@@ -571,9 +571,7 @@ export default function OperationsPlannerV2Page() {
           && Number(entry.day_of_week) === Number(shift.day_of_week)
           && String(entry.start_time).slice(0, 5) === String(shift.start_time || "").slice(0, 5)));
       if (!match) return false;
-      const wantRoles = storedRoleSegments(shift).map((item) => `${item.role}@${item.start_time}-${item.end_time}`).join("|");
-      const gotRoles = storedRoleSegments(match).map((item) => `${item.role}@${item.start_time}-${item.end_time}`).join("|");
-      if (wantRoles !== gotRoles) return false;
+      if (persistedRoleSignature(shift) !== persistedRoleSignature(match)) return false;
       const wantBreaks = asList(shift.break_slots).map((slot) => `${String(slot.start_time || "").slice(0, 5)}-${String(slot.end_time || "").slice(0, 5)}`).sort().join();
       const gotBreaks = asList(match.break_slots).map((slot) => `${String(slot.start_time || "").slice(0, 5)}-${String(slot.end_time || "").slice(0, 5)}`).sort().join();
       if (wantBreaks !== gotBreaks) return false;
@@ -1581,7 +1579,6 @@ function BreakBoard({ entries, employees, onMove, onCopyPattern }) {
 function TaskBoard({ tasks, employees, entries, day, onEdit }) {
   const [userId, setUserId] = useState(employees[0] ? String(employees[0].user_id) : "");
   const [role, setRole] = useState("");
-  const [shared, setShared] = useState(false);
   const byPerson = new Map();
   for (const task of tasks) {
     const key = Number(task.user_id);
@@ -1596,33 +1593,30 @@ function TaskBoard({ tasks, employees, entries, day, onEdit }) {
           event.preventDefault();
           const entry = entries.find((item) => String(item.user_id) === String(userId) && Number(item.day_of_week) === Number(day));
           if (!entry || !role.trim()) return;
-          const members = shared ? employees.map((employee) => Number(employee.user_id)) : [Number(userId)];
+          const activity = role.trim().startsWith("agroup_");
           const current = tasks
             .filter((task) => String(task.user_id) === String(userId) && Number(task.day_of_week) === Number(day))
             .map((task) => ({
               role: task.role,
               name: task.role,
-              shared: Boolean(task.assignment_group_id),
               user_ids: task.user_ids || [Number(task.user_id)],
-              execution_mode: task.assignment_group_id ? "shared" : "individual",
+              execution_mode: task.assignment_group_id || String(task.role || "").startsWith("agroup_") ? "shared" : "individual",
             }));
           onEdit(entry, {
             tasks: [...current.filter((task) => task.role !== role.trim()), {
               role: role.trim(),
               name: role.trim(),
-              shared,
-              user_ids: members,
-              execution_mode: shared ? "shared" : "individual",
+              user_ids: [Number(userId)],
+              execution_mode: activity ? "shared" : "individual",
             }],
           });
         }}
       >
-        <p>Assign an existing task role. Completed work stays on the employee record. A shared task uses one activity group.</p>
+        <p>Assign an existing task role. Completed work stays on the employee record. Shared activity groups keep the grouping configured in Task Management.</p>
         <select value={userId} onChange={(event) => setUserId(event.target.value)}>
           {employees.map((employee) => <option key={employee.user_id} value={employee.user_id}>{employee.display_name}</option>)}
         </select>
         <input value={role} onChange={(event) => setRole(event.target.value)} placeholder="Existing task role code" />
-        <label><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /> Shared activity group</label>
         <button type="submit">Assign task</button>
       </form>
       {[...byPerson.entries()].map(([personId, rows]) => {
@@ -1655,12 +1649,20 @@ function previewPayload() {
       { id: 1, user_id: 7, day_of_week: 1, start_time: "08:00", end_time: "16:00", role: "wash", break_slots: [{ start_time: "12:00", end_time: "12:30", timed: true }], role_assignments: [{ role: "wash", start_time: "08:00", end_time: "12:00" }, { role: "fold", start_time: "12:30", end_time: "16:00" }] },
       { id: 2, user_id: 8, day_of_week: 1, start_time: "09:00", end_time: "17:00", role: "fold", break_slots: [{ start_time: "12:00", end_time: "12:30", timed: true }], role_assignments: [{ role: "fold", start_time: "09:00", end_time: "17:00" }] },
       { id: 3, user_id: 9, day_of_week: 1, start_time: "10:00", end_time: "18:00", role: "fold", break_slots: [{ start_time: "13:00", end_time: "13:30", timed: true }], role_assignments: [{ role: "fold", start_time: "10:00", end_time: "18:00" }] },
-      { id: 4, user_id: 7, day_of_week: 2, start_time: "05:00", end_time: "13:00", role: "sort", break_minutes: 30, break_slots: null, role_assignments: [{ role: "sort", start_time: "05:00", end_time: "09:00" }, { role: "fold", start_time: "09:00", end_time: "13:00" }] },
+      { id: 4, user_id: 7, day_of_week: 2, start_time: "05:00", end_time: "13:30", role: "sort,weigher", break_minutes: 30, break_slots: [{ start_time: "10:00", end_time: "10:30", timed: true }], role_assignments: [{ role: "weigher", start_time: "05:00", end_time: "06:00" }, { role: "sort", start_time: "06:00", end_time: "10:00" }] },
+      { id: 5, user_id: 8, day_of_week: 3, start_time: "08:00", end_time: "16:30", role: "attendant", break_slots: [{ minutes: 30 }, { minutes: 30 }], role_assignments: [{ role: "attendant", start_time: "08:00", end_time: "16:00" }] },
+      { id: 6, user_id: 8, day_of_week: 3, start_time: "08:00", end_time: "16:00", role: "attendant", break_slots: [{ minutes: 30 }], role_assignments: [{ role: "attendant", start_time: "08:00", end_time: "16:00" }] },
     ],
     daily_responsibilities: [
-      { id: 11, user_id: 7, day_of_week: 1, role: "floor_reset", status: "completed", assignment_group_id: "g1" },
-      { id: 12, user_id: 8, day_of_week: 1, role: "floor_reset", status: "in_progress", assignment_group_id: "g1" },
-      { id: 13, user_id: 9, day_of_week: 1, role: "trash", status: "pending" },
+      { id: 11, user_id: 7, day_of_week: 1, role: "floor_cleaning", status: "completed", assignment_group_id: "g1" },
+      { id: 12, user_id: 8, day_of_week: 1, role: "floor_cleaning", status: "in_progress", assignment_group_id: "g1" },
+      { id: 13, user_id: 9, day_of_week: 1, role: "drop_off_customer", status: "pending" },
+      { id: 14, user_id: 9, day_of_week: 4, role: "agroup_washer_and_floor_cleaning", timing_mode: "anytime", execution_mode: "individual", status: "assigned" },
+    ],
+    role_catalog: [
+      { code: "floor_cleaning", name: "Floor Cleaning", kind: "task", uses_time_slots: false, active: true, display_order: 210, short_code: "FLR" },
+      { code: "drop_off_customer", name: "Drop Off Customer", kind: "task", uses_time_slots: false, active: true, display_order: 220, short_code: "DRP" },
+      { code: "agroup_washer_and_floor_cleaning", name: "Washer and floor cleaning", kind: "task", uses_time_slots: false, active: true, display_order: 230 },
     ],
     planner: {
       week_monday: "2026-11-09",

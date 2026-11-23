@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import week from "./fixtures/veewash-2027-01-04.json";
-import { barBox, dayScheduleSummary, displaySegments, draftOperations, placeBreak, relocateShift, resizeBreak, resizeEdge, resizeSegment, roleColor, scheduleCardRows, splitHalves, storedRoleSegments, timelineAxis, visibleBreaks, visualPieces } from "./plannerGeometry";
+import { applyRoleEdits, barBox, breakAssignment, dayScheduleSummary, displaySegments, draftOperations, persistedRoleSignature, placeBreak, proposeBreak, relocateShift, resizeBreak, resizeEdge, resizeSegment, roleColor, scheduleCardRows, scheduledRoleHours, splitHalves, staffingFigures, storedRoleSegments, timelineAxis, visibleBreaks, visualPieces } from "./plannerGeometry";
 
 describe("planner geometry", () => {
   it("starts the axis at the earliest shift instead of clipping 02:00 to 06:00", () => {
@@ -100,9 +100,8 @@ describe("planner geometry", () => {
   it("keeps an unallocated combined remainder on the combined role", () => {
     const maria = week.entries.find((entry) => entry.id === 5266);
     const pieces = visualPieces(maria);
-    expect(pieces.map((piece) => piece.role)).toEqual(["fold,attendant", "attendant"]);
-    expect(pieces[0].allocated).toBe(false);
-    expect(pieces[1].allocated).toBe(true);
+    expect(pieces.map((piece) => piece.role)).toEqual(["attendant"]);
+    expect(pieces[0].allocated).toBe(true);
     expect(roleColor("fold,attendant")).toBe("#3e4c59");
     expect(roleColor("fold,attendant")).not.toBe(roleColor("fold"));
     expect(roleColor("weigher,fold")).toBe("#3e4c59");
@@ -121,8 +120,8 @@ describe("planner geometry", () => {
     };
     expect(storedRoleSegments(fromApi).map((segment) => segment.role)).toEqual(["attendant"]);
     const pieces = visualPieces({ ...fromApi, role_assignments: storedRoleSegments(fromApi) });
-    expect(pieces.map((piece) => piece.role)).toEqual(["fold,attendant", "attendant"]);
-    expect(pieces[0].allocated).toBe(false);
+    expect(pieces.map((piece) => piece.role)).toEqual(["attendant"]);
+    expect(pieces[0].allocated).toBe(true);
     const plain = storedRoleSegments({
       role: "fold",
       assignments: [{ role: "fold", start_time: "08:00", end_time: "16:00", full_shift: true }],
@@ -173,7 +172,7 @@ describe("planner geometry", () => {
     ]);
     const summary = dayScheduleSummary([monday], 1);
     expect(summary.people).toBe(1);
-    expect(summary.gross).toBe(8);
+    expect(summary.gross).toBe(7.5);
     expect(summary.net).toBe(7.5);
     expect(summary.roles.wash).toBe(4);
     expect(summary.roles.fold).toBe(3.5);
@@ -209,5 +208,117 @@ describe("planner geometry", () => {
     });
     expect(combined.map((row) => row.role)).toEqual(["wash", "attendant"]);
     expect(combined.every((row) => row.unsplit && !row.start_time)).toBe(true);
+  });
+
+  it("schedules only the role intervals and ignores a wider stored shift", () => {
+    const monday = {
+      user_id: 38,
+      day_of_week: 1,
+      start_time: "05:00",
+      end_time: "13:30",
+      role: "dry",
+      break_minutes: 30,
+      break_slots: [{ start_time: "10:00", end_time: "10:30", timed: true }],
+      role_assignments: [
+        { role: "weigher", start_time: "05:00", end_time: "06:00" },
+        { role: "sort", start_time: "06:00", end_time: "10:00" },
+      ],
+    };
+    expect(scheduleCardRows(monday).map((row) => [row.role, row.start_time, row.end_time])).toEqual([
+      ["weigher", "05:00", "06:00"],
+      ["sort", "06:00", "10:00"],
+    ]);
+    expect(scheduleCardRows(monday).some((row) => !row.role)).toBe(false);
+    const hours = scheduledRoleHours(monday);
+    expect(hours.gross).toBe(5);
+    expect(hours.net).toBe(5);
+    const overlap = scheduledRoleHours({
+      ...monday,
+      role_assignments: [
+        { role: "weigher", start_time: "05:00", end_time: "07:00" },
+        { role: "sort", start_time: "06:00", end_time: "10:00" },
+      ],
+    });
+    expect(overlap.gross).toBe(5);
+    const inside = scheduledRoleHours({
+      ...monday,
+      break_slots: [{ start_time: "09:00", end_time: "09:30", timed: true }],
+      role_assignments: [
+        { role: "weigher", start_time: "05:00", end_time: "06:00" },
+        { role: "sort", start_time: "06:00", end_time: "10:00" },
+      ],
+    });
+    expect(inside.gross).toBe(5);
+    expect(inside.net).toBe(4.5);
+    const amna = staffingFigures(monday);
+    expect(amna).toMatchObject({ role: 5, unallocated: 3.5, total: 8.5, net: 8 });
+    const longerSort = applyRoleEdits(monday, [
+      { role: "weigher", start_time: "05:00", end_time: "06:00" },
+      { role: "sort", start_time: "06:00", end_time: "11:00" },
+    ]);
+    expect(longerSort.confirm).toBeUndefined();
+    expect(longerSort.entry.end_time).toBe("13:30");
+    expect(staffingFigures(longerSort.entry)).toMatchObject({ role: 6, unallocated: 2.5, total: 8.5 });
+    const extended = applyRoleEdits(monday, [
+      { role: "weigher", start_time: "05:00", end_time: "06:00" },
+      { role: "sort", start_time: "06:00", end_time: "14:00" },
+    ]);
+    expect(extended.confirm.kind).toBe("extend");
+    expect(extended.entry.end_time).toBe("13:30");
+    const trimmed = applyRoleEdits(monday, monday.role_assignments, "trim");
+    expect(trimmed.entry.end_time).toBe("10:00");
+    expect(staffingFigures(trimmed.entry).total).toBe(5);
+    const aselisa = staffingFigures([
+      {
+        user_id: 4,
+        day_of_week: 1,
+        start_time: "08:00",
+        end_time: "16:30",
+        role: "attendant",
+        role_assignments: [{ role: "attendant", start_time: "08:00", end_time: "16:00" }],
+        break_slots: [{ minutes: 30 }],
+      },
+      {
+        id: 2,
+        user_id: 4,
+        day_of_week: 1,
+        start_time: "08:00",
+        end_time: "16:00",
+        role: "attendant",
+        role_assignments: [{ role: "attendant", start_time: "08:00", end_time: "16:00" }],
+        break_slots: [{ minutes: 30 }],
+      },
+    ]);
+    expect(aselisa).toMatchObject({ role: 8, unallocated: 0.5, total: 8.5, net: 8, review: true });
+    const sent = {
+      role: "sort",
+      start_time: "09:00",
+      end_time: "11:00",
+      role_assignments: [{ role: "sort", start_time: "09:00", end_time: "11:00" }],
+    };
+    const stored = { role: "sort", start_time: "09:00", end_time: "11:00", role_assignments: null };
+    expect(persistedRoleSignature(sent)).toBe(persistedRoleSignature(stored));
+  });
+
+  it("previews a bulk break without replacing an existing record or touching the shift envelope", () => {
+    const stored = {
+      user_id: 7,
+      day_of_week: 1,
+      start_time: "08:00",
+      end_time: "16:30",
+      role: "fold",
+      role_assignments: [{ role: "fold", start_time: "08:00", end_time: "16:00" }],
+      break_slots: [],
+    };
+    const added = proposeBreak(stored, { mode: "untimed", minutes: 30, replace: false });
+    expect(added.skipped).toBe(false);
+    expect(added.entry.end_time).toBe("16:30");
+    expect(added.entry.break_slots).toEqual([{ minutes: 30 }]);
+    const kept = proposeBreak(added.entry, { mode: "timed", minutes: 15, start: "12:00", replace: false });
+    expect(kept.skipped).toBe(true);
+    expect(kept.entry.break_slots).toEqual([{ minutes: 30 }]);
+    const replaced = proposeBreak(added.entry, { mode: "timed", minutes: 30, start: "12:00", replace: true });
+    expect(replaced.entry.break_slots).toEqual([{ start_time: "12:00", end_time: "12:30", timed: true }]);
+    expect(breakAssignment(stored, [{ minutes: 30 }, { minutes: 30 }]).break_minutes).toBe(30);
   });
 });

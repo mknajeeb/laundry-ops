@@ -151,13 +151,13 @@ def prepare() -> None:
     conn.close()
 
 
-def serve() -> None:
+def build_app():
+    """Authenticated manager routes against the local ops_planner_test database."""
     from flask import Flask
 
     from backend.operations_planner_v2_routes import register_operations_planner_v2_routes
     from backend.scripts import ops_planner_isolated_db as db
 
-    prepare()
     app = Flask(__name__)
     app.config["SECRET_KEY"] = "ops-planner-isolated-test"
 
@@ -182,9 +182,14 @@ def serve() -> None:
 
     @app.get("/health")
     def health():
-        return {"ok": True, "database": DATABASE}
+        return {"ok": True, "database": DATABASE, "host": HOST, "port": PORT}
 
-    app.run(host="127.0.0.1", port=8000, debug=False)
+    return app
+
+
+def serve() -> None:
+    prepare()
+    build_app().run(host="127.0.0.1", port=8000, debug=False)
 
 
 if __name__ == "__main__":

@@ -284,8 +284,8 @@ def test_duplicate_entry_is_an_update_not_a_second_insert():
     assert blocked["ok"] is False
 
 
-def test_overlapping_role_segments_are_rejected():
-    result = _apply(
+def test_the_same_role_cannot_overlap_itself():
+    different = _apply(
         empty_state(),
         shift=_shift(
             role_assignments=[
@@ -294,8 +294,18 @@ def test_overlapping_role_segments_are_rejected():
             ]
         ),
     )
-    assert result["ok"] is False
-    assert result["code"] == "invalid_shift"
+    assert different["ok"] is True
+    same = _apply(
+        empty_state(),
+        shift=_shift(
+            role_assignments=[
+                {"role": "wash", "start_time": "08:00", "end_time": "12:00"},
+                {"role": "wash", "start_time": "11:00", "end_time": "13:00"},
+            ]
+        ),
+    )
+    assert same["ok"] is False
+    assert same["code"] == "invalid_shift"
 
 
 def test_timed_break_reduces_available_coverage_not_scheduled_staff():

@@ -100,6 +100,66 @@ export function scheduleRoleInfo(code) {
   return DEFAULT_ROLE_CATALOG.find((role) => role.code === code) || null;
 }
 
+const PREFERRED_ROLE_CODES = {
+  wash: "WSH",
+  sort: "SRT",
+  weigher: "WGH",
+  dry: "DRY",
+  fold: "FLD",
+  post_weigh: "PWG",
+  pt_washer: "PTW",
+  pt_sorter: "PTS",
+  pt_folder: "PTF",
+  hd_operator: "HDO",
+  hd_folder: "HDF",
+  non_rinse_folder: "NRF",
+  attendant: "ATD",
+  lint_cleaning: "LNT",
+  floor_cleaning: "FLR",
+  washer_cleaning: "WCL",
+  drop_off_customer: "DRP",
+  self_service: "SSV",
+};
+
+function proposeRoleCode(code, name, taken) {
+  const folded = String(name || "").toLowerCase();
+  let seed = "";
+  if (folded.includes("veewash") && folded.includes("folder")) seed = "VFD";
+  if (!seed) seed = PREFERRED_ROLE_CODES[String(code || "").toLowerCase()] || "";
+  if (!seed) {
+    const words = String(name || code || "role").match(/[A-Za-z0-9]+/g) || ["ROL"];
+    const initials = words.map((word) => word[0]).join("");
+    seed = `${initials}${words[0]}`.toUpperCase();
+  }
+  seed = seed.toUpperCase().replace(/[^A-Z0-9]/g, "X").padEnd(3, "X").slice(0, 3);
+  if (!taken.has(seed)) return seed;
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  for (const mark of alphabet) {
+    const next = `${seed.slice(0, 2)}${mark}`;
+    if (!taken.has(next)) return next;
+  }
+  return seed;
+}
+
+/** Three-character code from Role Maintenance. A blank code gets a unique proposal. */
+export function scheduleRoleMarks(catalog = scheduleRoleCatalog()) {
+  const taken = new Set();
+  const marks = {};
+  catalog.forEach((role) => {
+    const stored = String(role?.short_code || "").trim().toUpperCase();
+    const mark = /^[A-Z0-9]{3}$/.test(stored) && !taken.has(stored)
+      ? stored
+      : proposeRoleCode(role.code, role.name, taken);
+    marks[role.code] = mark;
+    taken.add(mark);
+  });
+  return marks;
+}
+
+export function scheduleRoleMark(code) {
+  return scheduleRoleMarks()[code] || proposeRoleCode(code, scheduleRoleLabel(code), new Set());
+}
+
 const DEFAULT_GROUP_LABELS = {
   RINSE_WF: "Rinse WF",
   RINSE_HD: "Rinse HD",

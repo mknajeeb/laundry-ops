@@ -118,6 +118,7 @@ def ensure_responsibilities_table(cursor) -> None:
         """
     )
     invalidate_schema_cache()
+    _ensure_task_group_columns(cursor)
 
 
 def serialize_responsibility(row: Mapping[str, Any]) -> dict[str, Any]:

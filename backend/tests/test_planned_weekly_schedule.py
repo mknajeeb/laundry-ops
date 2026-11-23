@@ -80,7 +80,8 @@ class _FakeCursor:
 
     def _execute_roles(self, sql_norm, params):
         if "insert into weekly_schedule_roles" in sql_norm:
-            org_id, code, name, group, order, active, timed, remarks = params
+            org_id, code, name, group, order, active, timed, remarks = params[:8]
+            short_code = params[8] if len(params) > 8 else None
             row = {
                 "organization_id": org_id,
                 "code": code,
@@ -90,6 +91,7 @@ class _FakeCursor:
                 "active": active,
                 "uses_time_slots": timed,
                 "remarks_enabled": remarks,
+                "short_code": short_code,
             }
             self.roles = [
                 r for r in self.roles if not (r["organization_id"] == org_id and r["code"] == code)
@@ -2602,10 +2604,12 @@ def test_break_validation_inside_shift_overnight_and_overlap():
         _, err = _validate_breaks({"break_slots": slots}, shift_start=shift[0], shift_end=shift[1])
         assert err and "within the shift" in err
 
-    _, err = _validate_breaks(
+    ok, err = _validate_breaks(
         {"break_slots": _slots(("12:00", "12:30"), ("12:15", "12:45"))}, shift_start=time(9, 0), shift_end=time(17, 0)
     )
-    assert err and "overlaps" in err
+    assert err is None and ok["break_minutes"] == 45
+    kept = __import__("json").loads(ok["break_slots"])
+    assert [slot["start_time"] for slot in kept] == ["12:00", "12:15"]
     _, err = _validate_breaks({"break_slots": _slots(("12:00", "12:00"))}, shift_start=time(9, 0), shift_end=time(17, 0))
     assert err
 

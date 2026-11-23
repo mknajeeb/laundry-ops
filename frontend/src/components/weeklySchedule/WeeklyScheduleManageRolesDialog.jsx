@@ -27,10 +27,10 @@ import {
   updateWeeklyScheduleRole,
   updateWeeklyScheduleRoleGroup,
 } from "../../api";
-import { roleStyle } from "./weeklyScheduleRoles";
+import { roleStyle, scheduleRoleMark } from "./weeklyScheduleRoles";
 import { useI18n } from "../../i18n/I18nContext";
 
-const EDITABLE_FIELDS = ["name", "kind", "role_group", "display_order", "active", "remarks_enabled"];
+const EDITABLE_FIELDS = ["name", "kind", "role_group", "display_order", "active", "remarks_enabled", "short_code"];
 
 const EMPTY_NEW_ROLE = {
   name: "",
@@ -47,7 +47,12 @@ const KIND_OPTIONS = [
 ];
 
 function withKind(role) {
-  return { ...role, kind: role.kind || (role.uses_time_slots === false ? "task" : "role") };
+  const stored = String(role.short_code || "").trim().toUpperCase();
+  return {
+    ...role,
+    kind: role.kind || (role.uses_time_slots === false ? "task" : "role"),
+    short_code: /^[A-Z0-9]{3}$/.test(stored) ? stored : scheduleRoleMark(role.code),
+  };
 }
 
 function changedFields(draft, original) {
@@ -311,6 +316,14 @@ function RoleFields({ draft, groups, onChange, onCreateGroup }) {
         onChange={(e) => onChange({ name: e.target.value })}
         inputProps={{ maxLength: 64 }}
         sx={{ gridColumn: { xs: "1 / -1", md: "auto" } }}
+      />
+      <TextField
+        size="small"
+        label="Code"
+        value={draft.short_code || ""}
+        onChange={(e) => onChange({ short_code: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 3) })}
+        inputProps={{ maxLength: 3, "aria-label": "Three character role code" }}
+        helperText="3 characters"
       />
       <TextField
         select

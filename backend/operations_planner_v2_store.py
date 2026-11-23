@@ -925,11 +925,12 @@ def add_assignments(cursor, organization_id: int, week_start: date, additions: A
     safe = []
     refused = 0
     for item in additions or []:
-        group = str(item.get("assignment_group_id") or "")
+        row = dict(item)
+        group = str(row.get("assignment_group_id") or "")
         if group and group in locked_groups:
             refused += 1
             continue
-        safe.append(item)
+        safe.append(row)
     desired = [
         {
             "user_id": row.get("user_id"),

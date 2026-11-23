@@ -92,6 +92,26 @@ BUILTIN_ROLE_DEFAULTS: tuple[dict[str, Any], ...] = (
     },
 )
 BUILTIN_ROLE_CODES = frozenset(r["code"] for r in BUILTIN_ROLE_DEFAULTS)
+PREFERRED_SHORT_CODES = {
+    "wash": "WSH",
+    "sort": "SRT",
+    "weigher": "WGH",
+    "dry": "DRY",
+    "fold": "FLD",
+    "post_weigh": "PWG",
+    "pt_washer": "PTW",
+    "pt_sorter": "PTS",
+    "pt_folder": "PTF",
+    "hd_operator": "HDO",
+    "hd_folder": "HDF",
+    "non_rinse_folder": "NRF",
+    "attendant": "ATD",
+    "lint_cleaning": "LNT",
+    "floor_cleaning": "FLR",
+    "washer_cleaning": "WCL",
+    "drop_off_customer": "DRP",
+    "self_service": "SSV",
+}
 CLEANING_TASK_CODES = frozenset({"lint_cleaning", "floor_cleaning", "washer_cleaning"})
 DEFAULT_ROLE_GROUP = "RINSE_WF"
 KIND_ROLE = "role"
@@ -132,12 +152,54 @@ def _builtin_default(code: str) -> dict[str, Any] | None:
     return None
 
 
+def normalize_short_code(raw: Any) -> str | None:
+    text = re.sub(r"[^A-Za-z0-9]", "", str(raw or "")).upper()
+    if len(text) != 3:
+        return None
+    return text
+
+
+def propose_short_code(code: str, name: str, taken: set[str]) -> str:
+    """A unique three-character proposal. Stored codes win; this fills blanks only."""
+    folded = str(name or "").casefold()
+    seed = "VFD" if "veewash" in folded and "folder" in folded else ""
+    if not seed:
+        seed = PREFERRED_SHORT_CODES.get(str(code or "").strip().lower(), "")
+    if not seed:
+        words = re.findall(r"[A-Za-z0-9]+", str(name or code or "role")) or ["ROL"]
+        seed = f"{''.join(word[0] for word in words)}{words[0]}".upper()
+    seed = re.sub(r"[^A-Z0-9]", "X", seed).ljust(3, "X")[:3]
+    if seed not in taken:
+        return seed
+    for mark in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789":
+        nxt = f"{seed[:2]}{mark}"
+        if nxt not in taken:
+            return nxt
+    return seed
+
+
+def assign_short_codes(catalog: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    taken: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for role in catalog:
+        row = dict(role)
+        stored = normalize_short_code(row.get("short_code"))
+        if stored and stored not in taken:
+            row["short_code"] = stored
+        else:
+            row["short_code"] = propose_short_code(str(row.get("code") or ""), str(row.get("name") or ""), taken)
+        taken.add(row["short_code"])
+        out.append(row)
+    return out
+
+
 def _role_record(base: Mapping[str, Any], *, builtin: bool) -> dict[str, Any]:
     code = str(base["code"])
     timed = bool(base.get("uses_time_slots", True))
     return {
         "code": code,
         "name": str(base.get("name") or code),
+        "short_code": normalize_short_code(base.get("short_code")),
         "kind": KIND_ROLE if timed else KIND_TASK,
         "role_group": base.get("role_group") or None,
         "display_order": int(base.get("display_order") or 0),
@@ -315,15 +377,26 @@ def reorder_role_groups(cursor, organization_id: int, codes: Sequence[str]) -> s
     return None
 
 
+def _ensure_short_code_column(cursor) -> None:
+    ensure_weekly_schedule_roles_table(cursor)
+    cursor.execute("SHOW COLUMNS FROM weekly_schedule_roles LIKE 'short_code'")
+    if cursor.fetchone():
+        return
+    cursor.execute(
+        "ALTER TABLE weekly_schedule_roles ADD COLUMN short_code CHAR(3) NULL DEFAULT NULL"
+    )
+    invalidate_schema_cache()
+
+
 def list_role_catalog(cursor, organization_id: int) -> list[dict[str, Any]]:
     """Built-in defaults overlaid with org overrides, plus org custom roles, in display order."""
     by_code: dict[str, dict[str, Any]] = {
         item["code"]: _role_record(item, builtin=True) for item in BUILTIN_ROLE_DEFAULTS
     }
-    ensure_weekly_schedule_roles_table(cursor)
+    _ensure_short_code_column(cursor)
     cursor.execute(
         """
-        SELECT code, name, role_group, display_order, active, uses_time_slots, remarks_enabled
+        SELECT code, name, role_group, display_order, active, uses_time_slots, remarks_enabled, short_code
         FROM weekly_schedule_roles
         WHERE organization_id = %s
         """,
@@ -342,11 +415,12 @@ def list_role_catalog(cursor, organization_id: int) -> list[dict[str, Any]]:
         if not builtin and not code.startswith(CUSTOM_ROLE_PREFIX) and uses_time_slots:
             continue
         by_code[code] = _role_record({**row, "code": code}, builtin=builtin)
-    return sorted(by_code.values(), key=lambda r: (r["display_order"], r["name"].casefold()))
+    ordered = sorted(by_code.values(), key=lambda r: (r["display_order"], r["name"].casefold()))
+    return assign_short_codes(ordered)
 
 
 def default_role_catalog() -> list[dict[str, Any]]:
-    return [_role_record(item, builtin=True) for item in BUILTIN_ROLE_DEFAULTS]
+    return assign_short_codes([_role_record(item, builtin=True) for item in BUILTIN_ROLE_DEFAULTS])
 
 
 def catalog_index(catalog: Sequence[Mapping[str, Any]] | None) -> dict[str, dict[str, Any]]:
@@ -464,6 +538,21 @@ def _validate_role_fields(
             out["display_order"] = int(data.get("display_order"))
         except (TypeError, ValueError):
             return None, "display_order must be an integer"
+    if "short_code" in data:
+        short = normalize_short_code(data.get("short_code"))
+        if not short:
+            return None, "role code must be three letters or digits"
+        clash = next(
+            (
+                r
+                for r in catalog
+                if r.get("code") != current.get("code") and normalize_short_code(r.get("short_code")) == short
+            ),
+            None,
+        )
+        if clash:
+            return None, f"{short} is already used by {clash.get('name') or clash.get('code')}"
+        out["short_code"] = short
     for key in ("active", "uses_time_slots", "remarks_enabled"):
         if key in data and not (key != "active" and "kind" in data):
             out[key] = _parse_bool(data.get(key), bool(out.get(key)))
@@ -473,20 +562,21 @@ def _validate_role_fields(
 
 
 def _upsert_role(cursor, organization_id: int, role: Mapping[str, Any]) -> None:
-    ensure_weekly_schedule_roles_table(cursor)
+    _ensure_short_code_column(cursor)
     cursor.execute(
         """
         INSERT INTO weekly_schedule_roles (
             organization_id, code, name, role_group, display_order,
-            active, uses_time_slots, remarks_enabled
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            active, uses_time_slots, remarks_enabled, short_code
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON DUPLICATE KEY UPDATE
             name=VALUES(name),
             role_group=VALUES(role_group),
             display_order=VALUES(display_order),
             active=VALUES(active),
             uses_time_slots=VALUES(uses_time_slots),
-            remarks_enabled=VALUES(remarks_enabled)
+            remarks_enabled=VALUES(remarks_enabled),
+            short_code=VALUES(short_code)
         """,
         (
             int(organization_id),
@@ -497,6 +587,7 @@ def _upsert_role(cursor, organization_id: int, role: Mapping[str, Any]) -> None:
             1 if role.get("active", True) else 0,
             1 if role.get("uses_time_slots", True) else 0,
             1 if role.get("remarks_enabled") else 0,
+            normalize_short_code(role.get("short_code")),
         ),
     )
 
@@ -534,6 +625,9 @@ def create_role(
     if err or role is None:
         return None, err
     role["code"] = _custom_code_for_name(role["name"], {r["code"] for r in catalog})
+    if not role.get("short_code"):
+        taken = {str(r.get("short_code")) for r in catalog if r.get("short_code")}
+        role["short_code"] = propose_short_code(role["code"], role["name"], taken)
     _upsert_role(cursor, organization_id, role)
     return _role_record(role, builtin=False), None
 

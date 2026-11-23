@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { DAY_NAMES, DAY_ORDER, breakLoad, clockMinutes, staffingHours, taskWindow } from "./plannerModel";
-import { roleColor, visibleBreaks } from "./plannerGeometry";
+import { roleColor, staffingFigures, visibleBreaks } from "./plannerGeometry";
 import { DEFAULT_CATEGORY_TABS } from "../components/tasks/taskDashboardLabels";
 import { scheduleRoleCatalog, scheduleRoleLabel } from "../components/weeklySchedule/weeklyScheduleRoles";
 import { TASK_TIMING, TASK_TIMING_OPTIONS } from "../components/weeklySchedule/weeklyScheduleTaskTiming";
@@ -49,7 +49,43 @@ function roleTitle(role) {
   return scheduleRoleLabel(text);
 }
 
-export function CoverageBoard({ entries, requirements, employees, day, days, onOpenGap }) {
+function dayRoleFigures(entries, role, day) {
+  const shifts = (entries || []).filter((entry) => Number(entry.day_of_week) === Number(day));
+  const people = new Set();
+  const matching = [];
+  shifts.forEach((entry) => {
+    const segments = (entry.role_assignments || []).filter((item) => item.role === role && item.start_time && item.end_time);
+    const named = !segments.length && String(entry.role || "").split(",").map((item) => item.trim()).includes(role);
+    if (!segments.length && !named) return;
+    people.add(Number(entry.user_id));
+    matching.push(segments.length ? { ...entry, role, role_assignments: segments, start_time: entry.start_time, end_time: entry.end_time } : entry);
+  });
+  return { people: people.size, hours: staffingFigures(matching).role };
+}
+
+function roleStaff(entries, role, day) {
+  return (entries || []).flatMap((entry) => {
+    if (Number(entry.day_of_week) !== Number(day)) return [];
+    const segments = (entry.role_assignments || []).filter((item) => item.role === role && item.start_time && item.end_time);
+    if (segments.length) {
+      return segments.map((item) => ({
+        entry,
+        start: String(item.start_time).slice(0, 5),
+        end: String(item.end_time).slice(0, 5),
+      }));
+    }
+    const named = String(entry.role || "").split(",").map((item) => item.trim()).includes(role);
+    if (!named) return [];
+    return [{
+      entry,
+      start: String(entry.start_time || "").slice(0, 5),
+      end: String(entry.end_time || "").slice(0, 5),
+      unsplit: true,
+    }];
+  });
+}
+
+export function CoverageBoard({ entries, requirements, employees, day, days, onOpenShift }) {
   const shown = (days && days.length ? days : [day]);
   const [picked, setPicked] = useState(null);
   const roles = [...new Set((entries || []).flatMap((entry) => {
@@ -57,47 +93,78 @@ export function CoverageBoard({ entries, requirements, employees, day, days, onO
     const codes = segments.length ? segments : String(entry.role || "").split(",").map((item) => item.trim()).filter(Boolean);
     return codes.filter((code) => !String(code).includes(","));
   }))];
+  const storedTargets = (requirements || []).filter((item) => item && (item.required_headcount || item.hourly_headcount));
   return (
-    <section className="coverage-board" aria-label="Hourly staffing">
+    <section className="coverage-board" aria-label="Role coverage">
       <header>
         <h2>Staffing coverage</h2>
-        <p>A colored hour is people still working after timed breaks. A requirement shows scheduled/required. An hour with no requirement is not a shortage.</p>
+        <p>Each cell is the number of employees, then the role-hours. Unallocated staffing is not a role. A shortage appears only where a target is stored.</p>
       </header>
-      {shown.map((value) => (
-        <div key={value} className="cov-day">
-          <h3>{DAY_NAMES[value]}</h3>
-          {roles.map((role) => {
-            const rows = staffingHours(entries, requirements, role, value);
-            if (!rows.length) return null;
-            return (
-              <div key={`${value}-${role}`} className="cov-row">
-                <div className="cov-name"><i style={{ background: roleColor(role) }} />{roleTitle(role)}</div>
-                <div className="cov-hours">
-                  {rows.map((row) => (
-                    <button
-                      key={row.hour}
-                      type="button"
-                      className={`cov-cell ${row.status}${picked && picked.day === value && picked.role === role && picked.hour === row.hour ? " is-on" : ""}`}
-                      onClick={() => {
-                        setPicked({ day: value, role, hour: row.hour, row });
-                        onOpenGap?.(value, role, row.hour);
-                      }}
-                    >
-                      <b>{String(row.hour).padStart(2, "0")}</b>
-                      <span>{row.required == null ? row.scheduled : `${row.scheduled}/${row.required}`}</span>
-                    </button>
-                  ))}
+      <div className="week-board" role="table" aria-label="Coverage for the week">
+        <div className="week-head"><span>Role</span>{shown.map((value) => <span key={value}>{DAY_NAMES[value].slice(0, 3)}</span>)}</div>
+        {roles.map((role) => (
+          <div className="week-row" key={role}>
+            <strong>{roleTitle(role)}</strong>
+            {shown.map((value) => {
+              const cell = dayRoleFigures(entries, role, value);
+              const target = storedTargets.find((item) => item.role === role);
+              const short = target && target.required_headcount && cell.people < Number(target.required_headcount);
+              return (
+                <div key={value}>
+                  <button type="button" className={`week-chip${short ? " is-open" : ""}${picked?.day === value && picked?.role === role ? " is-on" : ""}`} onClick={() => setPicked({ day: value, role, ...cell })}>
+                    {cell.people ? `${cell.people} · ${cell.hours.toFixed(1)}h` : "—"}
+                    {target ? "" : ""}
+                  </button>
                 </div>
-              </div>
-            );
+              );
+            })}
+          </div>
+        ))}
+        <div className="week-row">
+          <strong>Unallocated staffing</strong>
+          {shown.map((value) => {
+            const shifts = (entries || []).filter((entry) => Number(entry.day_of_week) === Number(value));
+            const byPerson = new Map();
+            shifts.forEach((entry) => {
+              const key = Number(entry.user_id);
+              byPerson.set(key, [...(byPerson.get(key) || []), entry]);
+            });
+            let people = 0;
+            let hours = 0;
+            byPerson.forEach((group) => {
+              const figures = staffingFigures(group);
+              if (figures.unallocated > 0) {
+                people += 1;
+                hours += figures.unallocated;
+              }
+            });
+            return <div key={value}><span className="week-chip">{people ? `${people} · ${hours.toFixed(1)}h` : "—"}</span></div>;
           })}
         </div>
-      ))}
+      </div>
+      {!storedTargets.length ? <p className="quiet">No target is stored. These cells are scheduled staffing, not shortages.</p> : null}
       {picked ? (
-        <p className="cov-detail">
-          {DAY_NAMES[picked.day]} {String(picked.hour).padStart(2, "0")}:00 · {roleTitle(picked.role)} · {picked.row.required == null ? `${picked.row.scheduled} scheduled, no requirement` : `${picked.row.scheduled} scheduled, ${picked.row.required} required`}.
-          {" "}{picked.row.userIds.map((id) => personName(employees, id)).join(", ") || "Nobody scheduled."}
-        </p>
+        <div className="cov-day">
+          <h3>{DAY_NAMES[picked.day]} · {roleTitle(picked.role)} · {picked.people} employees · {Number(picked.hours || 0).toFixed(1)}h</h3>
+          <div className="cov-hours">
+            {staffingHours(entries, storedTargets, picked.role, picked.day).map((row) => (
+              <div key={row.hour} className={`cov-cell ${row.required == null ? "ok" : row.status}`}>
+                <b>{String(row.hour).padStart(2, "0")}</b>
+                <span>{row.required == null ? row.scheduled : `${row.scheduled}/${row.required}`}</span>
+              </div>
+            ))}
+          </div>
+          <ul className="cov-staff">
+            {roleStaff(entries, picked.role, picked.day).map((row, index) => (
+              <li key={`${row.entry.id || row.entry.user_id}-${row.start}-${index}`}>
+                <b>{personName(employees, row.entry.user_id)}</b>
+                <span>{row.start && row.end ? `${row.start}–${row.end}` : "Not split"}{row.unsplit ? " · not split by role" : ""}</span>
+                <button type="button" className="btn" onClick={() => onOpenShift?.(row.entry)}>Open in schedule</button>
+              </li>
+            ))}
+          </ul>
+          {!roleStaff(entries, picked.role, picked.day).length ? <p className="quiet">Nobody is scheduled in this role.</p> : null}
+        </div>
       ) : null}
       {!roles.length ? <p className="quiet">No roles are scheduled.</p> : null}
     </section>
@@ -174,8 +241,9 @@ export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onC
   const [timing, setTiming] = useState(TASK_TIMING.ANYTIME);
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
-  const [shared, setShared] = useState(false);
   const [query, setQuery] = useState("");
+  const [joinGroup, setJoinGroup] = useState("");
+  const [employeeQuery, setEmployeeQuery] = useState("");
   const visible = (tasks || []).filter((task) => !task.remove);
   const source = catalog && catalog.length ? catalog : scheduleRoleCatalog();
   const taskRoles = source.filter((item) => item.uses_time_slots === false && item.active !== false);
@@ -194,7 +262,6 @@ export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onC
     const name = role.trim();
     if (!name || !people.length || !days.length) return;
     if (timing === TASK_TIMING.SPECIFIC && (!start || !end)) return;
-    const group = shared ? `draft-group-${Date.now()}` : null;
     const stamp = Date.now();
     const additions = [];
     people.forEach((userId) => {
@@ -209,8 +276,8 @@ export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onC
           timing_mode: timing,
           start_time: timing === TASK_TIMING.SPECIFIC ? start : null,
           end_time: timing === TASK_TIMING.SPECIFIC ? end : null,
-          shared,
-          assignment_group_id: group,
+          execution_mode: joinGroup ? "shared" : "individual",
+          assignment_group_id: joinGroup || null,
           status: "assigned",
         });
       });
@@ -242,10 +309,25 @@ export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onC
             );
           })}
         </select>
-        <select multiple aria-label="Employees" value={people} onChange={(event) => setPeople([...event.target.selectedOptions].map((option) => option.value))}>
-          {employees.map((employee) => <option key={employee.user_id} value={employee.user_id}>{employee.display_name}</option>)}
-        </select>
-        <p className="quiet">Hold Command or Ctrl to choose more than one employee. Anytime, or a planned start and end. These times are not the PIN timer.</p>
+        <input aria-label="Find an employee" value={employeeQuery} placeholder="Find an employee" onChange={(event) => setEmployeeQuery(event.target.value)} />
+        <div className="pick-row" role="group" aria-label="Employees">
+          {employees.filter((employee) => String(employee.display_name || "").toLowerCase().includes(employeeQuery.toLowerCase())).map((employee) => (
+            <label key={employee.user_id}>
+              <input type="checkbox" checked={people.includes(String(employee.user_id))} onChange={() => setPeople((current) => toggleId(current, employee.user_id))} />
+              {employee.display_name}
+            </label>
+          ))}
+        </div>
+        <label>
+          Occurrence
+          <select aria-label="Shared occurrence" value={joinGroup} onChange={(event) => setJoinGroup(event.target.value)}>
+            <option value="">Keep this assignment individual</option>
+            {[...new Map(visible.filter((task) => task.role === role && task.assignment_group_id).map((task) => [task.assignment_group_id, task])).values()].map((task) => (
+              <option key={task.assignment_group_id} value={task.assignment_group_id}>Join {roleTitle(task.role)} · {String(task.assignment_group_id).slice(0, 8)}</option>
+            ))}
+          </select>
+        </label>
+        <p className="quiet">{people.length} employees · {days.length} days. Nothing is saved until Save task changes.</p>
         <div className="pick-row" role="group" aria-label="Days">
           {DAY_ORDER.map((value) => (
             <label key={value}>
@@ -263,7 +345,6 @@ export function TaskPlanner({ tasks, employees, entries, day, mode, catalog, onC
             <input aria-label="Planned end" type="time" step="900" value={end} onChange={(event) => setEnd(event.target.value)} required />
           </>
         ) : null}
-        <label><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /> Shared group</label>
         <button type="submit" className="btn">Assign</button>
         <button type="button" className="btn primary" disabled={!(tasks || []).some((task) => task.draft || task.remove || task.changed)} onClick={onReview}>Save task changes</button>
       </form>

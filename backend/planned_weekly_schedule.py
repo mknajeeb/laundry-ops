@@ -436,6 +436,14 @@ def parse_break_slots_storage(raw: Any) -> list[dict[str, str]]:
         end = _time_to_str(item.get("end_time"))
         if start and end and start != end:
             out.append({"start_time": start, "end_time": end})
+            continue
+        if item.get("minutes") not in (None, ""):
+            try:
+                minutes = max(0, int(item.get("minutes") or 0))
+            except (TypeError, ValueError):
+                continue
+            if minutes:
+                out.append({"minutes": minutes})
     return out
 
 
@@ -463,8 +471,8 @@ def _shift_interval(entry: Mapping[str, Any]) -> tuple[int, int] | None:
 def _placed_break_ranges(entry: Mapping[str, Any], shift: tuple[int, int]) -> list[tuple[int, int]]:
     out: list[tuple[int, int]] = []
     for slot in entry_break_slots(entry):
-        seg_start = _hm_minutes(slot["start_time"])
-        seg_end = _hm_minutes(slot["end_time"])
+        seg_start = _hm_minutes(slot.get("start_time"))
+        seg_end = _hm_minutes(slot.get("end_time"))
         if seg_start is None or seg_end is None:
             continue
         start, end = _place_on_shift_timeline(seg_start, seg_end, shift[0])
@@ -1473,7 +1481,15 @@ def _validate_breaks(
         start = parse_time_value(item.get("start_time"))
         end = parse_time_value(item.get("end_time"))
         if start is None or end is None:
-            return None, f"Break {index}: start and end time are required"
+            if item.get("minutes") in (None, ""):
+                return None, f"Break {index}: start and end time are required"
+            try:
+                minutes = max(0, int(item.get("minutes") or 0))
+            except (TypeError, ValueError):
+                return None, f"Break {index}: minutes must be a number"
+            if minutes:
+                slots.append((10_000 + index, {"minutes": minutes}))
+            continue
         if start == end:
             return None, f"Break {index}: end time must be after the start time"
         if shift is None:
@@ -1482,13 +1498,16 @@ def _validate_breaks(
         window = _place_on_shift_timeline(start.hour * 60 + start.minute, end.hour * 60 + end.minute, shift[0])
         if window[1] > shift[1]:
             return None, f"{label} must be within the shift"
-        for other_label, other in placed:
-            if _intervals_overlap(window, other):
-                return None, f"{label} overlaps {other_label}"
         placed.append((label, window))
         slots.append((window[0], {"start_time": start.strftime("%H:%M"), "end_time": end.strftime("%H:%M")}))
 
-    timed = sum(end - start for _, (start, end) in placed)
+    timed = _ranges_minutes(_merge_ranges([window for _, window in placed]))
+    minute_values = [int(slot["minutes"]) for _, slot in slots if "minutes" in slot]
+    if minute_values:
+        untimed = minute_values[0] if len(minute_values) > 1 and len(set(minute_values)) == 1 else sum(minute_values)
+        total = timed + untimed
+        ordered = [slot for _, slot in sorted(slots, key=lambda item: item[0])]
+        return {"break_minutes": total, "break_slots": break_slots_storage(ordered)}, None
     if "unscheduled_break_minutes" in data:
         try:
             unscheduled = max(0, int(data.get("unscheduled_break_minutes") or 0))
