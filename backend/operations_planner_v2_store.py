@@ -1070,6 +1070,12 @@ def update_unlocked_assignment(cursor, organization_id: int, week_monday: date, 
 
     ensure_responsibilities_table(cursor)
     cursor.execute(
+        f"SELECT id FROM {RESPONSIBILITIES} WHERE organization_id=%s AND id=%s",
+        (int(organization_id), responsibility_id),
+    )
+    if not cursor.fetchone():
+        raise ValueError("The task assignment was not found.")
+    cursor.execute(
         f"""
         UPDATE {RESPONSIBILITIES}
            SET user_id=%s, day_of_week=%s, week_start=%s, role=%s, timing_mode=%s, start_time=%s, end_time=%s
@@ -1087,8 +1093,6 @@ def update_unlocked_assignment(cursor, organization_id: int, week_monday: date, 
             responsibility_id,
         ),
     )
-    if not cursor.rowcount:
-        raise ValueError("The task assignment was not found.")
 
 
 def remove_unlocked_assignment(cursor, organization_id: int, responsibility_id: int) -> None:

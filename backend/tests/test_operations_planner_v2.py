@@ -781,7 +781,8 @@ def test_repeat_task_save_moves_the_monday_row_and_keeps_the_planned_end(monkeyp
     class Cursor:
         def __init__(self):
             self.calls = []
-            self.rowcount = 1
+            # MySQL reports 0 when the UPDATE matches a row but changes nothing.
+            self.rowcount = 0
 
         def execute(self, sql, params=None):
             self.calls.append((" ".join(str(sql).split()), params))
@@ -800,6 +801,9 @@ def test_repeat_task_save_moves_the_monday_row_and_keeps_the_planned_end(monkeyp
             return []
 
         def fetchone(self):
+            sql, _params = self.calls[-1]
+            if sql.startswith("SELECT id FROM"):
+                return {"id": 286}
             return None
 
     cursor = Cursor()
