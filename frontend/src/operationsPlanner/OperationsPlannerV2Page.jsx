@@ -26,7 +26,7 @@ import PlannerWorkspace from "./PlannerWorkspace";
 import { asList, draftOperations, relocateShift, shiftKey, splitHalves, storedRoleSegments } from "./plannerGeometry";
 import { copyDay, copyEmployeeDay, copyEmployeeWeek, copyWeekShifts, copiedShift } from "./plannerCopy";
 import { laborComparison } from "./plannerLabor";
-import { interpretSaveResponse, patternCells, reviewLines, scopeDecision, staffingChanges, taskChanges } from "./plannerReview";
+import { affectedShiftCount, interpretSaveResponse, patternCells, reviewLines, scopeDecision, staffingChanges, taskChanges } from "./plannerReview";
 import { recordDraft, redoDraftHistory, undoDraftHistory } from "./draftHistory";
 import { setScheduleRoleCatalog } from "../components/weeklySchedule/weeklyScheduleRoles";
 
@@ -39,6 +39,16 @@ const LENSES = [
 
 function api(path, config = {}) {
   return axios({ baseURL: getWashproApiBase(), url: path, ...config });
+}
+
+function easternToday(now = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
 function easternMonday(now = new Date()) {
@@ -1112,11 +1122,25 @@ export default function OperationsPlannerV2Page() {
                 ["this_and_future", "This week and future weeks"],
                 ["future_only", "Future weeks only"],
                 ["selected_weeks", "Selected weeks"],
-              ].map(([value, label]) => (
-                <label key={value} style={{ display: "block", marginBottom: 6 }}>
-                  <input type="radio" name="scope" checked={scope === value} onChange={() => setScope(value)} /> {label}
-                </label>
-              ))
+              ].map(([value, label]) => {
+                const count = affectedShiftCount({
+                  scope: value,
+                  cells: pending.command.cells,
+                  selectedWeeks,
+                  anchor: week,
+                  today: easternToday(),
+                });
+                const detail = value === "this_week"
+                  ? `${count.shifts} ${count.shifts === 1 ? "shift" : "shifts"}`
+                  : `${count.shifts} ${count.shifts === 1 ? "shift" : "shifts"} across ${count.weeks} ${count.weeks === 1 ? "week" : "weeks"}`;
+                return (
+                  <label key={value} className="scope-choice">
+                    <input type="radio" name="scope" checked={scope === value} onChange={() => setScope(value)} />
+                    <span>{label}</span>
+                    <b>{detail}</b>
+                  </label>
+                );
+              })
             ) : <p>This task or staffing change is saved on the week of {week}.</p>}
             {scope === "selected_weeks" ? (
               <label>
@@ -1124,7 +1148,16 @@ export default function OperationsPlannerV2Page() {
                 <input value={selectedWeeks} onChange={(event) => setSelectedWeeks(event.target.value)} placeholder="2026-11-16, 2026-12-07" />
               </label>
             ) : null}
-            <p>Affected: {(preview?.dates || [week]).join(", ")}</p>
+            {pending.command.action === "apply_shift_set" && scope !== "this_week" ? (
+              <p className="scope-count">
+                {(() => {
+                  const count = affectedShiftCount({ scope, cells: pending.command.cells, selectedWeeks, anchor: week, today: easternToday() });
+                  return count.shifts
+                    ? `Saving confirms ${count.shifts} ${count.shifts === 1 ? "shift" : "shifts"} across ${count.weeks} ${count.weeks === 1 ? "week" : "weeks"}.`
+                    : "Enter the Mondays to include before saving.";
+                })()}
+              </p>
+            ) : pending.command.action === "apply_shift_set" ? <p className="scope-count">Future weeks stay unchanged.</p> : null}
             {preview?.shift ? <p>{preview.shift.start_time}–{preview.shift.end_time} · {(preview.shift.roles || []).join(", ")} · {preview.shift.net_hours} net hours</p> : null}
             {preview?.approved_or_published_weeks?.length ? (
               <fieldset>
@@ -1153,7 +1186,7 @@ export default function OperationsPlannerV2Page() {
               </label>
             ) : null}
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-              <button type="submit" className="primary" disabled={snapshot}>Save changes</button>
+              <button type="submit" className="primary" disabled={snapshot || (pending.command.action === "apply_shift_set" && scope !== "this_week" && !affectedShiftCount({ scope, cells: pending.command.cells, selectedWeeks, anchor: week, today: easternToday() }).shifts)}>Save changes</button>
               <button type="button" onClick={() => setPending(null)}>Cancel</button>
             </div>
           </form>

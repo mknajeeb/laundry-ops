@@ -14,6 +14,57 @@ function cellKey(userId, day) {
   return `${Number(userId)}:${Number(day)}`;
 }
 
+const REPEAT_HORIZON_WEEKS = 16;
+
+function isoDate(value) {
+  const text = String(value || "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : "";
+}
+
+function addIsoDays(iso, days) {
+  const [year, month, day] = iso.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+}
+
+/** Monday the schedule treats as current. Sunday opens the following Monday. */
+export function scheduleMonday(today) {
+  const iso = isoDate(today);
+  if (!iso) return "";
+  const [year, month, day] = iso.split("-").map(Number);
+  const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+  if (weekday === 0) return addIsoDays(iso, 1);
+  return addIsoDays(iso, -(weekday - 1));
+}
+
+/**
+ * Shifts a repeating save will write. This week is the changed days only.
+ * This week and future, and future only, use the same 16-week horizon as the server.
+ */
+export function affectedShiftCount({ scope = "this_week", cells = [], selectedWeeks = "", anchor, today } = {}) {
+  const floor = scheduleMonday(today);
+  const start = isoDate(anchor);
+  const startIsMonday = start && new Date(`${start}T00:00:00Z`).getUTCDay() === 1;
+  let weeks = [];
+  if (startIsMonday && (scope === "this_week" || scope === "this_and_future" || scope === "future_only")) {
+    let cursor = scope === "future_only" ? addIsoDays(start, 7) : start;
+    const limit = scope === "this_week" ? 1 : REPEAT_HORIZON_WEEKS;
+    for (let index = 0; index < limit && cursor; index += 1) {
+      if (floor && cursor >= floor) weeks.push(cursor);
+      cursor = addIsoDays(cursor, 7);
+    }
+  } else if (scope === "selected_weeks") {
+    weeks = String(selectedWeeks || "").split(",").map((item) => isoDate(item.trim())).filter((item) => {
+      if (!item || (floor && item < floor)) return false;
+      return new Date(`${item}T00:00:00Z`).getUTCDay() === 1;
+    });
+  }
+  const perWeek = (cells || []).reduce((sum, cell) => {
+    const count = Array.isArray(cell?.shifts) ? cell.shifts.filter((item) => item?.start_time).length : 0;
+    return sum + Math.max(count, 1);
+  }, 0);
+  return { weeks: weeks.length, perWeek, shifts: perWeek * weeks.length };
+}
+
 /** Every changed day can repeat, including a day that holds more than one shift. */
 export function scopeDecision(before, after) {
   const operations = draftOperations(before, after);

@@ -477,7 +477,7 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, saving, canUndo, can
     setEditorBreakMode(slots.length ? "timed" : "untimed");
     setBreakStart(slots[0]?.start_time ? String(slots[0].start_time).slice(0, 5) : "");
     setBreakEnd(slots[0]?.end_time ? String(slots[0].end_time).slice(0, 5) : "");
-    setBreakMinutes(String(visibleBreaks(entry).find((slot) => slot.unscheduled)?.minutes || entry?.break_minutes || 30));
+    setBreakMinutes(String(visibleBreaks(entry).find((slot) => slot.unscheduled)?.minutes ?? entry?.break_minutes ?? 0));
     setRoleCode("");
     setTaskCode("");
   }, [entry?.id]);
@@ -522,6 +522,7 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, saving, canUndo, can
           <input aria-label="Find a role" value={roleQuery} placeholder="Find a role" onChange={(event) => setRoleQuery(event.target.value)} />
           {!stored.length ? <p className="quiet">This shift is {hm(entry.start_time)}–{hm(entry.end_time)} with no role times. That span stays until a role row is added.</p> : null}
           {segmentsOverlap(stored) ? <p className="ops-warn">These role times overlap.</p> : null}
+          <div className="role-head" aria-hidden="true"><span>Role</span><span>Start</span><span>End</span><span /></div>
           <ul className="segs">
             {stored.map((segment, index) => (
               <li key={`${segment.role}-${segment.start_time}-${index}`} className="role-row">
@@ -540,16 +541,6 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, saving, canUndo, can
                   const next = stored.map((item, itemIndex) => (itemIndex === index ? { ...item, end_time: event.target.value } : item));
                   patch(coverSpan(entry, next), "Proposed a role time. Not saved.");
                 }} />
-                <button type="button" className="btn" disabled={index === 0} onClick={() => {
-                  const next = [...stored];
-                  [next[index - 1], next[index]] = [next[index], next[index - 1]];
-                  patch(coverSpan(entry, next), "Proposed a role order. Not saved.");
-                }}>Up</button>
-                <button type="button" className="btn" disabled={index === stored.length - 1} onClick={() => {
-                  const next = [...stored];
-                  [next[index + 1], next[index]] = [next[index], next[index + 1]];
-                  patch(coverSpan(entry, next), "Proposed a role order. Not saved.");
-                }}>Down</button>
                 <button type="button" className="btn danger" onClick={() => patch(coverSpan(entry, stored.filter((_, itemIndex) => itemIndex !== index)), "Proposed removing a role. Not saved.")}>Remove</button>
               </li>
             ))}
@@ -575,15 +566,13 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, saving, canUndo, can
               <b>Break</b>
               <input aria-label="Break start" type="time" step="900" value={breakStart} onChange={(event) => { setBreakStart(event.target.value); if (event.target.value && breakEnd) patch(writeBreaks(entry, [{ start_time: event.target.value, end_time: breakEnd }]), "Proposed a timed break. Not saved."); }} />
               <input aria-label="Break end" type="time" step="900" value={breakEnd} onChange={(event) => { setBreakEnd(event.target.value); if (breakStart && event.target.value) patch(writeBreaks(entry, [{ start_time: breakStart, end_time: event.target.value }]), "Proposed a timed break. Not saved."); }} />
-              <span>{spanMinutes(breakStart, breakEnd) ? `${spanMinutes(breakStart, breakEnd)} min` : ""}</span>
               <button type="button" className="btn danger" onClick={() => { setBreakStart(""); setBreakEnd(""); patch(writeBreaks(entry, []), "Removed the break. Not saved."); }}>Remove</button>
             </div>
           ) : (
             <div className="role-row">
-              <b>Break</b>
-              <label className="field">Duration
-                <input aria-label="Untimed break minutes" type="number" min="0" step="5" value={breakMinutes} onChange={(event) => { setBreakMinutes(event.target.value); patch({ ...entry, break_slots: [], break_minutes: Number(event.target.value) || 0 }, "Proposed an untimed break. Not saved."); }} />
-              </label>
+              <b>Duration</b>
+              <input aria-label="Untimed break minutes" type="number" min="0" step="5" value={breakMinutes} onChange={(event) => { setBreakMinutes(event.target.value); patch({ ...entry, break_slots: [], break_minutes: Number(event.target.value) || 0 }, "Proposed an untimed break. Not saved."); }} />
+              <span />
               <button type="button" className="btn danger" onClick={() => { setBreakMinutes("0"); patch({ ...entry, break_minutes: 0, break_slots: [] }, "Removed the break. Not saved."); }}>Remove</button>
             </div>
           )}
@@ -597,7 +586,7 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, saving, canUndo, can
               const edit = (patch) => onTasks?.((tasks || []).map((item) => (item === task || (task.id && item.id === task.id) ? { ...item, ...patch, changed: !item.draft } : item)));
               return (
                 <li key={task.id || task.role} className="role-row task-row">
-                  <b>{nice(task.role)}</b>
+                  <b className="task-name" title={nice(task.role)}>{nice(task.role)}</b>
                   <label><input type="checkbox" checked={anytime} disabled={locked} onChange={(event) => edit(event.target.checked ? { timing_mode: "anytime", start_time: null, end_time: null } : { timing_mode: "specific_time" })} /> Anytime</label>
                   {anytime ? null : (
                     <>
@@ -638,12 +627,7 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, saving, canUndo, can
       </div>
       <footer>
         <p className={`state${dirty ? " dirty" : ""}`}><i />{dirty ? "Unsaved changes" : "No unsaved changes"}</p>
-        <div className="footer-row">
-          <button type="button" className="btn quiet" onClick={onUndo} disabled={!canUndo || saving}>Undo</button>
-          <button type="button" className="btn quiet" onClick={onRedo} disabled={!canRedo || saving}>Redo</button>
-          <button type="button" className="btn" onClick={onDiscard} disabled={!dirty || saving}>Discard</button>
-          <button type="button" className="btn primary" onClick={() => onReview()} disabled={!dirty || saving}>{saving ? "Saving…" : "Save changes"}</button>
-        </div>
+        <button type="button" className="btn primary" onClick={() => onReview()} disabled={!dirty || saving}>{saving ? "Saving…" : "Save changes"}</button>
       </footer>
     </aside>
   );
@@ -1060,7 +1044,7 @@ export default function PlannerWorkspace({
                             const earliest = [...shifts].sort((a, b) => String(a.start_time).localeCompare(String(b.start_time)))[0];
                             const showTasks = shiftKey(earliest) === shiftKey(entry);
                             const rows = scheduleCardRows(entry);
-                            const needsRange = rows.some((row) => !row.start_time);
+                            const dayOpen = openDays.has(value);
                             return (
                               <button
                                 key={shiftKey(entry)}
@@ -1076,7 +1060,6 @@ export default function PlannerWorkspace({
                                 onDoubleClick={() => onEdit?.(entry)}
                                 onContextMenu={(event) => openMenu(event, entry, Number(entry.user_id), Number(entry.day_of_week))}
                               >
-                                {needsRange ? <span className="card-range">{hm(entry.start_time)}–{hm(entry.end_time)}</span> : null}
                                 {rows.map((row, index) => (
                                   <span key={`${row.role}-${row.start_time}-${index}`} className={`card-line${row.unsplit ? " is-unsplit" : ""}`}>
                                     <i style={{ background: row.role ? roleColor(row.role) : "#cbd5e1" }} />
@@ -1084,24 +1067,25 @@ export default function PlannerWorkspace({
                                     <span className="card-time">{row.start_time ? `${hm(row.start_time)}–${hm(row.end_time)}` : "Not split"}</span>
                                   </span>
                                 ))}
-                                {slots.length ? (
+                                <span className="card-span">Shift {hm(entry.start_time)}–{hm(entry.end_time)}</span>
+                                {dayOpen && slots.length ? (
                                   <span className={`card-line is-break${slots.some((slot) => slot.start_time) ? "" : " is-unsplit"}`} title={slots.some((slot) => !slot.start_time) ? "Break length with no clock time" : "Timed break"}>
                                     <i />
                                     <span className="card-name">Break</span>
                                     <span className="card-time">{breakLabel}</span>
                                   </span>
                                 ) : null}
-                                {showTasks ? dayTasks.map((task) => {
+                                {dayOpen && showTasks ? dayTasks.map((task) => {
                                   const scheduled = task.timing_mode === "specific_time" && task.start_time;
+                                  const taskName = `${nice(task.role)}${task.assignment_group_id ? " · shared" : ""}`;
                                   return (
-                                    <span key={task.id || task.role} className={`card-line is-task${scheduled ? "" : " is-unsplit"}`} title={nice(task.role)}>
+                                    <span key={task.id || task.role} className={`card-line is-task${scheduled ? "" : " is-unsplit"}`} title={taskName}>
                                       <i />
-                                      <span className="card-name">{nice(task.role)}{task.assignment_group_id ? " · shared" : ""}</span>
+                                      <span className="card-name">{taskName}</span>
                                       <span className="card-time">{scheduled ? `${hm(task.start_time)}${task.end_time ? `–${hm(task.end_time)}` : ""}` : "Anytime"}</span>
                                     </span>
                                   );
                                 }) : null}
-                                <span className="card-foot">{hours.net.toFixed(1)}h</span>
                               </button>
                             );
                           })}

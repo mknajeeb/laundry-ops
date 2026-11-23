@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { interpretSaveResponse } from "./plannerReview";
+import { affectedShiftCount, interpretSaveResponse } from "./plannerReview";
 
 describe("interpretSaveResponse", () => {
   it("treats a committed save as the only success", () => {
@@ -14,6 +14,16 @@ describe("interpretSaveResponse", () => {
     expect(busy.reload).toBe(false);
     expect(changed.saved).toBe(false);
     expect(changed.error).toMatch(/Another manager saved/);
+  });
+
+  it("counts one week by default and sixteen weeks only after a repeating choice", () => {
+    const cells = [{ shifts: [{ start_time: "05:00" }, { start_time: "17:00" }] }];
+    const anchor = "2026-11-23";
+    const today = "2026-11-22";
+    expect(affectedShiftCount({ scope: "this_week", cells, anchor, today })).toEqual({ weeks: 1, perWeek: 2, shifts: 2 });
+    expect(affectedShiftCount({ scope: "this_and_future", cells, anchor, today })).toEqual({ weeks: 16, perWeek: 2, shifts: 32 });
+    expect(affectedShiftCount({ scope: "future_only", cells, anchor, today }).weeks).toBe(16);
+    expect(affectedShiftCount({ scope: "selected_weeks", cells, anchor, today, selectedWeeks: "2026-11-23, 2026-12-07, tuesday" }).shifts).toBe(4);
   });
 
   it("asks again only when the server needs a scope confirmation", () => {
