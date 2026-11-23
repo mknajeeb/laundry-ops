@@ -42,6 +42,7 @@ import {
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import { clearOneSignalUser, syncOneSignalUser } from "../onesignalUser";
+import NotificationAssignments from "./NotificationAssignments";
 
 const NOTIF_OUTLINE_ACCORDION_SX = {
   border: 1,
@@ -1059,10 +1060,13 @@ function EventsSection() {
 export default function NotificationsPage({ user }) {
   const { t } = useI18n();
   const [tab, setTab] = useState(0);
-  const isAdmin = useMemo(
-    () => (user?.roles || []).map((r) => String(r).toUpperCase()).includes("ADMIN"),
+  const roles = useMemo(
+    () => new Set((user?.roles || []).map((role) => String(role).toUpperCase())),
     [user]
   );
+  const isAdmin = roles.has("ADMIN");
+  const canAssignNotifications =
+    isAdmin || roles.has("SUPER_ADMIN") || roles.has("PLATFORM_ADMIN");
 
   return (
     <Box sx={{ p: { xs: 1, md: 2 }, maxWidth: 1100 }}>
@@ -1073,13 +1077,15 @@ export default function NotificationsPage({ user }) {
         {t("notifications.intro")}
       </Typography>
       <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2 }}>
+        {canAssignNotifications && <Tab label="Assignments" />}
         <Tab label={t("notifications.tabPrefs")} />
         {isAdmin && <Tab label={t("notifications.tabGroups")} />}
         {isAdmin && <Tab label={t("notifications.tabEvents")} />}
       </Tabs>
-      {tab === 0 && <PrefsSection canTest={canSendOwnPush(user)} />}
-      {tab === 1 && isAdmin && <GroupsSection />}
-      {tab === 2 && isAdmin && <EventsSection />}
+      {canAssignNotifications && tab === 0 && <NotificationAssignments />}
+      {tab === (canAssignNotifications ? 1 : 0) && <PrefsSection canTest={canSendOwnPush(user)} />}
+      {isAdmin && tab === (canAssignNotifications ? 2 : 1) && <GroupsSection />}
+      {isAdmin && tab === (canAssignNotifications ? 3 : 2) && <EventsSection />}
     </Box>
   );
 }

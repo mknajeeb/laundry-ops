@@ -537,3 +537,88 @@ def register_notification_routes(app):
         finally:
             cursor.close()
             conn.close()
+
+    @app.route("/auth/notifications/management", methods=["GET"])
+    def notif_management_catalog():
+        from backend.app import get_db, require_admin
+        from backend.notification_assignments import ensure_assignment_tables, management_catalog
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err, st = require_admin(cursor)
+            if err is not None:
+                return err, st
+            oid, oerr, ost = _notification_org_id(me)
+            if oerr is not None:
+                return oerr, ost
+            ensure_assignment_tables(cursor)
+            payload = management_catalog(cursor, oid)
+            conn.commit()
+            return jsonify(payload)
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/auth/notifications/management/users", methods=["GET"])
+    def notif_management_users():
+        from backend.app import get_db, require_admin
+        from backend.notification_assignments import search_active_users
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err, st = require_admin(cursor)
+            if err is not None:
+                return err, st
+            oid, oerr, ost = _notification_org_id(me)
+            if oerr is not None:
+                return oerr, ost
+            return jsonify({"users": search_active_users(cursor, oid, request.args.get("q") or "")})
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/auth/notifications/management/<event_key>", methods=["PUT"])
+    def notif_management_save(event_key: str):
+        from backend.app import get_db, require_admin
+        from backend.notification_assignments import (
+            NotificationAssignmentError,
+            ensure_assignment_tables,
+            save_management_assignment,
+        )
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err, st = require_admin(cursor)
+            if err is not None:
+                return err, st
+            oid, oerr, ost = _notification_org_id(me)
+            if oerr is not None:
+                return oerr, ost
+            body = request.json or {}
+            ensure_assignment_tables(cursor)
+            saved = save_management_assignment(
+                cursor,
+                organization_id=oid,
+                event_key=event_key,
+                user_ids=body.get("user_ids") or [],
+                enabled=bool(body.get("enabled", True)),
+                actor_user_id=int(me["user_id"]),
+            )
+            conn.commit()
+            return jsonify({"ok": True, "event_key": event_key, "user_ids": saved})
+        except NotificationAssignmentError as ex:
+            conn.rollback()
+            status = 404 if ex.code == "unknown_category" else 400
+            return jsonify({"error": ex.code}), status
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()

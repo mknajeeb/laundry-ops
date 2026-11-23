@@ -383,6 +383,15 @@ def _notify_checklist_submitted(cursor, organization_id: int, list_payload: dict
             open_path = f"{open_path}?task_date={date_s}"
             if list_id is not None:
                 open_path = f"{open_path}&list_id={int(list_id)}"
+        from backend.notification_assignments import management_dispatch_recipients
+        from backend.notification_catalog import LEGACY_ROUTING
+
+        assigned = management_dispatch_recipients(
+            cursor, int(organization_id), NOTIFY_CHECKLIST_SUBMITTED
+        )
+        recipient_kwargs = {}
+        if assigned is not LEGACY_ROUTING:
+            recipient_kwargs["recipient_user_ids"] = assigned
         dispatch_notification_event(
             cursor,
             organization_id=int(organization_id),
@@ -396,6 +405,7 @@ def _notify_checklist_submitted(cursor, organization_id: int, list_payload: dict
                 "submitted_at": str(list_payload.get("submitted_at") or ""),
                 "open_path": open_path,
             },
+            **recipient_kwargs,
         )
     except Exception:
         pass

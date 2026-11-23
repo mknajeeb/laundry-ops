@@ -1654,6 +1654,15 @@ def _notify_sections_submitted_batch(cursor, organization_id: int, payloads: lis
             f"/finance/daily-revenue-cost?tab=entry&mobile_submission_id={sid}"
             f"&business_date={date_s}"
         )
+        from backend.notification_assignments import management_dispatch_recipients
+        from backend.notification_catalog import LEGACY_ROUTING
+
+        assigned = management_dispatch_recipients(
+            cursor, int(organization_id), NOTIFY_DRC_MOBILE_SUBMITTED
+        )
+        recipient_kwargs = {}
+        if assigned is not LEGACY_ROUTING:
+            recipient_kwargs["recipient_user_ids"] = assigned
         dispatch_notification_event(
             cursor,
             organization_id=int(organization_id),
@@ -1669,6 +1678,7 @@ def _notify_sections_submitted_batch(cursor, organization_id: int, payloads: lis
                 "submitted_employee": name,
                 "open_path": open_path,
             },
+            **recipient_kwargs,
         )
     except Exception:
         pass

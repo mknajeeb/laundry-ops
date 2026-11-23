@@ -1887,7 +1887,14 @@ def notify_found_item(cursor, organization_id: int, item: Mapping[str, Any]) -> 
         event = cursor.fetchone()
         if not event:
             return
-        reviewers = issue_reviewer_user_ids(cursor, int(organization_id))
+        from backend.notification_assignments import management_dispatch_recipients
+        from backend.notification_catalog import LEGACY_ROUTING
+
+        assigned = management_dispatch_recipients(cursor, int(organization_id), NOTIFY_EVENT_KEY)
+        if assigned is LEGACY_ROUTING:
+            reviewers = issue_reviewer_user_ids(cursor, int(organization_id))
+        else:
+            reviewers = assigned
         slug, brand = _org_push_identity(cursor, int(organization_id))
         category = report_category_of(item)
         title, body = compose_issue_push(

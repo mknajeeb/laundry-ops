@@ -186,6 +186,12 @@ export const postNotificationDispatch = (body) =>
   axios.post(`${API_BASE}/auth/notifications/dispatch`, body);
 export const postNotificationTestSelf = () =>
   axios.post(`${API_BASE}/auth/notifications/test-self`, {});
+export const getNotificationManagement = () =>
+  axios.get(`${API_BASE}/auth/notifications/management`);
+export const getNotificationManagementUsers = (query) =>
+  axios.get(`${API_BASE}/auth/notifications/management/users`, { params: { q: query || "" } });
+export const putNotificationManagementCategory = (eventKey, body) =>
+  axios.put(`${API_BASE}/auth/notifications/management/${encodeURIComponent(eventKey)}`, body);
 
 /** Single in-flight GET /auth/me (App bootstrap + refresh events can overlap). */
 let _authMeInflight = null;
