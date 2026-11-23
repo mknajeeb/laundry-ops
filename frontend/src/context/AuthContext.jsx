@@ -102,8 +102,8 @@ export function AuthProvider({ children }) {
     if (user?.id) {
       const t = window.setTimeout(() => {
         try {
-          // A closed or expired session must keep the device linked so a later
-          // alert can still arrive. logout() and the PIN handoff unlink explicitly.
+          // A closed or expired session keeps the device linked. Explicit logout,
+          // turning push off, and a non-reviewer PIN unlink it.
           if (isSharedKioskPath(window.location.pathname)) {
             clearOneSignalUser();
             return;

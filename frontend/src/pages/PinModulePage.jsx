@@ -5,7 +5,6 @@
 import { useCallback, useEffect, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { authLogout, clearAuthSession } from "../api";
-import { clearOneSignalUser } from "../onesignalUser";
 import {
   clearPinHubAppSession,
   clearPinHubSession,
@@ -42,7 +41,7 @@ export default function PinModulePage({ onPinHubDone, children }) {
   }, [clearWashproSession, location.state, navigate]);
 
   const onLock = useCallback(async () => {
-    clearOneSignalUser();
+    // Lock returns to the PIN pad. It does not unsubscribe this phone.
     clearPinHubSession();
     clearPinHubAppSession();
     await clearWashproSession();
