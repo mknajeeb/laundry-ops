@@ -30,8 +30,12 @@ import {
   breakAssignment,
   copyBreaksOnto,
   copyTaskAssignments,
+  moveBreakTo,
+  moveTaskTo,
   proposeBreak,
   removeBreak,
+  sharedActivity,
+  slideBreak,
   shiftKey,
   storedSegments,
   timelineAxis,
@@ -640,7 +644,8 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, saving, canUndo, can
                       <input aria-label={`${nice(task.role)} planned end`} type="time" step="900" disabled={locked} value={hm(task.end_time)} onChange={(event) => edit({ timing_mode: "specific_time", end_time: event.target.value })} />
                     </>
                   )}
-                  {locked ? null : <button type="button" className="btn" onClick={() => onCopyTask?.(task)}>Copy</button>}
+                  {locked || sharedActivity(task) ? null : <button type="button" className="btn" onClick={() => onCopyTask?.(task)}>Copy</button>}
+                  {sharedActivity(task) ? <span className="quiet">Shared activity. Copy is off so the checklist stays with this group.</span> : null}
                   {locked ? null : <button type="button" className="btn danger" onClick={() => onTasks?.((tasks || []).map((item) => (item === task || item.id === task.id ? { ...item, remove: true } : item)).filter((item) => !(item.draft && item.remove)))}>Remove</button>}
                 </li>
               );
@@ -729,6 +734,7 @@ export default function PlannerWorkspace({
   const [copyDays, setCopyDays] = useState([]);
   const [taskCopy, setTaskCopy] = useState(null);
   const [assignTask, setAssignTask] = useState("");
+  const [boardNote, setBoardNote] = useState("");
   const [breakPeople, setBreakPeople] = useState([]);
   const [breakDays, setBreakDays] = useState([String(day)]);
   const [breakMode, setBreakMode] = useState("timed");
@@ -887,8 +893,25 @@ export default function PlannerWorkspace({
                 openMenu(event, null, Number(employee.user_id), Number(value));
               }}
               onDrop={(event) => {
-                const key = event.dataTransfer.getData("text/plain");
-                const moving = entries.find((entry) => shiftKey(entry) === key);
+                const payload = event.dataTransfer.getData("text/plain");
+                if (payload.startsWith("break|")) {
+                  const [, key, start, end] = payload.split("|");
+                  const source = entries.find((entry) => shiftKey(entry) === key);
+                  if (!source) return;
+                  const placed = moveBreakTo(entries, source, { start_time: start, end_time: end, timed: true }, Number(employee.user_id), Number(value));
+                  if (placed.note) setBoardNote(placed.note);
+                  else if (placed.entries !== entries) onCommit(placed.entries, "Moved the break onto the selected shift. Not saved.");
+                  return;
+                }
+                if (payload.startsWith("task|")) {
+                  const source = (tasks || []).find((task) => String(task.id) === payload.slice(5));
+                  if (!source) return;
+                  const placed = moveTaskTo(tasks, source, Number(employee.user_id), Number(value));
+                  if (placed.note) setBoardNote(placed.note);
+                  else onCommit({ tasks: placed.tasks }, "Moved the timed task. Not saved.");
+                  return;
+                }
+                const moving = entries.find((entry) => shiftKey(entry) === payload);
                 if (moving && onMove) onMove(moving, Number(employee.user_id), Number(value));
               }}
             >
@@ -936,10 +959,48 @@ export default function PlannerWorkspace({
                         onPointerDown={(event) => trackPointer(event, axis, (minutes, done) => {
                           if (!done) return;
                           const index = visibleBreaks(item.entry).filter((itemSlot) => itemSlot.start_time).indexOf(slot);
-                          commit(resizeBreak(item.entry, index, "start", minutes), "Proposed a new break start. Not saved.");
+                          const next = resizeBreak(item.entry, index, "start", minutes);
+                          if (next === item.entry || !visibleBreaks(next).some((itemSlot) => itemSlot.start_time)) return;
+                          commit(next, "Proposed a new break start. Not saved.");
                         })}
                       />
+                      <span
+                        className="break-label"
+                        tabIndex={0}
+                        role="button"
+                        draggable
+                        aria-label={`Move break ${hm(slot.start_time)} to ${hm(slot.end_time)}. Arrow keys move it by 15 minutes. Shift plus an arrow changes the end.`}
+                        onDragStart={(event) => {
+                          event.stopPropagation();
+                          event.dataTransfer.setData("text/plain", `break|${shiftKey(item.entry)}|${hm(slot.start_time)}|${hm(slot.end_time)}`);
+                          event.dataTransfer.effectAllowed = "move";
+                        }}
+                        onPointerDown={(event) => {
+                          const index = visibleBreaks(item.entry).findIndex((itemSlot) => itemSlot.start_time === slot.start_time && itemSlot.end_time === slot.end_time);
+                          trackPointer(event, axis, (minutes, done) => {
+                            if (!done || index < 0) return;
+                            const next = slideBreak(item.entry, index, minutes);
+                            if (next === item.entry) setBoardNote("The break stays inside the shift.");
+                            else commit(next, "Moved a break. Not saved.");
+                          });
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                          event.preventDefault();
+                          const index = visibleBreaks(item.entry).findIndex((itemSlot) => itemSlot.start_time === slot.start_time && itemSlot.end_time === slot.end_time);
+                          if (index < 0) return;
+                          const delta = event.key === "ArrowLeft" ? -15 : 15;
+                          const next = event.shiftKey
+                            ? resizeBreak(item.entry, index, "end", end + delta)
+                            : slideBreak(item.entry, index, start + delta);
+                          const placed = visibleBreaks(next)[index];
+                          const kept = placed?.start_time && slideBreak(next, index, clockMinutes(placed.start_time)) !== next;
+                          if (next === item.entry || !kept) setBoardNote("The break stays inside the shift.");
+                          else commit(next, event.shiftKey ? "Changed a break end. Not saved." : "Moved a break. Not saved.");
+                        }}
+                      >
                       Break {hm(slot.start_time)}–{hm(slot.end_time)}
+                      </span>
                       <button
                         type="button"
                         className="break-grip"
@@ -980,8 +1041,35 @@ export default function PlannerWorkspace({
                     <span
                       key={task.id || `${task.role}-${task.start_time}`}
                       className="task-block"
+                      draggable
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`${nice(task.role)} at ${hm(task.start_time)}. Arrow keys move the start by 15 minutes.`}
                       style={{ left: `${leftOf(start, axis)}%`, width: `${widthOf(start, end, axis)}%`, top: 4, height: 16 }}
                       title={`${nice(task.role)} ${hm(task.start_time)}`}
+                      onDragStart={(event) => {
+                        event.stopPropagation();
+                        event.dataTransfer.setData("text/plain", `task|${task.id}`);
+                        event.dataTransfer.effectAllowed = "move";
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                        event.preventDefault();
+                        const locked = ["in_progress", "pending_approval", "approved", "rejected", "completed"].includes(String(task.activity_status || task.status || ""));
+                        if (locked || sharedActivity(task)) {
+                          setBoardNote(sharedActivity(task) ? "A shared activity stays with its group." : "Completed work stays on the original assignment.");
+                          return;
+                        }
+                        const delta = event.key === "ArrowLeft" ? -15 : 15;
+                        const duration = Math.max(15, end - start);
+                        onCommit({
+                          tasks: (tasks || []).map((item) => (
+                            item === task || (task.id && item.id === task.id)
+                              ? { ...item, timing_mode: "specific_time", start_time: minutesToClock(start + delta), end_time: minutesToClock(start + delta + duration), changed: !item.draft }
+                              : item
+                          )),
+                        }, "Moved a timed task. Not saved.");
+                      }}
                       onPointerDown={(event) => {
                         const locked = ["in_progress", "pending_approval", "approved", "rejected", "completed"].includes(String(task.activity_status || task.status || ""));
                         if (locked) return;
@@ -1026,6 +1114,7 @@ export default function PlannerWorkspace({
         <div className="shift-actions">
           <button type="button" className="btn" onClick={() => setBreakOpen(true)}>Assign Breaks & Tasks</button>
           <button type="button" className="btn" onClick={() => onAdd(addTarget, day)}>Add shift</button>
+          {boardNote ? <p className="ops-warn" role="status">{boardNote}</p> : null}
         </div>
       ) : null}
       {dirty && !showDrawer ? (
@@ -1341,11 +1430,16 @@ export default function PlannerWorkspace({
         <div className="ops-dialog-back">
           <form className="ops-dialog" onSubmit={(event) => {
             event.preventDefault();
-            onCommit({ tasks: copyTaskAssignments(tasks, taskCopy, copyPeople.map(Number), copyDays.map(Number)) }, "Copied the task as a new individual assignment. Completed work and the shared checklist stay on the original. Not saved.");
+            const result = copyTaskAssignments(tasks, taskCopy, copyPeople.map(Number), copyDays.map(Number));
+            if (result.refused) {
+              setBoardNote(result.refused);
+              return;
+            }
+            onCommit({ tasks: result.tasks }, "Copied the individual task. Anytime stays Anytime. Completed work was not copied. Not saved.");
             setTaskCopy(null);
           }}>
             <h2>Copy task</h2>
-            <p>{nice(taskCopy.role)} stays {taskCopy.timing_mode === "specific_time" && taskCopy.start_time ? "at its planned time" : "Anytime"}. The copy is a new individual assignment.</p>
+            <p>{nice(taskCopy.role)} stays {taskCopy.timing_mode === "specific_time" && taskCopy.start_time ? "at its planned time" : "Anytime"}. This copies an individual assignment only.</p>
             <div className="pick-row" role="group" aria-label="Employees for the task copy">
               {employees.map((employee) => (
                 <label key={employee.user_id}>
@@ -1370,11 +1464,18 @@ export default function PlannerWorkspace({
         <div className="ops-dialog-back">
           <form className="ops-dialog" onSubmit={(event) => {
             event.preventDefault();
-            onCommit(copyBreaksOnto(entries, breakCopy, copyPeople.map(Number), copyDays.map(Number)), "Copied breaks onto the selected shifts. Identical breaks were left as they are. Tasks were not copied. Not saved.");
+            const result = copyBreaksOnto(entries, breakCopy, copyPeople.map(Number), copyDays.map(Number));
+            const copied = result.notes.filter((note) => note.reason === "Copied.").length;
+            const skipped = result.notes.filter((note) => note.reason !== "Copied.");
+            if (copied) onCommit(result.entries, copied === 1 ? "Copied a break onto 1 shift. Not saved." : `Copied a break onto ${copied} shifts. Not saved.`);
+            if (skipped.length) {
+              setBoardNote(skipped.map((note) => `${personName(employees, note.userId)} ${SHORT[note.day] || ""}: ${note.reason}`).join(" "));
+              if (!copied) return;
+            }
             setBreakCopy(null);
           }}>
             <h2>Copy breaks</h2>
-            <p>Choose employees and days that already have a shift. A break that does not fit the shift, or is already there, is skipped.</p>
+            <p>Choose employees and days. A day without a shift, or a break that does not fit, is left unchanged.</p>
             <div className="pick-row" role="group" aria-label="Employees">
               {employees.map((employee) => (
                 <label key={employee.user_id}>
@@ -1388,6 +1489,11 @@ export default function PlannerWorkspace({
                 <label key={value}><input type="checkbox" checked={copyDays.includes(String(value))} onChange={() => setCopyDays((current) => current.includes(String(value)) ? current.filter((item) => item !== String(value)) : [...current, String(value)])} />{SHORT[value]}</label>
               ))}
             </div>
+            <ul className="break-preview">
+              {copyBreaksOnto(entries, breakCopy, copyPeople.map(Number), copyDays.map(Number)).notes.map((note, index) => (
+                <li key={`${note.userId}-${note.day}-${index}`}>{personName(employees, note.userId)} · {SHORT[note.day] || "Day"} · {note.reason}</li>
+              ))}
+            </ul>
             <div className="footer-row">
               <button type="button" className="btn" onClick={() => setBreakCopy(null)}>Cancel</button>
               <button type="submit" className="btn primary">Copy breaks</button>
@@ -1473,6 +1579,7 @@ export default function PlannerWorkspace({
                 ))}
               </select>
             </label>
+            {assignTask ? <p className="quiet">{String(assignTask).startsWith("agroup_") ? "This adds a new individual assignment. It does not join or copy a shared checklist." : "A task added here stays Anytime until you set a time on the shift."}</p> : null}
             <ul className="break-preview">
               {entries.filter((entry) => breakPeople.includes(String(entry.user_id)) && breakDays.includes(String(entry.day_of_week))).map((entry) => {
                 const proposal = proposeBreak(entry, { mode: breakMode, minutes: Number(breakLen), start: breakAt, replace: replaceBreaks });

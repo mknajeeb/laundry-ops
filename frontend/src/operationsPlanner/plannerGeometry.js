@@ -816,31 +816,58 @@ function breakInsideShift(entry, slot) {
 
 /**
  * Copy break records onto existing shifts for the chosen employees and days.
- * An identical break is not added again. A timed break outside the target shift is skipped.
- * Tasks are not copied.
+ * An identical break is not added again. A missing shift or a break outside that
+ * shift is reported and left unchanged. Tasks are not copied.
  */
 export function copyBreaksOnto(entries, source, userIds, days) {
   const breaks = visibleBreaks(source).filter((slot) => slot?.start_time || Number(slot?.minutes) > 0);
-  const people = new Set((userIds || []).map(Number));
-  const chosen = new Set((days || []).map(Number));
-  if (!breaks.length) return entries || [];
-  return (entries || []).map((entry) => {
-    if (!people.has(Number(entry.user_id)) || !chosen.has(Number(entry.day_of_week))) return entry;
-    const existing = visibleBreaks(entry);
-    const seen = new Set(existing.map(breakIdentity));
-    const additions = breaks.filter((slot) => breakInsideShift(entry, slot) && !seen.has(breakIdentity(slot)));
-    if (!additions.length) return entry;
-    return breakAssignment(entry, [...existing, ...additions]);
+  const notes = [];
+  const list = entries || [];
+  if (!breaks.length) return { entries: list, notes: [{ userId: null, day: null, reason: "This shift has no break to copy." }] };
+  const next = list.map((entry) => ({ ...entry }));
+  (userIds || []).forEach((userId) => {
+    (days || []).forEach((day) => {
+      const matches = next.filter((entry) => Number(entry.user_id) === Number(userId) && Number(entry.day_of_week) === Number(day));
+      if (!matches.length) {
+        notes.push({ userId: Number(userId), day: Number(day), reason: "No shift on this day. Add a shift before copying a break." });
+        return;
+      }
+      matches.forEach((entry) => {
+        const existing = visibleBreaks(entry);
+        const seen = new Set(existing.map(breakIdentity));
+        const outside = breaks.filter((slot) => !breakInsideShift(entry, slot));
+        const duplicate = breaks.filter((slot) => breakInsideShift(entry, slot) && seen.has(breakIdentity(slot)));
+        const additions = breaks.filter((slot) => breakInsideShift(entry, slot) && !seen.has(breakIdentity(slot)));
+        outside.forEach(() => notes.push({ userId: Number(userId), day: Number(day), reason: "The break is outside this shift, so it was not copied." }));
+        duplicate.forEach(() => notes.push({ userId: Number(userId), day: Number(day), reason: "This break is already on the shift." }));
+        if (!additions.length) return;
+        const updated = breakAssignment(entry, [...existing, ...additions]);
+        Object.assign(entry, updated);
+        notes.push({ userId: Number(userId), day: Number(day), reason: "Copied." });
+      });
+    });
   });
+  return { entries: next, notes };
+}
+
+export function sharedActivity(task) {
+  return Boolean(task?.assignment_group_id) || task?.execution_mode === "shared";
 }
 
 /**
- * Copy one assignment onto other employees and days as a new individual draft.
- * The source record, its group, and any completed or verified history stay unchanged.
+ * Copy one individual assignment onto other employees and days.
+ * A shared activity group is refused. Its checklist, participation, and verification stay put.
  * An Anytime assignment stays Anytime.
  */
 export function copyTaskAssignments(tasks, source, userIds, days) {
-  if (!source?.role) return tasks || [];
+  const list = tasks || [];
+  if (sharedActivity(source)) {
+    return {
+      tasks: list,
+      refused: "This is a shared activity. Copy is off so the shared checklist is not split into a separate individual task.",
+    };
+  }
+  if (!source?.role) return { tasks: list, refused: "Choose a task before copying." };
   const timed = source.timing_mode === "specific_time" && source.start_time;
   const stamp = Date.now();
   const additions = [];
@@ -862,7 +889,68 @@ export function copyTaskAssignments(tasks, source, userIds, days) {
       });
     });
   });
-  return [...(tasks || []), ...additions];
+  if (!additions.length) return { tasks: list, refused: "Choose another employee or day. The original assignment stays as it is." };
+  return { tasks: [...list, ...additions], refused: "" };
+}
+
+/** Slide one timed break, keeping its length, and refuse a time outside the shift. */
+export function slideBreak(entry, index, startMinutes) {
+  const slots = visibleBreaks(entry);
+  const slot = slots[index];
+  if (!slot?.start_time || !slot?.end_time) return entry;
+  const length = spanMinutes(slot.start_time, slot.end_time);
+  if (!length) return entry;
+  const start = minutesToClock(startMinutes);
+  const end = minutesToClock(startMinutes + length);
+  if (!start || !end || !breakInsideShift(entry, { start_time: start, end_time: end })) return entry;
+  const next = slots.map((item, itemIndex) => (itemIndex === index ? { start_time: start, end_time: end, timed: true } : item));
+  return breakAssignment(entry, next);
+}
+
+/**
+ * Move one timed break onto another employee and day.
+ * The source stays unchanged when the destination has no fitting shift.
+ */
+export function moveBreakTo(entries, source, slot, userId, day) {
+  const list = entries || [];
+  const targets = list.filter((entry) => Number(entry.user_id) === Number(userId) && Number(entry.day_of_week) === Number(day));
+  if (!targets.length) return { entries: list, note: "No shift on that day. The break stayed where it was." };
+  const same = targets.find((entry) => shiftKey(entry) === shiftKey(source));
+  if (same) return { entries: list, note: "" };
+  const fitting = targets.find((entry) => breakInsideShift(entry, slot) && !visibleBreaks(entry).some((item) => breakIdentity(item) === breakIdentity(slot)));
+  if (!fitting) {
+    const duplicate = targets.some((entry) => visibleBreaks(entry).some((item) => breakIdentity(item) === breakIdentity(slot)));
+    return {
+      entries: list,
+      note: duplicate ? "That shift already has this break." : "The break does not fit that shift, so it stayed where it was.",
+    };
+  }
+  const next = list.map((entry) => {
+    if (shiftKey(entry) === shiftKey(source)) {
+      const remaining = visibleBreaks(entry).filter((item) => breakIdentity(item) !== breakIdentity(slot));
+      return breakAssignment(entry, remaining);
+    }
+    if (shiftKey(entry) === shiftKey(fitting)) return breakAssignment(entry, [...visibleBreaks(entry), slot]);
+    return entry;
+  });
+  return { entries: next, note: "Moved the break. Not saved." };
+}
+
+/** Move one timed assignment. A shared activity group is left where it is. */
+export function moveTaskTo(tasks, source, userId, day) {
+  const list = tasks || [];
+  if (sharedActivity(source)) return { tasks: list, note: "A shared activity stays with its group. Move is off so the checklist is not rewritten." };
+  if (["in_progress", "pending_approval", "approved", "rejected", "completed"].includes(String(source?.activity_status || source?.status || ""))) {
+    return { tasks: list, note: "Completed work stays on the original assignment." };
+  }
+  return {
+    tasks: list.map((item) => (
+      item === source || (source?.id && item.id === source.id)
+        ? { ...item, user_id: Number(userId), day_of_week: Number(day), changed: !item.draft }
+        : item
+    )),
+    note: "",
+  };
 }
 
 /** A manager placing both ends creates a timed break. An empty field does not invent one. */
