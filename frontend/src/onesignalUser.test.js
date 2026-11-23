@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { pinPushAssociation } from "./onesignalUser";
+import { phoneRegistrationState, pinPushAssociation } from "./onesignalUser";
 
 const root = dirname(fileURLToPath(import.meta.url));
 
@@ -35,17 +35,71 @@ describe("PIN push association", () => {
     ).toEqual({ action: "link", user: { id: 41, organization_id: 3 } });
   });
 
-  it("unlinks when the employee cannot review issues", () => {
+  it("links the person who signed in even without the Issues tile", () => {
     expect(
       pinPushAssociation({
-        employee_id: 60,
+        employee_id: 32,
         organization_id: 3,
         features: { issues: { allowed: false } },
       }),
-    ).toEqual({ action: "clear" });
-    expect(pinPushAssociation({ employee_id: 15, organization_id: 3 })).toEqual({
-      action: "clear",
+    ).toEqual({ action: "link", user: { id: 32, organization_id: 3 } });
+  });
+
+  it("replaces the previous person when a different PIN is used", () => {
+    const first = pinPushAssociation({
+      employee_id: 32,
+      organization_id: 3,
+      features: { issues: { allowed: false } },
     });
+    const second = pinPushAssociation({
+      employee_id: 33,
+      organization_id: 3,
+      features: { issues: { allowed: true } },
+    });
+    expect(first.user).toEqual({ id: 32, organization_id: 3 });
+    expect(second.user).toEqual({ id: 33, organization_id: 3 });
+    expect(second.user).not.toEqual(first.user);
+  });
+
+  it("does not log out when the PIN response has no employee", () => {
+    expect(pinPushAssociation({ organization_id: 3 })).toEqual({ action: "skip" });
+  });
+});
+
+describe("phone registration status", () => {
+  it("is registered only when the identity and the push subscription match", () => {
+    expect(
+      phoneRegistrationState({
+        externalId: "lo-3-15",
+        expectedExternalId: "lo-3-15",
+        subscriptionId: "sub",
+        optedIn: true,
+      }),
+    ).toBe("registered");
+    expect(
+      phoneRegistrationState({
+        externalId: "lo-3-32",
+        expectedExternalId: "lo-3-15",
+        subscriptionId: "sub",
+        optedIn: true,
+      }),
+    ).toBe("not_registered");
+    expect(
+      phoneRegistrationState({
+        externalId: "lo-3-15",
+        expectedExternalId: "lo-3-15",
+        subscriptionId: "",
+        optedIn: true,
+      }),
+    ).toBe("not_registered");
+    expect(
+      phoneRegistrationState({
+        externalId: "lo-3-32",
+        expectedExternalId: "lo-3-32",
+        subscriptionId: "sub",
+        optedIn: false,
+      }),
+    ).toBe("not_registered");
   });
 });
 

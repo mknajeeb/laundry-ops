@@ -35,24 +35,75 @@ function deferredPush(fn) {
 }
 
 /**
- * PIN identity decides the push association.
- * A reviewer replaces the previous external id. An employee who cannot review
- * issues unlinks the device. Lock and session expiry do not call this.
+ * The person who just entered a PIN becomes this phone's push identity.
+ * A different PIN replaces the previous id. Issue-review access does not
+ * decide the link. Lock, session expiry, and a missing identity do not log out.
  */
 export function pinPushAssociation(body) {
-  if (body?.features?.issues?.allowed !== true) return { action: "clear" };
   const id = Number(body?.employee_id);
   const org = Number(body?.organization_id);
   if (!Number.isFinite(id) || id <= 0 || !Number.isFinite(org) || org <= 0) {
-    return { action: "clear" };
+    return { action: "skip" };
   }
   return { action: "link", user: { id, organization_id: org } };
 }
 
+/** Status only. Never include the external id or subscription id. */
+export function phoneRegistrationState({
+  externalId,
+  expectedExternalId,
+  subscriptionId,
+  optedIn,
+} = {}) {
+  if (!expectedExternalId) return "unavailable";
+  if (externalId === expectedExternalId && subscriptionId && optedIn === true) {
+    return "registered";
+  }
+  return "not_registered";
+}
+
+function readSdkRegistration(OneSignal, externalId) {
+  const sub = OneSignal?.User?.PushSubscription;
+  return phoneRegistrationState({
+    externalId: OneSignal?.User?.externalId,
+    expectedExternalId: externalId,
+    subscriptionId: sub?.id,
+    optedIn: sub?.optedIn,
+  });
+}
+
+/**
+ * Link this phone, then report whether the SDK's identity and push
+ * subscription match. Resolves "unavailable" when OneSignal is not in use.
+ */
 export function applyPinPushAssociation(body) {
   const decision = pinPushAssociation(body);
-  if (decision.action === "link") syncOneSignalUser(decision.user);
-  else clearOneSignalUser();
+  if (decision.action !== "link") return Promise.resolve("unavailable");
+  return registerPhoneForPush(decision.user);
+}
+
+export function registerPhoneForPush(user) {
+  const externalId = buildOneSignalExternalUserId(user);
+  if (!ONESIGNAL_APP_ID || ONESIGNAL_DISABLED || skipLocalOneSignal() || !externalId) {
+    return Promise.resolve("unavailable");
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve("not_registered"), 8000);
+    deferredPush(async function linkUser(OneSignal) {
+      clearTimeout(timer);
+      try {
+        if (!OneSignal || typeof OneSignal.login !== "function") {
+          resolve("not_registered");
+          return;
+        }
+        await OneSignal.login(externalId);
+        resolve(readSdkRegistration(OneSignal, externalId));
+      } catch (e) {
+        console.warn("OneSignal.login failed", e);
+        resolve("not_registered");
+      }
+    });
+  });
 }
 
 /**

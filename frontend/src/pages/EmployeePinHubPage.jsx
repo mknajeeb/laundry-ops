@@ -167,6 +167,8 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
   const [loading, setLoading] = useState(false);
   const [featureLoading, setFeatureLoading] = useState("");
   const [error, setError] = useState("");
+  const [phonePush, setPhonePush] = useState("");
+  const phonePushRequest = useRef(0);
   const [branding, setBranding] = useState(null);
   const [breakConfirmOpen, setBreakConfirmOpen] = useState(false);
   /** When clocked in, Clock tile asks Take Break vs End Shift (avoids mid-day clock-out loops). */
@@ -304,7 +306,13 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
       };
       savePinHubSession(sess);
       setHub(sess);
-      applyPinPushAssociation(body);
+      setPhonePush("");
+      const pushRequest = phonePushRequest.current + 1;
+      phonePushRequest.current = pushRequest;
+      applyPinPushAssociation(body).then((status) => {
+        if (phonePushRequest.current !== pushRequest) return;
+        if (status === "registered" || status === "not_registered") setPhonePush(status);
+      });
       // Server-authoritative: open shift_breaks → Break Mode, not the normal launcher.
       setPhase(onBreak ? "break" : "menu");
       setPin("");
@@ -405,11 +413,13 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
 
   const lockSession = () => {
     // Clears PIN hub unlock only — does not call punch APIs or change shift data.
-    // The reviewer's push association stays so alerts still arrive after Lock.
-    // A different PIN replaces it, and an employee who cannot review issues removes it.
+    // The signed-in person's push association stays so alerts still arrive after Lock.
+    // A different PIN replaces it. Explicit sign-out is what removes it.
     clearPinHubSession();
     clearPinHubAppSession();
     setHub(null);
+    phonePushRequest.current += 1;
+    setPhonePush("");
     setPhase("pin");
     setPin("");
     setError("");
@@ -808,6 +818,18 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
             >
               {error}
             </Alert>
+          ) : null}
+
+          {phase === "menu" && phonePush ? (
+            <Typography
+              data-testid="phone-push-status"
+              sx={{ textAlign: "center", fontSize: "0.875rem", fontWeight: 700 }}
+              color={phonePush === "registered" ? "success.main" : "warning.main"}
+            >
+              {phonePush === "registered"
+                ? t("mobileOps.phoneRegistered")
+                : t("mobileOps.phoneNotRegistered")}
+            </Typography>
           ) : null}
 
           {phase === "menu" && hub?.attendance?.clocked_in ? (
