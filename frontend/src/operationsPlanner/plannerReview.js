@@ -97,6 +97,23 @@ function clockLabel(entry) {
   return `${String(entry.start_time || "").slice(0, 5)}–${String(entry.end_time || "").slice(0, 5)} · ${roles} · ${breakText}`;
 }
 
+/** A failed save keeps the draft. The message says what to change. */
+export function explainSaveError(error) {
+  const text = String(error || "").trim();
+  if (!text) return "This save did not go through. Nothing was saved, and the draft is still here.";
+  if (text.includes("start_time and end_time") || text.includes("needs a start and end") || text.includes("Add a role with a start and end")) {
+    return "This shift needs a start and end. Add a role with its own start and end, then save again. Nothing was saved, and the draft is still here.";
+  }
+  if (text.includes("same role cannot overlap")) {
+    return "The same role is entered more than once for overlapping times. Remove the extra row, then save again. Nothing was saved, and the draft is still here.";
+  }
+  if (text.includes("role segments must sit inside")) {
+    return "A role extends past the saved shift. Confirm the new hours before saving. Nothing was saved, and the draft is still here.";
+  }
+  if (text.includes("Nothing was saved")) return text;
+  return `${text} Nothing was saved, and the draft is still here.`;
+}
+
 /** A 2xx with ok is the only path that may say the save landed. Conflicts keep the draft. */
 export function interpretSaveResponse(status, body = {}) {
   const code = String(body?.code || "");

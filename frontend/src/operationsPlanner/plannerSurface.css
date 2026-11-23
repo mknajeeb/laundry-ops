@@ -125,7 +125,7 @@
 }
 .ops-v2 .flag i { width: 6px; height: 6px; border-radius: 99px; background: #e0a100; display: block; flex: none; }
 .ops-v2 .ops-note { margin: 0; padding: 6px 12px; border-bottom: 1px solid var(--line); background: #f8fafc; color: var(--muted); font-size: 12.5px; }
-.ops-v2 .ops-note.ops-warn { background: #fff6f5; color: #9f2d20; }
+.ops-v2 .ops-note.ops-warn { position: sticky; top: 0; z-index: 100; background: #fff6f5; color: #9f2d20; }
 
 .ops-v2 .stage { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .ops-v2 .workspace { flex: 1; min-height: 0; display: flex; position: relative; }

@@ -26,7 +26,7 @@ import PlannerWorkspace from "./PlannerWorkspace";
 import { asList, draftOperations, persistedRoleSignature, relocateShift, shiftKey, splitHalves, storedRoleSegments } from "./plannerGeometry";
 import { copyDay, copyEmployeeDay, copyEmployeeWeek, copyWeekShifts, copiedShift } from "./plannerCopy";
 import { laborComparison } from "./plannerLabor";
-import { affectedShiftCount, interpretSaveResponse, patternCells, reviewLines, scopeDecision, staffingChanges, taskChanges } from "./plannerReview";
+import { affectedShiftCount, explainSaveError, interpretSaveResponse, patternCells, reviewLines, scopeDecision, staffingChanges, taskChanges } from "./plannerReview";
 import { recordDraft, redoDraftHistory, undoDraftHistory } from "./draftHistory";
 import { setScheduleRoleCatalog } from "../components/weeklySchedule/weeklyScheduleRoles";
 
@@ -607,7 +607,7 @@ export default function OperationsPlannerV2Page() {
       const outcome = interpretSaveResponse(response.status, response.data);
       if (!outcome.saved) {
         setNotice("");
-        setError(outcome.error || "This save did not go through.");
+        setError(explainSaveError(outcome.error || "This save did not go through."));
         setConflict(outcome.conflict || "");
         return;
       }
@@ -660,7 +660,7 @@ export default function OperationsPlannerV2Page() {
       if (!outcome.saved) {
         setPending(null);
         setNotice("");
-        setError(outcome.error);
+        setError(explainSaveError(outcome.error));
         setConflict(outcome.conflict || "conflict");
         return;
       }
@@ -981,6 +981,7 @@ export default function OperationsPlannerV2Page() {
             });
           }}
           catalog={payload?.role_catalog || []}
+          saveError={error}
         />
       ) : null}
       {lifecycle && !snapshot ? (

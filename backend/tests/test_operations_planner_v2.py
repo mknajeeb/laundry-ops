@@ -277,6 +277,78 @@ def test_a_shift_set_keeps_both_halves_and_refuses_a_lost_id():
     assert deleted["decisions"] == [{"action": "delete", "entry_id": 5216, "user_id": 38, "day_of_week": 3}]
 
 
+def test_a_new_shift_takes_its_envelope_from_the_role_interval():
+    from backend.operations_planner_v2 import plan_shift_set
+
+    created = plan_shift_set(
+        [
+            {
+                "op": "create",
+                "user_id": 12,
+                "day_of_week": 1,
+                "shift": {
+                    "start_time": "",
+                    "end_time": "",
+                    "role": "fold",
+                    "break_minutes": 30,
+                    "break_slots": [{"start_time": "10:00", "end_time": "10:30", "timed": True}],
+                    "role_assignments": [{"role": "fold", "start_time": "06:00", "end_time": "16:00"}],
+                },
+            }
+        ]
+    )
+    assert created["ok"] is True
+    shift = created["decisions"][0]["shift"]
+    assert shift["start_time"] == "06:00"
+    assert shift["end_time"] == "16:00"
+    assert shift["break_minutes"] == 30
+    assert shift["role_assignments"] == [{"role": "fold", "start_time": "06:00", "end_time": "16:00"}]
+    several = plan_shift_set(
+        [
+            {
+                "op": "create",
+                "user_id": 12,
+                "day_of_week": 1,
+                "shift": {
+                    "start_time": "",
+                    "end_time": "",
+                    "role_assignments": [
+                        {"role": "fold", "start_time": "06:00", "end_time": "12:00"},
+                        {"role": "wash", "start_time": "12:00", "end_time": "16:00"},
+                    ],
+                },
+            }
+        ]
+    )
+    assert several["ok"] is True
+    assert several["decisions"][0]["shift"]["start_time"] == "06:00"
+    assert several["decisions"][0]["shift"]["end_time"] == "16:00"
+    assert len(several["decisions"][0]["shift"]["role_assignments"]) == 2
+    empty = plan_shift_set(
+        [{"op": "create", "user_id": 12, "day_of_week": 1, "shift": {"start_time": "", "end_time": "", "role_assignments": []}}]
+    )
+    assert empty["ok"] is False
+    assert "Add a role" in empty["error"]
+    edited = plan_shift_set(
+        [
+            {
+                "op": "update",
+                "id": 90,
+                "user_id": 12,
+                "day_of_week": 1,
+                "shift": {
+                    "start_time": "",
+                    "end_time": "",
+                    "role": "fold",
+                    "role_assignments": [{"role": "fold", "start_time": "06:00", "end_time": "16:00"}],
+                },
+            }
+        ]
+    )
+    assert edited["ok"] is False
+    assert "saved hours were left unchanged" in edited["error"]
+
+
 def test_duplicate_entry_is_an_update_not_a_second_insert():
     decision = plan_entry_write([{"id": 4}], _shift())
     assert decision == {"ok": True, "action": "update", "entry_id": 4}

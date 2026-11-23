@@ -268,6 +268,49 @@ describe("planner geometry", () => {
     const trimmed = applyRoleEdits(monday, monday.role_assignments, "trim");
     expect(trimmed.entry.end_time).toBe("10:00");
     expect(staffingFigures(trimmed.entry).total).toBe(5);
+    const fresh = {
+      id: "draft-angelica",
+      user_id: 12,
+      day_of_week: 1,
+      start_time: "",
+      end_time: "",
+      role: "",
+      break_minutes: 0,
+      break_slots: [],
+      role_assignments: [],
+    };
+    const created = applyRoleEdits(fresh, [{ role: "fold", start_time: "06:00", end_time: "16:00" }]);
+    expect(created.confirm).toBeUndefined();
+    expect(created.entry).toMatchObject({ start_time: "06:00", end_time: "16:00", role: "fold" });
+    expect(created.entry.role_assignments).toEqual([{ role: "fold", start_time: "06:00", end_time: "16:00" }]);
+    expect(scheduleCardRows(created.entry)).toHaveLength(1);
+    const savedShape = {
+      ...created.entry,
+      break_minutes: 30,
+      break_slots: [{ start_time: "10:00", end_time: "10:30", timed: true }],
+    };
+    expect(staffingFigures(savedShape)).toMatchObject({ role: 10, unallocated: 0, total: 10, net: 9.5 });
+    const splitRoles = applyRoleEdits(savedShape, [
+      { role: "fold", start_time: "06:00", end_time: "12:00" },
+      { role: "wash", start_time: "12:00", end_time: "16:00" },
+    ]);
+    expect(splitRoles.confirm).toBeUndefined();
+    expect(splitRoles.entry.start_time).toBe("06:00");
+    expect(splitRoles.entry.end_time).toBe("16:00");
+    expect(splitRoles.entry.role_assignments).toHaveLength(2);
+    const removed = applyRoleEdits(splitRoles.entry, [{ role: "fold", start_time: "06:00", end_time: "12:00" }]);
+    expect(removed.entry.end_time).toBe("16:00");
+    expect(removed.entry.role_assignments).toEqual([{ role: "fold", start_time: "06:00", end_time: "12:00" }]);
+    const asks = applyRoleEdits(savedShape, [{ role: "fold", start_time: "06:00", end_time: "17:00" }]);
+    expect(asks.confirm.kind).toBe("extend");
+    expect(asks.entry.end_time).toBe("16:00");
+    const opened = applyRoleEdits(fresh, [
+      { role: "fold", start_time: "06:00", end_time: "12:00" },
+      { role: "wash", start_time: "12:00", end_time: "16:00" },
+    ]);
+    expect(opened.entry.start_time).toBe("06:00");
+    expect(opened.entry.end_time).toBe("16:00");
+    expect(staffingFigures(opened.entry)).toMatchObject({ role: 10, unallocated: 0, total: 10, net: 10 });
     const aselisa = staffingFigures([
       {
         user_id: 4,

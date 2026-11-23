@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { affectedShiftCount, interpretSaveResponse } from "./plannerReview";
+import { affectedShiftCount, explainSaveError, interpretSaveResponse } from "./plannerReview";
 
 describe("interpretSaveResponse", () => {
   it("treats a committed save as the only success", () => {
@@ -24,6 +24,15 @@ describe("interpretSaveResponse", () => {
     expect(affectedShiftCount({ scope: "this_and_future", cells, anchor, today })).toEqual({ weeks: 16, perWeek: 2, shifts: 32 });
     expect(affectedShiftCount({ scope: "future_only", cells, anchor, today }).weeks).toBe(16);
     expect(affectedShiftCount({ scope: "selected_weeks", cells, anchor, today, selectedWeeks: "2026-11-23, 2026-12-07, tuesday" }).shifts).toBe(4);
+  });
+
+  it("explains a missing envelope and keeps the draft", () => {
+    const rejected = interpretSaveResponse(409, { ok: false, code: "rolled_back", error: "start_time and end_time must be HH:MM" });
+    expect(rejected.saved).toBe(false);
+    expect(rejected.keepDraft).toBe(true);
+    expect(explainSaveError(rejected.error)).toMatch(/needs a start and end/);
+    expect(explainSaveError(rejected.error)).toMatch(/draft is still here/);
+    expect(explainSaveError("the same role cannot overlap itself on one shift")).toMatch(/Remove the extra row/);
   });
 
   it("asks again only when the server needs a scope confirmation", () => {

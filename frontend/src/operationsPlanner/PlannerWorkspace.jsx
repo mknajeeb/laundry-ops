@@ -442,7 +442,7 @@ function segmentsOverlap(segments) {
   return pieces.some((piece, index) => pieces.slice(index + 1).some((other) => piece[0] < other[1] && other[0] < piece[1]));
 }
 
-function Drawer({ entry, employees, tasks, dayLabel, dirty, saving, canUndo, canRedo, conflict, missingRole, badBreak, onClose, onCommit, onTasks, onReview, onUndo, onRedo, onDiscard }) {
+function Drawer({ entry, employees, tasks, dayLabel, dirty, saving, canUndo, canRedo, conflict, missingRole, badBreak, saveError, onClose, onCommit, onTasks, onReview, onUndo, onRedo, onDiscard }) {
   const range = entry ? shiftRange(entry) : null;
   const [roleCode, setRoleCode] = useState("");
   const [segStart, setSegStart] = useState(range ? minutesToClock(range.start) : "");
@@ -497,6 +497,7 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, saving, canUndo, can
         <button type="button" className="close" aria-label="Close" onClick={onClose}>×</button>
       </header>
         <div className="body">
+        {saveError ? <p className="ops-warn" role="alert">{saveError}</p> : null}
         {conflict ? <p className="ops-warn">This shift overlaps another shift for the same employee.</p> : null}
         {missingRole ? <p className="ops-warn">This shift has no role.</p> : null}
         {badBreak ? <p className="ops-warn">A break sits outside the shift, or its start and end are the same.</p> : null}
@@ -691,6 +692,7 @@ export default function PlannerWorkspace({
   onMove,
   onCopyRequest,
   catalog,
+  saveError,
 }) {
   const boardRef = useRef(null);
   const scrollMem = useRef({});
@@ -1178,6 +1180,7 @@ export default function PlannerWorkspace({
             conflict={peers.length > 0}
             missingRole={!selected.role && !storedSegments(selected).length}
             badBreak={breakOutside(selected)}
+            saveError={saveError}
             onClose={onCloseEditor}
             onCommit={commit}
             onReview={onReview}

@@ -115,7 +115,7 @@ def normalize_shift(raw: Mapping[str, Any] | None) -> tuple[dict[str, Any] | Non
     start = _hhmm(raw.get("start_time"))
     end = _hhmm(raw.get("end_time"))
     if start is None or end is None:
-        return None, "start_time and end_time must be HH:MM"
+        return None, "This shift needs a start and end. The saved hours were left unchanged."
     window = _interval(start, end)
     if window is None:
         return None, "shift must have a duration"
@@ -629,6 +629,27 @@ def _drop_exception(
     ]
 
 
+def envelope_from_role_intervals(raw: Mapping[str, Any]) -> tuple[str, str] | None:
+    """The earliest and latest role times. Used only when a new shift has no envelope."""
+    earliest: tuple[int, str] | None = None
+    latest: tuple[int, str] | None = None
+    for item in raw.get("role_assignments") or []:
+        if not isinstance(item, Mapping):
+            continue
+        start = _hhmm(item.get("start_time"))
+        end = _hhmm(item.get("end_time"))
+        piece = _interval(start, end) if start and end else None
+        if piece is None or start is None or end is None:
+            continue
+        if earliest is None or piece[0] < earliest[0]:
+            earliest = (piece[0], start)
+        if latest is None or piece[1] > latest[0]:
+            latest = (piece[1], end)
+    if earliest is None or latest is None:
+        return None
+    return earliest[1], latest[1]
+
+
 def plan_shift_set(operations: Sequence[Mapping[str, Any]] | None) -> dict[str, Any]:
     """Name every half of a save. Never collapse two shifts into one row.
 
@@ -654,6 +675,16 @@ def plan_shift_set(operations: Sequence[Mapping[str, Any]] | None) -> dict[str, 
             shift = raw.get("shift")
             if not isinstance(shift, Mapping):
                 return {"ok": False, "code": "invalid_shift", "error": "a new shift is required"}
+            shift = dict(shift)
+            if _hhmm(shift.get("start_time")) is None or _hhmm(shift.get("end_time")) is None:
+                bounds = envelope_from_role_intervals(shift)
+                if bounds is None:
+                    return {
+                        "ok": False,
+                        "code": "invalid_shift",
+                        "error": "Add a role with a start and end before saving this shift.",
+                    }
+                shift["start_time"], shift["end_time"] = bounds
             normalized, err = normalize_shift(shift)
             if err or normalized is None:
                 return {"ok": False, "code": "invalid_shift", "error": err or "a new shift is required"}

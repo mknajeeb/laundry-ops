@@ -454,6 +454,9 @@ export function applyRoleEdits(entry, segments, mode) {
       end_time: String(segment.end_time).slice(0, 5),
     })),
   };
+  if (!stored && needStart != null) {
+    return { entry: { ...draft, start_time: minutesToClock(needStart), end_time: minutesToClock(needEnd) } };
+  }
   if (mode === "trim" && needStart != null) {
     return { entry: { ...draft, start_time: minutesToClock(needStart), end_time: minutesToClock(needEnd) } };
   }
