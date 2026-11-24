@@ -4,7 +4,12 @@ import {
   Box,
   Button,
   Checkbox,
+  FormControl,
   FormControlLabel,
+  FormHelperText,
+  InputLabel,
+  MenuItem,
+  Select,
   Stack,
   Typography,
 } from "@mui/material";
@@ -22,6 +27,30 @@ export const MOBILE_PIN_ACCESS_MODULES = [
   { key: "team_status", label: "Team Status" },
 ];
 
+export const ISSUES_ACCESS_CHOICES = [
+  { value: "inherited", label: "Inherited — role or Task Review" },
+  { value: "allow", label: "Allow" },
+  { value: "deny", label: "Deny" },
+];
+
+export function issuesAccessFromPayload(data = {}) {
+  const mode = data.issues_access;
+  if (mode === "inherited" || mode === "allow" || mode === "deny") return mode;
+  return "inherited";
+}
+
+export function issuesAccessHelp(mode, effective) {
+  if (mode === "allow") return "Explicit allow. This employee can open Issues.";
+  if (mode === "deny") return "Explicit deny. The Issues tile stays hidden.";
+  if (effective === true) {
+    return "Inherited. Role or Task Review currently allows Issues. Saving other tiles keeps this inherited.";
+  }
+  if (effective === false) {
+    return "Inherited. Role or Task Review currently hides Issues. Saving other tiles keeps this inherited.";
+  }
+  return "Inherited until an administrator chooses Allow or Deny.";
+}
+
 export function normalizeMobilePinAccess(data = {}) {
   return {
     switch_role: !!data.switch_role,
@@ -32,11 +61,29 @@ export function normalizeMobilePinAccess(data = {}) {
     inventory: !!data.inventory,
     revenue_cost: !!data.revenue_cost,
     team_status: !!data.team_status,
+    issues_access: issuesAccessFromPayload(data),
+    issues_effective:
+      data.issues_effective === undefined || data.issues_effective === null
+        ? null
+        : !!data.issues_effective,
   };
 }
 
 export function mobilePinAccessSaveBody(values = {}) {
-  return normalizeMobilePinAccess(values);
+  const body = {
+    switch_role: !!values.switch_role,
+    take_break: !!values.take_break,
+    cleaning_tasks: !!values.cleaning_tasks,
+    cleaning_task_review: !!values.cleaning_task_review,
+    checklist: !!values.checklist,
+    inventory: !!values.inventory,
+    revenue_cost: !!values.revenue_cost,
+    team_status: !!values.team_status,
+  };
+  if (values.issues_access === "allow") body.issues = true;
+  else if (values.issues_access === "deny") body.issues = false;
+  else if (values.issues_access === "inherited") body.issues = null;
+  return body;
 }
 
 const EMPTY = normalizeMobilePinAccess({});
@@ -118,7 +165,10 @@ export default function MobilePinAccessPanel({ userId, canEdit = false }) {
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
         Controls which apps appear on the mobile PIN launcher. Separate from Allowed Work
-        Assignments. Clock In/Out follows shared attendance settings, not this list.
+        Assignments and from Notifications → Assignments. Issues Module Access is its own
+        choice: Inherited, Allow, or Deny. Saving the other tiles does not turn an inherited
+        setting into an explicit denial. Clock In/Out follows shared attendance settings, not
+        this list.
       </Typography>
 
       {error ? (
@@ -152,6 +202,24 @@ export default function MobilePinAccessPanel({ userId, canEdit = false }) {
               label={m.label}
             />
           ))}
+          <FormControl size="small" sx={{ mt: 1, maxWidth: 420 }} disabled={!canEdit || saving}>
+            <InputLabel id="issues-module-access-label">Issues Module Access</InputLabel>
+            <Select
+              labelId="issues-module-access-label"
+              label="Issues Module Access"
+              value={values.issues_access || "inherited"}
+              onChange={(e) => toggle("issues_access", e.target.value)}
+            >
+              {ISSUES_ACCESS_CHOICES.map((choice) => (
+                <MenuItem key={choice.value} value={choice.value}>
+                  {choice.label}
+                </MenuItem>
+              ))}
+            </Select>
+            <FormHelperText>
+              {issuesAccessHelp(values.issues_access, values.issues_effective)}
+            </FormHelperText>
+          </FormControl>
         </Stack>
       )}
 

@@ -159,6 +159,8 @@ class FakeCursor:
                 self._result = {"ok": 1}
             elif col == "allow_cleaning_task_review" and getattr(self, "_has_cleaning_task_review", True):
                 self._result = {"ok": 1}
+            elif col == "allow_issues" and getattr(self, "_has_issues", True):
+                self._result = {"ok": 1}
             else:
                 self._result = None
             return
@@ -346,6 +348,7 @@ class FakeCursor:
                     "allow_team_status": 1 if a.get("team_status") else 0,
                     "allow_cleaning_tasks": 1 if a.get("cleaning_tasks") else 0,
                     "allow_cleaning_task_review": 1 if a.get("cleaning_task_review") else 0,
+                    "allow_issues": None if "issues" not in a else (1 if a.get("issues") else 0),
                     "updated_at": None,
                     "updated_by_user_id": None,
                     "created_at": None,
@@ -439,8 +442,14 @@ class FakeCursor:
                 if porg == oid
             ]
             return
+        if "FROM user_roles ur" in sql_n and "JOIN roles r" in sql_n:
+            uid = int(params[0]) if params else 0
+            codes = list(getattr(self, "user_roles", {}).get(uid, []))
+            self._results = [{"code": code, "name": code} for code in codes]
+            return
         if "INSERT INTO employee_mobile_pin_access" in sql_n and "ON DUPLICATE KEY" in sql_n:
             org, uid = int(params[0]), int(params[1])
+            prior_issues = self.access.get((org, uid), {})
             self.access[(org, uid)] = {
                 "clock": bool(params[2]),
                 "switch_role": bool(params[3]),
@@ -452,6 +461,12 @@ class FakeCursor:
                 "cleaning_tasks": bool(params[9]) if len(params) >= 11 else False,
                 "cleaning_task_review": bool(params[10]) if len(params) >= 12 else False,
             }
+            if "allow_issues = NULL" in sql_n:
+                self.access[(org, uid)].pop("issues", None)
+            elif len(params) >= 13 and params[11] is not None:
+                self.access[(org, uid)]["issues"] = bool(params[11])
+            elif "issues" in prior_issues:
+                self.access[(org, uid)]["issues"] = prior_issues["issues"]
             return
         self._result = None
 
@@ -1481,3 +1496,88 @@ def test_role_allowed_returns_unfiltered_selection_tree():
     assert body["selection_tree"] == tree
     list_tree.assert_called_once()
     assert list_tree.call_args.args[1] == 3
+
+
+def test_issues_module_access_is_explicit_and_independent_of_other_tiles():
+    from backend.employee_mobile_pin_access import mobile_pin_access_grants_from_body
+    from backend.management_pin_access import issues_module_allowed
+
+    cur = FakeCursor()
+    cur.users = [(3, 28), (3, 15)]
+    cur.user_roles = {28: ["CLOCK"], 15: ["ADMIN"]}
+    cur.backfill_orgs[3] = 0
+    base = {
+        "clock": False,
+        "switch_role": True,
+        "take_break": True,
+        "checklist": False,
+        "inventory": False,
+        "revenue_cost": False,
+        "team_status": False,
+        "cleaning_tasks": False,
+        "cleaning_task_review": False,
+    }
+    cur.access[(3, 28)] = dict(base)
+    cur.access[(3, 15)] = dict(base)
+    with patch(
+        "backend.employee_mobile_pin_access.table_has_column", return_value=True
+    ):
+        assert issues_module_allowed(cur, 3, 28, ["CLOCK"]) is False
+        assert issues_module_allowed(cur, 3, 15, ["ADMIN"]) is True
+        inherited = manager_mobile_pin_access_payload(cur, 3, 28)
+        assert inherited["issues_access"] == "inherited"
+        assert inherited["issues_effective"] is False
+        admin = manager_mobile_pin_access_payload(cur, 3, 15)
+        assert admin["issues_access"] == "inherited"
+        assert admin["issues_effective"] is True
+
+        unrelated = mobile_pin_access_grants_from_body({**base, "inventory": True})
+        assert "issues" not in unrelated
+        save_employee_mobile_pin_access(cur, 3, 28, grants=unrelated, actor_user_id=15)
+        assert "issues" not in cur.access[(3, 28)]
+        assert issues_module_allowed(cur, 3, 28, ["CLOCK"]) is False
+        assert cur.access[(3, 28)]["inventory"] is True
+
+        save_employee_mobile_pin_access(
+            cur,
+            3,
+            28,
+            grants=mobile_pin_access_grants_from_body({**base, "issues": True}),
+            actor_user_id=15,
+        )
+        assert issues_module_allowed(cur, 3, 28, ["CLOCK"]) is True
+        allowed = manager_mobile_pin_access_payload(cur, 3, 28)
+        assert allowed["issues_access"] == "allow"
+        assert allowed["issues_effective"] is True
+        assert resolve_employee_mobile_pin_access(cur, 3, 28)["cleaning_task_review"] is False
+
+        save_employee_mobile_pin_access(
+            cur,
+            3,
+            28,
+            grants=mobile_pin_access_grants_from_body({**base, "checklist": True, "issues": None}),
+            actor_user_id=15,
+        )
+        assert "issues" not in cur.access[(3, 28)]
+        assert cur.access[(3, 28)]["checklist"] is True
+        assert issues_module_allowed(cur, 3, 28, ["CLOCK"]) is False
+        assert manager_mobile_pin_access_payload(cur, 3, 28)["issues_access"] == "inherited"
+
+        save_employee_mobile_pin_access(
+            cur,
+            3,
+            15,
+            grants=mobile_pin_access_grants_from_body({**base, "issues": False}),
+            actor_user_id=15,
+        )
+        assert issues_module_allowed(cur, 3, 15, ["ADMIN"]) is False
+        denied = manager_mobile_pin_access_payload(cur, 3, 15)
+        assert denied["issues_access"] == "deny"
+        assert denied["issues_effective"] is False
+        assert resolve_employee_mobile_pin_access(cur, 3, 15)["switch_role"] is True
+
+        save_employee_mobile_pin_access(
+            cur, 3, 15, grants=mobile_pin_access_grants_from_body(base), actor_user_id=15
+        )
+        assert issues_module_allowed(cur, 3, 15, ["ADMIN"]) is False
+        assert manager_mobile_pin_access_payload(cur, 3, 15)["issues_access"] == "deny"

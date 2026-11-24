@@ -78,6 +78,20 @@ SET @sql_tb := IF(
 );
 PREPARE _tb FROM @sql_tb; EXECUTE _tb; DEALLOCATE PREPARE _tb;
 
+-- Issues module access. NULL keeps the existing role or Task Review rule.
+SET @has_issues := (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = @db
+    AND TABLE_NAME = 'employee_mobile_pin_access'
+    AND COLUMN_NAME = 'allow_issues'
+);
+SET @sql_issues := IF(
+  @has_issues = 0,
+  'ALTER TABLE employee_mobile_pin_access ADD COLUMN allow_issues TINYINT(1) NULL DEFAULT NULL AFTER allow_cleaning_task_review',
+  'SELECT ''skip allow_issues'' AS _note'
+);
+PREPARE _issues FROM @sql_issues; EXECUTE _issues; DEALLOCATE PREPARE _issues;
+
 CREATE TABLE IF NOT EXISTS employee_mobile_pin_access_migrations (
   organization_id INT NOT NULL,
   migration_key VARCHAR(64) NOT NULL,

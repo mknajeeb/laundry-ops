@@ -178,6 +178,18 @@ def test_issues_tile_follows_supervisor_role_not_ordinary_staff():
             matched=_matched(["SHIFT SUPERVISOR"]),
             employee_module_access={"switch_role": True},
         )
+        explicit = resolve_hub_features(
+            conn,
+            org_id=3,
+            matched=_matched(["FRONT_DESK"]),
+            employee_module_access={"switch_role": True, "issues": True},
+        )
+        revoked = resolve_hub_features(
+            conn,
+            org_id=3,
+            matched=_matched(["ADMIN"]),
+            employee_module_access={"switch_role": True, "issues": False},
+        )
     assert staff["issues"]["allowed"] is False
     assert staff["scan_chronology"]["allowed"] is False
     assert staff["payroll"]["allowed"] is False
@@ -199,6 +211,11 @@ def test_issues_tile_follows_supervisor_role_not_ordinary_staff():
     assert floor_supervisor["cleaning_tasks"]["allowed"] is True
     assert floor_supervisor["team_status"]["allowed"] is True
     assert admin["issues"]["allowed"] is True
+    assert explicit["issues"]["allowed"] is True
+    assert explicit["scan_chronology"]["allowed"] is False
+    assert explicit["payroll"]["allowed"] is False
+    assert revoked["issues"]["allowed"] is False
+    assert revoked["payroll"]["allowed"] is True
     clocked_out = apply_attendance_gates_to_features(
         {
             "issues": {"allowed": True},

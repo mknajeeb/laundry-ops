@@ -562,21 +562,31 @@ def resolve_hub_features(
             if fid in ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES and emp_access is not None
             else True
         )
+        explicit_issues = (
+            fid == "issues"
+            and isinstance(emp_access, dict)
+            and "issues" in emp_access
+        )
         user_ok = (
-            _user_may_use_feature(
-                conn,
-                org_id=org_id,
-                matched=matched,
-                feature_id=fid,
-                keys=keys,
-                roles=roles,
-                tenant_modules=tenant_modules,
+            bool(emp_access.get("issues"))
+            if explicit_issues and org_on
+            else (
+                _user_may_use_feature(
+                    conn,
+                    org_id=org_id,
+                    matched=matched,
+                    feature_id=fid,
+                    keys=keys,
+                    roles=roles,
+                    tenant_modules=tenant_modules,
+                )
+                if org_on and emp_on
+                else False
             )
-            if org_on and emp_on
-            else False
         )
         if (
-            not user_ok
+            not explicit_issues
+            and not user_ok
             and supervisor_grant
             and org_on
             and emp_on

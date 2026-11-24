@@ -161,6 +161,7 @@ def ensure_employee_mobile_pin_access_tables(cursor) -> None:
           allow_team_status TINYINT(1) NOT NULL DEFAULT 0,
           allow_cleaning_tasks TINYINT(1) NOT NULL DEFAULT 0,
           allow_cleaning_task_review TINYINT(1) NOT NULL DEFAULT 0,
+          allow_issues TINYINT(1) NULL DEFAULT NULL,
           updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
           updated_by_user_id INT NULL,
           created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -220,6 +221,19 @@ def ensure_employee_mobile_pin_access_tables(cursor) -> None:
             ALTER TABLE {ACCESS_TABLE}
               ADD COLUMN allow_cleaning_task_review TINYINT(1) NOT NULL DEFAULT 0
               AFTER allow_cleaning_tasks
+            """
+        )
+        invalidate_schema_cache()
+    # NULL means "not configured": keep the previous role or Task Review rule.
+    # 1 grants the Issues tile. 0 hides it and denies the module.
+    if table_exists(cursor, ACCESS_TABLE) and not table_has_column(
+        cursor, ACCESS_TABLE, "allow_issues"
+    ):
+        cursor.execute(
+            f"""
+            ALTER TABLE {ACCESS_TABLE}
+              ADD COLUMN allow_issues TINYINT(1) NULL DEFAULT NULL
+              AFTER allow_cleaning_task_review
             """
         )
         invalidate_schema_cache()
@@ -292,8 +306,10 @@ def ensure_org_mobile_pin_access_backfill(cursor, organization_id: int) -> None:
         and table_exists(cursor, BACKFILL_MARKER_TABLE)
         and table_exists(cursor, MIGRATIONS_TABLE)
     ):
-        if not table_has_column(cursor, ACCESS_TABLE, "allow_team_status") or not table_has_column(
-            cursor, ACCESS_TABLE, "allow_take_break"
+        if (
+            not table_has_column(cursor, ACCESS_TABLE, "allow_team_status")
+            or not table_has_column(cursor, ACCESS_TABLE, "allow_take_break")
+            or not table_has_column(cursor, ACCESS_TABLE, "allow_issues")
         ):
             ensure_employee_mobile_pin_access_tables(cursor)
         ensure_role_take_break_defaults_migration(cursor, oid)
@@ -624,12 +640,18 @@ def get_access_row(cursor, organization_id: int, user_id: int) -> Optional[dict]
     """
     if not table_exists(cursor, ACCESS_TABLE):
         return None
+    issues_sql = (
+        ", allow_issues"
+        if table_has_column(cursor, ACCESS_TABLE, "allow_issues")
+        else ""
+    )
     cursor.execute(
         f"""
         SELECT organization_id, user_id,
                allow_clock, allow_switch_role, allow_take_break, allow_checklist,
                allow_inventory, allow_revenue_cost, allow_team_status,
-               allow_cleaning_tasks, allow_cleaning_task_review,
+               allow_cleaning_tasks, allow_cleaning_task_review
+               {issues_sql},
                updated_at, updated_by_user_id, created_at
         FROM {ACCESS_TABLE}
         WHERE organization_id = %s AND user_id = %s
@@ -655,11 +677,29 @@ def resolve_employee_mobile_pin_access(
     row = get_access_row(cursor, int(organization_id), int(user_id))
     parsed = _row_to_access(row if isinstance(row, dict) else None)
     if parsed is not None:
+        if isinstance(row, dict) and row.get("allow_issues") is not None:
+            parsed["issues"] = bool(row.get("allow_issues"))
         return parsed
     if _org_is_backfilled(cursor, int(organization_id)):
         return _all_false()
     # Temporary pre-marker compatibility only.
     return _all_true()
+
+
+def explicit_issues_grant(cursor, organization_id: int, user_id: int) -> Optional[bool]:
+    """Stored Issues choice. None means the employee has not been configured yet."""
+    try:
+        ready = table_exists(cursor, ACCESS_TABLE) and table_has_column(
+            cursor, ACCESS_TABLE, "allow_issues"
+        )
+    except AttributeError:
+        return None
+    if not ready:
+        return None
+    row = get_access_row(cursor, int(organization_id), int(user_id))
+    if not isinstance(row, dict) or row.get("allow_issues") is None:
+        return None
+    return bool(row.get("allow_issues"))
 
 
 def employee_allows_module(
@@ -921,8 +961,21 @@ def manager_mobile_pin_access_payload(
     # People UI does not edit clock; always report false so it is not mistaken
     # for a configurable Mobile PIN app.
     people = {k: bool(access.get(k)) for k in PEOPLE_MOBILE_PIN_ACCESS_KEYS}
+    explicit_issues = row.get("allow_issues") if isinstance(row, dict) else None
+    if not isinstance(row, dict) or explicit_issues is None:
+        from backend.management_pin_access import user_holds_pin_management_role
+
+        issues_access = "inherited"
+        issues_effective = user_holds_pin_management_role(cursor, uid) or bool(
+            access.get("cleaning_task_review")
+        )
+    else:
+        issues_effective = bool(explicit_issues)
+        issues_access = "allow" if issues_effective else "deny"
     return {
         **people,
+        "issues_access": issues_access,
+        "issues_effective": issues_effective,
         "clock": False,
         "has_explicit_row": row is not None,
         "org_backfilled": _org_is_backfilled(cursor, oid),
@@ -937,6 +990,20 @@ def _coerce_bool(value: Any, field: str) -> bool:
     if isinstance(value, str) and value.strip().lower() in ("true", "false"):
         return value.strip().lower() == "true"
     raise ValueError(f"{field} must be a boolean")
+
+
+def mobile_pin_access_grants_from_body(data: Optional[dict]) -> dict[str, Any]:
+    """PUT body for People → Mobile PIN Access.
+
+    ``issues`` is included only when the client sent it. ``null`` means inherited
+    (store NULL). Omitting the key leaves the stored choice unchanged, so a save
+    of the other tiles cannot turn an inherited employee into an explicit deny.
+    """
+    body = data if isinstance(data, dict) else {}
+    grants = {key: body.get(key) for key in PEOPLE_MOBILE_PIN_ACCESS_KEYS}
+    if "issues" in body:
+        grants["issues"] = body.get("issues")
+    return grants
 
 
 def save_employee_mobile_pin_access(
@@ -974,6 +1041,25 @@ def save_employee_mobile_pin_access(
             raise ValueError(f"Missing required field: {key}")
         after[key] = _coerce_bool(grants[key], key)
     after["clock"] = False
+    # omit: client did not mention Issues — keep the stored value.
+    # inherit: client chose Inherited — store NULL.
+    # set: client chose Allow or Deny.
+    issues_mode = "omit"
+    issues_value = None
+    if "issues" in grants:
+        raw_issues = grants["issues"]
+        if raw_issues is None:
+            issues_mode = "inherit"
+        else:
+            issues_value = 1 if _coerce_bool(raw_issues, "issues") else 0
+            issues_mode = "set"
+            after["issues"] = bool(issues_value)
+    if issues_mode == "inherit":
+        issues_update = "allow_issues = NULL"
+    elif issues_mode == "set":
+        issues_update = "allow_issues = VALUES(allow_issues)"
+    else:
+        issues_update = "allow_issues = COALESCE(VALUES(allow_issues), allow_issues)"
 
     cursor.execute(
         f"""
@@ -981,9 +1067,9 @@ def save_employee_mobile_pin_access(
           (organization_id, user_id,
            allow_clock, allow_switch_role, allow_take_break, allow_checklist,
            allow_inventory, allow_revenue_cost, allow_team_status,
-           allow_cleaning_tasks, allow_cleaning_task_review,
+           allow_cleaning_tasks, allow_cleaning_task_review, allow_issues,
            updated_by_user_id, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         ON DUPLICATE KEY UPDATE
           allow_clock = VALUES(allow_clock),
           allow_switch_role = VALUES(allow_switch_role),
@@ -994,6 +1080,7 @@ def save_employee_mobile_pin_access(
           allow_team_status = VALUES(allow_team_status),
           allow_cleaning_tasks = VALUES(allow_cleaning_tasks),
           allow_cleaning_task_review = VALUES(allow_cleaning_task_review),
+          {issues_update},
           updated_by_user_id = VALUES(updated_by_user_id),
           updated_at = NOW()
         """,
@@ -1009,6 +1096,7 @@ def save_employee_mobile_pin_access(
             1 if after["team_status"] else 0,
             1 if after["cleaning_tasks"] else 0,
             1 if after["cleaning_task_review"] else 0,
+            issues_value,
             int(actor_user_id) if actor_user_id is not None else None,
         ),
     )

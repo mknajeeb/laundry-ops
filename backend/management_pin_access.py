@@ -64,6 +64,23 @@ def user_holds_pin_management_role(cursor, user_id: int) -> bool:
     return holds_pin_management_role(labels)
 
 
+def issues_module_allowed(cursor, organization_id: int, user_id: int, roles) -> bool:
+    """Who may open the Mobile Ops Issues module.
+
+    An explicit Mobile PIN Access choice wins. Until an administrator saves one,
+    a management role or the Task Review grant keeps the access it already had.
+    Notification assignments do not grant this module.
+    """
+    from backend.employee_mobile_pin_access import explicit_issues_grant
+
+    explicit = explicit_issues_grant(cursor, int(organization_id), int(user_id))
+    if explicit is not None:
+        return explicit
+    if holds_pin_management_role(roles):
+        return True
+    return employee_allows_module(cursor, int(organization_id), int(user_id), "cleaning_task_review")
+
+
 def may_use_pin_management(cursor, organization_id: int, user_id: int, roles) -> bool:
     """Management PIN modules follow the assigned role or the Task Review grant.
 

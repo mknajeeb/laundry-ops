@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  ISSUES_ACCESS_CHOICES,
   MOBILE_PIN_ACCESS_MODULES,
+  issuesAccessHelp,
   mobilePinAccessSaveBody,
   normalizeMobilePinAccess,
 } from "./MobilePinAccessPanel";
@@ -27,6 +29,11 @@ describe("MobilePinAccessPanel contracts", () => {
       "Revenue / Cash",
       "Team Status",
     ]);
+    expect(ISSUES_ACCESS_CHOICES.map((choice) => choice.value)).toEqual([
+      "inherited",
+      "allow",
+      "deny",
+    ]);
   });
 
   it("normalizes loaded API values into module booleans", () => {
@@ -41,6 +48,8 @@ describe("MobilePinAccessPanel contracts", () => {
         inventory: false,
         revenue_cost: "1",
         team_status: 1,
+        issues_access: "inherited",
+        issues_effective: true,
         hang_dry: 1,
         extra: true,
       }),
@@ -53,10 +62,12 @@ describe("MobilePinAccessPanel contracts", () => {
       inventory: false,
       revenue_cost: true,
       team_status: true,
+      issues_access: "inherited",
+      issues_effective: true,
     });
   });
 
-  it("save body always sends People app booleans without Clock", () => {
+  it("keeps inherited Issues out of an unrelated tile save and sends an explicit choice only when selected", () => {
     expect(
       mobilePinAccessSaveBody({
         clock: true,
@@ -73,5 +84,17 @@ describe("MobilePinAccessPanel contracts", () => {
       revenue_cost: false,
       team_status: false,
     });
+    expect(
+      mobilePinAccessSaveBody({
+        inventory: true,
+        issues_access: "inherited",
+        issues_effective: true,
+      }).issues,
+    ).toBeNull();
+    expect(mobilePinAccessSaveBody({ issues_access: "allow" }).issues).toBe(true);
+    expect(mobilePinAccessSaveBody({ issues_access: "deny" }).issues).toBe(false);
+    expect(issuesAccessHelp("inherited", true)).toMatch(/Inherited/);
+    expect(issuesAccessHelp("allow", false)).toMatch(/Explicit allow/);
+    expect(issuesAccessHelp("deny", true)).toMatch(/Explicit deny/);
   });
 });

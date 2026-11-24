@@ -5062,9 +5062,16 @@ def attendance_pin_unlock():
                 return jsonify({"error": DENIED_MODULE_MESSAGE}), 403
             matched_roles = fetch_user_roles(cursor, matched["id"])
             rs = {str(r).upper() for r in matched_roles}
-            from backend.management_pin_access import is_pin_management_module, may_use_pin_management
+            from backend.management_pin_access import (
+                is_pin_management_module,
+                issues_module_allowed,
+                may_use_pin_management,
+            )
 
-            if is_pin_management_module(pin_hub_module):
+            if str(pin_hub_module or "") == "issues":
+                if not issues_module_allowed(cursor, org_id, emp_id, rs):
+                    return jsonify({"error": "Forbidden"}), 403
+            elif is_pin_management_module(pin_hub_module):
                 if not may_use_pin_management(cursor, org_id, emp_id, rs):
                     return jsonify({"error": "Forbidden"}), 403
             elif str(pin_hub_module or "") == "machines":
@@ -5120,9 +5127,21 @@ def attendance_pin_unlock():
                     )
                 except MobilePinAccessDeniedError:
                     return jsonify({"error": DENIED_MODULE_MESSAGE}), 403
-            from backend.management_pin_access import is_pin_management_module, may_use_pin_management
+            from backend.management_pin_access import (
+                is_pin_management_module,
+                issues_module_allowed,
+                may_use_pin_management,
+            )
 
-            if is_pin_management_module(pin_hub_module):
+            if str(pin_hub_module or "") == "issues":
+                if not issues_module_allowed(
+                    cursor,
+                    int(matched["organization_id"]),
+                    int(matched["id"]),
+                    matched_roles or [],
+                ):
+                    return jsonify({"error": "Forbidden"}), 403
+            elif is_pin_management_module(pin_hub_module):
                 if not may_use_pin_management(
                     cursor,
                     int(matched["organization_id"]),
