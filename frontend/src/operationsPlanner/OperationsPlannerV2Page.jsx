@@ -160,8 +160,14 @@ export default function OperationsPlannerV2Page() {
 
   const load = useCallback(async (weekStart, options = {}) => {
     const previewMode = new URLSearchParams(window.location.search).get("preview");
-    if (import.meta.env.DEV && (previewMode === "1" || previewMode === "veewash")) {
+    if (import.meta.env.DEV && (previewMode === "1" || previewMode === "veewash" || previewMode === "coverage")) {
       setFlags({ manager_pilot: true, employee_pilot: false, paystub_access: false });
+      if (previewMode === "coverage") {
+        const preview = coveragePreviewPayload();
+        setPayload(preview);
+        if (!weekStart) setWeek("2026-11-09");
+        return preview;
+      }
       if (previewMode === "veewash") {
         const snapshot = await import("./fixtures/veewash-2027-01-04.json");
         setPayload(snapshot.default);
@@ -1663,6 +1669,61 @@ function TaskBoard({ tasks, employees, entries, day, onEdit }) {
       })}
     </div>
   );
+}
+
+function coveragePreviewPayload() {
+  const names = ["Amina Cole", "Luis Ortega", "Priya Shah", "Noah Bennett", "Elena Vasquez", "Chris Dalton", "Maya Chen", "Owen Brooks", "Imani Brooks", "Jonah Hale", "Rosa Nguyen", "Samir Patel"];
+  const breaks = [
+    ["10:00", "10:30"],
+    ["10:00", "10:30"],
+    ["10:00", "10:30"],
+    ["10:15", "10:45"],
+    ["10:15", "10:45"],
+    ["10:00", "11:00"],
+    null,
+    null,
+  ];
+  const employees = names.map((display_name, index) => ({ user_id: index + 1, display_name }));
+  const fold = breaks.map((_, index) => ({
+    id: index + 1,
+    user_id: index + 1,
+    day_of_week: 1,
+    start_time: "06:00",
+    end_time: "14:00",
+    role: "fold",
+    break_slots: breaks[index] ? [{ start_time: breaks[index][0], end_time: breaks[index][1], timed: true }] : [],
+    role_assignments: [{ role: "fold", start_time: "06:00", end_time: "14:00" }],
+  }));
+  return {
+    week_label: "Nov 9–15, 2026",
+    employees,
+    entries: [
+      ...fold,
+      { id: 90, user_id: 1, day_of_week: 1, start_time: "08:00", end_time: "12:00", role: "fold", break_slots: [], role_assignments: [{ role: "fold", start_time: "08:00", end_time: "12:00" }] },
+      { id: 91, user_id: 2, day_of_week: 2, start_time: "05:00", end_time: "15:00", role: "wash,fold", break_minutes: 60, break_slots: [{ start_time: "08:30", end_time: "09:30", timed: true }], role_assignments: [{ role: "wash", start_time: "05:00", end_time: "09:00" }, { role: "fold", start_time: "09:00", end_time: "15:00" }] },
+      { id: 92, user_id: 3, day_of_week: 3, start_time: "08:00", end_time: "16:00", role: "wash,fold", break_minutes: 30, break_slots: null, role_assignments: [{ role: "wash", start_time: "08:00", end_time: "12:00" }, { role: "fold", start_time: "12:00", end_time: "16:00" }] },
+      { id: 93, user_id: 9, day_of_week: 1, start_time: "05:00", end_time: "13:00", role: "wash", break_slots: [{ start_time: "07:00", end_time: "07:30", timed: true }], role_assignments: [{ role: "wash", start_time: "05:00", end_time: "13:00" }] },
+      { id: 94, user_id: 10, day_of_week: 1, start_time: "05:00", end_time: "13:00", role: "wash", break_slots: [{ start_time: "07:00", end_time: "07:30", timed: true }], role_assignments: [{ role: "wash", start_time: "05:00", end_time: "13:00" }] },
+      { id: 95, user_id: 11, day_of_week: 1, start_time: "05:00", end_time: "13:00", role: "wash", break_slots: [{ start_time: "07:15", end_time: "07:45", timed: true }], role_assignments: [{ role: "wash", start_time: "05:00", end_time: "13:00" }] },
+      { id: 96, user_id: 12, day_of_week: 1, start_time: "05:00", end_time: "13:00", role: "wash", break_slots: [], role_assignments: [{ role: "wash", start_time: "05:00", end_time: "13:00" }] },
+    ],
+    daily_responsibilities: [
+      { id: 11, user_id: 1, day_of_week: 1, role: "floor_cleaning", status: "completed", timing_mode: "anytime" },
+      { id: 12, user_id: 2, day_of_week: 1, role: "floor_cleaning", status: "in_progress", timing_mode: "anytime", assignment_group_id: "g1" },
+    ],
+    role_catalog: [
+      { code: "floor_cleaning", name: "Floor Cleaning", kind: "task", uses_time_slots: false, active: true, display_order: 210, short_code: "FLR" },
+    ],
+    planner: {
+      week_monday: "2026-11-09",
+      status: "draft",
+      revision: 1,
+      flags: { manager_pilot: true },
+      role_settings: [
+        { role: "fold", required_headcount: 6, hourly_headcount: { 10: 6 }, show_on_rinse_dashboard: true, visible_to_rinse: true },
+      ],
+    },
+  };
 }
 
 function previewPayload() {

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { DAY_NAMES, DAY_ORDER, breakLoad, clockMinutes, staffingHours, taskWindow } from "./plannerModel";
+import { DAY_NAMES, DAY_ORDER, breakLoad, clockMinutes, roleDayCoverage, staffingHours, taskWindow } from "./plannerModel";
 import { roleColor, staffingFigures, visibleBreaks } from "./plannerGeometry";
 import { DEFAULT_CATEGORY_TABS } from "../components/tasks/taskDashboardLabels";
 import { scheduleRoleCatalog, scheduleRoleLabel } from "../components/weeklySchedule/weeklyScheduleRoles";
@@ -50,17 +50,11 @@ function roleTitle(role) {
 }
 
 function dayRoleFigures(entries, role, day) {
-  const shifts = (entries || []).filter((entry) => Number(entry.day_of_week) === Number(day));
-  const people = new Set();
-  const matching = [];
-  shifts.forEach((entry) => {
-    const segments = (entry.role_assignments || []).filter((item) => item.role === role && item.start_time && item.end_time);
-    const named = !segments.length && String(entry.role || "").split(",").map((item) => item.trim()).includes(role);
-    if (!segments.length && !named) return;
-    people.add(Number(entry.user_id));
-    matching.push(segments.length ? { ...entry, role, role_assignments: segments, start_time: entry.start_time, end_time: entry.end_time } : entry);
-  });
-  return { people: people.size, hours: staffingFigures(matching).role };
+  return roleDayCoverage(entries, role, day);
+}
+
+function hoursLabel(value) {
+  return `${Number(value || 0).toFixed(1)}h`;
 }
 
 function roleStaff(entries, role, day) {
@@ -94,13 +88,16 @@ export function CoverageBoard({ entries, requirements, employees, day, days, onO
     return codes.filter((code) => !String(code).includes(","));
   }))];
   const storedTargets = (requirements || []).filter((item) => item && (item.required_headcount || item.hourly_headcount));
+  const pickedHours = picked ? staffingHours(entries, storedTargets, picked.role, picked.day) : [];
+  const breakWindows = pickedHours.flatMap((row) => (row.slices || []).filter((slice) => slice.onBreak > 0).map((slice) => ({ ...slice, hour: row.hour })));
   return (
     <section className="coverage-board" aria-label="Role coverage">
       <header>
         <h2>Staffing coverage</h2>
-        <p>Each cell is the number of employees, then the role-hours. Unallocated staffing is not a role. A shortage appears only where a target is stored.</p>
+        <p>Each cell is scheduled employees, gross role hours, and net role hours. Gross is scheduled time on that role. Net subtracts a timed break only where it overlaps that role. An untimed break is subtracted only when the shift has that single role. Time on several roles at once is split across those roles. Open a cell to see scheduled and available employees through the day. A shortage appears only where a target is stored.</p>
+        <p className="quiet">Hourly availability excludes only known timed breaks. Untimed breaks cannot be placed on the timeline.</p>
       </header>
-      <div className="week-board" role="table" aria-label="Coverage for the week">
+      <div className="coverage-grid week-board" role="table" aria-label="Coverage for the week">
         <div className="week-head"><span>Role</span>{shown.map((value) => <span key={value}>{DAY_NAMES[value].slice(0, 3)}</span>)}</div>
         {roles.map((role) => (
           <div className="week-row" key={role}>
@@ -111,9 +108,20 @@ export function CoverageBoard({ entries, requirements, employees, day, days, onO
               const short = target && target.required_headcount && cell.people < Number(target.required_headcount);
               return (
                 <div key={value}>
-                  <button type="button" className={`week-chip${short ? " is-open" : ""}${picked?.day === value && picked?.role === role ? " is-on" : ""}`} onClick={() => setPicked({ day: value, role, ...cell })}>
-                    {cell.people ? `${cell.people} · ${cell.hours.toFixed(1)}h` : "—"}
-                    {target ? "" : ""}
+                  <button
+                    type="button"
+                    className={`week-chip${short ? " is-open" : ""}${picked?.day === value && picked?.role === role ? " is-on" : ""}`}
+                    aria-label={cell.people ? `${roleTitle(role)} ${DAY_NAMES[value]}: ${cell.people} scheduled, ${hoursLabel(cell.grossHours)} gross, ${hoursLabel(cell.netHours)} net${Number(cell.unallocatedUntimedHours) > 0 ? `, ${hoursLabel(cell.unallocatedUntimedHours)} untimed off the clock` : ""}` : `${roleTitle(role)} ${DAY_NAMES[value]}: nobody scheduled`}
+                    onClick={() => setPicked({ day: value, role, ...cell })}
+                  >
+                    {cell.people ? (
+                      <>
+                        <span>{cell.people} scheduled</span>
+                        <small>{hoursLabel(cell.grossHours)} gross</small>
+                        <small>{hoursLabel(cell.netHours)} net</small>
+                        {Number(cell.unallocatedUntimedHours) > 0 ? <small>{hoursLabel(cell.unallocatedUntimedHours)} unassigned</small> : null}
+                      </>
+                    ) : "—"}
                   </button>
                 </div>
               );
@@ -138,22 +146,43 @@ export function CoverageBoard({ entries, requirements, employees, day, days, onO
                 hours += figures.unallocated;
               }
             });
-            return <div key={value}><span className="week-chip">{people ? `${people} · ${hours.toFixed(1)}h` : "—"}</span></div>;
+            return <div key={value}><span className="week-chip">{people ? <><span>{people} scheduled</span><small>{hours.toFixed(1)}h gross</small></> : "—"}</span></div>;
           })}
         </div>
       </div>
-      {!storedTargets.length ? <p className="quiet">No target is stored. These cells are scheduled staffing, not shortages.</p> : null}
+      {!storedTargets.length ? <p className="quiet">No target is stored. Open a cell for available staffing. The counts above are scheduled employees and role hours, not shortages.</p> : null}
       {picked ? (
         <div className="cov-day">
-          <h3>{DAY_NAMES[picked.day]} · {roleTitle(picked.role)} · {picked.people} employees · {Number(picked.hours || 0).toFixed(1)}h</h3>
+          <h3>{DAY_NAMES[picked.day]} · {roleTitle(picked.role)} · {picked.people} scheduled · {hoursLabel(picked.grossHours)} gross · {hoursLabel(picked.netHours)} net</h3>
+          {picked.shared ? <p>Hours on this role are its share of time that is also assigned to another role.</p> : null}
+          {Number(picked.untimedHours) > 0 ? <p>Net includes {hoursLabel(picked.untimedHours)} of untimed break. That break is not placed on the clock.</p> : null}
+          {Number(picked.severalRoleUntimedHours) > 0 ? <p>{hoursLabel(picked.severalRoleUntimedHours)} of untimed break is not assigned to {roleTitle(picked.role)} because the shift has more than one role. It is not placed on the clock.</p> : null}
+          {Number(picked.openTimeUntimedHours) > 0 ? <p>{hoursLabel(picked.openTimeUntimedHours)} of untimed break is not placed on the clock. It stays off {roleTitle(picked.role)} because part of the shift has no role.</p> : null}
+          <p className="quiet">The first figure in each hour is scheduled headcount. The second is available headcount. A range means the number changes during that hour.</p>
           <div className="cov-hours">
-            {staffingHours(entries, storedTargets, picked.role, picked.day).map((row) => (
-              <div key={row.hour} className={`cov-cell ${row.required == null ? "ok" : row.status}`}>
-                <b>{String(row.hour).padStart(2, "0")}</b>
-                <span>{row.required == null ? row.scheduled : `${row.scheduled}/${row.required}`}</span>
-              </div>
-            ))}
+            {pickedHours.map((row) => {
+              const span = row.lowAvailable === row.highAvailable ? `${row.lowAvailable} av` : `${row.lowAvailable}–${row.highAvailable} av`;
+              const detail = (row.slices || []).map((slice) => `${slice.start}–${slice.end}: ${slice.scheduled} scheduled, ${slice.available} available`).join(". ");
+              return (
+                <div
+                  key={row.hour}
+                  className={`cov-cell ${row.required == null ? "ok" : row.status}`}
+                  title={detail || `${row.scheduled} scheduled`}
+                  aria-label={`${String(row.hour).padStart(2, "0")}:00, ${row.scheduled} scheduled, ${span}${row.required == null ? "" : `, target ${row.required}`}`}
+                >
+                  <b>{String(row.hour).padStart(2, "0")}</b>
+                  <span>{row.scheduled} sch</span>
+                  <span>{row.required == null ? span : `${span} / ${row.required}`}</span>
+                </div>
+              );
+            })}
           </div>
+          <ul className="cov-slices">
+            {breakWindows.map((slice) => (
+              <li key={`${slice.hour}-${slice.start}-${slice.end}`}>{slice.start}–{slice.end}: {slice.scheduled} scheduled, {slice.available} available, {slice.onBreak} on a timed break</li>
+            ))}
+          </ul>
+          {!breakWindows.length && picked.people ? <p className="quiet">No timed break overlaps this role, so scheduled employees stay available through each hour.</p> : null}
           <ul className="cov-staff">
             {roleStaff(entries, picked.role, picked.day).map((row, index) => (
               <li key={`${row.entry.id || row.entry.user_id}-${row.start}-${index}`}>

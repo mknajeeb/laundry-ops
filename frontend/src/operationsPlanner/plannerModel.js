@@ -240,36 +240,392 @@ export function breakAccounting(entries) {
   };
 }
 
-/** Required, scheduled, active, and on-break counts for one role during one hour. */
-export function roleCoverage(entries, role, hour, required) {
+function roleKey(role) {
+  const key = String(role || "").trim().toLowerCase();
+  if (key === "folder") return "fold";
+  if (key === "operator") return "wash";
+  return key;
+}
+
+function rolesMatch(left, right) {
+  return roleKey(left) === roleKey(right);
+}
+
+function wallClock(total) {
+  const minutes = Math.round(Number(total) || 0);
+  if (minutes === 24 * 60) return "24:00";
+  const wrapped = ((minutes % (24 * 60)) + 24 * 60) % (24 * 60);
+  return `${String(Math.floor(wrapped / 60)).padStart(2, "0")}:${String(wrapped % 60).padStart(2, "0")}`;
+}
+
+function roundHours(minutes) {
+  return Math.round((Number(minutes) || 0) * 10000) / 10000;
+}
+
+function sameIdList(left, right) {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+function mergeIntervals(ranges) {
+  const merged = [];
+  ranges.filter((range) => range && range[1] > range[0]).sort((a, b) => a[0] - b[0]).forEach(([start, end]) => {
+    const last = merged[merged.length - 1];
+    if (!last || start > last[1]) merged.push([start, end]);
+    else if (end > last[1]) last[1] = end;
+  });
+  return merged;
+}
+
+function intervalMinutes(ranges) {
+  return mergeIntervals(ranges).reduce((sum, [start, end]) => sum + (end - start), 0);
+}
+
+function shiftWindow(entry) {
+  const start = clockMinutes(entry?.start_time);
+  let end = clockMinutes(entry?.end_time);
+  if (start == null || end == null || start === end) return null;
+  if (end <= start) end += 24 * 60;
+  return { start, end };
+}
+
+function placeOnShift(start, end, shiftStart) {
+  let open = start < shiftStart ? start + 24 * 60 : start;
+  let close = end;
+  while (close <= open) close += 24 * 60;
+  return [open, close];
+}
+
+function clipToShift(start, end, shift) {
+  const [open, close] = placeOnShift(start, end, shift.start);
+  const left = Math.max(open, shift.start);
+  const right = Math.min(close, shift.end);
+  return right > left ? [left, right] : null;
+}
+
+function roleSegments(entry, shift) {
+  const stored = (entry?.role_assignments || []).filter((item) => item?.role && item.start_time && item.end_time);
+  if (stored.length) {
+    return stored.map((item) => {
+      const start = clockMinutes(item.start_time);
+      const end = clockMinutes(item.end_time);
+      if (start == null || end == null || start === end) return null;
+      const clipped = clipToShift(start, end, shift);
+      return clipped ? { role: item.role, start: clipped[0], end: clipped[1] } : null;
+    }).filter(Boolean);
+  }
+  const names = String(entry?.role || "").split(",").map((item) => item.trim()).filter(Boolean);
+  return names.map((role) => ({ role, start: shift.start, end: shift.end }));
+}
+
+function timedBreakIntervals(entry, shift) {
+  const slots = Array.isArray(entry?.break_slots) ? entry.break_slots : [];
+  return slots.map((slot) => {
+    if (!slot?.start_time || !slot?.end_time) return null;
+    const start = clockMinutes(slot.start_time);
+    const end = clockMinutes(slot.end_time);
+    if (start == null || end == null || start === end) return null;
+    return clipToShift(start, end, shift);
+  }).filter(Boolean);
+}
+
+function declaredBreakMinutes(entry, timedMinutes) {
+  const slots = Array.isArray(entry?.break_slots) ? entry.break_slots : [];
+  const loose = slots.filter((slot) => !slot?.start_time && Number(slot?.minutes) > 0).map((slot) => Number(slot.minutes));
+  const same = loose.length > 1 && loose.every((value) => value === loose[0]);
+  const fromSlots = same ? loose[0] : loose.reduce((sum, value) => sum + value, 0);
+  return Math.max(Math.max(0, Number(entry?.break_minutes) || 0), timedMinutes, fromSlots);
+}
+
+/** One employee's day, split where role or break boundaries change. Untimed breaks stay off the pieces. */
+function coverageTimelines(entries, day = null) {
+  const groups = new Map();
+  for (const entry of entries || []) {
+    if (day != null && Number(entry?.day_of_week) !== Number(day)) continue;
+    const key = `${Number(entry?.user_id)}|${Number(entry?.day_of_week || 0)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(entry);
+  }
+  const timelines = [];
+  for (const [key, group] of groups) {
+    const shifts = group.map((entry) => ({ entry, ...shiftWindow(entry) })).filter((shift) => shift.start != null);
+    shifts.sort((a, b) => a.start - b.start || a.end - b.end);
+    const segments = shifts.flatMap((shift) => roleSegments(shift.entry, shift));
+    const clusters = [];
+    for (const shift of shifts) {
+      const last = clusters[clusters.length - 1];
+      if (last && shift.start < last.end) {
+        last.end = Math.max(last.end, shift.end);
+        last.shifts.push(shift);
+      } else clusters.push({ start: shift.start, end: shift.end, shifts: [shift] });
+    }
+    const breakRanges = [];
+    const untimed = [];
+    for (const cluster of clusters) {
+      const perShift = cluster.shifts.map((shift) => ({ shift, ranges: timedBreakIntervals(shift.entry, shift) }));
+      const ranges = mergeIntervals(perShift.flatMap((item) => item.ranges));
+      const clusterTimed = intervalMinutes(ranges);
+      let declared = 0;
+      for (const item of perShift) {
+        declared = Math.max(declared, declaredBreakMinutes(item.shift.entry, intervalMinutes(item.ranges)));
+      }
+      const deduction = Math.min(cluster.end - cluster.start, Math.max(clusterTimed, declared));
+      if (deduction > clusterTimed) untimed.push({ start: cluster.start, end: cluster.end, minutes: deduction - clusterTimed });
+      ranges.forEach(([start, end]) => breakRanges.push([start, end]));
+    }
+    let shiftMinutes = 0;
+    let unallocatedUntimedOnce = 0;
+    const points = [...new Set([
+      ...shifts.flatMap((shift) => [shift.start, shift.end]),
+      ...segments.flatMap((segment) => [segment.start, segment.end]),
+      ...breakRanges.flatMap((range) => range),
+    ])].sort((a, b) => a - b);
+    const pieces = [];
+    for (let index = 0; index < points.length - 1; index += 1) {
+      const start = points[index];
+      const end = points[index + 1];
+      if (!shifts.some((shift) => shift.start <= start && shift.end >= end)) continue;
+      const roles = [...new Set(segments.filter((segment) => segment.start <= start && segment.end >= end).map((segment) => segment.role))];
+      pieces.push({
+        start,
+        end,
+        roles,
+        onBreak: breakRanges.some(([open, close]) => open <= start && close >= end),
+      });
+      shiftMinutes += end - start;
+    }
+    for (const item of untimed) {
+      const keys = new Set();
+      for (const piece of pieces) {
+        if (piece.onBreak || piece.start < item.start || piece.end > item.end) continue;
+        if (piece.roles.length) piece.roles.forEach((role) => keys.add(role));
+        else keys.add("");
+      }
+      item.roles = [...keys];
+    }
+    const parts = new Map();
+    const partFor = (role) => {
+      if (!parts.has(role)) parts.set(role, { gross: 0, worked: 0, timedBreak: 0, untimedBreak: 0, unallocatedBreak: 0, net: 0 });
+      return parts.get(role);
+    };
+    for (const piece of pieces) {
+      const keys = piece.roles.length ? piece.roles : [""];
+      const share = (piece.end - piece.start) / 60 / keys.length;
+      for (const role of keys) {
+        const row = partFor(role);
+        row.gross += share;
+        if (piece.onBreak) row.timedBreak += share;
+        else row.worked += share;
+      }
+    }
+    for (const item of untimed) {
+      const hours = item.minutes / 60;
+      const named = item.roles.filter(Boolean);
+      if (named.length === 1 && item.roles.length === 1) {
+        partFor(named[0]).untimedBreak += hours;
+      } else if (named.length > 1) {
+        unallocatedUntimedOnce += item.minutes;
+        named.forEach((role) => {
+          const row = partFor(role);
+          row.unallocatedBreak += hours;
+          row.severalRoleUntimed = (row.severalRoleUntimed || 0) + hours;
+        });
+      } else if (named.length === 1) {
+        unallocatedUntimedOnce += item.minutes;
+        const row = partFor(named[0]);
+        row.unallocatedBreak += hours;
+        row.openTimeUntimed = (row.openTimeUntimed || 0) + hours;
+      } else {
+        partFor("").untimedBreak += hours;
+      }
+    }
+    for (const row of parts.values()) row.net = row.worked - row.untimedBreak;
+    timelines.push({
+      userId: Number(key.split("|")[0]),
+      pieces,
+      parts,
+      shiftHours: shiftMinutes / 60,
+      unallocatedUntimedOnce,
+      assignedRoles: [...new Set(segments.map((segment) => segment.role))],
+    });
+  }
+  return timelines;
+}
+
+/**
+ * Available staffing for one role between two clocks.
+ * A timed break removes the employee only while it overlaps that role.
+ * An untimed break is not given a clock, so it never changes these slices.
+ */
+export function roleAvailability(entries, role, { day = null, start = 0, end = 24 * 60 } = {}) {
+  const events = [];
+  for (const timeline of coverageTimelines(entries, day)) {
+    for (const piece of timeline.pieces) {
+      if (!piece.roles.some((item) => rolesMatch(item, role))) continue;
+      const open = Math.max(piece.start, start);
+      const close = Math.min(piece.end, end);
+      if (close <= open) continue;
+      events.push({ userId: timeline.userId, start: open, end: close, onBreak: piece.onBreak });
+    }
+  }
+  const points = [...new Set(events.flatMap((event) => [event.start, event.end]))].sort((a, b) => a - b);
+  const raw = [];
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const open = points[index];
+    const close = points[index + 1];
+    if (close <= open) continue;
+    const covering = events.filter((event) => event.start <= open && event.end >= close);
+    const scheduledIds = [...new Set(covering.map((event) => event.userId))].sort((a, b) => a - b);
+    const onBreakIds = [...new Set(covering.filter((event) => event.onBreak).map((event) => event.userId))].sort((a, b) => a - b);
+    const breakSet = new Set(onBreakIds);
+    const availableIds = scheduledIds.filter((id) => !breakSet.has(id));
+    if (!scheduledIds.length) continue;
+    raw.push({
+      start: wallClock(open),
+      end: wallClock(close),
+      scheduled: scheduledIds.length,
+      available: availableIds.length,
+      onBreak: onBreakIds.length,
+      scheduledIds,
+      availableIds,
+      onBreakIds,
+    });
+  }
+  const slices = [];
+  for (const slice of raw) {
+    const last = slices[slices.length - 1];
+    if (
+      last
+      && last.end === slice.start
+      && sameIdList(last.scheduledIds, slice.scheduledIds)
+      && sameIdList(last.availableIds, slice.availableIds)
+      && sameIdList(last.onBreakIds, slice.onBreakIds)
+    ) last.end = slice.end;
+    else slices.push({ ...slice });
+  }
+  return slices;
+}
+
+/**
+ * Gross and net role hours for one day, from the payroll day timeline.
+ * Gross is scheduled time on the role. Net subtracts a timed break only where it overlaps that role.
+ * An untimed break is subtracted only when the shift has that single role. It is never placed on a clock.
+ * Time spent on several roles at once is split across those roles, the same way payroll counts it.
+ */
+export function roleDayCoverage(entries, role, day) {
+  const people = new Set();
+  let gross = 0;
+  let net = 0;
+  let timedBreak = 0;
+  let untimed = 0;
+  let unallocated = 0;
+  let openTime = 0;
+  let severalRoles = 0;
+  let shared = false;
+  for (const timeline of coverageTimelines(entries, day)) {
+    const matched = timeline.assignedRoles.find((item) => rolesMatch(item, role));
+    if (!matched) continue;
+    people.add(timeline.userId);
+    const parts = timeline.parts.get(matched);
+    if (parts) {
+      gross += parts.gross;
+      net += parts.net;
+      timedBreak += parts.timedBreak;
+      untimed += parts.untimedBreak;
+      unallocated += parts.unallocatedBreak;
+      openTime += parts.openTimeUntimed || 0;
+      severalRoles += parts.severalRoleUntimed || 0;
+    }
+    if (timeline.pieces.some((piece) => piece.roles.length > 1 && piece.roles.some((item) => rolesMatch(item, role)))) shared = true;
+  }
+  return {
+    people: people.size,
+    hours: roundHours(gross),
+    grossHours: roundHours(gross),
+    netHours: roundHours(net),
+    timedBreakHours: roundHours(timedBreak),
+    untimedHours: roundHours(untimed),
+    unallocatedUntimedHours: roundHours(unallocated),
+    openTimeUntimedHours: roundHours(openTime),
+    severalRoleUntimedHours: roundHours(severalRoles),
+    shared,
+  };
+}
+
+/** Coverage totals beside the existing shift gross, break, and net. This reads those figures and does not change them. */
+export function coverageShiftLedger(entries, day) {
+  let shiftGross = 0;
+  let roleGross = 0;
+  let roleNet = 0;
+  let noRoleGross = 0;
+  let timedBreak = 0;
+  let untimedBreak = 0;
+  let unallocatedUntimed = 0;
+  for (const timeline of coverageTimelines(entries, day)) {
+    shiftGross += timeline.shiftHours;
+    unallocatedUntimed += timeline.unallocatedUntimedOnce / 60;
+    for (const [role, parts] of timeline.parts) {
+      timedBreak += parts.timedBreak;
+      untimedBreak += parts.untimedBreak;
+      if (!role) noRoleGross += parts.gross;
+      else {
+        roleGross += parts.gross;
+        roleNet += parts.net;
+      }
+    }
+  }
+  return {
+    shiftGross: roundHours(shiftGross),
+    roleGross: roundHours(roleGross),
+    roleNet: roundHours(roleNet),
+    noRoleGross: roundHours(noRoleGross),
+    timedBreak: roundHours(timedBreak),
+    untimedBreak: roundHours(untimedBreak),
+    unallocatedUntimed: roundHours(unallocatedUntimed),
+  };
+}
+
+function coversRoleInWindow(entry, role, begin, end) {
+  const segments = (entry?.role_assignments || []).filter((item) => item?.role && item.start_time && item.end_time);
+  const named = segments.filter((item) => rolesMatch(item.role, role));
+  if (named.length) return named.some((item) => intervalOverlaps(item.start_time, item.end_time, begin, end));
+  if (segments.length) return false;
+  const names = String(entry?.role || "").split(",").map((item) => item.trim()).filter(Boolean);
+  if (!names.some((item) => rolesMatch(item, role))) return false;
+  return intervalOverlaps(entry?.start_time, entry?.end_time, begin, end);
+}
+
+/** Required, scheduled, and available counts for one role during one hour. Availability can change inside the hour. */
+export function roleCoverage(entries, role, hour, required, day = null) {
   const begin = hour * 60;
   const end = begin + 60;
+  const slices = roleAvailability(entries, role, { day, start: begin, end });
+  const breaking = new Set(slices.flatMap((slice) => slice.onBreakIds));
+  const scheduledIds = new Set(slices.flatMap((slice) => slice.scheduledIds));
   const scheduled = [];
   const onBreak = [];
   for (const entry of entries || []) {
-    const segments = (entry.role_assignments || []).filter((item) => item.role === role);
-    const covers = segments.length
-      ? segments.some((item) => intervalOverlaps(item.start_time, item.end_time, begin, end))
-      : entry.role === role && intervalOverlaps(entry.start_time, entry.end_time, begin, end);
-    if (!covers) continue;
+    if (day != null && Number(entry.day_of_week) !== Number(day)) continue;
+    if (!scheduledIds.has(Number(entry.user_id)) || !coversRoleInWindow(entry, role, begin, end)) continue;
     scheduled.push(entry);
-    const breaking = (entry.break_slots || []).some(
-      (slot) => slot?.timed !== false && intervalOverlaps(slot.start_time, slot.end_time, begin, end),
-    );
-    if (breaking) onBreak.push(entry);
+    if (breaking.has(Number(entry.user_id))) onBreak.push(entry);
   }
-  const breakIds = new Set(onBreak.map((entry) => entry.user_id));
-  const available = scheduled.filter((entry) => !breakIds.has(entry.user_id));
+  const available = scheduled.filter((entry) => !breaking.has(Number(entry.user_id)));
+  const low = slices.length ? Math.min(...slices.map((slice) => slice.available)) : 0;
+  const high = slices.length ? Math.max(...slices.map((slice) => slice.available)) : 0;
   const need = required == null || required === "" ? null : Number(required);
+  const finite = Number.isFinite(need);
   return {
     hour,
     role,
     scheduled,
     onBreak,
     available,
-    required: Number.isFinite(need) ? need : null,
-    shortage: Number.isFinite(need) ? Math.max(0, need - available.length) : 0,
-    surplus: Number.isFinite(need) ? Math.max(0, available.length - need) : 0,
+    slices,
+    lowAvailable: low,
+    highAvailable: high,
+    required: finite ? need : null,
+    shortage: finite ? Math.max(0, need - low) : 0,
+    surplus: finite ? Math.max(0, low - need) : 0,
   };
 }
 
@@ -369,29 +725,34 @@ export function periodLabel(mode, weekLabel, dayName) {
   return mode === "day" ? dayName : weekLabel;
 }
 
-/** Unique employees working a role during each hour, beside the configured need. */
+/** Scheduled and available employees for a role through the day. A short hour is one where the fewest available people fall below the target. */
 export function staffingHours(entries, requirements, role, day) {
   const dayEntries = (entries || []).filter((entry) => Number(entry.day_of_week) === Number(day));
   const rows = [];
   for (let hour = 5; hour <= 22; hour += 1) {
     const required = requirementFor(requirements, role, day, hour);
-    const coverage = roleCoverage(dayEntries, role, hour, required);
+    const coverage = roleCoverage(dayEntries, role, hour, required, day);
     const scheduledIds = [...new Set(coverage.scheduled.map((entry) => Number(entry.user_id)))];
     const breakIds = new Set(coverage.onBreak.map((entry) => Number(entry.user_id)));
     const working = scheduledIds.filter((id) => !breakIds.has(id));
     const need = coverage.required;
+    const low = coverage.lowAvailable;
     let status = "unset";
     if (need != null) {
-      if (working.length < need) status = "short";
-      else if (working.length > need) status = "extra";
+      if (low < need) status = "short";
+      else if (low > need) status = "extra";
       else status = "ok";
     }
     if (!scheduledIds.length && need == null) continue;
     rows.push({
       hour,
       required: need,
-      scheduled: working.length,
-      assignments: coverage.scheduled.length,
+      scheduled: scheduledIds.length,
+      available: low,
+      lowAvailable: low,
+      highAvailable: coverage.highAvailable,
+      slices: coverage.slices,
+      assignments: scheduledIds.length,
       onBreak: scheduledIds.filter((id) => breakIds.has(id)).length,
       status,
       userIds: working,

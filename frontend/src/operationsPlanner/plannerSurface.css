@@ -348,8 +348,11 @@
 .ops-v2 .cov-row { display: grid; grid-template-columns: 160px 1fr; gap: 8px; align-items: center; margin-bottom: 6px; }
 .ops-v2 .cov-name { display: flex; gap: 6px; align-items: center; font-weight: 650; font-size: 13px; }
 .ops-v2 .cov-name i { width: 8px; height: 8px; border-radius: 99px; display: block; }
+.ops-v2 .coverage-grid.week-head, .ops-v2 .coverage-grid.week-row, .ops-v2 .coverage-grid .week-head, .ops-v2 .coverage-grid .week-row { grid-template-columns: 112px repeat(7, minmax(156px, 1fr)); width: max(100%, 1204px); }
 .ops-v2 .cov-hours { display: flex; gap: 3px; overflow: auto; }
-.ops-v2 .cov-cell { min-width: 46px; height: 42px; border-radius: 8px; border: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 11px; }
+.ops-v2 .cov-cell { min-width: 64px; height: auto; min-height: 52px; padding: 4px 2px; border-radius: 8px; border: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 11px; line-height: 1.2; }
+.ops-v2 .cov-slices { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.ops-v2 .cov-slices li { font-size: 12px; }
 .ops-v2 .cov-cell.unset { background: #eef2f6; color: var(--ink); }
 .ops-v2 .cov-cell.ok { background: #e7f6ee; color: #067647; }
 .ops-v2 .cov-cell.short { background: #fde8e6; color: #9f2d20; }
