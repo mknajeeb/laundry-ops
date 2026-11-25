@@ -373,6 +373,25 @@ def _pattern_covers(pattern: Mapping[str, Any], monday: date) -> bool:
     return end is None or (isinstance(end, date) and monday < end)
 
 
+def recurring_cells(state: Mapping[str, Any], monday: date) -> list[dict[str, int]]:
+    """Employee-days whose open pattern covers this Monday. This week is then an exception."""
+    seen: set[tuple[int, int]] = set()
+    cells: list[dict[str, int]] = []
+    for pattern in state.get("patterns") or []:
+        try:
+            user_id = int(pattern.get("user_id") or 0)
+            day = int(pattern.get("day_of_week"))
+        except (TypeError, ValueError):
+            continue
+        if (user_id, day) in seen:
+            continue
+        if active_pattern(state, user_id, day, monday) is None:
+            continue
+        seen.add((user_id, day))
+        cells.append({"user_id": user_id, "day_of_week": day})
+    return cells
+
+
 def active_pattern(
     state: Mapping[str, Any],
     user_id: int,

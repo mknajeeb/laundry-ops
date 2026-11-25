@@ -24,6 +24,7 @@ from backend.operations_planner_v2 import (
     plan_cell_scopes,
     plan_change,
     publish_weeks,
+    recurring_cells,
     shift_set_confirmation,
     role_visible_to_rinse,
     verify_personal_paystub_code,
@@ -31,6 +32,7 @@ from backend.operations_planner_v2 import (
 )
 from backend.operations_planner_v2_store import (
     acquire_lock,
+    begin_locked_read,
     legacy_template_enabled,
     load_access,
     add_assignments,
@@ -273,6 +275,7 @@ def register_operations_planner_v2_routes(
                 "revision": status.get("revision") or 1,
                 "published_revision": status.get("published_revision"),
                 "schedule_token": schedule_fingerprint(cursor, org, monday),
+                "recurring_cells": recurring_cells(state, monday),
                 "flags": flags,
                 "legacy_template": legacy_template_enabled(cursor, org),
                 "role_settings": roles,
@@ -372,6 +375,7 @@ def register_operations_planner_v2_routes(
             if not acquire_lock(cursor, org):
                 return jsonify({"error": "Another manager is saving this schedule", "code": "busy"}), 409
             try:
+                begin_locked_read(conn)
                 action = str(body.get("action") or "")
                 if action in ("apply_shift_set", "apply_cell_scopes"):
                     monday = _monday_arg(body.get("week_start") or body.get("anchor"))
@@ -387,14 +391,6 @@ def register_operations_planner_v2_routes(
                                 }
                             ), 409
                 if action == "apply_cell_scopes":
-                    if str(body.get("scope") or "") == "this_week":
-                        return jsonify(
-                            {
-                                "ok": False,
-                                "code": "invalid_action",
-                                "error": "This week is saved as the shifts on the schedule. Choose a future scope for a repeating pattern, or save this week from the shift list.",
-                            }
-                        ), 409
                     result = plan_cell_scopes(load_state(cursor, org), _command(body, org, cursor))
                     if not result.get("ok"):
                         result.pop("state", None)
@@ -521,6 +517,7 @@ def register_operations_planner_v2_routes(
             if not acquire_lock(cursor, org):
                 return jsonify({"error": "Another manager is saving this schedule", "code": "busy"}), 409
             try:
+                begin_locked_read(conn)
                 state = load_state(cursor, org)
                 if kind == "approve":
                     result = approve_weeks(state, weeks)

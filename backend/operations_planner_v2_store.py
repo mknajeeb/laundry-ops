@@ -1279,6 +1279,20 @@ def acquire_lock(cursor, organization_id: int) -> bool:
     return bool(row and row[0])
 
 
+def begin_locked_read(conn) -> None:
+    """Read the schedule only after this request owns the lock.
+
+    The request connection leaves autocommit off, so its first statement opens
+    a REPEATABLE READ transaction. That statement is often GET_LOCK itself, and
+    the snapshot is fixed before the lock wait returns. A commit that landed
+    while this request waited would still match the old revision token, and
+    both overlapping saves would return 200. ROLLBACK ends that snapshot.
+    GET_LOCK is not released by ROLLBACK. The next read sees the latest
+    committed rows.
+    """
+    conn.rollback()
+
+
 def release_lock(cursor, organization_id: int) -> None:
     try:
         cursor.execute("SELECT RELEASE_LOCK(%s)", (f"ops_planner_{int(organization_id)}",))

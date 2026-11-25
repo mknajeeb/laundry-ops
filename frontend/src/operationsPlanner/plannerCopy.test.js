@@ -35,12 +35,14 @@ describe("schedule copies", () => {
 });
 
 describe("save scope", () => {
-  it("repeats one shift and also repeats two shifts on the same day", () => {
+  it("saves an ordinary edit on this week and asks when that day already repeats", () => {
     const next = { ...shift, end_time: "17:00" };
-    expect(scopeDecision([shift], [next]).recurring).toBe(true);
+    expect(scopeDecision([shift], [next]).recurring).toBe(false);
+    expect(scopeDecision([shift], [next], [{ user_id: 4, day_of_week: 1 }]).recurring).toBe(true);
+    expect(scopeDecision([shift], [next], [{ user_id: 9, day_of_week: 1 }]).recurring).toBe(false);
     expect(patternCells([shift], [next])[0].shift.end_time).toBe("17:00");
     const split = [shift, { ...shift, id: "draft-2", start_time: "16:00", end_time: "20:00" }];
-    expect(scopeDecision([shift], split).recurring).toBe(true);
+    expect(scopeDecision([shift], split).recurring).toBe(false);
     expect(patternCells([shift], split)[0].shifts).toHaveLength(2);
   });
 

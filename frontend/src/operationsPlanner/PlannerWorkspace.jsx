@@ -454,7 +454,7 @@ function segmentsOverlap(segments) {
   return pieces.some((piece, index) => pieces.slice(index + 1).some((other) => piece[0] < other[1] && other[0] < piece[1]));
 }
 
-function Drawer({ entry, employees, tasks, dayLabel, dirty, saving, canUndo, canRedo, conflict, missingRole, badBreak, saveError, onClose, onCommit, onTasks, onReview, onUndo, onRedo, onDiscard, onCopyBreaks, onCopyTask, onDelete }) {
+function Drawer({ entry, employees, tasks, dayLabel, dirty, saving, canUndo, canRedo, conflict, missingRole, badBreak, saveError, saveConflict, onReload, onClose, onCommit, onTasks, onReview, onUndo, onRedo, onDiscard, onCopyBreaks, onCopyTask, onDelete }) {
   const range = entry ? shiftRange(entry) : null;
   const [roleCode, setRoleCode] = useState("");
   const [segStart, setSegStart] = useState(range ? minutesToClock(range.start) : "");
@@ -509,7 +509,12 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, saving, canUndo, can
         <button type="button" className="close" aria-label="Close" onClick={onClose}>×</button>
       </header>
         <div className="body">
-        {saveError ? <p className="ops-warn" role="alert">{saveError}</p> : null}
+        {saveError ? (
+          <p className="ops-warn" role="alert">
+            {saveError}
+            {saveConflict === "schedule_changed" ? <button type="button" className="btn" onClick={onReload}>Reload week</button> : null}
+          </p>
+        ) : null}
         {!saveError && conflict ? <p className="ops-warn">This shift overlaps another shift for the same employee.</p> : null}
         {!saveError && missingRole ? <p className="ops-warn">Add a role. The shift hours stay until you save or discard.</p> : null}
         {!saveError && badBreak ? <p className="ops-warn">A break sits outside the shift, or its start and end are the same.</p> : null}
@@ -678,6 +683,7 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, saving, canUndo, can
       <footer>
         <p className={`state${dirty ? " dirty" : ""}`}><i />{dirty ? "Unsaved changes" : "No unsaved changes"}</p>
         <button type="button" className="btn danger" onClick={() => onDelete?.(entry)}>Delete shift</button>
+        <button type="button" className="btn" onClick={() => onReview({ repeat: true })} disabled={!dirty || saving}>Future weeks</button>
         <button type="button" className="btn" onClick={() => onReview()} disabled={!dirty || saving}>{saving ? "Saving…" : "Save"}</button>
         <button type="button" className="btn primary" onClick={() => onReview({ closeAfter: true })} disabled={!dirty || saving}>{saving ? "Saving…" : "Save & Close"}</button>
       </footer>
@@ -745,6 +751,8 @@ export default function PlannerWorkspace({
   onCopyRequest,
   catalog,
   saveError,
+  saveConflict,
+  onReload,
 }) {
   const boardRef = useRef(null);
   const scrollMem = useRef({});
@@ -1149,6 +1157,7 @@ export default function PlannerWorkspace({
           <button type="button" className="btn" onClick={onUndo} disabled={!canUndo}>Undo</button>
           <button type="button" className="btn" onClick={onRedo} disabled={!canRedo}>Redo</button>
           <button type="button" className="btn" onClick={onDiscard}>Discard</button>
+          <button type="button" className="btn" onClick={() => onReview({ repeat: true })}>Future weeks</button>
           <button type="button" className="btn primary" onClick={() => onReview()}>Save changes</button>
         </div>
       ) : null}
@@ -1402,6 +1411,8 @@ export default function PlannerWorkspace({
             missingRole={!selected.role && !storedSegments(selected).length}
             badBreak={breakOutside(selected)}
             saveError={saveError}
+            saveConflict={saveConflict}
+            onReload={onReload}
             onCopyBreaks={(entry) => {
               setBreakCopy(entry);
               setCopyPeople([String(entry.user_id)]);

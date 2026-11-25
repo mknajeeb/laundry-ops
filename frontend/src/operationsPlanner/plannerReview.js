@@ -65,21 +65,26 @@ export function affectedShiftCount({ scope = "this_week", cells = [], selectedWe
   return { weeks: weeks.length, perWeek, shifts: perWeek * weeks.length };
 }
 
-/** Every changed day can repeat, including a day that holds more than one shift. */
-export function scopeDecision(before, after) {
+/**
+ * A change repeats only when that employee-day already has a pattern, or the
+ * manager asks to apply it to future weeks. Any other edit stays on this week.
+ */
+export function scopeDecision(before, after, recurringCells = []) {
   const operations = draftOperations(before, after);
+  const covered = new Set((recurringCells || []).map((cell) => cellKey(cell.user_id, cell.day_of_week)));
+  const recurring = operations.some((op) => covered.has(cellKey(op.user_id, op.day_of_week)));
   return {
     operations,
-    recurring: operations.length > 0,
+    recurring,
     blocked: [],
-    reason: "This week is a temporary exception. This week and future, future only, and selected weeks repeat every shift on the changed days, including a second shift on the same day.",
+    reason: recurring ? "This day already repeats. This week only is an exception and leaves the pattern in place." : "",
   };
 }
 
 export function patternCells(before, after) {
-  const decision = scopeDecision(before, after);
-  if (!decision.recurring) return [];
-  const keys = [...new Set(decision.operations.map((op) => cellKey(op.user_id, op.day_of_week)))];
+  const operations = draftOperations(before, after);
+  if (!operations.length) return [];
+  const keys = [...new Set(operations.map((op) => cellKey(op.user_id, op.day_of_week)))];
   return keys.map((key) => {
     const [userId, day] = key.split(":").map(Number);
     const shifts = (after || []).filter((entry) => cellKey(entry.user_id, entry.day_of_week) === key && saveableShift(entry));

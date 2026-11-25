@@ -477,12 +477,14 @@ export default function OperationsPlannerV2Page() {
       setError("Nothing in this draft is different from the saved week.");
       return;
     }
-    const decision = scopeDecision(loadedEntries, working);
+    const decision = scopeDecision(loadedEntries, working, planner.recurring_cells || []);
+    const choice = Boolean(options.repeat) || decision.recurring;
     const command = {
       action: "apply_shift_set",
       operations,
       incomplete,
-      scopeMode: decision.recurring ? "choice" : "this_week_only",
+      scopeMode: choice ? "choice" : "this_week_only",
+      recordException: decision.recurring,
       scopeReason: decision.reason,
       cells: patternCells(loadedEntries, working),
       lines: reviewLines(loadedEntries, working, employees),
@@ -679,7 +681,8 @@ export default function OperationsPlannerV2Page() {
       return;
     }
     const operations = command.operations || [];
-    const repeating = action === "apply_shift_set" && requestedScope !== "this_week" && operations.length;
+    const exceptionThisWeek = Boolean(command.recordException) && requestedScope === "this_week";
+    const repeating = action === "apply_shift_set" && (requestedScope !== "this_week" || exceptionThisWeek) && operations.length;
     const body = {
       ...(repeating ? { action: "apply_cell_scopes", cells: command.cells } : command),
       scope: requestedScope,
@@ -973,7 +976,7 @@ export default function OperationsPlannerV2Page() {
       {error && !editorOpen ? (
         <p className="ops-note ops-warn">
           {error}
-          {conflict && conflict !== "mismatch" && conflict !== "tasks" ? <button type="button" className="btn" onClick={reloadWeek}>Reload week</button> : null}
+          {conflict === "schedule_changed" ? <button type="button" className="btn" onClick={reloadWeek}>Reload week</button> : null}
         </p>
       ) : null}
       {notice ? <p className="ops-note">{notice}</p> : null}
@@ -1029,6 +1032,8 @@ export default function OperationsPlannerV2Page() {
           }}
           catalog={payload?.role_catalog || []}
           saveError={error}
+          saveConflict={conflict}
+          onReload={reloadWeek}
         />
       ) : null}
       {lifecycle && !snapshot ? (
@@ -1118,32 +1123,17 @@ export default function OperationsPlannerV2Page() {
       {pending ? (
         <div className="ops-dialog-back">
           <form className="ops-dialog" onSubmit={(event) => { event.preventDefault(); if (!snapshot) send("/operations-planner/v2/apply"); }}>
-            <h2>Save changes</h2>
-            <p>
-              {pending.command.action === "save_staffing_requirements"
-                ? `${(pending.command.requirements || []).length} staffing interval${(pending.command.requirements || []).length === 1 ? "" : "s"}. Hours without an interval stay unconfigured.`
-                : pending.command.action === "assign_tasks"
-                  ? `${(pending.command.tasks || []).length} new assignment${(pending.command.tasks || []).length === 1 ? "" : "s"}. Completed records are not rewritten.`
-                  : pending.command.action === "apply_shift_set"
-                    ? "These draft changes are saved together. Approval and publishing stay separate."
+            <h2>{pending.command.action === "apply_shift_set" ? "Save which weeks?" : "Save changes"}</h2>
+            {pending.command.action === "apply_shift_set" ? null : (
+              <p>
+                {pending.command.action === "save_staffing_requirements"
+                  ? `${(pending.command.requirements || []).length} staffing interval${(pending.command.requirements || []).length === 1 ? "" : "s"}. Hours without an interval stay unconfigured.`
+                  : pending.command.action === "assign_tasks"
+                    ? `${(pending.command.tasks || []).length} new assignment${(pending.command.tasks || []).length === 1 ? "" : "s"}. Completed records are not rewritten.`
                     : `${pending.command.action} · employee ${pending.command.user_id} · ${DAY_NAMES[pending.command.day_of_week] || ""}`}
-            </p>
-            {pending.command.action === "apply_shift_set" && ((pending.command.lines || []).length || (pending.command.taskLines || []).length || (pending.command.staffingLines || []).length) ? (
-              <>
-                <p>{`${(pending.command.lines || []).length} shift ${(pending.command.lines || []).length === 1 ? "change" : "changes"}${(pending.command.taskLines || []).length ? `, ${(pending.command.taskLines || []).length} task ${(pending.command.taskLines || []).length === 1 ? "change" : "changes"}` : ""}.`}</p>
-                <ul className="review-list">
-                  {(pending.command.lines || []).map((line, index) => (
-                    <li key={`${line.kind}-${index}`}>{line.kind} · {line.employee} · {line.day} · {line.before} → {line.after}</li>
-                  ))}
-                  {(pending.command.taskLines || []).map((line, index) => (
-                    <li key={`task-${index}`}>Task · employee {line.employee} · {line.day} · {line.detail}</li>
-                  ))}
-                  {(pending.command.staffingLines || []).map((line, index) => (
-                    <li key={`staff-${index}`}>{line.detail}</li>
-                  ))}
-                </ul>
-              </>
-            ) : pending.command.action === "assign_tasks" || pending.command.action === "save_staffing_requirements" ? (
+              </p>
+            )}
+            {pending.command.action === "assign_tasks" || pending.command.action === "save_staffing_requirements" ? (
               <ul className="review-list">
                 {(pending.command.taskLines || []).map((line, index) => (
                   <li key={`task-${index}`}>{line.kind} · {line.detail}</li>

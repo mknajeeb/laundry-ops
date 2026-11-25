@@ -420,6 +420,7 @@
 .ops-v2 .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .ops-v2 .btn.danger { color: #9f2d20; border-color: #e7b4ae; }
 .ops-v2 .btn.danger:hover:not(:disabled) { background: #fde8e6; }
+.ops-v2 .ops-warn .btn { margin-left: 8px; }
 .ops-v2 .btn:disabled { opacity: .38; }
 .ops-v2 .drawer footer {
   flex: none; margin-top: auto; border-top: 1px solid var(--line); padding: 10px 14px;
