@@ -560,12 +560,7 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, saving, canUndo, can
             <input aria-label="Segment end" type="time" step="900" value={segEnd} onChange={(event) => setSegEnd(event.target.value)} />
             <button type="button" className="btn" onClick={() => patch(scheduleFromRoles(entry, [...stored, { role: roleCode, start_time: segStart, end_time: segEnd }].filter((item) => item.role && spanMinutes(item.start_time, item.end_time))), "Proposed a role segment. Not saved.")}>Add</button>
           </div>
-          <button type="button" className="btn" onClick={() => {
-            const trimmed = scheduleFromRoles(entry, stored, "trim");
-            const before = staffingFigures(entry);
-            const after = staffingFigures(trimmed);
-            setEnvelopeAsk({ kind: "trim", before: before.total, after: after.total, apply: trimmed });
-          }}>Trim unallocated time</button>
+          {booked.unallocated > 0.05 ? <p className="ops-warn">Unallocated {booked.unallocated.toFixed(1)}h stays on this shift. Change the shift hours if that time should not be scheduled.</p> : null}
           {envelopeAsk ? (
             <div className="ops-warn" role="dialog" aria-label="Confirm scheduled hours">
               <p>Total scheduled hours {Number(envelopeAsk.before).toFixed(1)}h to {Number(envelopeAsk.after).toFixed(1)}h. The stored envelope stays unchanged until this is confirmed.</p>
@@ -683,7 +678,8 @@ function Drawer({ entry, employees, tasks, dayLabel, dirty, saving, canUndo, can
       <footer>
         <p className={`state${dirty ? " dirty" : ""}`}><i />{dirty ? "Unsaved changes" : "No unsaved changes"}</p>
         <button type="button" className="btn danger" onClick={() => onDelete?.(entry)}>Delete shift</button>
-        <button type="button" className="btn primary" onClick={() => onReview()} disabled={!dirty || saving}>{saving ? "Saving…" : "Save changes"}</button>
+        <button type="button" className="btn" onClick={() => onReview()} disabled={!dirty || saving}>{saving ? "Saving…" : "Save"}</button>
+        <button type="button" className="btn primary" onClick={() => onReview({ closeAfter: true })} disabled={!dirty || saving}>{saving ? "Saving…" : "Save & Close"}</button>
       </footer>
     </aside>
   );
@@ -1307,7 +1303,7 @@ export default function PlannerWorkspace({
                                 {slots.map((slot, index) => (
                                   <span key={`break-${index}`} className={`card-line is-break${slot.start_time ? "" : " is-unsplit"}`}>
                                     <i />
-                                    <span className="card-name">{slot.start_time ? "Timed" : "Untimed"}</span>
+                                    <span className="card-name" title={slot.start_time ? "Timed break" : "Untimed break"}>Break</span>
                                     <span className="card-time">{slot.start_time ? `${hm(slot.start_time)}–${hm(slot.end_time)}` : `${slot.minutes}m${hours.review ? " · review" : ""}`}</span>
                                   </span>
                                 ))}

@@ -34,7 +34,14 @@ export function persistedRoleSignature(entry) {
 }
 
 function clockKey(value) {
-  return String(value || "").slice(0, 5);
+  const text = String(value || "").trim().slice(0, 5);
+  const match = /^(\d{1,2}):(\d{2})$/.exec(text);
+  if (!match) return text;
+  return `${match[1].padStart(2, "0")}:${match[2]}`;
+}
+
+function roleKey(value) {
+  return String(value || "").trim().toLowerCase();
 }
 
 /** The schedule a save still shows after the server stores a full-span role on the shift itself. */
@@ -45,7 +52,7 @@ export function canonicalSchedule(entry) {
   const partial = [];
   const spanned = [];
   segments.forEach((segment) => {
-    const role = String(segment?.role || "").trim();
+    const role = roleKey(segment?.role);
     if (!role) return;
     const segStart = clockKey(segment.start_time);
     const segEnd = clockKey(segment.end_time);
@@ -54,7 +61,7 @@ export function canonicalSchedule(entry) {
   });
   const full = String(entry?.role || "")
     .split(",")
-    .map((role) => role.trim())
+    .map((role) => roleKey(role))
     .filter((role) => role && !partial.some((item) => item.startsWith(`${role}@`)));
   spanned.forEach((role) => {
     if (!full.includes(role)) full.push(role);
@@ -92,40 +99,81 @@ export function canonicalSchedule(entry) {
   };
 }
 
-function sameSavedShift(left, right) {
-  return JSON.stringify(canonicalSchedule(left)) === JSON.stringify(canonicalSchedule(right));
+function scheduleKey(entry) {
+  return JSON.stringify(canonicalSchedule(entry));
+}
+
+function cellKey(entry) {
+  return `${Number(entry?.user_id)}:${Number(entry?.day_of_week)}`;
+}
+
+function stampedShift(op) {
+  const shift = op?.shift || {};
+  return {
+    ...shift,
+    user_id: Number(shift.user_id ?? op?.user_id),
+    day_of_week: Number(shift.day_of_week ?? op?.day_of_week),
+  };
+}
+
+/** The week the save asked to store, starting from the rows loaded before the request. */
+function projectSavedWeek(baseline, operations) {
+  const rows = (baseline || []).map((entry) => ({ ...entry }));
+  (operations || []).forEach((op) => {
+    if (op?.op === "delete") {
+      const index = rows.findIndex((entry) => String(entry.id) === String(op.id));
+      if (index >= 0) rows.splice(index, 1);
+      return;
+    }
+    const shift = stampedShift(op);
+    if (op?.op === "update") {
+      const index = rows.findIndex((entry) => String(entry.id) === String(op.id));
+      if (index >= 0) rows[index] = { ...rows[index], ...shift, id: op.id };
+      else rows.push(shift);
+      return;
+    }
+    rows.push(shift);
+  });
+  return rows;
 }
 
 /**
- * A save can give a new row a new id and store a full-span role without its segment.
- * Those are the same schedule. Each stored row can satisfy only one change.
+ * A committed save can keep the existing row id, drop a timed-break flag, sort roles,
+ * or store a full-span role on the shift itself. Those are the same schedule.
+ * The check is the resulting employee-day, so a replaced id is not reported as missing.
+ * Another row on that day, or a change that did not come back, still keeps the draft.
  */
-export function operationsWereSaved(entries, operations, knownIds = []) {
+export function operationsWereSaved(entries, operations, baseline = []) {
   const saved = entries || [];
-  const claimed = new Set();
-  const known = new Set((knownIds || []).map((id) => String(id)));
+  const prior = (baseline || []).filter((entry) => entry && typeof entry === "object");
+  const projected = projectSavedWeek(prior, operations);
+  const touched = new Set();
+  (operations || []).forEach((op) => {
+    const shift = stampedShift(op);
+    if (Number.isInteger(shift.day_of_week) && shift.day_of_week >= 0 && shift.day_of_week <= 6 && shift.user_id) {
+      touched.add(cellKey(shift));
+    }
+    if (op?.op === "update" || op?.op === "delete") {
+      const previous = prior.find((entry) => String(entry.id) === String(op.id));
+      if (previous) touched.add(cellKey(previous));
+    }
+  });
+  const failed = new Set();
+  touched.forEach((key) => {
+    const wanted = projected.filter((entry) => cellKey(entry) === key).map(scheduleKey).sort();
+    const found = saved.filter((entry) => cellKey(entry) === key).map(scheduleKey).sort();
+    if (JSON.stringify(wanted) !== JSON.stringify(found)) failed.add(key);
+  });
   const missing = [];
   (operations || []).forEach((op) => {
-    if (op?.op === "delete") {
-      if (saved.some((entry) => String(entry.id) === String(op.id))) missing.push(op);
-      return;
+    const shift = stampedShift(op);
+    const key = cellKey(shift);
+    const previous = (op?.op === "update" || op?.op === "delete")
+      ? prior.find((entry) => String(entry.id) === String(op.id))
+      : null;
+    if (!shift.user_id || !Number.isInteger(shift.day_of_week) || failed.has(key) || (previous && failed.has(cellKey(previous)))) {
+      missing.push(op);
     }
-    const shift = op?.shift || {};
-    if (op?.op === "update") {
-      const match = saved.find((entry) => String(entry.id) === String(op.id));
-      if (!match || !sameSavedShift(shift, match)) missing.push(op);
-      else claimed.add(String(match.id));
-      return;
-    }
-    const match = saved.find((entry) => (
-      !claimed.has(String(entry.id))
-      && !known.has(String(entry.id))
-      && Number(entry.user_id) === Number(shift.user_id)
-      && Number(entry.day_of_week) === Number(shift.day_of_week)
-      && sameSavedShift(shift, entry)
-    ));
-    if (!match) missing.push(op);
-    else claimed.add(String(match.id));
   });
   return { ok: missing.length === 0, missing };
 }

@@ -452,12 +452,104 @@ describe("planner geometry", () => {
     const created = operationsWereSaved(
       [stored, { ...stored, id: 90 }],
       [{ op: "create", day_of_week: 0, shift: { ...sent, id: "draft-1" } }],
-      [12],
+      [stored],
     );
     expect(created.ok).toBe(true);
     expect(created.missing).toEqual([]);
     const absent = operationsWereSaved([], [{ op: "create", day_of_week: 0, user_id: 34, shift: sent }], []);
     expect(absent.ok).toBe(false);
     expect(absent.missing).toHaveLength(1);
+    const notDuplicated = operationsWereSaved(
+      [stored],
+      [{ op: "create", day_of_week: 0, shift: { ...sent, id: "draft-2" } }],
+      [stored],
+    );
+    expect(notDuplicated.ok).toBe(false);
+  });
+
+  it("accepts a committed recurring save that kept the existing row id", () => {
+    const loaded = {
+      id: 6077,
+      user_id: 27,
+      day_of_week: 1,
+      start_time: "10:00",
+      end_time: "18:00",
+      role: "attendant,fold",
+      break_minutes: 30,
+      break_slots: [{ start_time: "14:00", end_time: "14:30", timed: true }],
+      role_assignments: [
+        { role: "fold", start_time: "10:00", end_time: "16:00" },
+        { role: "attendant", start_time: "16:00", end_time: "18:00" },
+      ],
+    };
+    const draft = { ...loaded, id: "draft-monday", role: "fold,attendant" };
+    const returned = {
+      id: 6077,
+      user_id: 27,
+      day_of_week: 1,
+      start_time: "10:00:00",
+      end_time: "18:00:00",
+      role: "fold,attendant",
+      break_minutes: 30,
+      break_slots: [{ start_time: "14:00", end_time: "14:30" }],
+      assignments: [
+        { role: "fold", start_time: "10:00", end_time: "16:00", full_shift: false },
+        { role: "attendant", start_time: "16:00", end_time: "18:00", full_shift: false },
+      ],
+    };
+    const kept = operationsWereSaved(
+      [returned],
+      [
+        { op: "delete", id: 6077, user_id: 27, day_of_week: 1 },
+        { op: "create", user_id: 27, day_of_week: 1, shift: draft },
+      ],
+      [loaded],
+    );
+    expect(kept.ok).toBe(true);
+    const unchangedNeighbor = {
+      id: 99,
+      user_id: 16,
+      day_of_week: 1,
+      start_time: "05:30",
+      end_time: "09:30",
+      role: "fold",
+      break_minutes: 0,
+      break_slots: [],
+    };
+    const ignored = operationsWereSaved(
+      [returned, { ...unchangedNeighbor, start_time: "06:00" }],
+      [{ op: "update", id: 6077, user_id: 27, day_of_week: 1, shift: draft }],
+      [loaded, unchangedNeighbor],
+    );
+    expect(ignored.ok).toBe(true);
+    const rejected = operationsWereSaved(
+      [{ ...returned, end_time: "16:00" }],
+      [{ op: "update", id: 6077, user_id: 27, day_of_week: 1, shift: draft }],
+      [loaded],
+    );
+    expect(rejected.ok).toBe(false);
+    expect(rejected.missing.map((op) => op.day_of_week)).toEqual([1]);
+    const concurrent = operationsWereSaved(
+      [returned, { ...returned, id: 7000 }],
+      [{ op: "update", id: 6077, user_id: 27, day_of_week: 1, shift: draft }],
+      [loaded],
+    );
+    expect(concurrent.ok).toBe(false);
+    const sibling = {
+      id: 99,
+      user_id: 27,
+      day_of_week: 1,
+      start_time: "05:00",
+      end_time: "09:00",
+      role: "wash",
+      break_minutes: 0,
+      break_slots: [],
+    };
+    const sameDay = operationsWereSaved(
+      [returned, { ...sibling, start_time: "05:00:00", end_time: "09:00:00" }],
+      [{ op: "update", id: 6077, user_id: 27, day_of_week: 1, shift: draft }],
+      [loaded, sibling],
+    );
+    expect(sameDay.ok).toBe(true);
   });
 });
